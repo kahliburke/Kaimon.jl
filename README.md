@@ -32,37 +32,20 @@ code search.
 
 ## Quick Start
 
-```julia
-using Pkg
-Pkg.add("Kaimon")
-
-using Kaimon
-
-# Interactive setup (generates API keys, configures security)
-Kaimon.setup_wizard_tui()
-
-# Start the MCP server
-Kaimon.start!()  # default port 2828
+```bash
+git clone https://github.com/kahliburke/Kaimon.jl
+cd Kaimon.jl
+./bin/kaimon
 ```
 
-Configure your MCP client to connect:
+The first run opens a setup wizard (security mode, API key, port). After that, the terminal dashboard launches:
 
-```json
-{
-  "servers": {
-    "kaimon": {
-      "type": "http",
-      "url": "http://localhost:2828"
-    }
-  }
-}
-```
+![Kaimon dashboard](docs/src/assets/kaimon_overview.gif)
 
-Or launch the terminal dashboard for multi-session management:
-
-```julia
-Kaimon.tui()
-```
+From the dashboard:
+- Press **`i`** in the Config tab to write MCP config for Claude Code, Cursor, VS Code, or Gemini CLI
+- Press **`g`** to add a Gate snippet to `~/.julia/config/startup.jl` so every Julia session auto-connects
+- Or connect manually from any REPL: `using Kaimon; Gate.serve()`
 
 ## Tool Categories
 

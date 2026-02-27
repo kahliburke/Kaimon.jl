@@ -6,14 +6,17 @@
 
 ## Install Kaimon
 
-From the Julia REPL, add the package from the General registry:
+Clone the repository and use `bin/kaimon` as the launcher:
 
-```julia
-using Pkg
-Pkg.add("Kaimon")
+```bash
+git clone https://github.com/kahliburke/Kaimon.jl
+cd Kaimon.jl
+./bin/kaimon
 ```
 
-Alternatively, install directly from the repository for the latest development version:
+`bin/kaimon` activates the project, installs dependencies on first run, and launches the terminal dashboard. This is the recommended way to run Kaimon.
+
+Alternatively, add it as a Julia package for use as a library:
 
 ```julia
 using Pkg

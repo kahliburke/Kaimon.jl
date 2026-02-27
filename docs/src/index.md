@@ -45,19 +45,26 @@ Kaimon (開門, "opening the gate") turns any Julia REPL into a Model Context Pr
 
 ## Quick Start
 
-**1. Launch the server**
+**1. Install**
+
+```bash
+git clone https://github.com/kahliburke/Kaimon.jl
+cd Kaimon.jl
+```
+
+**2. Launch the dashboard**
 
 ```bash
 ./bin/kaimon
 ```
 
-The first run walks you through a setup wizard (security mode, API key, port). After that, the dashboard opens.
+The first run walks you through a setup wizard (security mode, API key, port). After that, the terminal dashboard opens.
 
-**2. Connect your editor**
+**3. Connect your editor**
 
 Press **`i`** in the Config tab to install MCP config for Claude Code, Cursor, VS Code, or Gemini CLI — no manual file editing needed.
 
-**3. Connect a Julia REPL**
+**4. Connect a Julia REPL**
 
 ```julia
 using Kaimon
