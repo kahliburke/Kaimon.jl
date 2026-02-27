@@ -102,6 +102,46 @@ if use_revise && isdefined(Main, :Revise)
     end
 end
 
+# Check that Kaimon is in the global Julia environment.
+# Gate.serve() is called from users' own project REPLs, so Kaimon must be
+# accessible outside this cloned repo — the global env is the right place.
+if isa(stdin, Base.TTY)
+    let global_env = joinpath(homedir(), ".julia", "environments",
+                               "v$(VERSION.major).$(VERSION.minor)")
+        global_proj = joinpath(global_env, "Project.toml")
+        in_global = isfile(global_proj) &&
+            haskey(get(Pkg.TOML.parsefile(global_proj), "deps", Dict()), "Kaimon")
+
+        if !in_global
+            println("""
+
+            Kaimon is not installed in your global Julia environment.
+
+            Gate.serve() must be called from your project REPLs to connect them
+            to the Kaimon dashboard. For this to work, Kaimon needs to be
+            available in every Julia session — the global environment is the
+            recommended place to install it.
+            """)
+            print("Add Kaimon to your global Julia environment now? [Y/n]: ")
+            response = strip(readline())
+            if isempty(response) || lowercase(response) in ("y", "yes")
+                @info "Installing Kaimon in global environment..."
+                try
+                    Pkg.activate()
+                    Pkg.develop(PackageSpec(path = PROJECT_DIR))
+                    Pkg.activate(PROJECT_DIR)
+                    println("\nDone. You can now call `using Kaimon` from any Julia session.\n")
+                catch e
+                    @warn "Global install failed" exception = e
+                    Pkg.activate(PROJECT_DIR)
+                end
+            else
+                println()
+            end
+        end
+    end
+end
+
 # First-time setup: launch security wizard if no config exists
 has_config = Kaimon.load_security_config() !== nothing ||
              Kaimon.load_global_security_config() !== nothing

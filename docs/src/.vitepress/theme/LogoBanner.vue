@@ -1,10 +1,11 @@
-<script setup>
-import { withBase } from 'vitepress'
+<script setup lang="ts">
+declare const __ASSET_BASE__: string
+const logoSrc = __ASSET_BASE__ + 'kaimon-logo.jpg'
 </script>
 
 <template>
   <div class="logo-banner">
-    <img :src="withBase('/assets/kaimon-logo.jpg')" alt="Kaimon" class="logo-img" />
+    <img :src="logoSrc" alt="Kaimon" class="logo-img" />
   </div>
 </template>
 

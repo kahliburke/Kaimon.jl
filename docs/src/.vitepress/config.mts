@@ -1,25 +1,67 @@
+import type MarkdownIt from 'markdown-it'
+import type Token from 'markdown-it/lib/token'
 import { defineConfig } from 'vitepress'
 import { tabsMarkdownPlugin } from 'vitepress-plugin-tabs'
 import { withMermaid } from 'vitepress-plugin-mermaid'
 
+const BASE = '/Kaimon.jl/'
+// In CI, KAIMON_ASSET_BASE points to GitHub Releases.
+// Locally, falls back to VitePress public/assets/ served under the site base.
+const ASSET_BASE = process.env.KAIMON_ASSET_BASE ?? (BASE + 'assets/')
+
+// Rewrite ./assets/kaimon_*.gif src attributes to use ASSET_BASE so that
+// local dev builds serve from public/assets/ and CI builds serve from
+// the docs-assets GitHub release.
+function kaimonAssetsPlugin(md: MarkdownIt, assetBase: string) {
+  const defaultRender = md.renderer.rules.image
+  md.renderer.rules.image = function (
+    tokens: Token[],
+    idx: number,
+    options: object,
+    env: object,
+    self: MarkdownIt['renderer'],
+  ) {
+    const token = tokens[idx]
+    const srcIdx = token.attrIndex('src')
+    if (srcIdx >= 0) {
+      const src = token.attrs![srcIdx][1]
+      const m = src.match(/(?:\.\.?\/)?assets\/(kaimon_[^"')]+\.gif)$/)
+      if (m) {
+        token.attrs![srcIdx][1] = assetBase + m[1]
+      }
+    }
+    return defaultRender
+      ? defaultRender(tokens, idx, options, env, self)
+      : self.renderToken(tokens, idx, options)
+  }
+}
+
 export default withMermaid(defineConfig({
-  base: '/Kaimon.jl/',
+  base: BASE,
   title: 'Kaimon.jl',
   description: 'Opening the gate between AI and Julia',
   lastUpdated: true,
   cleanUrls: true,
-  head: [['link', { rel: 'icon', href: '/Kaimon.jl/assets/kaimon_logo1.png' }]],
+  head: [['link', { rel: 'icon', href: ASSET_BASE + 'kaimon_logo1.png' }]],
+
+  vite: {
+    define: {
+      // Injected into Vue components (e.g. LogoBanner.vue)
+      __ASSET_BASE__: JSON.stringify(ASSET_BASE),
+    },
+  },
 
   markdown: {
     config(md) {
       md.use(tabsMarkdownPlugin)
+      md.use((m: MarkdownIt) => kaimonAssetsPlugin(m, ASSET_BASE))
     },
   },
 
   mermaid: {},
 
   themeConfig: {
-    logo: '/assets/kaimon_logo1.png',
+    logo: ASSET_BASE + 'kaimon_logo1.png',
     nav: [
       { text: 'Guide', link: '/getting-started' },
       { text: 'Tools', link: '/tools' },

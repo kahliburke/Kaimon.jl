@@ -31,7 +31,6 @@ jobs:
       - name: Install system fonts
         run: |
           sudo apt-get install -y fonts-dejavu fonts-liberation
-          # Meslo Nerd Font (braille + powerline glyphs used in TUI GIFs)
           wget -q https://github.com/ryanoasis/nerd-fonts/releases/latest/download/Meslo.tar.xz \
                -O /tmp/meslo.tar.xz || echo "Meslo download failed, skipping"
           if [ -f /tmp/meslo.tar.xz ]; then
@@ -39,7 +38,6 @@ jobs:
             sudo tar -xf /tmp/meslo.tar.xz -C /usr/share/fonts/truetype/meslo \
               --wildcards "*.ttf" 2>/dev/null || true
           fi
-          # JetBrains Mono
           wget -q https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip \
                -O /tmp/jbmono.zip || echo "JetBrains Mono download failed, skipping"
           if [ -f /tmp/jbmono.zip ]; then
@@ -84,8 +82,22 @@ jobs:
       - name: Generate doc assets
         run: julia --threads auto --project=docs docs/generate_assets.jl
 
+      - name: Upload assets to docs-assets release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view docs-assets --repo ${{ github.repository }} \
+            || gh release create docs-assets --repo ${{ github.repository }} \
+               --title "Documentation Assets" --prerelease \
+               --notes "Auto-updated GIF assets for the documentation site."
+          find docs/src/assets \( -name '*.gif' -o -name '*.jpg' -o -name '*.png' \) \
+            | xargs -I{} gh release upload docs-assets {} \
+                --repo ${{ github.repository }} --clobber
+
       - name: Build and deploy documentation
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
+          KAIMON_ASSET_BASE: 'https://github.com/kahliburke/Kaimon.jl/releases/download/docs-assets/'
         run: julia --project=docs docs/make.jl

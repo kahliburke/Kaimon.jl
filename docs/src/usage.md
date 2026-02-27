@@ -2,7 +2,7 @@
 
 Kaimon's terminal UI has seven tabs, each accessible by pressing its number key. This page walks through each tab.
 
-![Kaimon dashboard](assets/kaimon_overview.gif)
+![Kaimon dashboard](./assets/kaimon_overview.gif)
 
 | Key | Tab | Purpose |
 |---|---|---|
@@ -30,7 +30,7 @@ The status bar at the top shows the server address and port.
 
 The Sessions tab lists all Julia REPLs currently connected through the Gate.
 
-![Sessions tab](assets/kaimon_sessions.gif)
+![Sessions tab](./assets/kaimon_sessions.gif)
 
 Each entry shows:
 - The 8-character **session key** (used to target tools at a specific REPL)
@@ -45,7 +45,7 @@ When multiple sessions are connected, tools that execute code require a `ses` or
 
 The Activity tab is a real-time feed of every tool call the MCP server has handled.
 
-![Activity tab](assets/kaimon_activity.gif)
+![Activity tab](./assets/kaimon_activity.gif)
 
 The left pane shows a scrollable list of tool call records. Each entry shows the tool name, session target, timestamp, and result status (success or error).
 
@@ -66,7 +66,7 @@ Select a record with `↑`/`↓` and press `Enter` to open the detail pane on th
 
 The Search tab manages semantic vector indexes over your codebase and runs natural language queries against them.
 
-![Search tab](assets/kaimon_search.gif)
+![Search tab](./assets/kaimon_search.gif)
 
 The tab has three panes:
 
@@ -78,9 +78,9 @@ Press `/` to focus the query input, type a natural language description, and pre
 
 Press `i` to index the current project, `m` to open the Collection Manager, and `o` to configure the embedding model.
 
-![Search model configuration](assets/kaimon_search_config.gif)
+![Search model configuration](./assets/kaimon_search_config.gif)
 
-![Collection manager](assets/kaimon_collection_manager.gif)
+![Collection manager](./assets/kaimon_collection_manager.gif)
 
 For full details — key reference, model options, collection management — see [Semantic Search](search.md).
 
@@ -92,7 +92,7 @@ The Tests tab is primarily a display surface for test runs triggered by the AI a
 
 You can also trigger a run manually with `r`. If multiple gate sessions with a `test/runtests.jl` are connected, a picker dialog appears so you can choose which project to test.
 
-![Tests tab](assets/kaimon_tests.gif)
+![Tests tab](./assets/kaimon_tests.gif)
 
 Results stream in as they complete. When all tests finish, the pane shows a pass/fail summary tree.
 
@@ -117,7 +117,7 @@ Select a failed test with `↑`/`↓` and press `Space` to expand it. The right 
 
 The Config tab handles all MCP client setup. It generates and writes configuration files for supported editors and CLI tools.
 
-![Config tab](assets/kaimon_config.gif)
+![Config tab](./assets/kaimon_config.gif)
 
 Supported clients: **Claude Code**, **VS Code** (Copilot / Continue), **Cursor**, **Gemini CLI**, **KiloCode**.
 
@@ -125,9 +125,9 @@ Press `i` to open the client list and select a target. Press `Enter` to write th
 
 The onboarding flow (`o`) creates a `.julia-startup.jl` file for per-project auto-connect, and the global gate option (`g`) appends the same snippet to `~/.julia/config/startup.jl` so every Julia session connects automatically.
 
-![Per-project gate](assets/kaimon_startup_project.gif)
+![Per-project gate](./assets/kaimon_startup_project.gif)
 
-![Global gate](assets/kaimon_startup_global.gif)
+![Global gate](./assets/kaimon_startup_global.gif)
 
 See [Getting Started](getting-started.md) for the full onboarding walkthrough.
 

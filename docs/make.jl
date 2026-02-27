@@ -2,11 +2,13 @@ using Documenter
 using DocumenterVitepress
 using Kaimon
 
-# Copy GIF/PNG assets into VitePress's source-level public/ dir BEFORE makedocs
-# so VitePress can serve them at the correct base-relative path.
+# Copy assets into VitePress public/assets/.
+# In CI (KAIMON_ASSET_BASE set) all assets are served from the docs-assets
+# GitHub Release, so nothing needs to be copied.
+# Locally, copy everything except .tach and .svg files.
 let public_assets = joinpath(@__DIR__, "src", "public", "assets")
     src_dir = joinpath(@__DIR__, "src", "assets")
-    if isdir(src_dir)
+    if isdir(src_dir) && !haskey(ENV, "KAIMON_ASSET_BASE")
         mkpath(public_assets)
         for f in readdir(src_dir; join = false)
             src = joinpath(src_dir, f)
@@ -90,7 +92,7 @@ let config_path =
         folder = deploy_decision.subfolder
         base = "/Kaimon.jl/$(folder)$(isempty(folder) ? "" : "/")"
         config = read(config_path, String)
-        config = replace(config, "base: '/Kaimon.jl/'" => "base: '$(base)'")
+        config = replace(config, r"const BASE = '[^']*'" => "const BASE = '$(base)'")
         write(config_path, config)
     end
 end

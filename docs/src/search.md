@@ -2,7 +2,7 @@
 
 Kaimon provides natural language search over Julia codebases using vector embeddings. Instead of matching exact keywords, you can describe what you are looking for in plain language — for example, "function that handles HTTP routing" or "struct for database configuration" — and Kaimon returns the most semantically relevant code snippets.
 
-![Kaimon search tab](assets/kaimon_search.gif)
+![Kaimon search tab](./assets/kaimon_search.gif)
 
 ## How It Works
 
@@ -124,7 +124,7 @@ Press `o` to open the model configuration overlay. This shows all supported embe
 
 Press `o` from the Search tab to open the model configuration overlay:
 
-![Kaimon search model configuration](assets/kaimon_search_config.gif)
+![Kaimon search model configuration](./assets/kaimon_search_config.gif)
 
 Navigate with `↑`/`↓` and press `Enter` to select a model. Installed models are marked. If the new model has a different vector dimension than the current collection, Kaimon will warn you and prompt you to reindex (`y`/`n`). Press `y` to reindex all connected project collections with the new model.
 
