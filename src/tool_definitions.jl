@@ -1398,7 +1398,7 @@ add_watch_expression_tool = @mcp_tool(
 
 copy_debug_value_tool = @mcp_tool(
     :copy_debug_value,
-    "Copy a debug variable value to clipboard. Read with pbpaste (macOS) or xclip (Linux). Requires VS Code with active debug session.",
+    "Copy a debug variable value to clipboard. Read with pbpaste (macOS), wl-paste (Wayland), or xclip (X11). Requires VS Code with active debug session.",
     Dict(
         "type" => "object",
         "properties" => Dict(
@@ -1432,7 +1432,11 @@ copy_debug_value_tool = @mcp_tool(
             clipboard_cmd = if Sys.isapple()
                 "pbpaste"
             elseif Sys.islinux()
-                "xclip -selection clipboard -o (or xsel --clipboard --output)"
+                if haskey(ENV, "WAYLAND_DISPLAY")
+                    "wl-paste"
+                else
+                    "xclip -selection clipboard -o (or xsel --clipboard --output)"
+                end
             elseif Sys.iswindows()
                 "powershell Get-Clipboard"
             else

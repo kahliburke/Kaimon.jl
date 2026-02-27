@@ -518,7 +518,8 @@ function update_api_key!(m::SetupWizardModel, evt::KeyEvent)
         try
             clipboard_cmd =
                 Sys.isapple() ? `pbcopy` :
-                Sys.islinux() ? `xclip -selection clipboard` : nothing
+                Sys.islinux() ? (haskey(ENV, "WAYLAND_DISPLAY") ? `wl-copy` : `xclip -selection clipboard`) :
+                nothing
             if clipboard_cmd !== nothing
                 open(clipboard_cmd, "w") do io
                     print(io, m.api_key)
