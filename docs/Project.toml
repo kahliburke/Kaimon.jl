@@ -1,0 +1,19 @@
+[deps]
+ColorTypes = "3da002f7-5984-5a60-b8a6-cbb66c0b333f"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+DocumenterVitepress = "4710194d-e776-4893-9690-8d956a29c365"
+FreeTypeAbstraction = "663a7486-cb36-511b-a19d-713bb74d65c9"
+JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+Kaimon = "d3856c55-31fd-4246-b7e8-380411123c01"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+Tachikoma = "468859d6-42d8-48b7-8ad9-1d312e0e3b0a"
+
+[compat]
+Documenter = "1"
+DocumenterVitepress = "0.1"
+
+[sources]
+Kaimon = {path = ".."}
+Tachikoma = {path = "/Users/kburke/devel/Tachikoma.jl"}

@@ -1,0 +1,179 @@
+digraph Kaimon_Complete_Schema {
+    // Graph settings - Dark Theme - Balanced Layout
+    rankdir=LR;
+    bgcolor="#1E1E1E";
+    compound=true;
+    node [shape=record, fontname="Arial", fontsize=9, fontcolor="white"];
+    edge [fontname="Arial", fontsize=8, fontcolor="#B0B0B0", color="#606060"];
+    graph [fontname="Arial", fontsize=11, fontcolor="white", label="Kaimon Complete Database Architecture\nRaw Data → ETL → Analytics → Views → API", labelloc=t, ranksep=1.2, nodesep=0.5];
+    
+    node [style=filled];
+    
+    // ============================================================================
+    // RAW DATA LAYER - Generic JSON storage
+    // ============================================================================
+    
+    subgraph cluster_raw {
+        label="Raw Data\n(JSON Blobs)";
+        style=filled;
+        fillcolor="#263238";
+        color="#607D8B";
+        fontcolor="white";
+        fontsize=10;
+        rank=same;
+        
+        sessions_raw [
+            label="{sessions|session_id (PK)|metadata JSON}",
+            fillcolor="#1565C0",
+            color="#42A5F5",
+            penwidth=2,
+            fontcolor="white"
+        ];
+        
+        events_raw [
+            label="{events|id (PK)|session_id (FK)|event_type|data JSON}",
+            fillcolor="#6A1B9A",
+            color="#BA68C8",
+            fontcolor="white"
+        ];
+        
+        interactions_raw [
+            label="{interactions|id (PK)|session_id (FK)|request_id|method|content JSON}",
+            fillcolor="#2E7D32",
+            color="#66BB6A",
+            fontcolor="white"
+        ];
+    }
+    
+    // ============================================================================
+    // ETL PIPELINE (centered)
+    // ============================================================================
+    
+    etl_process [
+        label="ETL\nPipeline\n(30s)",
+        shape=box,
+        style="filled,rounded",
+        fillcolor="#D84315",
+        color="#FF5722",
+        fontcolor="white",
+        fontsize=9
+    ];
+    
+    // ============================================================================
+    // ANALYTICS LAYER - Structured queryable data
+    // ============================================================================
+    
+    subgraph cluster_analytics {
+        label="Analytics Layer\n(Structured)";
+        style=filled;
+        fillcolor="#1A237E";
+        color="#5C6BC0";
+        fontcolor="white";
+        fontsize=10;
+        rank=same;
+        
+        tool_executions [
+            label="{tool_executions|tool_name 🔥|duration_ms 📊|status 🔥}",
+            fillcolor="#283593",
+            color="#5C6BC0",
+            fontcolor="white",
+            fontsize=8
+        ];
+        
+        errors [
+            label="{errors|error_type 🔥|error_category 🔥|resolved}",
+            fillcolor="#C62828",
+            color="#E57373",
+            fontcolor="white",
+            fontsize=8
+        ];
+        
+        performance_metrics [
+            label="{performance_metrics|throughput 📈|p50/p95/p99}",
+            fillcolor="#1B5E20",
+            color="#66BB6A",
+            fontcolor="white",
+            fontsize=8
+        ];
+        
+        client_sessions [
+            label="{client_sessions|client_name 🔥|capabilities}",
+            fillcolor="#004D40",
+            color="#4DB6AC",
+            fontcolor="white",
+            fontsize=8
+        ];
+        
+        session_lifecycle [
+            label="{session_lifecycle|event_type 🔥|state transitions}",
+            fillcolor="#4A148C",
+            color="#AB47BC",
+            fontcolor="white",
+            fontsize=8
+        ];
+    }
+    
+    // Flow arrows left to right
+    interactions_raw -> etl_process [label="extract", color="#FF5722", fontcolor="#B0B0B0", penwidth=2];
+    
+    etl_process -> tool_executions [label="load", color="#5C6BC0", fontcolor="#B0B0B0", penwidth=2];
+    
+    // ============================================================================
+    // ANALYTICS VIEWS
+    // ============================================================================
+    
+    subgraph cluster_views {
+        label="Views";
+        style=filled;
+        fillcolor="#37474F";
+        color="#90A4AE";
+        fontcolor="white";
+        fontsize=10;
+        
+        views_box [
+            label="v_daily_tool_usage\nv_session_summary\nv_error_hotspots",
+            shape=box,
+            style="filled,rounded",
+            fillcolor="#546E7A",
+            color="#90A4AE",
+            fontcolor="white",
+            fontsize=8
+        ];
+    }
+    
+    tool_executions -> views_box [style=dotted, color="#90A4AE", fontcolor="#B0B0B0"];
+    
+    // ============================================================================
+    // API ENDPOINTS
+    // ============================================================================
+    
+    api_endpoints [
+        label="REST API\n/analytics/*",
+        shape=box,
+        style="filled,rounded",
+        fillcolor="#00838F",
+        color="#00BCD4",
+        fontcolor="white",
+        fontsize=9
+    ];
+    
+    views_box -> api_endpoints [style=dashed, color="#00BCD4", fontcolor="#B0B0B0", label="queries"];
+    
+    // ============================================================================
+    // Legend
+    // ============================================================================
+    
+    legend [
+        label="Legend:\n🔥 = Indexed | 📊 = Metric | 📈 = Time-series\n... = Additional columns",
+        shape=note,
+        fillcolor="#2D2D2D",
+        color="#9E9E9E",
+        fontcolor="white",
+        fontsize=8
+    ];
+    
+    // Force layout - left to right flow
+    {rank=same; cluster_raw; etl_process}
+    {rank=same; cluster_analytics; cluster_views}
+    {rank=same; api_endpoints; legend}
+}

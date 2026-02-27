@@ -1,0 +1,138 @@
+{
+  "categories": {
+    "julia": {
+      "name": "🔬 Julia REPL",
+      "commands": {
+        "language-julia.startREPL": "Start the Julia REPL if not running."
+      }
+    },
+    "file": {
+      "name": "💾 File Operations",
+      "commands": {
+        "workbench.action.files.saveAll": "Save all open files. Use before running tests, before REPL restart, or after making multiple edits.",
+        "workbench.action.closeAllEditors": "Close all open editor tabs.",
+        "workbench.action.files.openFile": "Open a specific file. Requires file path as argument.",
+        "vscode.open": "Open a file, URL, or resource in VS Code. Can be text, binary, or http(s) URL.",
+        "vscode.openWith": "Open a resource with a specific editor. Requires resource URI and view ID."
+      }
+    },
+    "navigation": {
+      "name": "🧭 Navigation & Focus",
+      "commands": {
+        "workbench.action.terminal.focus": "Focus the terminal panel. Use when you need to run commands or check terminal output.",
+        "workbench.action.focusActiveEditorGroup": "Focus the active editor. Use when returning focus to code after terminal/panel operations.",
+        "workbench.files.action.focusFilesExplorer": "Focus the file explorer sidebar.",
+        "workbench.action.quickOpen": "Open Quick Open dialog (Cmd+P/Ctrl+P) for fast file navigation.",
+        "workbench.action.gotoLine": "Go to a specific line number in the active editor.",
+        "workbench.action.navigateToLastEditLocation": "Navigate to the last location where you made an edit.",
+        "workbench.action.showAllSymbols": "Search for symbols across the workspace.",
+        "editor.action.goToLocations": "Go to specific locations from a position in a file. Requires URI, position, and locations array."
+      }
+    },
+    "window": {
+      "name": "🪟 Window Management",
+      "commands": {
+        "workbench.action.reloadWindow": "Reload the entire VS Code window. Use when extension changes, settings updates, or major configuration changes are made.",
+        "workbench.action.splitEditor": "Split the editor into multiple panes for side-by-side editing.",
+        "workbench.action.togglePanel": "Toggle the bottom panel (terminal, problems, output, debug console) visibility.",
+        "workbench.action.toggleSidebarVisibility": "Toggle the sidebar (file explorer, search, git, etc.) visibility."
+      }
+    },
+    "terminal": {
+      "name": "⌨️ Terminal",
+      "commands": {
+        "workbench.action.terminal.new": "Create a new terminal instance.",
+        "workbench.action.terminal.kill": "Kill the active terminal instance.",
+        "workbench.action.terminal.sendSequence": "Send a sequence of text to the terminal. Requires {\"text\": \"command\\r\"} as argument. NOTE: This command is unreliable and often doesn't work. Prefer using Copilot's run_in_terminal tool for executing shell commands."
+      }
+    },
+    "search": {
+      "name": "🔍 Search",
+      "commands": {
+        "workbench.action.findInFiles": "Open workspace-wide search to find text across all files.",
+        "workbench.action.replaceInFiles": "Open workspace-wide search and replace dialog."
+      }
+    },
+    "git": {
+      "name": "🔀 Git",
+      "commands": {
+        "git.refresh": "Refresh the git repository status.",
+        "git.stage": "Stage the selected file or changes.",
+        "git.stageAll": "Stage all changes in the repository.",
+        "git.sync": "Synchronize (pull and push) with the remote repository.",
+        "git.unstage": "Unstage the selected file or changes.",
+        "git.unstageAll": "Unstage all staged changes."
+      },
+      "note": "git.commit is intentionally excluded - it requires interactive input box and cannot be automated with parameters. For programmatic commits, use Copilot's run_in_terminal tool with 'git commit -m \"message\"' (terminal.sendSequence is unreliable)."
+    },
+    "debug": {
+      "name": "🐛 Debugging",
+      "commands": {
+        "workbench.view.debug": "Open the debug view/panel.",
+        "workbench.action.debug.start": "Start a debugging session with the current configuration.",
+        "workbench.action.debug.run": "Run without debugging (no breakpoints).",
+        "workbench.action.debug.restart": "Restart the current debugging session.",
+        "workbench.action.debug.stop": "Stop the current debugging session.",
+        "workbench.action.debug.pause": "Pause execution at the current location.",
+        "workbench.action.debug.continue": "Continue execution until the next breakpoint.",
+        "workbench.action.debug.stepOver": "Step over the current line (execute without entering functions).",
+        "workbench.action.debug.stepInto": "Step into the function on the current line.",
+        "workbench.action.debug.stepOut": "Step out of the current function and return to caller.",
+        "workbench.action.debug.stepBack": "Step backwards in time (if supported by debugger).",
+        "editor.debug.action.toggleBreakpoint": "Toggle a breakpoint at the current line.",
+        "editor.debug.action.conditionalBreakpoint": "Set a conditional breakpoint that only triggers when a condition is true.",
+        "editor.debug.action.toggleInlineBreakpoint": "Toggle an inline breakpoint within a line.",
+        "workbench.action.debug.addWatch": "Add a watch expression to monitor during debugging.",
+        "workbench.action.debug.removeWatch": "Remove a watch expression.",
+        "workbench.debug.action.copyValue": "Copy the value of the selected variable/expression to clipboard.",
+        "workbench.debug.action.focusVariablesView": "Focus the Variables view in the debug sidebar.",
+        "workbench.debug.action.focusWatchView": "Focus the Watch view in the debug sidebar.",
+        "workbench.debug.action.focusCallStackView": "Focus the Call Stack view in the debug sidebar.",
+        "workbench.debug.action.focusBreakpointsView": "Focus the Breakpoints view in the debug sidebar.",
+        "workbench.debug.viewlet.action.addFunctionBreakpoint": "Add a function breakpoint (breaks when function is called).",
+        "workbench.debug.viewlet.action.removeAllBreakpoints": "Remove all breakpoints from the current session.",
+        "workbench.debug.viewlet.action.enableAllBreakpoints": "Enable all breakpoints.",
+        "workbench.debug.viewlet.action.disableAllBreakpoints": "Disable all breakpoints without removing them."
+      }
+    },
+    "tasks": {
+      "name": "⚙️ Tasks",
+      "commands": {
+        "workbench.action.tasks.runTask": "Run a configured task. Can pass task name as argument to run specific task."
+      }
+    },
+    "extensions": {
+      "name": "🧩 Extensions",
+      "commands": {
+        "workbench.extensions.installExtension": "Install an extension by ID or from VSIX file. Requires extension ID as argument."
+      }
+    },
+    "vscode_api": {
+      "name": "🔧 VS Code API",
+      "commands": {
+        "vscode.executeDefinitionProvider": "Execute all definition providers for a symbol. Requires URI and position.",
+        "vscode.executeTypeDefinitionProvider": "Execute type definition providers. Requires URI and position.",
+        "vscode.executeImplementationProvider": "Execute implementation providers. Requires URI and position.",
+        "vscode.executeReferenceProvider": "Execute reference providers to find all usages. Requires URI and position.",
+        "vscode.executeHoverProvider": "Execute hover providers to get hover information. Requires URI and position.",
+        "vscode.executeDocumentSymbolProvider": "Get all symbols in a document. Requires URI.",
+        "vscode.executeWorkspaceSymbolProvider": "Search for symbols across workspace. Requires search query.",
+        "vscode.executeCompletionItemProvider": "Get completion suggestions at a position. Requires URI and position.",
+        "vscode.executeSignatureHelpProvider": "Get signature help for a function call. Requires URI and position.",
+        "vscode.executeFormatDocumentProvider": "Format entire document. Requires URI.",
+        "vscode.executeFormatRangeProvider": "Format a range in document. Requires URI, range, and options.",
+        "vscode.executeCodeActionProvider": "Get available code actions (quick fixes, refactorings) for a location. Requires URI, range, and optional kind filter.",
+        "vscode.executeDocumentRenameProvider": "Rename a symbol across the workspace. Requires URI, position, and new name.",
+        "vscode.executeDocumentHighlightProvider": "Get all occurrences of a symbol in the current document. Requires URI and position.",
+        "vscode.prepareCallHierarchy": "Prepare call hierarchy for a symbol. Requires URI and position.",
+        "vscode.provideIncomingCalls": "Get incoming calls to a function/method. Requires call hierarchy item.",
+        "vscode.provideOutgoingCalls": "Get outgoing calls from a function/method. Requires call hierarchy item.",
+        "vscode.prepareTypeHierarchy": "Prepare type hierarchy for a type. Requires URI and position.",
+        "vscode.provideSupertypes": "Get supertypes of a type. Requires type hierarchy item.",
+        "vscode.provideSubtypes": "Get subtypes of a type. Requires type hierarchy item.",
+        "vscode.executeCodeLensProvider": "Get code lenses (inline actionable info) for a document. Requires URI.",
+        "vscode.executeInlayHintProvider": "Get inlay hints (type annotations, parameter names) for a range. Requires URI and range."
+      }
+    }
+  }
+}

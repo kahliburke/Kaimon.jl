@@ -1,0 +1,318 @@
+
+# AI Agent Guidelines for {{ project_name }}
+
+This document provides guidelines for AI agents working with this Julia project via Kaimon.
+
+## Overview
+
+This project is configured with Kaimon, which exposes the Julia REPL to AI agents via the Model Context Protocol (MCP). This enables you to:
+
+- Execute Julia code in a persistent REPL session
+- Run and fix tests interactively
+- Inspect package environment and dependencies
+- Use Julia's introspection tools
+- Debug issues in real-time
+
+## Available Tools
+
+Kaimon provides these MCP tools:
+
+### Core Tools
+
+- **`ex`** - Execute Julia code in the shared REPL (primary tool)
+- **`usage_instructions`** - Get detailed workflow guidelines (READ THIS FIRST!)
+- **`investigate_environment`** - Inspect project setup, packages, and dev dependencies
+- **`tool_help`** - Get help for any tool
+- **`manage_repl`** - Restart or shutdown the REPL
+- **`ping`** - Check server health
+
+### Code Analysis
+
+- **`search_methods`** - Find all methods of a function
+- **`type_info`** - Get type hierarchy and field information
+- **`list_names`** - List exported names in a module
+
+### Package Management
+
+- **`pkg_add`** - Install Julia packages
+- **`pkg_rm`** - Remove Julia packages
+
+### Testing
+
+- **`run_tests`** - Run tests with optional coverage
+
+### LSP Integration (Best-of Navigation)
+
+- **`lsp_goto_definition`** - Jump to symbol definition
+- **`lsp_find_references`** - Find all symbol references
+- **`lsp_document_symbols`** - List all symbols in file
+- **`lsp_workspace_symbols`** - Search for symbols across workspace
+
+### Semantic Code Search (Qdrant)
+
+- **`qdrant_search_code`** - Natural language search over indexed codebase
+- **`qdrant_list_collections`** - List available code collections
+- **`qdrant_collection_info`** - Get collection statistics
+- **`qdrant_browse_collection`** - Browse indexed code chunks
+- **`qdrant_index_project`** - Index project for semantic search
+- **`qdrant_sync_index`** - Sync index with file changes
+- **`qdrant_reindex_file`** - Re-index a specific file
+
+### VS Code Integration (Optional)
+
+- **`execute_vscode_command`** - Trigger VS Code commands
+- **`restart_repl`** - Restart the Julia REPL
+
+## Workflow Best Practices
+
+### 1. Start with Usage Instructions
+
+**ALWAYS** call `usage_instructions` before using `ex`:
+
+```json
+{
+  "name": "usage_instructions"
+}
+```
+
+This provides critical information about the `ex` tool and best practices.
+
+### 2. Understand the Environment
+
+Before making changes, investigate the project setup:
+
+```json
+{
+  "name": "investigate_environment"
+}
+```
+
+This shows:
+- Current working directory
+- Active project and packages
+- Development packages (tracked by Revise)
+- Revise.jl status
+
+### 3. Execute Code Responsibly
+
+The REPL is **shared** - your code appears in the user's REPL too. Be respectful:
+
+- ✅ Test incrementally
+- ✅ Use descriptive variable names
+- ✅ Clean up after yourself
+- ❌ Don't flood the REPL with verbose output
+- ❌ Don't change `Pkg.activate()` (it's pre-configured)
+
+### 4. Work with Tests
+
+Run tests interactively to fix issues one by one:
+
+```julia
+# Run a specific test
+@testset "My Feature" begin
+    @test my_function(input) == expected
+end
+```
+
+This avoids "time-to-first-plot" issues by reusing the warm REPL.
+
+### 5. Use Introspection Tools
+
+Julia has powerful introspection. Use it!
+
+```julia
+# Get help
+?function_name
+
+# See all methods
+methods(function_name)
+
+# Inspect types
+typeof(x)
+fieldnames(MyType)
+supertype(MyType)
+subtypes(AbstractType)
+
+# Check type stability
+@code_warntype my_function(arg)
+```
+
+### 6. Hot Reloading with Revise
+
+If Revise.jl is loaded, changes to files are automatically tracked:
+
+- Edit source files directly
+- Changes are reflected immediately in the REPL
+- No need to restart Julia!
+
+**Note**: If Revise isn't tracking changes, restart the REPL:
+
+```json
+{
+  "name": "restart_repl"
+}
+```
+
+Then wait 5-10 seconds for Julia to restart.
+
+### 7. LSP for Code Intelligence
+
+Use LSP tools for advanced code navigation and refactoring:
+
+```json
+{
+  "name": "lsp_goto_definition",
+  "arguments": {
+    "file_path": "/absolute/path/to/file.jl",
+    "line": 42,
+    "column": 10
+  }
+}
+```
+
+LSP provides IDE-level intelligence without leaving the MCP interface.
+
+## Common Tasks
+
+### Running Tests
+
+```julia
+using Pkg
+Pkg.test()
+```
+
+Or run specific test files:
+
+```julia
+include("test/specific_test.jl")
+```
+
+### Adding Dependencies
+
+```julia
+using Pkg
+Pkg.add("PackageName")
+```
+
+### Checking Package Status
+
+```julia
+using Pkg
+Pkg.status()
+```
+
+### Profiling Performance
+
+```json
+{
+  "name": "profile_code",
+  "arguments": {
+    "code": "my_function(arguments)"
+  }
+}
+```
+
+### Debugging
+
+1. Set breakpoint: `open_file_and_set_breakpoint`
+2. Start debugging: `start_debug_session`
+3. Use step commands: `debug_step_over`, `debug_step_into`, `debug_step_out`
+4. Inspect variables: `copy_debug_value`
+
+## Project-Specific Notes
+
+### Module Structure
+
+The main module is `{{ project_name }}`, defined in `src/{{ project_name }}.jl`.
+
+To use it:
+
+```julia
+using {{ project_name }}
+```
+
+### Test Structure
+
+Tests are in `test/runtests.jl`. Run with:
+
+```julia
+using Pkg
+Pkg.test()
+```
+
+### Development Packages
+
+Check which packages are under development:
+
+```json
+{
+  "name": "investigate_environment"
+}
+```
+
+Development packages are tracked by Revise for hot reloading.
+
+## Security Notes
+
+This project uses Kaimon's security system:
+
+- Always respect the configured security mode
+- Don't attempt to bypass authentication
+- Don't expose sensitive data in REPL output
+- Be aware that REPL output is visible to the user
+
+### Configuration Files and Security
+
+**Important**: Configuration files contain sensitive information:
+
+- `.vscode/mcp.json` - **Hardcoded API key** (git-ignored, do not commit)
+- `.kaimon/security.json` - Master security config (git-ignored)
+- `.env` - Environment variables for other tools (git-ignored)
+- `.claude/settings.local.json` - Claude Desktop config (git-ignored)
+
+Template files (`claude-mcp-config.json`, `gemini-settings.json`) use environment variable placeholders
+and can be safely committed. The actual values are loaded from `.env` at runtime.
+
+**For AI Agents**: If authentication fails:
+1. For VS Code/Claude Code: Check `.vscode/mcp.json` has correct hardcoded API key
+2. For other tools: Check `.env` or `.claude/settings.local.json` exists with correct values
+3. Confirm the values match those in `.kaimon/security.json`
+4. Remind users to restart their terminal/IDE after configuration changes
+
+## Troubleshooting
+
+### REPL seems stuck
+
+The REPL might be waiting for input or processing a long operation. Use `Ctrl+C` in the Julia REPL to interrupt.
+
+### Code changes not reflected
+
+1. Check if Revise is loaded: `isdefined(Main, :Revise)`
+2. If not, consider restarting: Use `restart_repl` tool
+3. Wait 5-10 seconds after restart before continuing
+
+### Cannot find package/module
+
+1. Check package status: `Pkg.status()`
+2. Verify you're in the right project: `Base.active_project()`
+3. Install missing package: `Pkg.add("PackageName")`
+
+### LSP not responding
+
+1. Ensure file paths are absolute
+2. Check that Julia LSP extension is running in VS Code
+3. Try reloading the window: `execute_vscode_command("workbench.action.reloadWindow")`
+
+## Resources
+
+- [Kaimon.jl Documentation](https://github.com/kahliburke/Kaimon.jl)
+- [Julia Documentation](https://docs.julialang.org/)
+- [Julia REPL Documentation](https://docs.julialang.org/en/v1/stdlib/REPL/)
+- [Model Context Protocol Specification](https://modelcontextprotocol.io/)
+
+## Questions?
+
+If you're unsure about something, use the `usage_instructions` tool for detailed guidance on REPL workflows and best practices.
+
+Happy coding! 🚀
+

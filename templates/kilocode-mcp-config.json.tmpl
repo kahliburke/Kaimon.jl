@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "kaimon": {
+      "type": "streamable-http",
+      "url": "http://localhost:{{port}}",
+      {% if has_api_key %}
+      "headers": {
+        "Authorization": "{{api_key}}",
+        "X-Kaimon-Target": "{{repl_id}}"
+      },
+      {% else %}
+      "headers": {
+        "X-Kaimon-Target": "{{repl_id}}"
+      },{% end %}
+      "alwaysAllow": [
+                  {{tool_list}}
+      ],
+      "disabled": false
+    }
+  }
+}

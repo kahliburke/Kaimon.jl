@@ -1,0 +1,116 @@
+#!/usr/bin/env -S julia -t auto
+#
+# Kaimon TUI launcher
+#
+# Usage:
+#   ./bin/kaimon              # default port 2828, kokaku theme
+#   ./bin/kaimon --port 3000  # custom port
+#   ./bin/kaimon --theme esper
+#   ./bin/kaimon --revise      # load Revise before Kaimon
+#
+
+using Pkg
+
+const PROJECT_DIR = joinpath(@__DIR__, "..")
+Pkg.activate(PROJECT_DIR)
+
+# Parse args early so --revise can be honored before loading Kaimon.
+function parse_args()
+    port = 2828
+    theme = :kokaku
+    use_revise = false
+
+    i = 1
+    while i <= length(ARGS)
+        if ARGS[i] in ("--port", "-p") && i + 1 <= length(ARGS)
+            port = parse(Int, ARGS[i+1])
+            i += 2
+        elseif ARGS[i] in ("--theme", "-t") && i + 1 <= length(ARGS)
+            theme = Symbol(ARGS[i+1])
+            i += 2
+        elseif ARGS[i] in ("--revise", "-r")
+            use_revise = true
+            i += 1
+        elseif ARGS[i] in ("--help", "-h")
+            println("""
+            Kaimon TUI — persistent MCP server with terminal dashboard
+
+            Usage: kaimon [options]
+
+            Options:
+              -p, --port PORT    MCP HTTP server port (default: 2828)
+              -t, --theme NAME   Theme: kokaku, esper, motoko, neuromancer (default: kokaku)
+              -r, --revise       Load Revise before Kaimon
+              -h, --help         Show this help
+
+            Start a Gate session in your Julia REPL:
+              using Kaimon
+              Gate.serve(name="myproject")
+            """)
+            exit(0)
+        else
+            println("Unknown argument: $(ARGS[i])")
+            exit(1)
+        end
+    end
+    return (; port, theme, use_revise)
+end
+
+(; port, theme, use_revise) = parse_args()
+
+# Auto-instantiate if Manifest is missing or stale
+let manifest = joinpath(PROJECT_DIR, "Manifest.toml")
+    project = joinpath(PROJECT_DIR, "Project.toml")
+    if !isfile(manifest)
+        @info "First run — installing dependencies (Pkg.instantiate)..."
+        Pkg.instantiate()
+    elseif mtime(project) > mtime(manifest)
+        @info "Project.toml changed — resolving dependencies..."
+        Pkg.resolve()
+    end
+end
+
+# Precompile if needed (Pkg.precompile is a no-op when up to date)
+Pkg.precompile()
+
+if use_revise
+    try
+        @eval using Revise
+    catch e
+        @warn "Could not load Revise, continuing without it" exception = e
+    end
+end
+
+using Kaimon
+
+if use_revise && isdefined(Main, :Revise)
+    # Revise is loaded and tracking Kaimon. In a REPL, revisions apply
+    # automatically via AST transforms. In a script (no REPL backend),
+    # we need a background task to call Revise.revise() periodically.
+    # Poll-based Revise: check for changes every 3 seconds.
+    # Event-based (Revise.revision_event) doesn't reliably fire in non-REPL
+    # scripts since there's no entr() or REPL backend polling inotify.
+    Threads.@spawn begin
+        while true
+            try
+                Main.Revise.revise()
+            catch e
+                e isa InterruptException && break
+            end
+            sleep(3)
+        end
+    end
+end
+
+# First-time setup: launch security wizard if no config exists
+has_config = Kaimon.load_security_config() !== nothing ||
+             Kaimon.load_global_security_config() !== nothing
+
+if !has_config
+    result = Kaimon.setup_wizard_tui()
+    if result === nothing
+        exit(0)
+    end
+end
+
+tui(; port, theme_name=theme)

@@ -1,0 +1,109 @@
+/* JuliaMono font for code blocks — @import must be first */
+@import url('https://cdn.jsdelivr.net/gh/cormullion/juliamono/webfonts/JuliaMono-Regular.woff2');
+
+/* Kaimon brand colors — gate purple to teal gradient */
+:root {
+  --kaimon-purple: #7B4FA2;
+  --kaimon-teal: #2DB5A0;
+  --julia-purple: #9558B2;
+
+  /* VitePress brand color overrides */
+  --vp-c-brand-1: var(--kaimon-purple);
+  --vp-c-brand-2: #6A45A0;
+  --vp-c-brand-3: var(--kaimon-purple);
+  --vp-c-brand-soft: rgba(123, 79, 162, 0.14);
+
+  --vp-font-family-mono: 'JuliaMono', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', monospace;
+}
+
+.dark {
+  --vp-c-brand-1: #A07FD0;
+  --vp-c-brand-2: var(--kaimon-purple);
+  --vp-c-brand-3: #A07FD0;
+  --vp-c-brand-soft: rgba(123, 79, 162, 0.16);
+}
+
+/* ── Mermaid diagram theming ──────────────────────────────────────────────── */
+
+/* Node shapes */
+.vp-doc .mermaid svg .node rect,
+.vp-doc .mermaid svg .node polygon,
+.vp-doc .mermaid svg .node circle,
+.vp-doc .mermaid svg .node ellipse {
+  fill: #f5eeff !important;
+  stroke: #7B4FA2 !important;
+  stroke-width: 1.5px !important;
+}
+
+/* Cluster / subgraph boxes */
+.vp-doc .mermaid svg .cluster rect {
+  fill: #faf7ff !important;
+  stroke: #c5a8e0 !important;
+  stroke-width: 1px !important;
+}
+
+/* Edge paths */
+.vp-doc .mermaid svg .edgePath path,
+.vp-doc .mermaid svg .flowchart-link {
+  stroke: #7B4FA2 !important;
+  stroke-width: 1.5px !important;
+}
+
+/* Arrowhead markers */
+.vp-doc .mermaid svg marker path {
+  fill: #7B4FA2 !important;
+  stroke: #7B4FA2 !important;
+}
+
+/* Edge label backgrounds */
+.vp-doc .mermaid svg .edgeLabel rect,
+.vp-doc .mermaid svg .edgeLabel .label {
+  background: transparent !important;
+  fill: transparent !important;
+}
+
+/* Cluster label text */
+.vp-doc .mermaid svg .cluster span {
+  color: #5a3a80 !important;
+}
+
+/* ── Dark mode ── */
+.dark .vp-doc .mermaid svg .node rect,
+.dark .vp-doc .mermaid svg .node polygon,
+.dark .vp-doc .mermaid svg .node circle,
+.dark .vp-doc .mermaid svg .node ellipse {
+  fill: #2a1f3a !important;
+  stroke: #A07FD0 !important;
+}
+
+.dark .vp-doc .mermaid svg .cluster rect {
+  fill: #1e1628 !important;
+  stroke: #6a4590 !important;
+}
+
+.dark .vp-doc .mermaid svg .edgePath path,
+.dark .vp-doc .mermaid svg .flowchart-link {
+  stroke: #A07FD0 !important;
+}
+
+.dark .vp-doc .mermaid svg marker path {
+  fill: #A07FD0 !important;
+  stroke: #A07FD0 !important;
+}
+
+.dark .vp-doc .mermaid svg .cluster span {
+  color: #c5a8e0 !important;
+}
+
+/* ── Docstring container styling ─────────────────────────────────────────── */
+/* Docstring container styling */
+.docstring {
+  border-left: 3px solid var(--kaimon-purple);
+  padding-left: 1rem;
+  margin: 1rem 0;
+}
+
+.docstring h3 {
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.95rem;
+}

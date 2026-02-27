@@ -1,0 +1,73 @@
+# {{ project_name }}
+
+A Julia project with AI agent integration via Kaimon.
+
+## Quick Start
+
+```bash
+cd {{ project_name }}
+./repl
+```
+
+The MCP server will start automatically when Julia launches!
+
+## Project Structure
+
+```
+{{ project_name }}/
+├── src/                # Source code
+├── test/               # Test suite
+├── .kaimon/            # Security configuration (git-ignored)
+├── .vscode/            # VS Code MCP config
+└── AGENTS.md           # AI agent guidelines
+```
+
+## Security
+
+**Mode**: `{{ mode }}` | **Port**: `{{ port }}`{% if has_api_key %} | **API Key**: See `.env`{% else %} | **Auth**: None (localhost only){% end %}
+
+{% if has_api_key %}
+### Environment Setup
+
+Your API key is in `.env` and `.claude/settings.local.json` (both git-ignored).
+
+- **VS Code**: Auto-loads `.env`
+- **Claude Desktop**: Auto-loads `.claude/settings.local.json`  
+- **Other tools**: Set `JULIA_MCP_API_KEY` and `JULIA_MCP_PORT` manually
+
+To view your key: `cat .env`
+
+To change security mode:
+
+```julia
+using Kaimon
+Kaimon.setup()
+```
+{% else %}
+To change security mode:
+
+```julia
+using Kaimon
+Kaimon.setup()
+```
+{% end %}
+
+## AI Agent Integration
+
+**For AI agents**: See [AGENTS.md](AGENTS.md) for detailed guidelines.
+
+**VS Code**: Open project, start Julia REPL{% if has_api_key %} (`.env` auto-loaded){% end %}  
+**Claude Desktop**: Config in `.mcp.json`{% if has_api_key %} (`.claude/settings.local.json` auto-loaded){% end %}  
+**Gemini**: Configured in `~/.gemini/settings.json`{% if has_api_key %} (`.env` auto-loaded){% end %}
+
+## Troubleshooting
+
+**Port in use?** Override with: `JULIA_MCP_PORT=3001 julia --project=.`
+
+**Auth fails?** Check API key: `cat .env`
+
+**Server won't start?** Restart Julia or check port: `lsof -i :{{ port }}`
+
+## License
+
+{% if has_license %}[MIT License](LICENSE){% else %}See LICENSE file{% end %}

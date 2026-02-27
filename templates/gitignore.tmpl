@@ -1,0 +1,41 @@
+# Julia
+*.jl.*.cov
+*.jl.cov
+*.jl.mem
+/Manifest.toml
+/docs/build/
+/docs/site/
+
+# Kaimon - security config contains API keys
+.kaimon/
+.julia-startup.jl
+
+# Qdrant indexing state - local index tracking
+.qdrant_index.json
+
+# Environment variables - contains API keys and ports
+.env
+.claude/
+
+# VS Code - mcp.json contains hardcoded API keys
+.vscode/*
+!.vscode/settings.json
+
+# MCP client configs - contain hardcoded API keys/ports
+# Note: These template files use env vars but are safe to commit
+# claude-mcp-config.json
+# gemini-settings.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.log

@@ -1,0 +1,42 @@
+# Julia
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+deps/deps.jl
+
+# Example project (for local testing)
+example-project/
+
+# Logs
+*.log
+
+# VS Code
+.vscode/settings.json
+.vscode/mcp.json
+
+# Environment
+.env
+Manifest.toml
+
+# Kaimon configuration (contains API keys, security settings, and session data)
+.kaimon/security.json
+.kaimon/sessions.json
+
+**/.DS_Store
+.kilocode/mcp.json
+crush.json
+**/coverage-lcov.info
+
+HANDOFF.md
+coverage.info
+lcov.info
+.qdrant_index.json
+LocalPreferences.toml
+test/SuppositionDB/
+
+# Documentation build output
+docs/build/
+docs/node_modules/
+docs/src/public/assets/
+docs/.render_cache.json
+docs/src/assets/*.tach

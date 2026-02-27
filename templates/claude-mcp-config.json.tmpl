@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "kaimon": {
+      "type": "http",
+      "url": "http://localhost:${JULIA_MCP_PORT}",
+      {% if has_api_key %}
+      "headers": {
+        "Authorization": "Bearer \${JULIA_MCP_API_KEY}",
+        "X-Kaimon-Target": "\${JULIA_MCP_REPL_ID}"
+      }
+      {% else %}
+      "headers": {
+        "X-Kaimon-Target": "\${JULIA_MCP_REPL_ID}"
+      }
+      {% end %}
+    }
+  }
+}

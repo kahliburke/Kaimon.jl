@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+
+# Start Julia REPL with Kaimon project and auto-load startup script
+# This script launches Julia in the project and loads the startup script.
+
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+echo "Starting Julia REPL with Kaimon project..."
+echo ""
+
+exec julia -i --project="$SCRIPT_DIR" --load="$SCRIPT_DIR/.julia-startup.jl" "$@"

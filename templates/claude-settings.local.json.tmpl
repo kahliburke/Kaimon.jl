@@ -1,0 +1,10 @@
+{
+  "env": {
+{% if has_api_key %}    "JULIA_MCP_API_KEY": "{{api_key}}",
+{% end %}    "JULIA_MCP_PORT": "{{port}}",
+    "JULIA_MCP_REPL_ID": "{{repl_id}}"
+  },
+  "enabledMcpjsonServers": [
+    "kaimon"
+  ]
+}

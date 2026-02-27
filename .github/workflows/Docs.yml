@@ -1,0 +1,90 @@
+name: Documentation
+
+on:
+  push:
+    branches:
+      - main
+    tags: ['*']
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.12'
+
+      - uses: julia-actions/cache@v2
+
+      - name: Install system fonts
+        run: |
+          sudo apt-get install -y fonts-dejavu fonts-liberation
+          # Meslo Nerd Font (braille + powerline glyphs used in TUI GIFs)
+          wget -q https://github.com/ryanoasis/nerd-fonts/releases/latest/download/Meslo.tar.xz \
+               -O /tmp/meslo.tar.xz || echo "Meslo download failed, skipping"
+          if [ -f /tmp/meslo.tar.xz ]; then
+            sudo mkdir -p /usr/share/fonts/truetype/meslo
+            sudo tar -xf /tmp/meslo.tar.xz -C /usr/share/fonts/truetype/meslo \
+              --wildcards "*.ttf" 2>/dev/null || true
+          fi
+          # JetBrains Mono
+          wget -q https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip \
+               -O /tmp/jbmono.zip || echo "JetBrains Mono download failed, skipping"
+          if [ -f /tmp/jbmono.zip ]; then
+            sudo mkdir -p /usr/share/fonts/truetype/jetbrains-mono
+            sudo unzip -oq /tmp/jbmono.zip "*.ttf" \
+              -d /usr/share/fonts/truetype/jetbrains-mono 2>/dev/null || true
+          fi
+          sudo fc-cache -f
+
+      - name: Install Julia dependencies
+        run: |
+          julia --project=docs -e '
+            using Pkg
+            Pkg.develop(PackageSpec(path=pwd()))
+            Pkg.instantiate()'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Cache npm dependencies
+        uses: actions/cache@v4
+        with:
+          path: docs/node_modules
+          key: npm-${{ hashFiles('docs/package-lock.json', 'docs/package.json') }}
+
+      - name: Install VitePress dependencies
+        working-directory: docs
+        run: npm install
+
+      - name: Restore asset cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            docs/src/assets/*.tach
+            docs/src/assets/*.gif
+            docs/.render_cache.json
+          key: doc-assets-${{ hashFiles('docs/generate_assets.jl', 'src/**/*.jl') }}
+          restore-keys: |
+            doc-assets-
+
+      - name: Generate doc assets
+        run: julia --threads auto --project=docs docs/generate_assets.jl
+
+      - name: Build and deploy documentation
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
+        run: julia --project=docs docs/make.jl

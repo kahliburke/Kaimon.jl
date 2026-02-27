@@ -1,0 +1,16 @@
+{
+  "servers": {
+    "kaimon": {
+      "type": "http",
+      "url": "http://localhost:{{port}}"{% if has_api_key %},
+      "headers": {
+        "Authorization": "Bearer {{api_key}}",
+        "X-Kaimon-Target": "{{repl_id}}"
+      }{% else %},
+      "headers": {
+        "X-Kaimon-Target": "{{repl_id}}"
+      }{% end %}
+    }
+  },
+  "inputs": []
+}
