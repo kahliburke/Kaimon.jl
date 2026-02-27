@@ -40,3 +40,5 @@ docs/node_modules/
 docs/src/public/assets/
 docs/.render_cache.json
 docs/src/assets/*.tach
+docs/src/assets/*.gif
+docs/src/assets/*.svg
