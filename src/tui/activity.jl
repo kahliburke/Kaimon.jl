@@ -117,7 +117,7 @@ function _view_analytics(m::KaimonModel, area::Rect, buf::Buffer)
     # ── Tool Usage DataTable ──────────────────────────────────────────────────
     tool_area = Rect(inner.x, y, inner.width, tool_h)
     if isempty(ts)
-        placeholder = Block(title = " Tool Usage ", border_style = tstyle(:accent))
+        placeholder = Block(title = " Tool Usage Summary ", border_style = tstyle(:accent))
         pi = render(placeholder, tool_area, buf)
         set_string!(buf, pi.x + 1, pi.y, "No tool executions recorded", tstyle(:text_dim))
     else
@@ -149,7 +149,7 @@ function _view_analytics(m::KaimonModel, area::Rect, buf::Buffer)
                     format = v -> @sprintf("%.0f%%", v),
                 ),
             ];
-            block = Block(title = " Tool Usage ", border_style = tstyle(:accent)),
+            block = Block(title = " Tool Usage Summary ", border_style = tstyle(:accent)),
             show_scrollbar = true,
             selected = 0,
         )
