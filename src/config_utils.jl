@@ -74,7 +74,7 @@ function check_vscode_status()
     servers = get(config, "servers", Dict())
 
     for (name, server_config) in servers
-        if contains(lowercase(string(name)), "julia")
+        if contains(lowercase(string(name)), "kaimon")
             server_type = get(server_config, "type", "")
             if server_type == "http"
                 return :configured_http
@@ -115,7 +115,7 @@ function remove_vscode_mcp_server()
     servers = get(config, "servers", Dict())
 
     for name in collect(keys(servers))
-        if contains(lowercase(string(name)), "julia")
+        if contains(lowercase(string(name)), "kaimon")
             delete!(servers, name)
         end
     end
