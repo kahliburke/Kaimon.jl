@@ -247,7 +247,7 @@ function _build_overview_model()
     conn1 = _mock_conn(;
         session_id = "abcd1234efgh5678",
         display_name = "Kaimon",
-        project_path = "/Users/kburke/.julia/dev/Kaimon",
+        project_path = "/home/user/dev/Kaimon.jl",
         pid = 41000,
         tool_call_count = 57,
         tools = [
@@ -259,7 +259,7 @@ function _build_overview_model()
     conn2 = _mock_conn(;
         session_id = "efgh5678ijkl9012",
         display_name = "Tachikoma",
-        project_path = "/Users/kburke/devel/Tachikoma.jl",
+        project_path = "/home/user/dev/Tachikoma.jl",
         pid = 38500,
         tool_call_count = 112,
     )
@@ -356,7 +356,7 @@ function _build_sessions_model()
     conn1 = _mock_conn(;
         session_id = "abcd1234efgh5678",
         display_name = "Kaimon",
-        project_path = "/Users/kburke/.julia/dev/Kaimon",
+        project_path = "/home/user/dev/Kaimon.jl",
         pid = 41000,
         tool_call_count = 57,
         tools = tools_kaimon,
@@ -532,7 +532,7 @@ function _build_search_model()
         Dict(
             "score" => 0.91,
             "payload" => Dict(
-                "file" => "/Users/kburke/.julia/dev/Kaimon/src/gate.jl",
+                "file" => "/home/user/dev/Kaimon.jl/src/gate.jl",
                 "name" => "serve",
                 "start_line" => 1293,
                 "end_line" => 1310,
@@ -544,7 +544,7 @@ function _build_search_model()
         Dict(
             "score" => 0.84,
             "payload" => Dict(
-                "file" => "/Users/kburke/.julia/dev/Kaimon/src/gate.jl",
+                "file" => "/home/user/dev/Kaimon.jl/src/gate.jl",
                 "name" => "GateTool",
                 "start_line" => 210,
                 "end_line" => 230,
@@ -556,7 +556,7 @@ function _build_search_model()
         Dict(
             "score" => 0.76,
             "payload" => Dict(
-                "file" => "/Users/kburke/.julia/dev/Kaimon/src/gate_client.jl",
+                "file" => "/home/user/dev/Kaimon.jl/src/gate_client.jl",
                 "name" => "_dispatch_tool",
                 "start_line" => 88,
                 "end_line" => 112,
@@ -568,7 +568,7 @@ function _build_search_model()
         Dict(
             "score" => 0.71,
             "payload" => Dict(
-                "file" => "/Users/kburke/.julia/dev/Kaimon/src/MCPServer.jl",
+                "file" => "/home/user/dev/Kaimon.jl/src/MCPServer.jl",
                 "name" => "_handle_tool_call",
                 "start_line" => 445,
                 "end_line" => 480,
@@ -697,7 +697,7 @@ function _build_activity_model()
 
     mgr = ConnectionManager()
     conn = _mock_conn(; session_id="abcd1234efgh5678", display_name="Kaimon",
-                       project_path="/Users/kburke/.julia/dev/Kaimon", pid=41000,
+                       project_path="/home/user/dev/Kaimon.jl", pid=41000,
                        tool_call_count=169)
     push!(mgr.connections, conn)
 
@@ -737,7 +737,7 @@ const EVENTS_ACTIVITY = EventScript(
 # ═══════════════════════════════════════════════════════════════════════
 
 function _build_tests_model()
-    run1 = TestRun(; id=1, project_path="/Users/kburke/.julia/dev/Kaimon")
+    run1 = TestRun(; id=1, project_path="/home/user/dev/Kaimon.jl")
     run1.status      = RUN_PASSED
     run1.finished_at = now() - Second(30)
     run1.started_at  = run1.finished_at - Second(4)
@@ -751,7 +751,7 @@ function _build_tests_model()
         TestResult("Config tests",   TEST_PASS,  8, 0, 0,  8, 1),
     ]
 
-    run2 = TestRun(; id=2, project_path="/Users/kburke/.julia/dev/Kaimon", pattern="gate")
+    run2 = TestRun(; id=2, project_path="/home/user/dev/Kaimon.jl", pattern="gate")
     run2.status      = RUN_FAILED
     run2.finished_at = now() - Second(5)
     run2.started_at  = run2.finished_at - Second(2)
@@ -826,21 +826,21 @@ function _build_collection_manager_model()
     entries = [
         (
             label       = "Kaimon",
-            project_path = "/Users/kburke/.julia/dev/Kaimon",
+            project_path = "/home/user/dev/Kaimon.jl",
             collection  = "kaimon",
             session_id  = "abcd1234",
             status      = :connected,
         ),
         (
             label       = "Tachikoma",
-            project_path = "/Users/kburke/devel/Tachikoma.jl",
+            project_path = "/home/user/dev/Tachikoma.jl",
             collection  = "tachikoma",
             session_id  = "efgh5678",
             status      = :connected,
         ),
         (
             label       = "EvaCopy (external)",
-            project_path = "/Users/kburke/devel/EvaCopy",
+            project_path = "/home/user/dev/EvaCopy",
             collection  = "evacopy",
             session_id  = "",
             status      = :external,
