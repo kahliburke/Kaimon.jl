@@ -1,5 +1,9 @@
 # Kaimon.jl
 
+<p align="center">
+  <img src="https://github.com/kahliburke/Kaimon.jl/releases/download/docs-assets/kaimon-logo.jpg" alt="Kaimon" width="320" />
+</p>
+
 **Opening the gate between AI and Julia.**
 
 [![CI](https://github.com/kahliburke/Kaimon.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/kahliburke/Kaimon.jl/actions/workflows/CI.yml)
