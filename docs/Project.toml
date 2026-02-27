@@ -16,4 +16,4 @@ DocumenterVitepress = "0.1"
 
 [sources]
 Kaimon = {path = ".."}
-Tachikoma = {path = "/Users/kburke/devel/Tachikoma.jl"}
+Tachikoma = {url = "https://github.com/kahliburke/Tachikoma.jl"}
