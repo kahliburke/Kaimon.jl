@@ -21,7 +21,7 @@ end
 
 # ── Config Flow: Input Handler ───────────────────────────────────────────────
 
-const CLIENT_OPTIONS = [:claude, :gemini, :codex, :copilot, :vscode, :kilo]
+const CLIENT_OPTIONS = [:claude, :gemini, :codex, :copilot, :vscode, :kilo, :cursor, :opencode]
 const CLIENT_LABELS = [
     "Claude Code",
     "Gemini CLI",
@@ -29,6 +29,8 @@ const CLIENT_LABELS = [
     "GitHub Copilot",
     "VS Code / Copilot",
     "KiloCode",
+    "Cursor",
+    "OpenCode",
 ]
 const CLIENT_LABEL = Dict(
     :claude    => "Claude Code",
@@ -37,6 +39,8 @@ const CLIENT_LABEL = Dict(
     :copilot   => "GitHub Copilot",
     :vscode    => "VS Code / Copilot",
     :kilo      => "KiloCode",
+    :cursor    => "Cursor",
+    :opencode  => "OpenCode",
     :startup_jl => "Julia startup.jl (global gate)",
 )
 
@@ -144,6 +148,8 @@ function execute_client_config!(m::KaimonModel)
             :copilot => _install_copilot(m, port, api_key)
             :vscode => _install_vscode(m, port, api_key)
             :kilo => _install_kilo(m, port, api_key)
+            :cursor => _install_cursor(m, port, api_key)
+            :opencode => _install_opencode(m, port, api_key)
             :startup_jl => _install_startup_jl(m)
             _ => nothing
         end
@@ -191,6 +197,8 @@ function remove_client_config!(m::KaimonModel)
             :copilot => _remove_copilot(m)
             :vscode => _remove_vscode(m)
             :kilo => _remove_kilo(m)
+            :cursor => _remove_cursor(m)
+            :opencode => _remove_opencode(m)
             :startup_jl => _remove_startup_jl(m)
             _ => nothing
         end
@@ -472,5 +480,83 @@ function _install_copilot(m::KaimonModel, port::Int, api_key)
     existing["mcpServers"] = servers
     write(target_file, _to_json(existing))
     m.flow_message = "Wrote $(_short_path(target_file))"
+    m.flow_success = true
+end
+
+# ── Cursor ───────────────────────────────────────────────────────────────────
+
+function _install_cursor(m::KaimonModel, port::Int, api_key)
+    url = "http://localhost:$port/mcp"
+    cursor_dir = joinpath(homedir(), ".cursor")
+    isdir(cursor_dir) || mkpath(cursor_dir)
+    target_file = joinpath(cursor_dir, "mcp.json")
+
+    # Merge with existing config to preserve other servers
+    existing = if isfile(target_file)
+        try
+            JSON.parsefile(target_file)
+        catch
+            Dict{String,Any}()
+        end
+    else
+        Dict{String,Any}()
+    end
+    servers = get(existing, "mcpServers", Dict{String,Any}())
+    entry = Dict{String,Any}("type" => "http", "url" => url)
+    if api_key !== nothing
+        entry["headers"] = Dict{String,Any}("Authorization" => "Bearer $api_key")
+    end
+    servers["kaimon"] = entry
+    existing["mcpServers"] = servers
+    write(target_file, _to_json(existing))
+    m.flow_message = "Wrote $(_short_path(target_file))"
+    m.flow_success = true
+end
+
+function _remove_cursor(m::KaimonModel)
+    target_file = joinpath(homedir(), ".cursor", "mcp.json")
+    _remove_server_from_json!(target_file, "mcpServers")
+    m.flow_message = "Removed kaimon from\n$(_short_path(target_file))"
+    m.flow_success = true
+end
+
+# ── OpenCode ──────────────────────────────────────────────────────────────────
+
+function _install_opencode(m::KaimonModel, port::Int, api_key)
+    url = "http://localhost:$port/mcp"
+    opencode_dir = joinpath(homedir(), ".config", "opencode")
+    isdir(opencode_dir) || mkpath(opencode_dir)
+    target_file = joinpath(opencode_dir, "opencode.json")
+
+    # Merge with existing config to preserve other servers
+    existing = if isfile(target_file)
+        try
+            JSON.parsefile(target_file)
+        catch
+            Dict{String,Any}()
+        end
+    else
+        Dict{String,Any}()
+    end
+    mcp_servers = get(existing, "mcp", Dict{String,Any}())
+    entry = Dict{String,Any}(
+        "type" => "remote",
+        "url" => url,
+        "enabled" => true
+    )
+    if api_key !== nothing
+        entry["headers"] = Dict{String,Any}("Authorization" => "Bearer $api_key")
+    end
+    mcp_servers["kaimon"] = entry
+    existing["mcp"] = mcp_servers
+    write(target_file, _to_json(existing))
+    m.flow_message = "Wrote $(_short_path(target_file))"
+    m.flow_success = true
+end
+
+function _remove_opencode(m::KaimonModel)
+    target_file = joinpath(homedir(), ".config", "opencode", "opencode.json")
+    _remove_server_from_json!(target_file, "mcp")
+    m.flow_message = "Removed kaimon from\n$(_short_path(target_file))"
     m.flow_success = true
 end

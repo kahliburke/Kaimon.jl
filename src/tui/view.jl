@@ -541,6 +541,20 @@ function _refresh_client_status_async!(m::KaimonModel)
         "KiloCode" => _detect_in_files(joinpath(_kilo_settings_dir(), "mcp_settings.json"))
     end
 
+    # Cursor
+    spawn_task!(q, :client_status) do
+        "Cursor" => _detect_in_files(
+            joinpath(homedir(), ".cursor", "mcp.json"),
+        )
+    end
+
+    # OpenCode
+    spawn_task!(q, :client_status) do
+        "OpenCode" => _detect_in_files(
+            joinpath(homedir(), ".config", "opencode", "opencode.json"),
+        )
+    end
+
 end
 
 function _detect_startup_jl_configured()::Bool
