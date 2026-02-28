@@ -300,6 +300,10 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
 
         # Escape — per-tab cancel or quit
         (:escape, _) => begin
+            # Ignore escape events during startup — stale terminal probe responses
+            # (e.g. partial CSI sequences timing out in read_csi) arrive as
+            # spurious KeyEvent(:escape) events within the first second.
+            time() - m.start_time < 1.0 && return
             @match tab begin
                 7 => (m.stress_state == STRESS_RUNNING && _cancel_stress_test!(m); return)
                 5 => (_handle_tests_escape!(m); return)
