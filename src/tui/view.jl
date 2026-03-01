@@ -410,7 +410,8 @@ function view_server(m::KaimonModel, area::Rect, f::Frame)
         border_style = _pane_border(m, 1, 2),
         title_style = _pane_title(m, 1, 2),
     )
-    _sync_log_pane!(m, rows[2].width - 2)  # -2 for border
+    m._log_pane_width = rows[2].width - 2   # -2 for border
+    _sync_log_pane!(m, m._log_pane_width)
     render(pane, rows[2], buf)
 end
 

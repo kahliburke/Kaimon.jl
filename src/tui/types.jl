@@ -190,6 +190,7 @@ end
     log_pane::Union{ScrollPane,Nothing} = nothing
     log_word_wrap::Bool = false
     _log_pane_synced::Int = 0   # number of server_log entries already pushed to pane
+    _log_pane_width::Int = 0    # last-known render width for word wrap rebuilds
 
     # Pane focus — which pane has keyboard focus on each tab
     # Tab 1: 1=status, 2=log | Tab 2: 1=gates, 2=agents, 3=detail

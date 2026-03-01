@@ -7,6 +7,9 @@ Uses Ollama for embeddings (qwen3-embedding model).
 
 # Uses QdrantClient, get_ollama_embedding, and DEFAULT_EMBEDDING_MODEL from parent scope
 
+# Extensible PDF text extraction — implemented by KaimonPDFIOExt when PDFIO is loaded.
+function _extract_pdf_text end
+
 # Embedding model configuration
 const EMBEDDING_CONFIGS = Dict(
     "qwen3-embedding:0.6b" => (dims=1024, context_tokens=8192, context_chars=16000),
@@ -322,23 +325,23 @@ Structure:
 - "files": Dict mapping file paths to their index metadata
 """
 function load_index_state(project_path::String)
-    _default_state() = Dict(
-        "config" => Dict(
+    _default_state() = Dict{String,Any}(
+        "config" => Dict{String,Any}(
             "dirs" => String[],
             "extensions" => DEFAULT_INDEX_EXTENSIONS,
         ),
-        "files" => Dict(),
+        "files" => Dict{String,Any}(),
     )
 
     config = get_project_config(project_path)
     config === nothing && return _default_state()
     idx_state = get(config, "index_state", Dict())
     parsed_config = Dict(
-        "dirs" => Vector{String}(get(idx_state, "dirs", get(config, "dirs", String[]))),
-        "extensions" => Vector{String}(get(idx_state, "extensions", get(config, "extensions", DEFAULT_INDEX_EXTENSIONS))),
+        "dirs" => String.(get(idx_state, "dirs", get(config, "dirs", String[]))),
+        "extensions" => String.(get(idx_state, "extensions", get(config, "extensions", DEFAULT_INDEX_EXTENSIONS))),
     )
     files = Dict(get(idx_state, "files", Dict()))
-    return Dict("config" => parsed_config, "files" => files)
+    return Dict{String,Any}("config" => parsed_config, "files" => files)
 end
 
 """
@@ -1119,13 +1122,24 @@ function index_file(
         return 0
     end
 
-    content = try
-        read(file_path, String)
-    catch e
-        msg = "Failed to read: $(basename(file_path))"
-        !silent && verbose && println("  ⚠️  $msg - $e")
-        with_index_logger(() -> @warn msg exception = e)
-        return 0
+    content = if endswith(lowercase(file_path), ".pdf")
+        text = applicable(_extract_pdf_text, file_path) ? _extract_pdf_text(file_path) : nothing
+        if text === nothing
+            msg = "Skipping PDF (PDFIO not loaded): $(basename(file_path))"
+            !silent && verbose && println("  ⏭️  $msg")
+            with_index_logger(() -> @info msg)
+            return 0
+        end
+        text
+    else
+        try
+            read(file_path, String)
+        catch e
+            msg = "Failed to read: $(basename(file_path))"
+            !silent && verbose && println("  ⚠️  $msg - $e")
+            with_index_logger(() -> @warn msg exception = e)
+            return 0
+        end
     end
 
     if isempty(strip(content))
@@ -1356,13 +1370,13 @@ function index_project(
     if isempty(config_dirs) && registry_config !== nothing
         reg_dirs = get(registry_config, "dirs", String[])
         if !isempty(reg_dirs)
-            config_dirs = Vector{String}(reg_dirs)
+            config_dirs = String.(reg_dirs)
         end
     end
     if registry_config !== nothing && extensions === nothing
         reg_exts = get(registry_config, "extensions", nothing)
         if reg_exts !== nothing && !isempty(reg_exts)
-            config_extensions = Vector{String}(reg_exts)
+            config_extensions = String.(reg_exts)
         end
     end
 
@@ -1486,11 +1500,11 @@ function sync_index(
         if reg_config !== nothing
             reg_dirs = get(reg_config, "dirs", String[])
             if !isempty(reg_dirs)
-                dirs_to_sync = Vector{String}(reg_dirs)
+                dirs_to_sync = String.(reg_dirs)
             end
             reg_exts = get(reg_config, "extensions", nothing)
             if reg_exts !== nothing && !isempty(reg_exts)
-                extensions = Vector{String}(reg_exts)
+                extensions = String.(reg_exts)
             end
         end
     end

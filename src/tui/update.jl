@@ -328,7 +328,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
 
     @match tab begin
         1 => @match evt.char begin
-            'w' => (m.log_word_wrap = !m.log_word_wrap; _rebuild_log_pane!(m))
+            'w' => (m.log_word_wrap = !m.log_word_wrap; _rebuild_log_pane!(m, m._log_pane_width))
             'F' => (
                 m.log_pane !== nothing && (m.log_pane.following = !m.log_pane.following)
             )

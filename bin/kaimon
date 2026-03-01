@@ -81,6 +81,9 @@ if use_revise
     end
 end
 
+# Load optional extensions before Kaimon so they activate on package load.
+try @eval using PDFIO catch end
+
 using Kaimon
 
 if use_revise && isdefined(Main, :Revise)
