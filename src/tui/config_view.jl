@@ -193,14 +193,13 @@ function view_config_flow(m::KaimonModel, area::Rect, buf::Buffer)
             set_string!(buf, x, y, "Status: ", tstyle(:text_dim))
             set_string!(buf, x + 8, y, status_text, status_style)
             y += 1
-            scope_str = if m.client_target == :startup_jl
-                "Installs: ~/.julia/config/startup.jl"
+            if m.client_target == :startup_jl
+                set_string!(buf, x, y, "Installs: ~/.julia/config/startup.jl", tstyle(:text_dim))
             elseif m.client_target in (:claude, :gemini)
-                "Scope: project-level"
+                set_string!(buf, x, y, "Scope: user (global)", tstyle(:text_dim))
             else
-                "Scope: user-level (global)"
+                set_string!(buf, x, y, "Scope: user-level (global)", tstyle(:text_dim))
             end
-            set_string!(buf, x, y, scope_str, tstyle(:text_dim))
             y += 2
             set_string!(
                 buf,

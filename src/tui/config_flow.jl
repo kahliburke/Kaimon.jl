@@ -85,6 +85,7 @@ function handle_flow_input!(m::KaimonModel, evt::KeyEvent)
     elseif flow == FLOW_CLIENT_CONFIRM
         @match (evt.key, evt.char) begin
             (:enter, _) => execute_client_config!(m)
+
             (:char, 'r') => begin
                 client_label = get(CLIENT_LABEL, m.client_target, "")
                 configured =
@@ -212,18 +213,16 @@ end
 # ── Remove helpers ────────────────────────────────────────────────────────────
 
 function _remove_claude(m::KaimonModel)
-    try
-        read(pipeline(`claude mcp remove --scope project kaimon`; stderr = devnull), String)
-    catch
+    for s in ("project", "user", "local")
+        try read(pipeline(`claude mcp remove --scope $s kaimon`; stderr = devnull), String) catch end
     end
     m.flow_message = "Removed kaimon from Claude Code"
     m.flow_success = true
 end
 
 function _remove_gemini(m::KaimonModel)
-    try
-        read(pipeline(`gemini mcp remove --scope project kaimon`; stderr = devnull), String)
-    catch
+    for s in ("project", "user")
+        try read(pipeline(`gemini mcp remove --scope $s kaimon`; stderr = devnull), String) catch end
     end
     m.flow_message = "Removed kaimon from Gemini CLI"
     m.flow_success = true
@@ -345,16 +344,16 @@ end
 
 function _install_claude(m::KaimonModel, port::Int, api_key)
     url = "http://localhost:$port/mcp"
-    try
-        read(pipeline(`claude mcp remove --scope project kaimon`; stderr = devnull), String)
-    catch
+    scope = string(m.client_scope)
+    for s in ("project", "user", "local")
+        try read(pipeline(`claude mcp remove --scope $s kaimon`; stderr = devnull), String) catch end
     end
-    args = `claude mcp add --transport http --scope project kaimon $url`
+    args = `claude mcp add --transport http --scope $scope kaimon $url`
     if api_key !== nothing
         args = `$args -H "Authorization: Bearer $api_key"`
     end
     read(pipeline(args; stderr = stderr), String)
-    m.flow_message = "Added kaimon to Claude Code\n(scope: project)"
+    m.flow_message = "Added kaimon to Claude Code\n(scope: $scope)"
     m.flow_success = true
 end
 
@@ -395,16 +394,16 @@ end
 
 function _install_gemini(m::KaimonModel, port::Int, api_key)
     url = "http://localhost:$port/mcp"
-    try
-        read(pipeline(`gemini mcp remove --scope project kaimon`; stderr = devnull), String)
-    catch
+    scope = string(m.client_scope)
+    for s in ("project", "user")
+        try read(pipeline(`gemini mcp remove --scope $s kaimon`; stderr = devnull), String) catch end
     end
-    args = `gemini mcp add --transport http --scope project kaimon $url`
+    args = `gemini mcp add --transport http --scope $scope kaimon $url`
     if api_key !== nothing
         args = `$args -H "Authorization: Bearer $api_key"`
     end
     read(pipeline(args; stderr = devnull), String)
-    m.flow_message = "Added kaimon to Gemini CLI\n(scope: project)"
+    m.flow_message = "Added kaimon to Gemini CLI\n(scope: $scope)"
     m.flow_success = true
 end
 

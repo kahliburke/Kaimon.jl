@@ -143,6 +143,7 @@ end
 
     # Client config state
     client_target::Symbol = :claude
+    client_scope::Symbol = :user
     gate_mirror_repl::Bool = false
 
     # Flow result
