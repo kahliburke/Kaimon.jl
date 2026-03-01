@@ -68,6 +68,7 @@ Does nothing if the logo file is missing or the area is too small.
 """
 function _render_logo!(area::Rect, f::Frame; tick::Int = 0)
     area.width < 2 || area.height < 2 && return
+    Tachikoma.graphics_protocol() == Tachikoma.gfx_none && return
     pixels = _get_logo_pixels()
     pixels === nothing && return
     img = PixelImage(area.width, area.height)
