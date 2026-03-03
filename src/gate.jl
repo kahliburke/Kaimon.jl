@@ -49,6 +49,10 @@ const _GATE_TTY_SIZE =
     Ref{Union{Nothing,NamedTuple{(:rows, :cols),Tuple{Int,Int}}}}(nothing)
 const _GATE_TTY_ECHO_DISABLED = Ref{Bool}(false)
 const _GATE_TTY_PARKED_PGRP = Ref{Union{Int32,Nothing}}(nothing)
+# Set to true between the :restart reply and the actual execvp call.
+# Prevents the message-loop task's `finally` from closing sockets prematurely
+# and defeating the 0.3 s grace period for the ZMQ reply to flush.
+const _RESTARTING = Ref{Bool}(false)
 
 # ── Session-Scoped Tools ──────────────────────────────────────────────────────
 
@@ -407,8 +411,11 @@ function _coerce_value(value, T)
     # Primitives
     T === String && return string(value)
     T === Bool && value isa Bool && return value
+    T === Bool && value isa AbstractString && return value in ("true", "1", "yes")
     T <: Integer && value isa Number && return T(value)
+    T <: Integer && value isa AbstractString && return T(parse(Int, value))
     T <: AbstractFloat && value isa Number && return T(value)
+    T <: AbstractFloat && value isa AbstractString && return T(parse(Float64, value))
 
     # Symbol
     T === Symbol && value isa String && return Symbol(value)
@@ -448,6 +455,55 @@ function _coerce_value(value, T)
     catch
         return value
     end
+end
+
+"""Return a Dict mapping kwarg name → declared type, using the inner body function.
+
+Works for both top-level functions (via Base.bodyfunction) and closures (by
+extracting the inner body closure stored as a field of the outer kwarg wrapper).
+In both cases the inner function's positional args are [self, kw1, kw2, ..., outer_fn].
+"""
+function _kwarg_types(handler::Function)::Dict{Symbol,Any}
+    result = Dict{Symbol,Any}()
+    try
+        m = first(methods(handler))
+        kw_names = Base.kwarg_decl(m)
+        isempty(kw_names) && return result
+
+        # Get the inner body function — it has kwargs as typed positional args.
+        # For top-level functions, Base.bodyfunction works directly.
+        # For closures, the outer kwarg wrapper captures the inner body as its
+        # only field (e.g. handler.#foo#16).
+        inner_fn = try
+            body = Base.bodyfunction(m)
+            isempty(methods(body)) ? nothing : body
+        catch
+            nothing
+        end
+
+        if inner_fn === nothing
+            # Closure: extract inner body from the single captured field
+            fnames = fieldnames(typeof(handler))
+            if length(fnames) == 1
+                candidate = getfield(handler, fnames[1])
+                candidate isa Function && (inner_fn = candidate)
+            end
+        end
+
+        inner_fn === nothing && return result
+
+        inner_m = first(methods(inner_fn))
+        sig = inner_m.sig
+        while sig isa UnionAll; sig = sig.body; end
+        # Layout: [typeof(inner), kwarg_types..., typeof(outer_fn)]
+        params = sig.parameters
+        for (i, kw) in enumerate(kw_names)
+            idx = i + 1   # skip the function-type param at position 1
+            idx < length(params) && (result[kw] = params[idx])
+        end
+    catch
+    end
+    return result
 end
 
 """
@@ -495,11 +551,13 @@ function _dispatch_tool_call(handler::Function, args::Dict{String,Any})
     catch
         Symbol[]
     end
+    kw_types = _kwarg_types(handler)
     kwargs = Pair{Symbol,Any}[]
     for kw in kw_names
         kw_str = string(kw)
         if haskey(args, kw_str)
-            push!(kwargs, kw => args[kw_str])
+            T = get(kw_types, kw, Any)
+            push!(kwargs, kw => _coerce_value(args[kw_str], T))
         end
     end
 
@@ -1021,14 +1079,55 @@ function _should_replay_argv()
 end
 
 """
+    _base_julia_args() -> Vector{String}
+
+Return the Julia binary + original launch flags, stripping only the arguments
+that `_exec_restart` will inject itself: `-e`/`--eval` (+ value), `--project`
+(+ value), and `-i`.  Everything else — `-t`, `--heap-size-hint`, `--gcthreads`,
+`-O`, custom sysimage flags, etc. — is preserved verbatim from `_ORIGINAL_ARGV[]`.
+
+Falls back to `Base.julia_cmd().exec` if `_ORIGINAL_ARGV[]` was not captured
+(non-macOS/non-Linux or capture failed).
+"""
+function _base_julia_args()::Vector{String}
+    orig = _ORIGINAL_ARGV[]
+    isempty(orig) && return Base.julia_cmd().exec
+
+    result = [orig[1]]   # preserve exact Julia binary path
+    i = 2
+    while i <= length(orig)
+        arg = orig[i]
+        # Strip flags whose values we inject ourselves
+        if arg in ("-e", "--eval", "--project")
+            i += 2   # skip flag + separate value
+            continue
+        end
+        if startswith(arg, "--eval=") || startswith(arg, "--project=")
+            i += 1   # skip combined form
+            continue
+        end
+        # Strip bare -i (we add our own); leave e.g. --inline alone
+        if arg == "-i"
+            i += 1
+            continue
+        end
+        push!(result, arg)
+        i += 1
+    end
+    return result
+end
+
+"""
     _exec_restart(name, session_id, project_path)
 
 Replace the current process with a fresh Julia via `execvp`. Same PID, same
 terminal, fresh Julia state. The `-i` flag keeps the REPL interactive.
 """
 function _exec_restart(name::String, session_id::String, project_path::String)
-    # Tell startup.jl to skip serve() — the app or -e code will handle it.
-    ENV["MCPREPL_RESTART_SESSION"] = session_id
+    # Signal to all serve() callers in the new process (startup.jl, app code,
+    # or our injected -e fallback) that this is a restart and they should
+    # reuse this session_id so the TUI reconnects to the same session.
+    ENV["KAIMON_RESTART_SESSION"] = session_id
 
     args = if _should_replay_argv()
         # Replay original argv exactly — the app code (e.g. GateToolTest.run()
@@ -1037,17 +1136,26 @@ function _exec_restart(name::String, session_id::String, project_path::String)
         # backend that conflicts with TUI terminal handling.
         copy(_ORIGINAL_ARGV[])
     else
-        # Plain REPL session — construct minimal -e to re-establish the gate
-        julia_args = Base.julia_cmd().exec
-        ns = _SESSION_NAMESPACE[]
-        mirror = _ALLOW_MIRROR[]
-        ns_kwarg = isempty(ns) ? "" : ", namespace=$(repr(ns))"
-        mirror_kwarg = mirror ? "" : ", allow_mirror=false"
+        # Plain REPL session — reconstruct from the original argv, preserving
+        # all launch flags (-t, --heap-size-hint, --gcthreads, -O, etc.), then
+        # inject our own --project / -i / -e Gate.serve(...).
+        julia_args = _base_julia_args()
+        ns      = _SESSION_NAMESPACE[]
+        mirror  = _ALLOW_MIRROR[]
+        restart = _ALLOW_RESTART[]
+        ns_kwarg      = isempty(ns) ? "" : ", namespace=$(repr(ns))"
+        mirror_kwarg  = mirror  ? "" : ", allow_mirror=false"
+        restart_kwarg = restart ? "" : ", allow_restart=false"
+        # The injected -e code runs after startup.jl.  If startup.jl already
+        # called Gate.serve() and picked up KAIMON_RESTART_SESSION, the gate
+        # will already be running with the correct session_id; our serve() call
+        # becomes a no-op that updates mutable options (mirror, restart flag).
+        # If startup.jl didn't call serve, this creates the gate from scratch.
         serve_code = """
         try; using Revise; catch; end
         using Kaimon
-        delete!(ENV, "MCPREPL_RESTART_SESSION")
-        Gate.serve(session_id=$(repr(session_id))$ns_kwarg$mirror_kwarg)
+        delete!(ENV, "KAIMON_RESTART_SESSION")
+        Gate.serve(session_id=$(repr(session_id))$ns_kwarg$mirror_kwarg$restart_kwarg)
         """
         vcat(julia_args, ["--project=$project_path", "-i", "-e", serve_code])
     end
@@ -1091,8 +1199,9 @@ function handle_message(request::NamedTuple)
         code = get(request, :code, "")
         display_code = get(request, :display_code, code)
         request_id = get(request, :request_id, "")
-        # Run eval in background, return :accepted immediately
-        @async begin
+        # Run eval on a default-pool thread so the interactive message loop
+        # stays responsive to pings during CPU-intensive evals.
+        Threads.@spawn begin
             try
                 result = gate_eval(code; display_code = display_code)
                 _publish_stream("eval_complete", _serialize_result(result); request_id)
@@ -1167,7 +1276,9 @@ function handle_message(request::NamedTuple)
         end
         tool = _SESSION_TOOLS[][idx]
 
-        @async begin
+        # Run tool handler on a default-pool thread so the interactive message
+        # loop stays responsive to pings during CPU-intensive tool calls.
+        Threads.@spawn begin
             try
                 # Make progress function available via task-local storage
                 task_local_storage(:gate_request_id, request_id)
@@ -1197,14 +1308,20 @@ function handle_message(request::NamedTuple)
         old_session_id = _SESSION_ID[]
         old_project = dirname(Base.active_project())
 
+        # Signal the message-loop task's `finally` block to skip _cleanup().
+        # We need the ZMQ sockets to stay open for ~0.3 s so the :ok reply
+        # above actually reaches the client before we tear down the process.
+        _RESTARTING[] = true
         _RUNNING[] = false
 
         @async begin
             try
-                sleep(0.3)  # Let ZMQ reply go through
+                sleep(0.3)  # Let ZMQ reply flush through IPC buffer
+                _RESTARTING[] = false
                 _cleanup()  # Close sockets, remove metadata files
                 _exec_restart(old_name, old_session_id, old_project)
             catch e
+                _RESTARTING[] = false
                 @error "Restart failed" exception = (e, catch_backtrace())
                 exit(1)
             end
@@ -1327,17 +1444,15 @@ function _serve(;
         return nothing
     end
 
-    # Restart gate: when a session is restarting via _exec_restart, skip
-    # startup.jl's serve() call so we don't create a temporary gate.
-    # App code calling serve(force=true) picks up the session_id from the env var.
-    if session_id === nothing && haskey(ENV, "MCPREPL_RESTART_SESSION")
-        if !force
-            @debug "Skipping gate: restart in progress, app code will handle it"
-            return nothing
+    # Restart gate: if KAIMON_RESTART_SESSION is set the current process was
+    # launched by _exec_restart.  Any serve() call — whether from startup.jl,
+    # app code (force=true), or our injected -e fallback — picks up the
+    # session_id so the TUI can reconnect to the same session.
+    if session_id === nothing
+        restart_sid = get(ENV, "KAIMON_RESTART_SESSION", "")
+        if !isempty(restart_sid)
+            session_id = pop!(ENV, "KAIMON_RESTART_SESSION")
         end
-        # App code (e.g. GateToolTest.run()) calling serve(force=true) —
-        # restore the session_id so the TUI reconnects to the same session.
-        session_id = pop!(ENV, "MCPREPL_RESTART_SESSION")
     end
 
     # Auto-derive namespace from project basename if not specified
@@ -1373,7 +1488,12 @@ function _serve(;
             @info "Registered $(length(tools)) tool(s) on running gate (session=$(_SESSION_ID[]))"
             return _SESSION_ID[]
         else
-            # Duplicate serve() call (e.g. startup.jl ran twice) — no-op
+            # Same session already running (e.g. startup.jl created the gate,
+            # then our injected -e fallback fires).  Update mutable options so
+            # allow_mirror / allow_restart from the original session are
+            # restored; namespace is auto-derived so it will match already.
+            _ALLOW_MIRROR[] = allow_mirror
+            _ALLOW_RESTART[] = allow_restart
             return _SESSION_ID[]
         end
     end
@@ -1407,16 +1527,22 @@ function _serve(;
     _GATE_CONTEXT[] = ctx
     _GATE_SOCKET[] = socket
 
-    # Set receive timeout (1 second) so message loop can check _RUNNING
+    # 1s receive timeout so message loop can check _RUNNING periodically.
+    # linger=0: close() returns immediately without blocking to drain.
     socket.rcvtimeo = 1000
+    socket.linger = 0
 
     # Bind IPC endpoint
     sock_path = joinpath(SOCK_DIR, "$(sid).sock")
     endpoint = "ipc://$(sock_path)"
     bind(socket, endpoint)
 
-    # Create PUB socket for streaming stdout/stderr to TUI
+    # Create PUB socket for streaming stdout/stderr to TUI.
+    # sndhwm=0: unlimited send buffer — never drop messages under load.
+    # linger=0: close() returns immediately.
     pub_socket = Socket(ctx, PUB)
+    pub_socket.sndhwm = 0
+    pub_socket.linger = 0
     stream_path = joinpath(SOCK_DIR, "$(sid)-stream.sock")
     stream_endpoint = "ipc://$(stream_path)"
     bind(pub_socket, stream_endpoint)
@@ -1428,20 +1554,23 @@ function _serve(;
     # Register cleanup
     atexit(() -> stop())
 
-    # Start message loop in background
+    # Start message loop on an interactive thread so it stays scheduled even
+    # when the main thread is busy executing REPL code.
+    # Async handlers (eval_async, tool_call_async) use Threads.@spawn to run
+    # on the default thread pool, keeping this interactive thread free to
+    # answer pings during CPU-intensive operations.
     _RUNNING[] = true
     local this_task
-    this_task = _GATE_TASK[] = @async begin
+    this_task = _GATE_TASK[] = Threads.@spawn :interactive begin
         try
             message_loop(socket)
         catch e
             @debug "Gate task exited" exception = e
         finally
-            # Only clean up if we're still the active gate — a restart may
-            # have already torn us down and created a replacement gate.
-            if _GATE_TASK[] === this_task
-                _cleanup()
-            end
+            # Don't call _cleanup() here — stop() owns cleanup via atexit.
+            # With Threads.@spawn :interactive, this finally block can race
+            # with stop() during Julia shutdown, causing double-cleanup of
+            # ZMQ resources and intermittent segfaults.
         end
     end
 
@@ -1502,41 +1631,20 @@ function _cleanup()
     end
     _REVISE_WATCHER_TASK[] = nothing
 
-    # Close REP socket
-    socket = _GATE_SOCKET[]
-    if socket !== nothing
-        try
-            close(socket)
-        catch
-        end
-        _GATE_SOCKET[] = nothing
-    end
-
-    # Close PUB socket
-    pub = _STREAM_SOCKET[]
-    if pub !== nothing
-        try
-            close(pub)
-        catch
-        end
-        _STREAM_SOCKET[] = nothing
-    end
-
-    # Close context
-    ctx = _GATE_CONTEXT[]
-    if ctx !== nothing
-        try
-            close(ctx)
-        catch
-        end
-        _GATE_CONTEXT[] = nothing
-    end
+    # Don't explicitly close ZMQ sockets/context here — Julia's GC finalizers
+    # handle it. Explicit close + finalize during atexit was causing intermittent
+    # segfaults in LLVM's JIT compiler on Julia 1.12.5.
+    # Just null the refs so our code doesn't use them after cleanup.
+    _GATE_SOCKET[] = nothing
+    _STREAM_SOCKET[] = nothing
+    _GATE_CONTEXT[] = nothing
 
     # Remove files
     cleanup_files(_SESSION_ID[])
 
     _GATE_TASK[] = nothing
     _RUNNING[] = false
+    _RESTARTING[] = false
     _MIRROR_REPL[] = false
     _ALLOW_MIRROR[] = true
     _ALLOW_RESTART[] = true
