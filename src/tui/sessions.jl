@@ -27,9 +27,10 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
 
     items = ListItem[]
     for conn in connections
-        icon = conn.status == :connected ? "●" : conn.status == :connecting ? "◐" : "○"
+        icon = conn.status == :connected ? "●" : conn.status == :stalled ? "◑" : conn.status == :connecting ? "◐" : "○"
         style =
             conn.status == :connected ? tstyle(:success) :
+            conn.status == :stalled ? tstyle(:warning) :
             conn.status == :connecting ? tstyle(:warning) : tstyle(:error)
         dname = isempty(conn.display_name) ? conn.name : conn.display_name
         label = "$icon $dname"
