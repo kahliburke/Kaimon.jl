@@ -1,195 +1,154 @@
 """
 MCP Prompts support for Kaimon.
-
-Prompts are reusable prompt templates that can be exposed through the MCP protocol.
-They help agents get started quickly with best practices for using the Julia REPL tools.
 """
 
 module Prompts
 
 export get_prompts, get_prompt
 
-# Define available prompts
 const PROMPT_DEFINITIONS = [
     Dict(
         "name" => "getting-started",
-        "description" => "Learn how to use Kaimon's Julia code discovery tools effectively. Start here for new sessions!",
-        "arguments" => [],  # No arguments needed
-    ),
-    Dict(
-        "name" => "semantic-search-guide",
-        "description" => "Guide to using semantic code search with qdrant_search_code",
+        "description" => "Key tips for working effectively with Kaimon",
         "arguments" => [],
     ),
     Dict(
-        "name" => "type-exploration",
-        "description" => "How to inspect Julia types, hierarchies, and structures using type_info",
+        "name" => "gate-tools",
+        "description" => "How to write custom GateTools that expose Julia functions as MCP tools to agents",
         "arguments" => [],
     ),
 ]
 
-"""
-Get list of all available prompts.
-Returns array of prompt definitions with name, description, and arguments.
-"""
 function get_prompts()
     return PROMPT_DEFINITIONS
 end
 
-"""
-Get a specific prompt by name.
-Returns the prompt content as a string.
-"""
 function get_prompt(name::String)
     if name == "getting-started"
         return """
-# Getting Started with Kaimon
+# Kaimon Quick Tips
 
-Kaimon provides Julia-native code discovery tools that are more effective than grep or shell commands for Julia codebases.
-
-## Code Discovery Tools
-
-### Semantic Code Search
-**`qdrant_search_code(query="natural language description")`**
-Finds code by meaning, not just keywords. Discovers implementations even with different terminology.
-```julia
-qdrant_search_code(query="function that handles HTTP requests and dispatches to handlers")
-```
-Requires Ollama running with embedding model (default: `qwen3-embedding:0.6b`).
-
-### Deep Type Introspection
-**`type_info("TypeName")`**
-Shows complete type hierarchy, all fields with types, type parameters, and subtypes.
-```julia
-type_info("AbstractArray")
-```
-
-### Method Discovery
-**`search_methods("function_name")`**
-Finds all method signatures across all modules, including operator overloads.
-```julia
-search_methods("sort")
-```
-
-### Symbol Discovery
-**`list_names("ModuleName")`**
-Lists exported names (public API). Use `all=true` for internal symbols.
-```julia
-list_names("Base")
-```
-
-### Code Navigation (via Julia reflection)
-- `goto_definition(file, line, col)` — Jump to where a symbol is defined
-- `document_symbols(file)` — List all symbols defined in a file
-- `workspace_symbols(query="...")` — Search for symbols across loaded modules
-
-## Quick Execution Guide
-
-**Primary Tool:** `ex(e="julia code")`
-- Default quiet mode (`q=true`) saves tokens by suppressing return values
-- Only use `q=false` when you need the return value to make a decision
-```julia
-ex(e="using DataFrames")             # q=true (default)
-ex(e="length(result)", q=false)      # q=false when you need the value
-```
-
-## Environment & Packages
-
-- `investigate_environment()` — Check current packages, project, Revise status
-- `pkg_add(packages=["Name"])` — Add packages
-- `ping()` — Verify server is responsive
-- `tool_help("tool_name")` — Detailed help on any tool
+- **`ex(e="code")`** is your REPL. Default `q=true` suppresses return values (saves tokens). Use `q=false` only when you need the result.
+- **`qdrant_search_code(query="...")`** finds Julia code by meaning, not keywords. Prefer it over grep for exploring unfamiliar codebases.
+- **`usage_instructions()`** for the full workflow guide.
 """
-    elseif name == "semantic-search-guide"
+    elseif name == "gate-tools"
         return """
-# Semantic Code Search Guide
+# Gate Tools — Custom MCP Tools from Your Julia Session
 
-`qdrant_search_code` finds Julia code by meaning, not keywords.
+Gate tools let your Julia session expose functions as MCP tools that agents can call directly.
+They appear namespaced under your session: e.g. `myapp.greet`.
 
-## Best Practices
-
-### Describe what you're looking for
-```julia
-# Good — specific about behavior
-qdrant_search_code(query="function that validates HTTP request headers")
-qdrant_search_code(query="code that parses JSON and handles errors")
-
-# Poor — too vague
-qdrant_search_code(query="validate")
-```
-
-### Increase limit for broader searches
-```julia
-qdrant_search_code(query="authentication logic", limit=10)
-```
-
-### Specify collection for multi-project setups
-```julia
-qdrant_search_code(query="routing code", collection="MyProject")
-```
-
-## Common Use Cases
+## Minimal Example
 
 ```julia
-# Feature implementations
-qdrant_search_code(query="code that implements user authentication and session management")
+using Kaimon.Gate
 
-# Error handling
-qdrant_search_code(query="functions that catch exceptions and log errors")
+\"\"\"
+    greet(name, loud) -> String
 
-# Configuration
-qdrant_search_code(query="code that reads configuration from files or environment variables")
+Say hello. If loud=true, shout in uppercase.
+\"\"\"
+function greet(name::String, loud::Bool = false)
+    loud ? uppercase("Hello, \$name!") : "Hello, \$name!"
+end
+
+Gate.serve(tools = [GateTool("greet", greet)], namespace = "myapp")
 ```
 
-## Tips
+The agent calls: `myapp.greet(name="world")` → `"Hello, world!"`
 
-1. **Start broad, then narrow** — Refine based on initial results
-2. **Combine with navigation tools** — Use semantic search to find files, then `goto_definition`/`document_symbols` for precise navigation
-3. **Check index** — `qdrant_collection_info(collection="Name")` to verify code is indexed
-4. **Rephrase** — Try different descriptions if first attempt doesn't find what you need
-5. **Sync after changes** — `qdrant_sync_index()` to update index after code changes
-"""
-    elseif name == "type-exploration"
-        return """
-# Julia Type Exploration Guide
+## Key Rules
 
-`type_info` reveals complete information about Julia types that you can't get from reading source files alone.
+- **Docstring = tool description.** Write a clear docstring; it becomes the MCP tool description.
+- **Typed signatures = schema.** The gate reflects on argument types to build the JSON schema automatically.
+- **Return a String** (or anything — it will be stringified for the agent).
+- **`namespace` prefixes all tool names.** Defaults to the project name if omitted.
 
-## Basic Usage
+## Supported Argument Types
+
+| Julia type | MCP schema | Notes |
+|---|---|---|
+| `String` | `string` | |
+| `Int`, `Float64` | `number` | |
+| `Bool` | `boolean` | |
+| `@enum T a b c` | `string` (enum) | Values auto-extracted |
+| `struct` | `object` | Fields become properties |
+| `Vector{T}` | `array` | Element type reflected recursively |
+| `Union{T, Nothing}` | optional `T` | Marks parameter as not required |
+| keyword args | optional params | `; limit::Int=10` → optional integer |
+
+## Optional / Keyword Arguments
 
 ```julia
-type_info("String")          # Concrete type — fields, hierarchy
-type_info("Vector{Int}")     # Parametric type — parameters, constraints
-type_info("AbstractArray")   # Abstract type — subtypes, interface
+function search(query::String; limit::Int = 10, fuzzy::Bool = false)
+    # limit and fuzzy are optional — agent may omit them
+end
 ```
 
-## What You'll See
-
-- **Type hierarchy:** `String <: AbstractString <: Any`
-- **Fields:** All fields with types (including private/internal)
-- **Type parameters:** Names, constraints, variance
-- **Subtypes:** All types that inherit (for abstract types)
-
-## Common Use Cases
+`Union{T, Nothing}` also marks an argument optional:
 
 ```julia
-# Understand data structures
-type_info("DataFrame")
-type_info("HTTP.Request")
-
-# Explore type hierarchies
-type_info("Number")
-type_info("AbstractArray")
-
-# Debug type issues — understand what methods will match
-type_info("MyCustomType")
+function fetch(url::String, timeout::Union{Float64, Nothing} = nothing)
+    t = timeout !== nothing ? timeout : 30.0
+    # ...
+end
 ```
 
-## Complementary Tools
+## Enums and Structs
 
-- `search_methods("func")` — Find all methods for a type
-- `list_names("Module")` — Discover available types in a module
-- `goto_definition()` — Jump to type source code
+The gate coerces incoming string/dict values to your Julia types automatically:
+
+```julia
+@enum Priority low medium high critical
+
+struct Tag
+    name::String
+    color::Symbol
+end
+
+function add_task(title::String, priority::Priority, tags::Vector{Tag})
+    # priority arrives as e.g. Priority("high") — already coerced
+    # tags arrives as Vector{Tag} — each element coerced from dict
+end
+```
+
+## Progress Updates for Long-Running Tools
+
+Call `Gate.progress("message")` to stream incremental updates to the agent
+(displayed as SSE notifications, prevents HTTP timeouts on slow operations):
+
+```julia
+function analyze(passes::Int)
+    for i in 1:passes
+        sleep(1)
+        Gate.progress("pass \$i/\$passes complete")
+    end
+    return "analysis done"
+end
+```
+
+## Background / Fire-and-Forget
+
+Return immediately and do work in `@async` when the agent shouldn't wait:
+
+```julia
+function start_job(config::String)
+    @async run_long_job(config)
+    return "job started"
+end
+```
+
+## Updating Tools at Runtime
+
+Call `Gate.serve()` again with a new tools list to replace the registered tools.
+The MCP server sends a `tools/list_changed` notification automatically.
+
+## Closing the Gate
+
+```julia
+Gate.stop()
+```
 """
     else
         return nothing

@@ -263,6 +263,12 @@ function _parse_runner_line!(run::TestRun, state::_ParserState, line::String)::B
     if startswith(payload, "START")
         run.status = RUN_RUNNING
         return true
+    elseif startswith(payload, "TESTSET_START")
+        name_idx = findfirst("name=", payload)
+        if name_idx !== nothing
+            state.current_testset = strip(payload[last(name_idx)+1:end])
+        end
+        return true
     elseif startswith(payload, "TESTSET_DONE")
         state.has_testset_done = true
         kv = _parse_kv(payload)
@@ -501,43 +507,84 @@ function format_test_summary(run::TestRun)::String
         "Pass: $(run.total_pass) | Fail: $(run.total_fail) | Error: $(run.total_error) | Total: $(run.total_tests) | Duration: $duration",
     )
 
-    # Testset breakdown (if any)
+    # Testset breakdown — show all failing testsets, summarise passing ones.
+    # Never dump every passing testset in a large suite.
     if !isempty(run.results)
-        println(buf)
-        println(buf, "Testsets:")
-        for r in run.results
-            indent = "  "^(r.depth + 1)
-            marker = if r.fail_count > 0 || r.error_count > 0
-                "X"
-            else
-                "."
+        failing = filter(r -> r.fail_count > 0 || r.error_count > 0, run.results)
+        passing = filter(r -> r.fail_count == 0 && r.error_count == 0, run.results)
+
+        if !isempty(failing)
+            println(buf)
+            println(buf, "Failed testsets:")
+            for r in failing
+                indent = "  "^(r.depth + 1)
+                counts = "$(r.fail_count) fail"
+                r.error_count > 0 && (counts *= ", $(r.error_count) error")
+                r.pass_count > 0  && (counts *= ", $(r.pass_count) pass")
+                println(buf, "$(indent)[X] $(r.name): $counts")
             end
-            counts = "$(r.pass_count) pass"
-            r.fail_count > 0 && (counts *= ", $(r.fail_count) fail")
-            r.error_count > 0 && (counts *= ", $(r.error_count) error")
-            println(buf, "$indent[$marker] $(r.name): $counts")
+        end
+
+        if !isempty(passing)
+            # Only show top-level passing testsets (depth 0); skip leaf noise.
+            top = filter(r -> r.depth == 0, passing)
+            println(buf)
+            if isempty(top)
+                println(buf, "$(length(passing)) passing testsets (all nested)")
+            else
+                shown = first(top, 10)
+                println(buf, "Passing testsets ($(length(top)) top-level):")
+                for r in shown
+                    println(buf, "  [.] $(r.name): $(r.pass_count) pass")
+                end
+                if length(top) > 10
+                    println(buf, "  ... ($(length(top) - 10) more)")
+                end
+            end
         end
     end
 
-    # Failure details
+    # Failure details — tiered to stay token-efficient at scale:
+    #   Tier 1 (first 3):  expression + evaluated, no backtrace
+    #   Tier 2 (next 10):  location + expression only
+    #   Tier 3 (beyond):   counts grouped by testset
     if !isempty(run.failures)
         println(buf)
-        println(buf, "Failures:")
+        println(buf, "Failures ($(length(run.failures)) total):")
         println(buf, "-"^60)
-        for (i, f) in enumerate(run.failures)
+
+        n = length(run.failures)
+        tier1 = first(run.failures, 3)
+        tier2 = n >= 4 ? run.failures[4:min(13, n)] : TestFailure[]
+        tier3 = n > 13 ? run.failures[14:end] : TestFailure[]
+
+        for (i, f) in enumerate(tier1)
             println(buf, "  $i) $(f.file):$(f.line)")
-            !isempty(f.testset) && println(buf, "     Testset: $(f.testset)")
+            !isempty(f.testset)    && println(buf, "     Testset:    $(f.testset)")
             !isempty(f.expression) && println(buf, "     Expression: $(f.expression)")
-            !isempty(f.evaluated) && println(buf, "     Evaluated: $(f.evaluated)")
-            if !isempty(f.backtrace)
-                # Show first few lines of backtrace
-                bt_lines = split(f.backtrace, "\n")
-                for bt_line in first(bt_lines, 5)
-                    println(buf, "     $bt_line")
-                end
-                if length(bt_lines) > 5
-                    println(buf, "     ... ($(length(bt_lines) - 5) more lines)")
-                end
+            !isempty(f.evaluated)  && println(buf, "     Evaluated:  $(f.evaluated)")
+            println(buf)
+        end
+
+        if !isempty(tier2)
+            println(buf, "  Further failures (location + expression only):")
+            for (i, f) in enumerate(tier2)
+                loc = "$(f.file):$(f.line)"
+                expr = isempty(f.expression) ? "" : "  $(f.expression)"
+                println(buf, "    $(i + 3)) $loc$expr")
+            end
+            println(buf)
+        end
+
+        if !isempty(tier3)
+            println(buf, "  Remaining $(length(tier3)) failures by testset:")
+            by_testset = Dict{String,Int}()
+            for f in tier3
+                key = isempty(f.testset) ? "(unknown)" : f.testset
+                by_testset[key] = get(by_testset, key, 0) + 1
+            end
+            for (ts, n) in sort(collect(by_testset); by = last, rev = true)
+                println(buf, "    $n × $ts")
             end
             println(buf)
         end
@@ -545,12 +592,21 @@ function format_test_summary(run::TestRun)::String
 
     # If parsing yielded no structured results and no failures, fall back to
     # showing the tail of raw output so the agent always has something useful.
+    # Filter to lines likely to be meaningful (errors, TEST_RUNNER: markers, non-blank).
     if isempty(run.results) && isempty(run.failures) && !isempty(run.raw_output)
-        println(buf)
-        println(buf, "Raw output (last 50 lines):")
-        println(buf, "-"^60)
-        for line in last(run.raw_output, 50)
-            println(buf, line)
+        meaningful = filter(run.raw_output) do line
+            stripped = strip(line)
+            !isempty(stripped) &&
+                !all(c -> c == '─' || c == '═' || c == '-' || c == '=', stripped)
+        end
+        tail = last(meaningful, 20)
+        if !isempty(tail)
+            println(buf)
+            println(buf, "Output (last $(length(tail)) lines):")
+            println(buf, "-"^60)
+            for line in tail
+                println(buf, line)
+            end
         end
     end
 

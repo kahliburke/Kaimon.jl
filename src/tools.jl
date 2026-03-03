@@ -2,6 +2,7 @@
 struct MCPTool
     id::Symbol                    # Internal identifier (:exec_repl)
     name::String                  # JSON-RPC name ("exec_repl")
+    title::String                 # Human-readable display name ("Exec Repl")
     description::String
     parameters::Dict{String,Any}
     handler::Function

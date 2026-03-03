@@ -62,7 +62,7 @@ ex(e="function f() ... end", q=false)    # Definitions
 
 ## Environment & Packages
 
-- **Revise.jl** auto-tracks changes in `src/`. If it fails: `manage_repl(command="restart")`, then `ping()`
+- **Revise.jl** auto-tracks changes in `src/`. Do not call `Revise.revise()` — it does nothing useful here. If changes aren't picked up, restart.
 - **Session start:** `investigate_environment()` to see packages, dev status, Revise status
 - **Add packages:** `pkg_add(packages=["Name"])`
 
@@ -73,5 +73,22 @@ ex(e="function f() ... end", q=false)    # Definitions
 **Semantic search:** `qdrant_search_code(query="...")`, `qdrant_list_collections()`
 **Code navigation:** `goto_definition()`, `document_symbols()`, `workspace_symbols()`
 **Testing:** `run_tests(pattern="...")` — spawns subprocess, streams results
-**Utilities:** `format_code(path)`, `ping()`, `investigate_environment()`, `manage_repl(command="restart")`
+**Utilities:** `format_code(path)`, `ping()`, `investigate_environment()`
 **Help:** `tool_help("tool_name")` or `tool_help("tool_name", extended=true)`
+**Gate tools:** If session tools appear (namespaced as `<ns>.toolname`), use the `gate-tools` MCP prompt for authoring reference.
+
+---
+
+## Session Restart
+
+Restart is lightweight — the session key is preserved and the gate reconnects automatically. You do lose all in-memory variables and state, so don't restart if that matters. But if you're fighting world-age errors or stale state, restarting is often faster than trying to work around them.
+
+Restart when:
+- You upgraded a package that's already loaded and the code feels stale
+- `__init__` or module-level code changed
+- You're getting `MethodError` / world-age errors that persist after fixing the code
+- The session feels stuck or inconsistent
+
+```julia
+manage_repl(command="restart")
+```

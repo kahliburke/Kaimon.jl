@@ -8,6 +8,26 @@ using Dates
 include("session.jl")
 using .Session
 
+"""
+    is_trusted_origin(origin::AbstractString) -> Bool
+
+Return true only for exact localhost origins. This parses the Origin header as a
+URI instead of using prefix checks so values like `http://localhost.evil.test`
+or `http://localhost@evil.test` are rejected.
+"""
+function is_trusted_origin(origin::AbstractString)
+    try
+        uri = HTTP.URI(origin)
+        host = lowercase(String(uri.host))
+        scheme = lowercase(String(uri.scheme))
+        return !isempty(scheme) &&
+               scheme in ("http", "https") &&
+               (host == "localhost" || host == "127.0.0.1" || host == "::1")
+    catch
+        return false
+    end
+end
+
 # ============================================================================
 # Multi-Session Support (In-Memory)
 # ============================================================================
@@ -318,6 +338,19 @@ function create_handler(
     session::Union{MCPSession,Nothing} = nothing,
 )
     return function handle_request(req::HTTP.Request)
+        # Origin validation — MCP 2025-11-25 Streamable HTTP spec requirement.
+        let origin = HTTP.header(req, "Origin", "")
+            if !isempty(origin)
+                if !is_trusted_origin(origin)
+                    return HTTP.Response(
+                        403,
+                        ["Content-Type" => "application/json"],
+                        JSON.json(Dict("error" => "Forbidden: untrusted Origin")),
+                    )
+                end
+            end
+        end
+
         # Security check - apply to ALL endpoints including vscode-response
         nonce_validated = false  # Track if nonce auth succeeded
 
@@ -588,21 +621,12 @@ function create_handler(
                 end
             end
 
-            # Handle GET requests - return 405 per Streamable HTTP spec (we don't support SSE streaming)
+            # Handle GET requests — return empty SSE stream per 2025-11-25 spec.
             if req.method == "GET"
                 return HTTP.Response(
-                    405,
-                    ["Content-Type" => "application/json", "Allow" => "POST"],
-                    JSON.json(
-                        Dict(
-                            "jsonrpc" => "2.0",
-                            "id" => nothing,
-                            "error" => Dict(
-                                "code" => -32600,
-                                "message" => "Method Not Allowed - server does not support SSE streaming via GET",
-                            ),
-                        ),
-                    ),
+                    200,
+                    ["Content-Type" => "text/event-stream", "Cache-Control" => "no-cache"],
+                    ": keepalive\n\n",
                 )
             end
 
@@ -610,7 +634,7 @@ function create_handler(
             if req.method == "DELETE"
                 return HTTP.Response(
                     405,
-                    ["Content-Type" => "application/json", "Allow" => "POST"],
+                    ["Content-Type" => "application/json", "Allow" => "GET, POST"],
                     JSON.json(
                         Dict(
                             "jsonrpc" => "2.0",
@@ -622,6 +646,24 @@ function create_handler(
                         ),
                     ),
                 )
+            end
+
+            # MCP-Protocol-Version header validation — 2025-11-25 spec requirement.
+            let ver = HTTP.header(req, "MCP-Protocol-Version", "")
+                if !isempty(ver) && ver ∉ ("2025-06-18", "2025-03-26", "2025-11-25", "2025-11-05", "2024-11-05")
+                    return HTTP.Response(
+                        400,
+                        ["Content-Type" => "application/json"],
+                        JSON.json(Dict(
+                            "jsonrpc" => "2.0",
+                            "id" => nothing,
+                            "error" => Dict(
+                                "code" => -32600,
+                                "message" => "Unsupported MCP-Protocol-Version: $ver",
+                            ),
+                        )),
+                    )
+                end
             end
 
             # Handle empty body for POST requests
@@ -682,7 +724,7 @@ function create_handler(
                                 "logging" => Dict(),
                             ),
                             "serverInfo" =>
-                                Dict("name" => "Kaimon", "version" => "0.4.0"),
+                                Dict("name" => "Kaimon", "title" => "Kaimon MCP Server", "version" => "0.4.0"),
                         )
                     end
 
@@ -839,6 +881,7 @@ function create_handler(
                 tool_list = [
                     Dict(
                         "name" => tool.name,
+                        "title" => tool.title,
                         "description" => tool.description,
                         "inputSchema" => tool.parameters,
                     ) for tool in values(tools)
@@ -980,11 +1023,14 @@ function create_handler(
                 prompt_args = get(request["params"], "arguments", Dict())
 
                 # Return the prompt with messages
+                prompt_def = findfirst(p -> p["name"] == prompt_name, Prompts.PROMPT_DEFINITIONS)
+                prompt_description = prompt_def !== nothing ?
+                    Prompts.PROMPT_DEFINITIONS[prompt_def]["description"] : prompt_name
                 response = Dict(
                     "jsonrpc" => "2.0",
                     "id" => request["id"],
                     "result" => Dict(
-                        "description" => "Learn how to use Kaimon effectively",
+                        "description" => prompt_description,
                         "messages" => [
                             Dict(
                                 "role" => "user",
@@ -1490,8 +1536,42 @@ function start_mcp_server(
         req = http.message
 
         # CRITICAL: Read the request body FIRST before any response
-        # HTTP.jl requires reading the full request before writing responses
-        body = String(read(http))
+        # HTTP.jl requires reading the full request before writing responses.
+        # Use readavailable in a loop (chunk reads) to avoid Base.read(io::IO)
+        # which reads byte-by-byte and triggers HTTP.jl's inefficiency warning.
+        # The eof(http) call at loop termination is also required: HTTP.jl uses
+        # it to mark the request body as fully consumed. Skipping it (e.g. via
+        # read(http, n)) leaves the stream in an unconsumed state and causes
+        # HTTP.jl to RST the connection after sending response headers
+        # (manifests as ECONNRESET on the client while reading the response).
+        # Wrap in try/catch so IOError on early client disconnect doesn't escape
+        # to HTTP.jl's handle_connection and produce spurious error log entries.
+        body = try
+            buf = IOBuffer()
+            while !eof(http)
+                chunk = readavailable(http)
+                isempty(chunk) || write(buf, chunk)
+            end
+            String(take!(buf))
+        catch e
+            e isa Base.IOError && return nothing   # client disconnected before sending body
+            rethrow()
+        end
+
+        # Origin validation — MCP 2025-11-25 Streamable HTTP spec requirement.
+        # If an Origin header is present it must be a trusted local origin.
+        # Absent Origin is allowed (non-browser clients don't send it).
+        let origin = HTTP.header(req, "Origin", "")
+            if !isempty(origin)
+                if !is_trusted_origin(origin)
+                    HTTP.setstatus(http, 403)
+                    HTTP.setheader(http, "Content-Type" => "application/json")
+                    HTTP.startwrite(http)
+                    write(http, JSON.json(Dict("error" => "Forbidden: untrusted Origin")))
+                    return nothing
+                end
+            end
+        end
 
         # Security check - apply to ALL endpoints including vscode-response
         nonce_validated = false  # Track if nonce auth succeeded
@@ -1677,25 +1757,27 @@ function start_mcp_server(
                 end
             end
 
-            # Handle GET requests on MCP endpoint - return 405 per Streamable HTTP spec
+            # Handle GET requests on MCP endpoint — open SSE stream per 2025-11-25 spec.
+            # Kaimon has no server-initiated messages, so we open the stream and hold it
+            # open with periodic keepalive comments until the client disconnects.
             if req.method == "GET" && (
                 req.target == "/mcp" ||
                 req.target == "/" ||
                 startswith(req.target, "/mcp?")
             )
-                HTTP.setstatus(http, 405)
-                HTTP.setheader(http, "Content-Type" => "application/json")
-                HTTP.setheader(http, "Allow" => "POST")
+                HTTP.setstatus(http, 200)
+                HTTP.setheader(http, "Content-Type" => "text/event-stream")
+                HTTP.setheader(http, "Cache-Control" => "no-cache")
+                HTTP.setheader(http, "Connection" => "keep-alive")
                 HTTP.startwrite(http)
-                error_response = Dict(
-                    "jsonrpc" => "2.0",
-                    "id" => nothing,
-                    "error" => Dict(
-                        "code" => -32600,
-                        "message" => "Method Not Allowed - server does not support SSE streaming via GET",
-                    ),
-                )
-                write(http, JSON.json(error_response))
+                # Send keepalive comments every 15 s until the client closes.
+                try
+                    while isopen(http)
+                        write(http, ": keepalive\n\n")
+                        sleep(15)
+                    end
+                catch
+                end
                 return nothing
             end
 
@@ -1703,7 +1785,7 @@ function start_mcp_server(
             if req.method == "DELETE"
                 HTTP.setstatus(http, 405)
                 HTTP.setheader(http, "Content-Type" => "application/json")
-                HTTP.setheader(http, "Allow" => "POST")
+                HTTP.setheader(http, "Allow" => "GET, POST")
                 HTTP.startwrite(http)
                 error_response = Dict(
                     "jsonrpc" => "2.0",
@@ -1715,6 +1797,25 @@ function start_mcp_server(
                 )
                 write(http, JSON.json(error_response))
                 return nothing
+            end
+
+            # MCP-Protocol-Version header validation — 2025-11-25 spec requirement.
+            # If the header is present it must name a supported protocol version.
+            let ver = HTTP.header(req, "MCP-Protocol-Version", "")
+                if !isempty(ver) && ver ∉ ("2025-06-18", "2025-03-26", "2025-11-25", "2025-11-05", "2024-11-05")
+                    HTTP.setstatus(http, 400)
+                    HTTP.setheader(http, "Content-Type" => "application/json")
+                    HTTP.startwrite(http)
+                    write(http, JSON.json(Dict(
+                        "jsonrpc" => "2.0",
+                        "id" => nothing,
+                        "error" => Dict(
+                            "code" => -32600,
+                            "message" => "Unsupported MCP-Protocol-Version: $ver",
+                        ),
+                    )))
+                    return nothing
+                end
             end
 
             if isempty(body)
@@ -1815,23 +1916,33 @@ function start_mcp_server(
             return nothing
 
         catch e
-            HTTP.setstatus(http, 500)
-            HTTP.setheader(http, "Content-Type" => "application/json")
-            HTTP.startwrite(http)
+            # Client disconnected — no response possible, no need to log
+            e isa Base.IOError && return nothing
 
-            request_id = try
-                parsed = JSON.parse(body; dicttype = Dict{String,Any})
-                get(parsed, :id, 0)
+            # Attempt a 500 JSON-RPC error response.  Wrap in its own try/catch
+            # because startwrite throws if the response was already started
+            # (e.g. after SSE headers were sent) or if the socket closed.
+            try
+                HTTP.setstatus(http, 500)
+                HTTP.setheader(http, "Content-Type" => "application/json")
+                HTTP.startwrite(http)
+
+                request_id = try
+                    parsed = JSON.parse(body; dicttype = Dict{String,Any})
+                    get(parsed, :id, 0)
+                catch
+                    0
+                end
+
+                error_response = Dict(
+                    "jsonrpc" => "2.0",
+                    "id" => request_id,
+                    "error" => Dict("code" => -32603, "message" => "Internal error: $e"),
+                )
+                write(http, JSON.json(error_response))
             catch
-                0
+                # Response already started or connection closed — nothing to do
             end
-
-            error_response = Dict(
-                "jsonrpc" => "2.0",
-                "id" => request_id,
-                "error" => Dict("code" => -32603, "message" => "Internal error: $e"),
-            )
-            write(http, JSON.json(error_response))
             return nothing
         end
     end

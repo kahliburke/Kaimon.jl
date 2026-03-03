@@ -126,6 +126,8 @@ let _w = Base.get_world_counter()
     @eval function Test.push_testset(ts::Test.DefaultTestSet)
         ts.verbose = true
         \$_testset_depth[] += 1
+        println("TEST_RUNNER: TESTSET_START name=", ts.description)
+        flush(stdout)
         return Base.invoke_in_world(\$_w, Test.push_testset, ts)
     end
 end
@@ -246,19 +248,16 @@ function _write_test_runner_script()::String
 end
 
 """
-    spawn_test_run(project_path::String; pattern="", verbose=1, on_progress=nothing) -> TestRun
+    spawn_test_run(project_path::String; pattern="", verbose=1) -> TestRun
 
 Spawn a Julia subprocess to run tests for the given project.
 Returns a TestRun immediately with status=RUN_RUNNING.
 A background task reads stdout line-by-line and updates the TestRun.
-
-The `on_progress` callback receives `(message::String)` for inflight updates.
 """
 function spawn_test_run(
     project_path::String;
     pattern::String = "",
     verbose::Int = 1,
-    on_progress::Union{Function,Nothing} = nothing,
 )::TestRun
     run_id = lock(_TUI_TEST_LOCK) do
         _TEST_RUN_COUNTER[] += 1
@@ -288,20 +287,11 @@ function spawn_test_run(
                     line = readline(process; keep = false)
                     isempty(line) && continue
 
-                    meaningful = parse_test_line!(run, line)
+                    parse_test_line!(run, line)
 
                     # Push to activity feed for real-time visibility
                     project_name = basename(run.project_path)
                     _push_activity!(:test_output, "run_tests", project_name, line)
-
-                    # Push progress update
-                    if on_progress !== nothing
-                        if meaningful
-                            on_progress(
-                                "$(run.total_pass) passed, $(run.total_fail) failed ($(length(run.raw_output)) lines)",
-                            )
-                        end
-                    end
 
                     # Push update to TUI buffer
                     _push_test_update!(:update, run)

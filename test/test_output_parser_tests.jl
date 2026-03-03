@@ -234,7 +234,7 @@ using Kaimon:
 
         summary = format_test_summary(run)
         @test contains(summary, "FAILED")
-        @test contains(summary, "Raw output")
+        @test contains(summary, "Output (last")
         @test contains(summary, "SomeError")
 
         delete!(_PARSER_STATES, 108)
