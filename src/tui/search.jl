@@ -44,7 +44,7 @@ end
 """Pane 1: Health status, collection selector, filter."""
 function _view_search_status(m::KaimonModel, area::Rect, buf::Buffer)
     blk = Block(
-        title = " Semantic Search ",
+        title = "Semantic Search",
         border_style = _pane_border(m, 7, 1),
         title_style = _pane_title(m, 7, 1),
     )
@@ -206,7 +206,7 @@ end
 """Pane 2: Query input."""
 function _view_search_query(m::KaimonModel, area::Rect, buf::Buffer)
     blk = Block(
-        title = " Query ",
+        title = "Query",
         border_style = _pane_border(m, 7, 2),
         title_style = _pane_title(m, 7, 2),
     )
@@ -256,7 +256,7 @@ function _view_search_results(m::KaimonModel, area::Rect, buf::Buffer)
 
     pane = m.search_results_pane::ScrollPane
     pane.block = Block(
-        title = " Results ($(n_results)) ",
+        title = "Results ($(n_results))",
         border_style = _pane_border(m, 7, 3),
         title_style = _pane_title(m, 7, 3),
     )

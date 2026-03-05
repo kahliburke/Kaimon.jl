@@ -15,7 +15,7 @@ function _view_search_manage(m::KaimonModel, area::Rect, buf::Buffer)
     border_s = tstyle(:accent, bold = true)
     inner = if animations_enabled()
         border_shimmer!(buf, rect, border_s.fg, m.tick; box = BOX_HEAVY, intensity = 0.12)
-        title = " Collection Manager "
+        title = "Collection Manager"
         if rect.width > length(title) + 4
             set_string!(buf, rect.x + 2, rect.y, title, tstyle(:accent, bold = true))
         end
@@ -23,7 +23,7 @@ function _view_search_manage(m::KaimonModel, area::Rect, buf::Buffer)
     else
         render(
             Block(
-                title = " Collection Manager ",
+                title = "Collection Manager",
                 border_style = border_s,
                 title_style = border_s,
                 box = BOX_HEAVY,

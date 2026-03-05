@@ -13,7 +13,7 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         h = 5
         rect = center(f.area, w, h)
         block = Block(
-            title = " Shutting Down ",
+            title = "Shutting Down",
             border_style = tstyle(:warning, bold = true),
             title_style = tstyle(:warning, bold = true),
             box = BOX_HEAVY,
@@ -82,6 +82,10 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
                 # (the tool handler already pushes tool_start/tool_done events)
                 status = msg.channel == "eval_complete" ? "completed" : "error"
                 _push_log!(:info, "Gate eval $status ($(msg.session_name))")
+            elseif msg.channel == "breakpoint_hit"
+                _handle_breakpoint_hit!(m, msg)
+            elseif msg.channel == "breakpoint_resumed"
+                _handle_breakpoint_resumed!(m)
             else
                 kind = msg.channel == "stderr" ? :stderr : :stdout
                 push!(
@@ -158,19 +162,51 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
     length(m.tool_call_history) > 120 && popfirst!(m.tool_call_history)
 
     # ── Layout: outer frame → tab bar | content | status bar ──
+    # Kanji style reflects system state — breathes when active, red on errors.
+    n_conns_k = m.conn_mgr !== nothing ? length(connected_sessions(m.conn_mgr)) : 0
+    has_inflight = !isempty(m.inflight_calls)
+    has_error = m._code_stale || m.debug_state == :paused
+    kanji_style = if has_error
+        Style(
+            fg = color_lerp(
+                ColorRGB(0xcc, 0x22, 0x22),
+                ColorRGB(0xff, 0x55, 0x44),
+                breathe(m.tick; period = 30),
+            ),
+            bold = true,
+        )
+    elseif has_inflight
+        Style(
+            fg = color_lerp(
+                ColorRGB(0x44, 0x88, 0xcc),
+                ColorRGB(0x66, 0xcc, 0xff),
+                breathe(m.tick; period = 40),
+            ),
+            bold = true,
+        )
+    elseif n_conns_k > 0
+        Style(
+            fg = color_lerp(
+                ColorRGB(0x33, 0x88, 0x55),
+                ColorRGB(0x55, 0xbb, 0x77),
+                breathe(m.tick; period = 90),
+            ),
+            bold = true,
+        )
+    else
+        tstyle(:title, bold = true)
+    end
+
     outer = Block(
-        title = " Kaimon ",
+        title = "Kaimon",
         border_style = tstyle(:border),
         title_style = tstyle(:title, bold = true),
+        title_right = "開門",
+        title_right_style = kanji_style,
+        title_padding = 2,
     )
     main = render(outer, f.area, buf)
     main.width < 4 && return
-
-    # Draw kanji at the right edge of the top border, mirroring the left title placement
-    let kanji = " 開門 ", title_style = tstyle(:title, bold = true)
-        kx = f.area.x + f.area.width - 1 - textwidth(kanji)
-        kx >= f.area.x + 10 && set_string!(buf, kx, f.area.y, kanji, title_style)
-    end
 
     rows = tsplit(Layout(Vertical, [Fixed(1), Fill(), Fixed(1)]), main)
     length(rows) < 3 && return
@@ -188,6 +224,13 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         [Span("5", tstyle(:warning)), Span(" Tests", tstyle(:text))],
         [Span("6", tstyle(:warning)), Span(" Config", tstyle(:text))],
         [Span("7", tstyle(:warning)), Span(" Advanced", tstyle(:text))],
+        [
+            Span("8", tstyle(:warning)),
+            Span(
+                " Debug",
+                m.debug_state == :paused ? tstyle(:error, bold = true) : tstyle(:text),
+            ),
+        ],
     ]
 
     # Compute visible tab window that fits in tab_area and includes the active tab.
@@ -278,6 +321,7 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         end
         6 => view_config(m, content_area, buf)
         7 => view_advanced(m, content_area, buf)
+        8 => view_debug(m, content_area, buf)
         _ => nothing
     end
 
@@ -344,17 +388,12 @@ function view_server(m::KaimonModel, area::Rect, f::Frame)
 
     # ── Top: Server status panel ──
     status_block = Block(
-        title = " Server Status ",
+        title = "Server Status",
         border_style = _pane_border(m, 1, 1),
         title_style = _pane_title(m, 1, 1),
     )
     si = render(status_block, rows[1], buf)
     if si.width >= 4
-        # Reserve right side for logo if there's enough horizontal room
-        logo_w = 13
-        has_logo = si.width >= logo_w + 20
-        text_w = has_logo ? si.width - logo_w - 1 : si.width
-
         y = si.y
         x = si.x + 1
 
@@ -393,11 +432,6 @@ function view_server(m::KaimonModel, area::Rect, f::Frame)
         set_string!(buf, x, y, rpad("Tool Calls", 14), tstyle(:text_dim))
         set_string!(buf, x + 14, y, string(m.total_tool_calls), tstyle(:text))
 
-        # Logo — right side of the status panel
-        if has_logo
-            logo_area = Rect(si.x + si.width - logo_w, si.y, logo_w, si.height)
-            _render_logo!(logo_area, f; tick = m.tick)
-        end
     end
 
     # ── Bottom: Server log (ScrollPane) ──
@@ -406,7 +440,7 @@ function view_server(m::KaimonModel, area::Rect, f::Frame)
     pane = m.log_pane::ScrollPane
     follow_hint = pane.following ? "[F]ollow:on" : "[F]ollow:off"
     pane.block = Block(
-        title = " Server Log ($(length(m.server_log))) [$wrap_hint] $follow_hint ",
+        title = "Server Log ($(length(m.server_log))) [$wrap_hint] $follow_hint",
         border_style = _pane_border(m, 1, 2),
         title_style = _pane_title(m, 1, 2),
     )

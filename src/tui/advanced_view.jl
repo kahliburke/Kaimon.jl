@@ -23,7 +23,7 @@ function _view_scenario_modal(m::KaimonModel, mx, base_y, mw, max_h, buf::Buffer
     my = base_y + (max_h - modal_h) ÷ 2
 
     block = Block(
-        title = " Select Scenario ",
+        title = "Select Scenario",
         border_style = tstyle(:accent, bold = true),
         title_style = tstyle(:accent, bold = true),
     )
@@ -100,7 +100,7 @@ function _view_session_modal(m::KaimonModel, mx, base_y, mw, max_h, buf::Buffer)
     my = base_y + (max_h - modal_h) ÷ 2
 
     block = Block(
-        title = " Select Session ",
+        title = "Select Session",
         border_style = tstyle(:accent, bold = true),
         title_style = tstyle(:accent, bold = true),
     )
@@ -153,7 +153,7 @@ function _view_tool_modal(m::KaimonModel, mx, base_y, mw, max_h, buf::Buffer)
     my = base_y + (max_h - modal_h) ÷ 2
 
     block = Block(
-        title = " Configure Tool ",
+        title = "Configure Tool",
         border_style = tstyle(:accent, bold = true),
         title_style = tstyle(:accent, bold = true),
     )
@@ -245,7 +245,7 @@ function _view_stress_code_editor(m::KaimonModel, area::Rect, buf::Buffer)
             Rect(area.x + 1, area.y + 1, max(0, area.width - 2), max(0, area.height - 2))
     else
         block = Block(
-            title = " Code Editor ",
+            title = "Code Editor",
             border_style = tstyle(:accent, bold = true),
             title_style = tstyle(:accent, bold = true),
             box = BOX_HEAVY,
@@ -320,14 +320,14 @@ function _view_stress_log(m::KaimonModel, area::Rect, buf::Buffer, focused::Bool
     # Build title
     title = if m.stress_state == STRESS_RUNNING
         si = mod1(m.tick ÷ 2, length(SPINNER_BRAILLE))
-        " $(SPINNER_BRAILLE[si]) Output "
+        "$(SPINNER_BRAILLE[si]) Output"
     elseif m.stress_state == STRESS_COMPLETE
-        result_hint = isempty(m.stress_result_file) ? "" : " saved "
-        " Output (complete$result_hint) "
+        result_hint = isempty(m.stress_result_file) ? "" : " saved"
+        "Output (complete$result_hint)"
     elseif m.stress_state == STRESS_ERROR
-        " Output (error) "
+        "Output (error)"
     else
-        " Output "
+        "Output"
     end
 
     # Ensure scroll pane exists
@@ -435,7 +435,7 @@ function _view_agent_horde(
             Rect(area.x + 1, area.y + 1, max(0, area.width - 2), max(0, area.height - 2))
     else
         block = Block(
-            title = " Agent Horde$scroll_hint ",
+            title = "Agent Horde$scroll_hint",
             border_style = focused ? tstyle(:accent) : tstyle(:border),
             title_style = focused ? tstyle(:accent, bold = true) : tstyle(:text_dim),
         )
@@ -643,7 +643,7 @@ function _view_agent_horde(
                 sparkline = Sparkline(
                     times;
                     block = Block(
-                        title = " Response Times ",
+                        title = "Response Times",
                         border_style = tstyle(:border),
                         title_style = tstyle(:text_dim),
                     ),

@@ -51,7 +51,7 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
             items;
             selected = m.selected_connection,
             block = Block(
-                title = " REPL Sessions ($(length(connections))) ",
+                title = "REPL Sessions ($(length(connections)))",
                 border_style = _pane_border(m, 2, 1),
                 title_style = _pane_title(m, 2, 1),
             ),
@@ -65,7 +65,7 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
     # ── MCP agents table ──
     if isempty(agent_sessions)
         agent_block = Block(
-            title = " Agents ",
+            title = "Agents",
             border_style = _pane_border(m, 2, 2),
             title_style = _pane_title(m, 2, 2),
         )
@@ -92,7 +92,7 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
                 header,
                 rows;
                 block = Block(
-                    title = " Agents ($(length(agent_sessions))) ",
+                    title = "Agents ($(length(agent_sessions)))",
                     border_style = _pane_border(m, 2, 2),
                     title_style = _pane_title(m, 2, 2),
                 ),
@@ -103,9 +103,9 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
     end
 
     # ── Right: detail panel for selected gate connection ──
-    scroll_indicator = m.sessions_detail_scroll > 0 ? " ↑$(m.sessions_detail_scroll) " : ""
+    scroll_indicator = m.sessions_detail_scroll > 0 ? " ↑$(m.sessions_detail_scroll)" : ""
     detail_block = Block(
-        title = " Details$scroll_indicator",
+        title = "Details$scroll_indicator",
         border_style = _pane_border(m, 2, 3),
         title_style = _pane_title(m, 2, 3),
     )

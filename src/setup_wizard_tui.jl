@@ -848,7 +848,7 @@ function view_mode_select(m::SetupWizardModel, f::Frame)
 
     # Outer border
     outer = Block(
-        title = " SETUP ",
+        title = "SETUP",
         border_style = tstyle(:border),
         title_style = tstyle(:title, bold = true),
         box = BOX_HEAVY,
@@ -896,7 +896,7 @@ function view_mode_select(m::SetupWizardModel, f::Frame)
         box_type = is_selected ? BOX_HEAVY : BOX_ROUNDED
 
         blk = Block(
-            title = " $name ",
+            title = "$name",
             border_style = border_style,
             title_style = Style(; fg = mode_colors[i], bold = true),
             box = box_type,
@@ -1050,7 +1050,7 @@ function view_dragon_intro(m::SetupWizardModel, area::Rect, buf::Buffer)
         if flash_val > 0.4
             border_style = Style(; fg = Color256(196), bold = true)
             blk = Block(
-                title = " DANGER ",
+                title = "DANGER",
                 border_style = border_style,
                 title_style = Style(; fg = Color256(226), bold = true),
                 box = BOX_HEAVY,
@@ -1104,7 +1104,7 @@ function view_butterfly_intro(m::SetupWizardModel, area::Rect, buf::Buffer)
     border_color = BUTTERFLY_COLORS[border_cidx]
     if glow > 0.5
         blk = Block(
-            title = " ~ ",
+            title = "~",
             border_style = Style(; fg = Color256(border_color)),
             title_style = Style(; fg = Color256(border_color)),
         )
@@ -1612,7 +1612,7 @@ function view_progress_list(m::SetupWizardModel, area::Rect, buf::Buffer)
     end
 
     blk = Block(
-        title = " Steps ",
+        title = "Steps",
         border_style = tstyle(:border),
         title_style = tstyle(:text_dim),
     )
@@ -1842,7 +1842,7 @@ function view_done(m::SetupWizardModel, f::Frame)
     area = f.area
 
     outer = Block(
-        title = " COMPLETE ",
+        title = "COMPLETE",
         border_style = tstyle(:success, bold = true),
         title_style = tstyle(:success, bold = true),
         box = BOX_HEAVY,

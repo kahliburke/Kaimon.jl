@@ -84,7 +84,7 @@ function _view_analytics(m::KaimonModel, area::Rect, buf::Buffer)
     cache = m.analytics_cache
 
     title_block = Block(
-        title = " Analytics [d]ata [r]efresh ",
+        title = "Analytics [d]ata [r]efresh",
         border_style = tstyle(:accent),
         title_style = tstyle(:accent, bold = true),
     )
@@ -117,7 +117,7 @@ function _view_analytics(m::KaimonModel, area::Rect, buf::Buffer)
     # ── Tool Usage DataTable ──────────────────────────────────────────────────
     tool_area = Rect(inner.x, y, inner.width, tool_h)
     if isempty(ts)
-        placeholder = Block(title = " Tool Usage Summary ", border_style = tstyle(:accent))
+        placeholder = Block(title = "Tool Usage Summary", border_style = tstyle(:accent))
         pi = render(placeholder, tool_area, buf)
         set_string!(buf, pi.x + 1, pi.y, "No tool executions recorded", tstyle(:text_dim))
     else
@@ -149,7 +149,7 @@ function _view_analytics(m::KaimonModel, area::Rect, buf::Buffer)
                     format = v -> @sprintf("%.0f%%", v),
                 ),
             ];
-            block = Block(title = " Tool Usage Summary ", border_style = tstyle(:accent)),
+            block = Block(title = "Tool Usage Summary", border_style = tstyle(:accent)),
             show_scrollbar = true,
             selected = 0,
         )
@@ -162,7 +162,7 @@ function _view_analytics(m::KaimonModel, area::Rect, buf::Buffer)
     # ── Error Hotspots DataTable ──────────────────────────────────────────────
     err_area = Rect(inner.x, y, inner.width, err_h)
     if isempty(eh)
-        placeholder = Block(title = " Error Hotspots ", border_style = tstyle(:error))
+        placeholder = Block(title = "Error Hotspots", border_style = tstyle(:error))
         pi = render(placeholder, err_area, buf)
         set_string!(buf, pi.x + 1, pi.y, "No errors recorded", tstyle(:success))
     else
@@ -181,7 +181,7 @@ function _view_analytics(m::KaimonModel, area::Rect, buf::Buffer)
                 DataColumn("Tool", tools),
                 DataColumn("Count", counts; align = col_right),
             ];
-            block = Block(title = " Error Hotspots ", border_style = tstyle(:error)),
+            block = Block(title = "Error Hotspots", border_style = tstyle(:error)),
             show_scrollbar = false,
             selected = 0,
         )
@@ -360,8 +360,8 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
     count_str = n_inflight > 0 ? "$(n_inflight) running, $nf done" : "$nf"
     follow_str = m.activity_follow ? "[F]ollow:on" : "[F]ollow:off"
     list_title =
-        isempty(filter_key) ? " Tool Calls ($count_str) [f]ilter $follow_str [d]ata " :
-        " Tool Calls ($count_str) [f] $filter_label $follow_str [d]ata "
+        isempty(filter_key) ? "Tool Calls ($count_str) [f]ilter $follow_str [d]ata" :
+        "Tool Calls ($count_str) [f] $filter_label $follow_str [d]ata"
 
     list_widget = SelectableList(
         items;
@@ -392,7 +392,7 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
 
     if !show_inflight && !show_completed
         empty_block = Block(
-            title = " Details ",
+            title = "Details",
             border_style = _pane_border(m, 3, 2),
             title_style = _pane_title(m, 3, 2),
         )
@@ -447,7 +447,7 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
         end
         wrap_mode = m.result_word_wrap ? word_wrap : no_wrap
         p = Paragraph(spans; wrap = wrap_mode)
-        detail_title = " $(ifc.tool_name) (running) "
+        detail_title = "$(ifc.tool_name) (running)"
         p.block = Block(
             title = detail_title,
             border_style = _pane_border(m, 3, 2),
@@ -512,9 +512,9 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
         detail_title = if has_scroll
             top_line = offset + 1
             bot_line = min(offset + pane_inner_h, total_lines)
-            " $(r.tool_name) [$top_line-$bot_line/$total_lines] $wrap_hint "
+            "$(r.tool_name) [$top_line-$bot_line/$total_lines] $wrap_hint"
         else
-            " $(r.tool_name) $wrap_hint "
+            "$(r.tool_name) $wrap_hint"
         end
 
         m.detail_paragraph.block = Block(

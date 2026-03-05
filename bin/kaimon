@@ -1,4 +1,4 @@
-#!/usr/bin/env -S julia -t auto
+#!/usr/bin/env -S julia -t auto --startup-file=no
 #
 # Kaimon TUI launcher
 #
@@ -12,7 +12,7 @@
 using Pkg
 
 const PROJECT_DIR = joinpath(@__DIR__, "..")
-Pkg.activate(PROJECT_DIR)
+Pkg.activate(PROJECT_DIR; io=devnull)
 
 # Parse args early so --revise can be honored before loading Kaimon.
 function parse_args()
@@ -70,8 +70,28 @@ let manifest = joinpath(PROJECT_DIR, "Manifest.toml")
     end
 end
 
-# Precompile if needed (Pkg.precompile is a no-op when up to date)
-Pkg.precompile()
+# Animated loading indicator — runs in a background task while packages load.
+# Redirect stderr to suppress precompilation progress bars that would interleave
+# with our animation (both use \r to overwrite the current line).
+const _PREV_STDERR = stderr
+redirect_stderr(devnull)
+
+const _LOADING_DONE = Ref(false)
+const _LOADING_TASK = Threads.@spawn begin
+    io = stdout
+    frames = ["   ", ".  ", ".. ", "..."]
+    i = 0
+    while !_LOADING_DONE[]
+        f = frames[mod1(i += 1, length(frames))]
+        print(io, "\r\e[2K")
+        printstyled(io, "  ⚡ kaimon"; color = :green, bold = true)
+        printstyled(io, " initializing$f"; color = :light_black)
+        flush(io)
+        sleep(0.3)
+    end
+    print(io, "\r\e[2K")
+    flush(io)
+end
 
 if use_revise
     try
@@ -85,6 +105,10 @@ end
 try @eval using PDFIO catch end
 
 using Kaimon
+
+_LOADING_DONE[] = true
+wait(_LOADING_TASK)
+redirect_stderr(_PREV_STDERR)
 
 if use_revise && isdefined(Main, :Revise)
     # Revise is loaded and tracking Kaimon. In a REPL, revisions apply

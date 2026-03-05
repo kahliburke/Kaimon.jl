@@ -11,7 +11,7 @@ function _view_search_config(m::KaimonModel, area::Rect, buf::Buffer)
     border_s = tstyle(:accent, bold = true)
     inner = if animations_enabled()
         border_shimmer!(buf, rect, border_s.fg, m.tick; box = BOX_HEAVY, intensity = 0.12)
-        title = " Search Config "
+        title = "Search Config"
         if rect.width > length(title) + 4
             set_string!(buf, rect.x + 2, rect.y, title, tstyle(:accent, bold = true))
         end
@@ -19,7 +19,7 @@ function _view_search_config(m::KaimonModel, area::Rect, buf::Buffer)
     else
         render(
             Block(
-                title = " Search Config ",
+                title = "Search Config",
                 border_style = border_s,
                 title_style = border_s,
                 box = BOX_HEAVY,
@@ -233,9 +233,9 @@ function _view_collection_detail(m::KaimonModel, area::Rect, buf::Buffer)
     rect = center(area, w, h)
 
     border_s = tstyle(:accent, bold = true)
-    title = " Collection: $col_name "
+    title = "Collection: $col_name"
     if length(title) > w - 2
-        title = " " * first(col_name, w - 6) * "… "
+        title = first(col_name, w - 6) * "…"
     end
     inner = if animations_enabled()
         border_shimmer!(buf, rect, border_s.fg, m.tick; box = BOX_HEAVY, intensity = 0.12)

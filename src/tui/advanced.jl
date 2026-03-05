@@ -492,7 +492,7 @@ function _view_stress_form(m::KaimonModel, area::Rect, buf::Buffer)
         title_style = form_focused ? tstyle(:accent, bold = true) : tstyle(:text_dim)
         border_style = form_focused ? tstyle(:accent) : tstyle(:border)
         block = Block(
-            title = " Stress Test Configuration ",
+            title = "Stress Test Configuration",
             border_style = border_style,
             title_style = title_style,
         )

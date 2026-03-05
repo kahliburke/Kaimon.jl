@@ -19,7 +19,7 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
 
     # Server info
     srv_block = Block(
-        title = " Server ",
+        title = "Server",
         border_style = _pane_border(m, 4, 1),
         title_style = _pane_title(m, 4, 1),
     )
@@ -48,7 +48,7 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
 
     # Actions
     act_block = Block(
-        title = " Actions ",
+        title = "Actions",
         border_style = _pane_border(m, 4, 2),
         title_style = _pane_title(m, 4, 2),
     )
@@ -75,7 +75,7 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
 
     # ── Right column: MCP Client Status ──
     client_block = Block(
-        title = " MCP Clients ",
+        title = "MCP Clients",
         border_style = _pane_border(m, 4, 3),
         title_style = _pane_title(m, 4, 3),
     )
@@ -117,7 +117,7 @@ function view_config_flow(m::KaimonModel, area::Rect, buf::Buffer)
         _render_text_input_modal(
             buf,
             area,
-            " Add Project ",
+            "Add Project",
             "Enter project path:",
             m.path_input,
             "[Enter] confirm  [Esc] cancel";
@@ -146,7 +146,7 @@ function view_config_flow(m::KaimonModel, area::Rect, buf::Buffer)
         _render_selection_modal(
             buf,
             area,
-            " Select Client ",
+            "Select Client",
             CLIENT_LABELS,
             m.flow_selected,
             "[↑↓] select  [Enter] confirm  [Esc] cancel";
@@ -173,7 +173,7 @@ function view_config_flow(m::KaimonModel, area::Rect, buf::Buffer)
         else
             render(
                 Block(
-                    title = " $client_label ",
+                    title = "$client_label",
                     border_style = border_s,
                     title_style = border_s,
                     box = BOX_HEAVY,
@@ -351,7 +351,7 @@ function _render_result_modal(
     rect = center(area, w, h)
 
     border_style = success ? tstyle(:success, bold = true) : tstyle(:error, bold = true)
-    title = success ? " Success " : " Error "
+    title = success ? "Success" : "Error"
     inner = if tick !== nothing && animations_enabled()
         border_shimmer!(buf, rect, border_style.fg, tick; box = BOX_HEAVY, intensity = 0.12)
         if rect.width > 4

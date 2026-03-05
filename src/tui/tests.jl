@@ -80,7 +80,7 @@ function _view_test_runs_list(m::KaimonModel, area::Rect, buf::Buffer)
             items;
             selected = display_selected,
             block = Block(
-                title = " Test Runs ($n) $follow_str ",
+                title = "Test Runs ($n) $follow_str",
                 border_style = _pane_border(m, 6, 1),
                 title_style = _pane_title(m, 6, 1),
             ),
@@ -98,7 +98,7 @@ function _view_test_detail(m::KaimonModel, area::Rect, buf::Buffer)
     if sel < 1 || sel > length(m.test_runs)
         render(
             Block(
-                title = " Results ",
+                title = "Results",
                 border_style = _pane_border(m, 6, 2),
                 title_style = _pane_title(m, 6, 2),
             ),
@@ -110,7 +110,7 @@ function _view_test_detail(m::KaimonModel, area::Rect, buf::Buffer)
 
     run = m.test_runs[sel]
     mode_str = m.test_view_mode == :results ? "Results" : "Output"
-    title = " $mode_str [o]toggle "
+    title = "$mode_str [o]toggle"
 
     if m.test_view_mode == :output
         # Raw output scroll pane
@@ -497,14 +497,14 @@ function _view_test_session_picker(m::KaimonModel, area::Rect, buf::Buffer)
     border_s = tstyle(:accent, bold = true)
     inner = if animations_enabled()
         border_shimmer!(buf, rect, border_s.fg, m.tick; box = BOX_HEAVY, intensity = 0.12)
-        title = " Choose Session "
+        title = "Choose Session"
         rect.width > length(title) + 4 &&
             set_string!(buf, rect.x + 2, rect.y, title, border_s)
         Rect(rect.x + 1, rect.y + 1, max(0, rect.width - 2), max(0, rect.height - 2))
     else
         render(
             Block(
-                title = " Choose Session ",
+                title = "Choose Session",
                 border_style = border_s,
                 title_style = border_s,
                 box = BOX_HEAVY,
