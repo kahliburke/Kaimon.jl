@@ -1048,24 +1048,28 @@ function _eval_with_capture(expr)
         close(stderr_read)
     end
 
-    # Format value representation
+    # Format value representation.
+    # Use invokelatest so that methods defined during this eval (e.g. by
+    # `using SomePackage`) are visible — without it, show/repr can fail with
+    # "method too new to be called from this world context" when run on the
+    # REPL backend thread.
     value_repr = ""
     if value !== nothing
         io = IOBuffer()
         try
-            show(io, MIME("text/plain"), value)
+            Base.invokelatest(show, io, MIME("text/plain"), value)
             value_repr = String(take!(io))
         catch
-            value_repr = repr(value)
+            value_repr = Base.invokelatest(repr, value)
         end
     end
 
     exception_str = if caught !== nothing
         io = IOBuffer()
         try
-            showerror(io, caught, bt)
+            Base.invokelatest(showerror, io, caught, bt)
         catch
-            showerror(io, caught)
+            Base.invokelatest(showerror, io, caught)
         end
         String(take!(io))
     else
