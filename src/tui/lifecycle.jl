@@ -191,29 +191,34 @@ function Tachikoma.init!(m::KaimonModel, _t::Tachikoma.Terminal)
     _t.io = _TUI_REAL_STDOUT[]
 
     # Start connection manager (discovers REPL gates)
-    m.conn_mgr = ConnectionManager()
-    start!(m.conn_mgr)
-    register_sessions_changed_callback!(m.conn_mgr)
-    m.gate_mirror_repl = get_gate_mirror_repl_preference()
+    # Reuse existing gate services if start!(gate=true) was called before tui()
+    if GATE_MODE[] && GATE_CONN_MGR[] !== nothing
+        m.conn_mgr = GATE_CONN_MGR[]
+    else
+        m.conn_mgr = ConnectionManager()
+        start!(m.conn_mgr)
+        register_sessions_changed_callback!(m.conn_mgr)
 
-    # Enable gate mode — tool evals route to connected REPLs
-    GATE_MODE[] = true
-    GATE_CONN_MGR[] = m.conn_mgr
+        GATE_MODE[] = true
+        GATE_CONN_MGR[] = m.conn_mgr
 
-    # Start service endpoint for gate → Kaimon reverse calls (Qdrant, Ollama)
-    try
-        start_service_endpoint!()
-    catch e
-        _push_log!(:warn, "Failed to start service endpoint: $(sprint(showerror, e))")
+        # Start service endpoint for gate → Kaimon reverse calls (Qdrant, Ollama)
+        try
+            start_service_endpoint!()
+        catch e
+            _push_log!(:warn, "Failed to start service endpoint: $(sprint(showerror, e))")
+        end
+
+        # Start managed extensions (spawns subprocesses for auto_start extensions)
+        start_extensions!()
     end
+
+    m.gate_mirror_repl = get_gate_mirror_repl_preference()
 
     # MCP server is started on the first view() tick so the TUI is already
     # rendering and can report status in the Server tab.
 
     m.start_time = time()
-
-    # Start managed extensions (spawns subprocesses for auto_start extensions)
-    start_extensions!()
 end
 
 function Tachikoma.cleanup!(m::KaimonModel)

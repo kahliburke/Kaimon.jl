@@ -1480,6 +1480,7 @@ function start!(;
     julia_session_name::String = "",
     workspace_dir::String = pwd(),
     session_uuid::Union{String,Nothing} = nothing,
+    gate::Bool = true,
 )
     SERVER[] !== nothing && stop!() # Stop existing server if running
 
@@ -1615,6 +1616,12 @@ function start!(;
         session_uuid = session_uuid,
     )
 
+    # Start gate services (connection manager, extensions, service endpoint)
+    if gate
+        status_msg[] = "Starting gate services..."
+        _start_gate_services!()
+    end
+
     # Stop the spinner and show completion
     spinner_active[] = false
     wait(spinner_task)  # Wait for spinner task to finish
@@ -1623,8 +1630,9 @@ function start!(;
     global_logger(old_logger)
 
     # Green checkmark, dark blue text, yellow dragon, muted cyan port number
+    gate_info = gate ? ", gate" : ""
     print(
-        "\r\033[K\033[1;32m✓\033[0m \033[38;5;24mKaimon server started\033[0m \033[33m🐉\033[0m \033[90m(port $actual_port)\033[0m\n",
+        "\r\033[K\033[1;32m✓\033[0m \033[38;5;24mKaimon server started\033[0m \033[33m🐉\033[0m \033[90m(port $actual_port$gate_info)\033[0m\n",
     )
     flush(stdout)
 
@@ -1643,6 +1651,55 @@ function start!(;
     end
 
 
+    nothing
+end
+
+"""Start gate services without the TUI: connection manager, service endpoint, extensions."""
+function _start_gate_services!()
+    # Guard against double-start (e.g. start!() called twice, or before tui())
+    if GATE_MODE[]
+        @debug "Gate services already running, skipping"
+        return
+    end
+
+    mgr = ConnectionManager()
+    start!(mgr)
+    register_sessions_changed_callback!(mgr)
+
+    GATE_MODE[] = true
+    GATE_CONN_MGR[] = mgr
+
+    try
+        start_service_endpoint!()
+    catch e
+        @warn "Failed to start service endpoint" exception = e
+    end
+
+    start_extensions!()
+    nothing
+end
+
+"""Stop gate services started by `_start_gate_services!`."""
+function _stop_gate_services!()
+    GATE_MODE[] || return
+
+    try
+        stop_service_endpoint!()
+    catch
+    end
+
+    stop_all_extensions!()
+
+    mgr = GATE_CONN_MGR[]
+    GATE_MODE[] = false
+    GATE_CONN_MGR[] = nothing
+
+    if mgr !== nothing
+        try
+            stop!(mgr)
+        catch
+        end
+    end
     nothing
 end
 
@@ -1693,6 +1750,9 @@ function stop!()
         catch e
             @debug "Failed to stop index sync scheduler" exception = e
         end
+
+        # Stop gate services if running headless
+        _stop_gate_services!()
 
         stop_mcp_server(SERVER[])
         SERVER[] = nothing
