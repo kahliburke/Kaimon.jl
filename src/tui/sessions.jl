@@ -1,6 +1,6 @@
 # ── Sessions Tab (REPL gates + MCP agents) ────────────────────────────────
 
-const _EVAL_SPINNER = ("◐", "◓", "◑", "◒")
+const _EVAL_SPINNER = ("⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷")
 _eval_icon(tick::Int) = _EVAL_SPINNER[mod1(tick ÷ 4 + 1, length(_EVAL_SPINNER))]
 
 function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
@@ -28,9 +28,25 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
         REPLConnection[]
     end
 
+    # Filter out extension connections (they appear in the Extensions tab)
+    ext_namespaces = Set(
+        ext.config.manifest.namespace for ext in get_managed_extensions()
+    )
+    filter!(conn -> !(conn.namespace in ext_namespaces), connections)
+
     items = ListItem[]
     for conn in connections
-        icon = conn.status == :connected ? "●" : conn.status == :evaluating ? _eval_icon(m.tick) : conn.status == :stalled ? "◑" : conn.status == :connecting ? "◐" : "○"
+        icon = if conn.status == :connected
+            "⬤"
+        elseif conn.status == :evaluating
+            _eval_icon(m.tick)
+        elseif conn.status == :stalled
+            "⬤"
+        elseif conn.status == :connecting
+            "◌"
+        else
+            "⬤"
+        end
         style =
             conn.status == :connected ? tstyle(:success) :
             conn.status == :evaluating ? tstyle(:accent) :

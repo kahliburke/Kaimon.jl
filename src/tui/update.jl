@@ -91,7 +91,13 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
             end
             m.stress_scroll_pane !== nothing && handle_mouse!(m.stress_scroll_pane, evt)
         end
-        9 => handle_resize!(m.extensions_layout, evt)
+        9 => begin
+            if m.ext_detail_open && m.ext_detail_pane !== nothing
+                handle_mouse!(m.ext_detail_pane, evt)
+            else
+                handle_resize!(m.extensions_layout, evt)
+            end
+        end
         _ => nothing
     end
 end
@@ -266,6 +272,13 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
         return
     end
 
+    # When an extension flow is active, route all input there
+    if m.active_tab == 9 && m.ext_flow != :idle
+        evt.key == :escape && (m.ext_flow = :idle; return)
+        _handle_ext_flow_input!(m, evt)
+        return
+    end
+
     # When a debug consent modal is open, capture all input
     if m.debug_agent_continue_pending
         Base.invokelatest(_handle_debug_consent_key!, m, evt)
@@ -402,6 +415,17 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
                     return
                 end
                 5 => (_handle_tests_escape!(m); return)
+                9 => begin
+                    if m.ext_flow != :idle
+                        m.ext_flow = :idle
+                    elseif m.ext_detail_open
+                        m.ext_detail_open = false
+                        m.ext_detail_pane = nothing
+                    else
+                        m.quit_confirm = true
+                    end
+                    return
+                end
                 8 => begin
                     if m.stress_modal != :none
                         m.stress_modal = :none

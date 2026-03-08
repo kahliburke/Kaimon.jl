@@ -715,7 +715,7 @@ function _kilo_settings_dir()
     joinpath(gs, "kilocode.kilo-code", "settings")
 end
 
-function _short_path(path::String)
+function _short_path(path::AbstractString)
     home = homedir()
     if startswith(path, home)
         return "~" * path[length(home)+1:end]

@@ -200,6 +200,13 @@ function Tachikoma.init!(m::KaimonModel, _t::Tachikoma.Terminal)
     GATE_MODE[] = true
     GATE_CONN_MGR[] = m.conn_mgr
 
+    # Start service endpoint for gate → Kaimon reverse calls (Qdrant, Ollama)
+    try
+        start_service_endpoint!()
+    catch e
+        _push_log!(:warn, "Failed to start service endpoint: $(sprint(showerror, e))")
+    end
+
     # MCP server is started on the first view() tick so the TUI is already
     # rendering and can report status in the Server tab.
 
@@ -215,6 +222,12 @@ function Tachikoma.cleanup!(m::KaimonModel)
 
     # Skip teardown on restart — we're coming right back
     m._restart_requested && return
+
+    # Stop service endpoint (gate → Kaimon reverse channel)
+    try
+        stop_service_endpoint!()
+    catch
+    end
 
     # Stop managed extensions before disconnecting gates
     stop_all_extensions!()

@@ -349,6 +349,16 @@ end
     ext_detail_scroll::Int = 0            # scroll offset in detail pane
     extensions_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(40), Fill()])
 
+    # Extension flow (add/remove)
+    ext_flow::Symbol = :idle              # :idle, :add_path, :add_confirm, :add_result, :remove_confirm, :remove_result
+    ext_path_input::Any = nothing         # TextInput for path entry
+    ext_flow_message::String = ""
+    ext_flow_success::Bool = false
+
+    # Extension detail view (Enter to expand)
+    ext_detail_open::Bool = false
+    ext_detail_pane::Union{ScrollPane,Nothing} = nothing
+
     # ── Code staleness (Revise reload) ──
     _code_stale::Bool = false
     _code_last_check::Float64 = 0.0
