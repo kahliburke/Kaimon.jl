@@ -7,7 +7,7 @@ using Kaimon
         run = Kaimon.spawn_test_run(project_path; pattern = "Version Info Tests", verbose = 1)
 
         deadline = time() + 90.0
-        while run.status == Kaimon.RUN_RUNNING && time() < deadline
+        while (!run.reader_done || run.status == Kaimon.RUN_RUNNING) && time() < deadline
             sleep(0.25)
         end
 

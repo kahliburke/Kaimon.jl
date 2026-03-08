@@ -282,6 +282,15 @@ function spawn_test_run(
                 # (the Test Summary may have been printed but not caught by structured lines)
                 _parse_raw_summary!(run)
 
+                # When pattern-filtered runs produce only nested testsets (depth > 0),
+                # the summary parser never populates total_pass. Derive from results.
+                if run.total_pass == 0 && run.total_fail == 0 && !isempty(run.results)
+                    run.total_pass = sum(r.pass_count for r in run.results)
+                    run.total_fail = sum(r.fail_count for r in run.results)
+                    run.total_error = sum(r.error_count for r in run.results)
+                    run.total_tests = sum(r.total_count for r in run.results)
+                end
+
             catch e
                 if !(e isa EOFError)
                     run.status = RUN_ERROR
