@@ -22,7 +22,7 @@ e) `ex(e="methods(my_function)")` - to analyze signatures
 
 ---
 
-## Question 3: Critique This Code (25 points)
+## Question 3: Critique This Code (20 points)
 
 Identify ALL problems and explain what should be done instead:
 
@@ -52,6 +52,13 @@ a) You want to see all methods of `push!`
 b) You want to run the project's test suite and see pass/fail summary
 c) You want to check what fields a `DataFrame` has
 d) You want to find code that handles WebSocket connections
+
+---
+
+## Question 6: Eval Tracking (10 points)
+
+a) When does the eval ID become available — before, during, or after the evaluation executes? How is it delivered?
+b) If a long-running `ex()` call times out on the client side, how can you check if it completed?
 
 ---
 

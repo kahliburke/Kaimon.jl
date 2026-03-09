@@ -321,8 +321,14 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
         ts = Dates.format(ifc.timestamp_dt, "HH:MM:SS")
         sess_name = _session_display_name(ifc.session_key)
         sess_tag = isempty(filter_key) && !isempty(sess_name) ? " [$sess_name]" : ""
+        eval_tag = if ifc.tool_name == "ex"
+            eid = _extract_eval_id(ifc.progress_lines)
+            isempty(eid) ? "" : " $eid"
+        else
+            ""
+        end
         si = mod1(m.tick ÷ 2, length(SPINNER_BRAILLE))
-        label = "$ts $(SPINNER_BRAILLE[si]) $(ifc.tool_name)$sess_tag ($elapsed_str)"
+        label = "$ts $(SPINNER_BRAILLE[si]) $(ifc.tool_name)$eval_tag$sess_tag ($elapsed_str)"
         push!(items, ListItem(label, tstyle(:warning)))
         if m.selected_inflight == ii
             display_sel = item_idx
@@ -338,7 +344,13 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
         style = r.success ? tstyle(:success) : tstyle(:error)
         sess_name = _session_display_name(r.session_key)
         sess_tag = isempty(filter_key) && !isempty(sess_name) ? " [$sess_name]" : ""
-        label = "$ts $marker $(r.tool_name)$sess_tag ($(r.duration_str))"
+        eval_tag = if r.tool_name == "ex" && !isempty(r.result_text)
+            eid = _extract_eval_id_from_result(r.result_text)
+            isempty(eid) ? "" : " $eid"
+        else
+            ""
+        end
+        label = "$ts $marker $(r.tool_name)$eval_tag$sess_tag ($(r.duration_str))"
         push!(items, ListItem(label, style))
         if m.selected_inflight == 0 && ri == m.selected_result
             display_sel = item_idx
@@ -435,6 +447,10 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
                 "Session:  ",
             )
         end
+        if ifc.tool_name == "ex"
+            eid = _extract_eval_id(ifc.progress_lines)
+            !isempty(eid) && _detail_span!(spans, eid, :secondary, "Eval ID:  ")
+        end
         _build_detail_spans!(spans, ifc.tool_name, ifc.args_json, nothing)
         if !isempty(ifc.progress_lines)
             push!(spans, Span("\n", tstyle(:text)))
@@ -483,6 +499,10 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
                     :secondary,
                     "Session:  ",
                 )
+            end
+            if r.tool_name == "ex" && !isempty(r.result_text)
+                eid = _extract_eval_id_from_result(r.result_text)
+                !isempty(eid) && _detail_span!(spans, eid, :secondary, "Eval ID:  ")
             end
             _build_detail_spans!(spans, r.tool_name, r.args_json, r.result_text)
             wrap_mode = m.result_word_wrap ? word_wrap : no_wrap
@@ -665,6 +685,20 @@ function _highlight_repl_output(text::String)
         end
     end
     return spans
+end
+
+"""Extract eval_id from an ex tool call's progress lines or result text."""
+function _extract_eval_id(progress_lines::Vector{String})
+    for line in progress_lines
+        m = match(r"\[eval_id:([0-9a-f]+)\]", line)
+        m !== nothing && return String(m.captures[1])
+    end
+    return ""
+end
+
+function _extract_eval_id_from_result(result_text::String)
+    m = match(r"\[eval_id:([0-9a-f]+)\]", result_text)
+    m !== nothing ? String(m.captures[1]) : ""
 end
 
 # Default values for ex tool args (omitted from compact display)

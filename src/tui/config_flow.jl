@@ -19,6 +19,35 @@ function begin_global_gate!(m::KaimonModel)
     m.config_flow = FLOW_CLIENT_CONFIRM
 end
 
+function begin_project_add!(m::KaimonModel)
+    m.config_flow = FLOW_PROJECT_ADD_PATH
+    m.project_path_input = TextInput(text = string(pwd()), label = "Path: ", tick = m.tick)
+    m.flow_modal_selected = :confirm
+end
+
+function begin_project_remove!(m::KaimonModel)
+    isempty(m.project_entries) && return
+    m.selected_project < 1 && return
+    m.selected_project > length(m.project_entries) && return
+    m.flow_modal_selected = :confirm
+    m.config_flow = FLOW_PROJECT_REMOVE_CONFIRM
+end
+
+function begin_project_edit_launch!(m::KaimonModel)
+    isempty(m.project_entries) && return
+    m.selected_project < 1 && return
+    m.selected_project > length(m.project_entries) && return
+    lc = m.project_entries[m.selected_project].launch_config
+    m.launch_config_inputs = Dict{Symbol,Any}(
+        :threads => TextInput(text = lc.threads, label = "", tick = m.tick),
+        :gcthreads => TextInput(text = lc.gcthreads, label = "", tick = m.tick),
+        :heap_size_hint => TextInput(text = lc.heap_size_hint, label = "", tick = m.tick),
+        :extra_flags => TextInput(text = join(lc.extra_flags, " "), label = "", tick = m.tick),
+    )
+    m.launch_config_selected = 1
+    m.config_flow = FLOW_PROJECT_EDIT_LAUNCH
+end
+
 # ── Config Flow: Input Handler ───────────────────────────────────────────────
 
 const CLIENT_OPTIONS = [:claude, :gemini, :codex, :copilot, :vscode, :kilo, :cursor, :opencode]
@@ -97,6 +126,59 @@ function handle_flow_input!(m::KaimonModel, evt::KeyEvent)
     elseif flow == FLOW_CLIENT_RESULT
         m.config_flow = FLOW_IDLE
         _refresh_client_status_async!(m)
+
+    elseif flow == FLOW_PROJECT_ADD_PATH
+        @match evt.key begin
+            :enter => begin
+                m.onboard_path = Tachikoma.text(m.project_path_input)
+                m.flow_modal_selected = :confirm
+                m.config_flow = FLOW_PROJECT_ADD_CONFIRM
+            end
+            :tab => _complete_path!(m.project_path_input)
+            _ => handle_key!(m.project_path_input, evt)
+        end
+    elseif flow == FLOW_PROJECT_ADD_CONFIRM
+        @match evt.key begin
+            :left || :right => begin
+                m.flow_modal_selected =
+                    m.flow_modal_selected == :cancel ? :confirm : :cancel
+            end
+            :enter => begin
+                m.flow_modal_selected == :confirm ? execute_project_add!(m) :
+                (m.config_flow = FLOW_IDLE)
+            end
+            _ => nothing
+        end
+    elseif flow == FLOW_PROJECT_ADD_RESULT
+        m.config_flow = FLOW_IDLE
+    elseif flow == FLOW_PROJECT_REMOVE_CONFIRM
+        @match evt.key begin
+            :left || :right => begin
+                m.flow_modal_selected =
+                    m.flow_modal_selected == :cancel ? :confirm : :cancel
+            end
+            :enter => begin
+                m.flow_modal_selected == :confirm ? execute_project_remove!(m) :
+                (m.config_flow = FLOW_IDLE)
+            end
+            _ => nothing
+        end
+    elseif flow == FLOW_PROJECT_REMOVE_RESULT
+        m.config_flow = FLOW_IDLE
+
+    elseif flow == FLOW_PROJECT_EDIT_LAUNCH
+        field_keys = [:threads, :gcthreads, :heap_size_hint, :extra_flags]
+        active_key = field_keys[m.launch_config_selected]
+        active_input = m.launch_config_inputs[active_key]
+        @match evt.key begin
+            :up => (m.launch_config_selected = max(1, m.launch_config_selected - 1))
+            :down => (m.launch_config_selected = min(4, m.launch_config_selected + 1))
+            :enter => execute_project_edit_launch!(m)
+            _ => begin
+                active_input.tick = m.tick
+                handle_key!(active_input, evt)
+            end
+        end
     end
 end
 
@@ -161,18 +243,129 @@ function execute_client_config!(m::KaimonModel)
     m.config_flow = FLOW_CLIENT_RESULT
 end
 
+function execute_project_add!(m::KaimonModel)
+    if m._render_mode
+        m.flow_message = "(render mode — no files written)"
+        m.flow_success = true
+        m.config_flow = FLOW_PROJECT_ADD_RESULT
+        return
+    end
+    try
+        path = rstrip(expanduser(m.onboard_path), ['/', '\\'])
+        isdir(path) || error("Directory does not exist: $path")
+        isfile(joinpath(path, "Project.toml")) ||
+            error("No Project.toml found in $path")
+
+        norm_path = try
+            realpath(path)
+        catch
+            path
+        end
+
+        # Check if already in list
+        entries = load_projects_config()
+        for entry in entries
+            entry_norm = try
+                realpath(expanduser(entry.project_path))
+            catch
+                expanduser(entry.project_path)
+            end
+            if entry_norm == norm_path
+                m.flow_message = "Project already in allowed list"
+                m.flow_success = false
+                m.config_flow = FLOW_PROJECT_ADD_RESULT
+                return
+            end
+        end
+
+        push!(entries, ProjectEntry(norm_path, true))
+        save_projects_config(entries)
+        m.project_entries = entries
+        m.flow_message = "Added $(_short_path(norm_path)) to allowed projects"
+        m.flow_success = true
+    catch e
+        m.flow_message = "Error: $(sprint(showerror, e))"
+        m.flow_success = false
+    end
+    m.config_flow = FLOW_PROJECT_ADD_RESULT
+end
+
+function execute_project_remove!(m::KaimonModel)
+    if m._render_mode
+        m.flow_message = "(render mode — no files written)"
+        m.flow_success = true
+        m.config_flow = FLOW_PROJECT_REMOVE_RESULT
+        return
+    end
+    try
+        idx = m.selected_project
+        entries = load_projects_config()
+        if idx < 1 || idx > length(entries)
+            m.flow_message = "No project selected"
+            m.flow_success = false
+            m.config_flow = FLOW_PROJECT_REMOVE_RESULT
+            return
+        end
+
+        removed = entries[idx]
+        deleteat!(entries, idx)
+        save_projects_config(entries)
+        m.project_entries = entries
+        m.selected_project = min(m.selected_project, length(entries))
+        m.flow_message = "Removed $(_short_path(removed.project_path)) from allowed projects"
+        m.flow_success = true
+    catch e
+        m.flow_message = "Error: $(sprint(showerror, e))"
+        m.flow_success = false
+    end
+    m.config_flow = FLOW_PROJECT_REMOVE_RESULT
+end
+
+function execute_project_edit_launch!(m::KaimonModel)
+    if m._render_mode
+        m.config_flow = FLOW_IDLE
+        return
+    end
+    try
+        idx = m.selected_project
+        entries = load_projects_config()
+        if idx < 1 || idx > length(entries)
+            m.config_flow = FLOW_IDLE
+            return
+        end
+
+        threads = strip(Tachikoma.text(m.launch_config_inputs[:threads]))
+        gcthreads = strip(Tachikoma.text(m.launch_config_inputs[:gcthreads]))
+        heap = strip(Tachikoma.text(m.launch_config_inputs[:heap_size_hint]))
+        extra_raw = strip(Tachikoma.text(m.launch_config_inputs[:extra_flags]))
+        extra = isempty(extra_raw) ? String[] : String.(split(extra_raw))
+
+        lc = LaunchConfig(threads, gcthreads, heap, extra)
+        old = entries[idx]
+        entries[idx] = ProjectEntry(old.project_path, old.enabled, lc)
+        save_projects_config(entries)
+        m.project_entries = entries
+    catch e
+        _push_log!(:error, "Failed to save launch config: $(sprint(showerror, e))")
+    end
+    m.config_flow = FLOW_IDLE
+end
+
 function toggle_gate_mirror_repl!(m::KaimonModel)
     m._render_mode && return
     new_value = !m.gate_mirror_repl
     m.gate_mirror_repl = set_gate_mirror_repl_preference!(new_value)
 
+    session_prefs = load_session_prefs()
     applied = 0
     total = 0
     if m.conn_mgr !== nothing
-        conns = connected_sessions(m.conn_mgr)
-        total = length(conns)
-        for conn in conns
-            set_mirror_repl!(conn, m.gate_mirror_repl) && (applied += 1)
+        for conn in connected_sessions(m.conn_mgr)
+            total += 1
+            # Per-session override takes precedence over global toggle
+            override = resolve_session_pref(session_prefs, conn.project_path, :mirror_repl)
+            target = override !== nothing ? override : m.gate_mirror_repl
+            set_mirror_repl!(conn, target) && (applied += 1)
         end
     end
 

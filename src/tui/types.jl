@@ -65,6 +65,14 @@ end
     FLOW_CLIENT_SELECT         # Choose client
     FLOW_CLIENT_CONFIRM        # Modal confirmation
     FLOW_CLIENT_RESULT         # Success/failure feedback
+    # Allowed projects (agent-spawnable sessions)
+    FLOW_PROJECT_ADD_PATH      # TextInput for project path
+    FLOW_PROJECT_ADD_CONFIRM   # Modal confirmation
+    FLOW_PROJECT_ADD_RESULT    # Success/failure feedback
+    FLOW_PROJECT_REMOVE_CONFIRM # Modal confirmation for removal
+    FLOW_PROJECT_REMOVE_RESULT  # Success/failure feedback
+    # Launch config editing
+    FLOW_PROJECT_EDIT_LAUNCH    # Edit launch config for selected project
 end
 
 # Stress test state machine
@@ -89,6 +97,11 @@ end
     sessions_detail_max_scroll::Int = 0 # updated each frame by view_sessions
     _sessions_detail_area::Rect = Rect() # cached for mouse hit-testing
 
+    # Session terminal (PTY console for agent-spawned sessions)
+    session_terminal_open::Bool = false
+    session_terminal::Any = nothing        # Union{TerminalWidget, Nothing}
+    session_terminal_key::String = ""      # session key of the displayed terminal
+
     # Session tab layouts (resizable)
     sessions_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(45), Fill()])
     sessions_left_layout::ResizableLayout = ResizableLayout(Vertical, [Fill(), Percent(40)])
@@ -99,6 +112,7 @@ end
     # Config tab layouts (resizable)
     config_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(50), Fill()])
     config_left_layout::ResizableLayout = ResizableLayout(Vertical, [Fixed(8), Fill()])
+    config_right_layout::ResizableLayout = ResizableLayout(Vertical, [Percent(55), Fill()])
 
     # Activity feed — unified timeline of tool calls + streaming output
     activity_feed::Vector{ActivityEvent} = ActivityEvent[]
@@ -344,6 +358,15 @@ end
     _debug_locals_synced::Int = 0         # for incremental pane sync
     _debug_history_synced::Int = 0
 
+    # ── Allowed projects (Config tab) ──
+    project_entries::Vector{ProjectEntry} = ProjectEntry[]
+    selected_project::Int = 1
+    project_path_input::Any = nothing  # TextInput for adding projects
+
+    # Launch config editing
+    launch_config_inputs::Dict{Symbol,Any} = Dict{Symbol,Any}()  # TextInput widgets for threads/gc/heap/extra
+    launch_config_selected::Int = 1  # which field is focused (1-4)
+
     # ── Extensions tab (tab 9) ──
     ext_selected::Int = 1                 # selected extension in list
     ext_detail_scroll::Int = 0            # scroll offset in detail pane
@@ -369,7 +392,7 @@ end
 
 # Number of focusable panes per tab
 # Tab order: 1=Server 2=Sessions 3=Activity 4=Search 5=Tests 6=Config 7=Debug 8=Advanced 9=Extensions
-const _PANE_COUNTS = Dict(1 => 2, 2 => 3, 3 => 2, 4 => 3, 5 => 2, 6 => 3, 7 => 2, 8 => 3, 9 => 2)
+const _PANE_COUNTS = Dict(1 => 2, 2 => 3, 3 => 2, 4 => 3, 5 => 2, 6 => 4, 7 => 2, 8 => 3, 9 => 2)
 
 """Return the border style for a pane — highlighted if focused."""
 function _pane_border(m::KaimonModel, tab::Int, pane::Int)

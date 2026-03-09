@@ -215,6 +215,9 @@ function Tachikoma.init!(m::KaimonModel, _t::Tachikoma.Terminal)
 
     m.gate_mirror_repl = get_gate_mirror_repl_preference()
 
+    # Load allowed projects config
+    m.project_entries = load_projects_config()
+
     # MCP server is started on the first view() tick so the TUI is already
     # rendering and can report status in the Server tab.
 
@@ -234,7 +237,8 @@ function Tachikoma.cleanup!(m::KaimonModel)
     catch
     end
 
-    # Stop managed extensions before disconnecting gates
+    # Stop managed sessions and extensions before disconnecting gates
+    stop_all_sessions!()
     stop_all_extensions!()
 
     # Disable gate mode

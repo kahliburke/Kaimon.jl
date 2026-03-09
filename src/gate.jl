@@ -53,6 +53,9 @@ const _GATE_TTY_PARKED_PGRP = Ref{Union{Int32,Nothing}}(nothing)
 # Prevents the message-loop task's `finally` from closing sockets prematurely
 # and defeating the 0.3 s grace period for the ZMQ reply to flush.
 const _RESTARTING = Ref{Bool}(false)
+# Set by :shutdown handler so the message loop's `finally` block knows
+# to call _cleanup() after the reply has been sent and the loop exits.
+const _SHUTTING_DOWN = Ref{Bool}(false)
 
 # ── Debug Breakpoint State ───────────────────────────────────────────────────
 # Programmatic breakpoint system for agent-assisted debugging.
@@ -1182,7 +1185,8 @@ function write_metadata(
     session_id::String,
     name::String,
     endpoint::String,
-    stream_endpoint::String = "",
+    stream_endpoint::String = "";
+    spawned_by::String = "user",
 )
     meta_path = joinpath(SOCK_DIR, "$(session_id).json")
     meta = Dict{String,Any}(
@@ -1194,6 +1198,7 @@ function write_metadata(
         "endpoint" => endpoint,
         "stream_endpoint" => stream_endpoint,
         "started_at" => string(now()),
+        "spawned_by" => spawned_by,
     )
     open(meta_path, "w") do io
         # Simple JSON without dependency — just key-value pairs
@@ -1504,6 +1509,7 @@ function handle_message(request::NamedTuple)
         tool_meta = [_reflect_tool(t) for t in _SESSION_TOOLS[]]
         return (type = :tools, tools = tool_meta)
     elseif msg_type == :shutdown
+        _SHUTTING_DOWN[] = true
         _RUNNING[] = false
         return (type = :ok, message = "shutting down")
     elseif msg_type == :restart
@@ -1647,6 +1653,7 @@ function serve(;
     namespace::String = "",
     allow_mirror::Bool = true,
     allow_restart::Bool = true,
+    spawned_by::String = "user",
 )
     _serve(;
         name = basename(dirname(something(Base.active_project(), "julia"))),
@@ -1656,6 +1663,7 @@ function serve(;
         namespace,
         allow_mirror,
         allow_restart,
+        spawned_by,
     )
 end
 
@@ -1667,6 +1675,7 @@ function _serve(;
     namespace::String = "",
     allow_mirror::Bool = true,
     allow_restart::Bool = true,
+    spawned_by::String = "user",
 )
     # Capture original argv for restart replay (once, on first call)
     _capture_original_argv()
@@ -1782,7 +1791,7 @@ function _serve(;
     _STREAM_SOCKET[] = pub_socket
 
     # Write metadata file for session discovery
-    write_metadata(sid, name, endpoint, stream_endpoint)
+    write_metadata(sid, name, endpoint, stream_endpoint; spawned_by)
 
     # Register cleanup
     atexit(() -> stop())
@@ -1800,10 +1809,16 @@ function _serve(;
         catch e
             @debug "Gate task exited" exception = e
         finally
-            # Don't call _cleanup() here — stop() owns cleanup via atexit.
-            # With Threads.@spawn :interactive, this finally block can race
-            # with stop() during Julia shutdown, causing double-cleanup of
-            # ZMQ resources and intermittent segfaults.
+            if _SHUTTING_DOWN[]
+                # Remote shutdown: clean up and exit the process
+                _SHUTTING_DOWN[] = false
+                _cleanup()
+                exit(0)
+            end
+            # Otherwise don't call _cleanup() here — stop() owns cleanup
+            # via atexit. With Threads.@spawn :interactive, this finally
+            # block can race with stop() during Julia shutdown, causing
+            # double-cleanup of ZMQ resources and intermittent segfaults.
         end
     end
 
@@ -1898,6 +1913,7 @@ function _cleanup()
     _GATE_TASK[] = nothing
     _RUNNING[] = false
     _RESTARTING[] = false
+    _SHUTTING_DOWN[] = false
     _MIRROR_REPL[] = false
     _ALLOW_MIRROR[] = true
     _ALLOW_RESTART[] = true

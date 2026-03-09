@@ -60,7 +60,7 @@ function _build_extension_script(config::ExtensionConfig)
     import Pkg; Pkg.activate($(repr(e.project_path)); io=devnull)
     using $(m.module_name)
     tools = $(m.module_name).$(m.tools_function)(Kaimon.Gate.GateTool)
-    Kaimon.Gate.serve(tools=tools, namespace=$(repr(m.namespace)), force=true, allow_mirror=false, allow_restart=false)
+    Kaimon.Gate.serve(tools=tools, namespace=$(repr(m.namespace)), force=true, allow_mirror=false, allow_restart=false, spawned_by="extension")
     while true; sleep(60); end
     """
 end

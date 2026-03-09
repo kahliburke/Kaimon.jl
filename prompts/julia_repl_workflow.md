@@ -60,6 +60,22 @@ ex(e="function f() ... end", q=false)    # Definitions
 - **Use `pkg_add`** instead of `Pkg.add()`
 - **Never change project** with `Pkg.activate()`
 
+## Eval Tracking
+
+Every `ex()` call returns an eval ID **immediately** as its first progress message,
+in the format `[eval_id:XXXXXXXX]`. This ID arrives before the evaluation begins
+executing, so you always have it available even for long-running or timed-out calls.
+The ID is also prepended to the final text result.
+
+```julia
+check_eval(eval_id="abc12345")  # status, elapsed time, result preview
+```
+
+The eval history keeps the last 64 evaluations. Use `check_eval` when:
+- A previous `ex()` timed out and you want to know if it eventually completed
+- You kicked off a long computation and want to poll for completion
+- You need to confirm a prior eval's result
+
 ## Environment & Packages
 
 - **Revise.jl** auto-tracks changes in `src/`. Do not call `Revise.revise()` — it does nothing useful here. If changes aren't picked up, restart.

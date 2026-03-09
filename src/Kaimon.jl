@@ -63,6 +63,8 @@ include("gate.jl")
 include("gate_client.jl")
 include("extensions.jl")
 include("extension_manager.jl")
+include("projects_config.jl")
+include("session_manager.jl")
 include("stress_test.jl")
 include("test_output_parser.jl")
 include("test_runner.jl")
@@ -1154,10 +1156,17 @@ function _resolve_gate_conn(session::String)
     if conn.status == :stalled
         ago = round(Int, Dates.value(now() - conn.last_seen) / 1000)
         dname = isempty(conn.display_name) ? conn.name : conn.display_name
+        diag_str = if conn.diagnostics !== nothing
+            d = conn.diagnostics
+            activity = _diagnose_activity(d)
+            "\nProcess stats: $(round(d.rss_mb; digits=1)) MB RSS, $(round(d.cpu_pct; digits=1))% CPU — $activity."
+        else
+            ""
+        end
         return (
             nothing,
-            "Session '$dname' ($(short_key(conn))) is stalled — last seen $(ago)s ago. " *
-            "It may be performing a long-running task (compilation, GC, etc). " *
+            "Session '$dname' ($(short_key(conn))) is stalled — last seen $(ago)s ago.$diag_str\n" *
+            "A backtrace was sent to the session's terminal. " *
             "Try again shortly or use manage_repl to restart it.",
         )
     end
@@ -1264,6 +1273,23 @@ function execute_via_gate_streaming(
 
     cleaned_code, show_return_value, was_stripped = _prepare_gate_code(code, quiet)
 
+    # Generate eval_id for tracking
+    eval_id = bytes2hex(rand(UInt8, 4))  # 8 hex chars
+    mgr = GATE_CONN_MGR[]
+
+    # Record eval start
+    if mgr !== nothing
+        _record_eval_start!(mgr, eval_id, short_key(conn), code)
+    end
+
+    # Stream eval_id as first progress message
+    if on_progress !== nothing
+        try
+            on_progress("[eval_id:$eval_id]")
+        catch
+        end
+    end
+
     # Use async eval with streaming — on_output forwards chunks to on_progress
     on_output = if on_progress !== nothing
         (channel, data) -> begin
@@ -1276,16 +1302,45 @@ function execute_via_gate_streaming(
         nothing
     end
 
-    response =
-        eval_remote_async(conn, cleaned_code; display_code = code, on_output = on_output)
+    response = eval_remote_async(
+        conn,
+        cleaned_code;
+        display_code = code,
+        on_output = on_output,
+        request_id = eval_id,
+    )
 
-    return _format_gate_response(
+    # Record eval completion
+    if mgr !== nothing
+        status = if hasproperty(response, :exception) && response.exception !== nothing
+            if contains(string(response.exception), "timed out")
+                :timeout
+            else
+                :failed
+            end
+        else
+            :completed
+        end
+        preview = if hasproperty(response, :value_repr)
+            string(response.value_repr)
+        elseif hasproperty(response, :exception) && response.exception !== nothing
+            string(response.exception)
+        else
+            ""
+        end
+        _record_eval_done!(mgr, eval_id, status, preview)
+    end
+
+    result = _format_gate_response(
         response,
         show_return_value,
         quiet,
         was_stripped,
         max_output,
     )
+
+    # Prepend eval_id to the result text
+    return "[eval_id:$eval_id]\n" * result
 end
 
 """
@@ -1412,6 +1467,7 @@ function collect_tools()::Vector{MCPTool}
         tool_help_tool,
         repl_tool,
         manage_repl_tool,
+        start_session_tool,
         set_tty_tool,
         vscode_command_tool,
         list_vscode_commands_tool,
@@ -1436,6 +1492,7 @@ function collect_tools()::Vector{MCPTool}
         run_tests_tool,
         stress_test_tool,
         extension_info_tool,
+        check_eval_tool,
         reflection_tools...,
         qdrant_tools...,
     ]
@@ -1688,6 +1745,7 @@ function _stop_gate_services!()
     catch
     end
 
+    stop_all_sessions!()
     stop_all_extensions!()
 
     mgr = GATE_CONN_MGR[]

@@ -38,15 +38,15 @@
 
 ---
 
-## Question 3: Critique This Code (25 points)
+## Question 3: Critique This Code (20 points)
 
 **Problems:**
 
-1. **println is stripped (10 pts)** — All println calls to stdout are removed. Use TEXT responses instead.
+1. **println is stripped (8 pts)** — All println calls to stdout are removed. Use TEXT responses instead.
 
-2. **Unnecessary q=false (10 pts)** — Wastes tokens. Use `q=true` (default) for assignments/imports.
+2. **Unnecessary q=false (8 pts)** — Wastes tokens. Use `q=true` (default) for assignments/imports.
 
-3. **No batching (5 pts)** — Four separate calls could be combined into one or two.
+3. **No batching (4 pts)** — Four separate calls could be combined into one or two.
 
 **Corrected:**
 ```julia
@@ -56,10 +56,10 @@ ex(e="m", q=false)  # Only if you need to inspect the value
 ```
 
 **Grading:**
-- 25: All three problems identified with corrections
-- 20: println + q=false issues found
-- 15: Only println issue found
-- 10: Vague awareness something's wrong
+- 20: All three problems identified with corrections
+- 16: println + q=false issues found
+- 12: Only println issue found
+- 8: Vague awareness something's wrong
 - 0: Thought code was fine
 
 ---
@@ -93,6 +93,18 @@ c) `type_info("DataFrame")` — Shows fields, hierarchy, and type parameters. Be
 d) `qdrant_search_code(query="WebSocket connection handling")` — Semantic search finds relevant code by meaning. (~3 pts)
 
 **Grading:** ~4 points each, partial credit for reasonable alternatives with explanation
+
+---
+
+## Question 6: Eval Tracking (10 points)
+
+**Answers:**
+
+a) The eval ID is available **immediately, before the evaluation begins executing**. It is streamed as the very first progress message in the format `[eval_id:XXXXXXXX]`, so you always have it even if the eval takes a long time or times out. It also appears prepended to the final text result. (5 pts)
+
+b) Use `check_eval(eval_id="XXXXXXXX")` with the eval ID. It returns the current status (:running, :completed, :failed, :timeout), elapsed time, and a preview of the result if available. (5 pts)
+
+**Grading:** 5 points per sub-question
 
 ---
 

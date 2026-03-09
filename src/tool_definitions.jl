@@ -142,7 +142,12 @@ ping_tool = @mcp_tool(
                 tools_info = ntools > 0 ? ", $(ntools) tools" : ""
                 stalled_info = if conn.status == :stalled
                     ago = round(Int, Dates.value(now() - conn.last_seen) / 1000)
-                    ", last seen $(ago)s ago"
+                    diag = conn.diagnostics
+                    if diag !== nothing
+                        ", last seen $(ago)s ago, $(round(diag.rss_mb; digits=0))MB/$(round(diag.cpu_pct; digits=0))% CPU"
+                    else
+                        ", last seen $(ago)s ago"
+                    end
                 else
                     ""
                 end
@@ -546,12 +551,124 @@ Commands:
             mgr.on_sessions_changed = old_cb
             return "Restart sent to $key but timed out waiting for reconnection (60s). The session may still be starting — try again shortly."
         elseif command == "shutdown"
-            ok = send_restart!(conn)  # reuse restart to stop the gate loop
+            ok = send_shutdown!(conn)
             disconnect!(conn)
             return ok ? "Session $key shut down." : "Error: Failed to reach session $key."
         else
             return "Error: Invalid command '$command'"
         end
+    end
+)
+
+start_session_tool = @mcp_tool(
+    :start_session,
+    """Spawn a new Julia session for a project.
+
+Starts a background Julia process that activates the given project, runs
+Pkg.instantiate, and connects back as a gate session. The project must be
+in the allowed-projects list (configured in the TUI Config tab or
+~/.config/kaimon/projects.json).
+
+Returns the 8-character session key on success, which can be used with
+other tools (ex, run_tests, etc.) via the `session` parameter.
+
+Call with no `project_path` to list allowed projects and their status.""",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "project_path" => Dict(
+                "type" => "string",
+                "description" => "Absolute path to the Julia project directory (must contain Project.toml). Omit to list allowed projects.",
+            ),
+            "name" => Dict(
+                "type" => "string",
+                "description" => "Optional display name for the session (defaults to project directory name)",
+            ),
+        ),
+        "required" => [],
+    ),
+    (args) -> begin
+        raw_path = get(args, "project_path", "")
+        name = get(args, "name", "")
+
+        # No path → list allowed projects
+        if isempty(raw_path)
+            entries = load_projects_config()
+            isempty(entries) && return "No allowed projects configured. Add projects via the TUI Config tab [p] or manually to ~/.config/kaimon/projects.json"
+            managed = get_managed_sessions()
+            lines = String["Allowed projects:"]
+            for entry in entries
+                status = if !entry.enabled
+                    "disabled"
+                else
+                    ms = find_managed_session(entry.project_path)
+                    if ms !== nothing && ms.status == :running && !isempty(ms.session_key)
+                        "running (session: $(ms.session_key))"
+                    else
+                        "ready"
+                    end
+                end
+                push!(lines, "  $(entry.project_path)  [$status]")
+            end
+            return join(lines, "\n")
+        end
+
+        # Normalize path
+        path = try
+            realpath(expanduser(rstrip(raw_path, ['/', '\\'])))
+        catch
+            expanduser(rstrip(raw_path, ['/', '\\']))
+        end
+
+        # Validate directory and Project.toml
+        isdir(path) || return "Error: Directory does not exist: $path"
+        isfile(joinpath(path, "Project.toml")) ||
+            return "Error: No Project.toml found in $path"
+
+        # Check allowed list
+        if !is_project_allowed(path)
+            return "Error: Project not in allowed list. Add it via the TUI Config tab [p] or manually to ~/.config/kaimon/projects.json"
+        end
+
+        # Check for existing running session for the same project
+        existing = find_managed_session(path)
+        if existing !== nothing && existing.status == :running && !isempty(existing.session_key)
+            return "Session already running for this project. Session key: $(existing.session_key)"
+        end
+
+        # If there's a crashed/stopped session for this path, remove it
+        if existing !== nothing
+            lock(MANAGED_SESSIONS_LOCK) do
+                filter!(ms -> ms !== existing, MANAGED_SESSIONS)
+            end
+        end
+
+        # Create and spawn
+        ms = ManagedSession(path; name = isempty(name) ? "" : name)
+        lock(MANAGED_SESSIONS_LOCK) do
+            push!(MANAGED_SESSIONS, ms)
+        end
+        spawn_session!(ms)
+
+        # Poll for connection (Pkg.instantiate can be slow)
+        mgr = GATE_CONN_MGR[]
+        timeout = 120.0
+        start = time()
+        while time() - start < timeout
+            sleep(2.0)
+            if mgr !== nothing
+                _monitor_managed_sessions!(mgr)
+            end
+            if ms.status == :running && !isempty(ms.session_key)
+                return "Session started. Session key: $(ms.session_key)"
+            end
+            if ms.status == :crashed
+                err_msg = isempty(ms.error_log) ? "unknown error" : last(ms.error_log)
+                return "Error: Session failed to start — $err_msg\nCheck log: $(ms.log_file)"
+            end
+        end
+
+        return "Error: Timed out waiting for session to connect ($(Int(timeout))s). The process may still be starting — check log: $(ms.log_file)"
     end
 )
 
@@ -2171,5 +2288,74 @@ and `tool_args` directly for a custom gate tool call.
             tool_name = tool_name,
             tool_args_json = tool_args_json,
         )
+    end
+)
+
+# ── Eval Tracking ────────────────────────────────────────────────────────────
+
+check_eval_tool = @mcp_tool(
+    :check_eval,
+    """Check the status of a previous ex() evaluation by its eval ID.
+
+Returns whether the eval is still running, completed, or failed, along with
+elapsed time and a preview of the result if available. Use this when a previous
+ex() call timed out or you want to check on a long-running evaluation.
+
+The eval ID is streamed as the first progress message of every ex() call,
+in the format [eval_id:XXXXXXXX]. It also appears prepended to the final
+text result.""",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "eval_id" => Dict(
+                "type" => "string",
+                "description" => "The 8-character eval ID from a previous ex() call",
+            ),
+        ),
+        "required" => ["eval_id"],
+    ),
+    args -> begin
+        eval_id = get(args, "eval_id", "")
+        isempty(eval_id) && return "Error: eval_id is required."
+
+        mgr = GATE_CONN_MGR[]
+        mgr === nothing && return "No gate connection manager active."
+
+        record = lock(mgr.eval_history_lock) do
+            for r in reverse(mgr.eval_history)
+                if startswith(r.eval_id, eval_id)
+                    return r
+                end
+            end
+            return nothing
+        end
+
+        record === nothing && return "No eval found matching '$eval_id'. History keeps the last $(_EVAL_HISTORY_MAX) evaluations."
+
+        elapsed = if record.finished_at > 0
+            record.finished_at - record.started_at
+        else
+            time() - record.started_at
+        end
+        elapsed_str = if elapsed < 1.0
+            "$(round(Int, elapsed * 1000))ms"
+        elseif elapsed < 60.0
+            "$(round(elapsed; digits=1))s"
+        else
+            "$(round(Int, elapsed ÷ 60))m $(round(Int, elapsed % 60))s"
+        end
+
+        code_preview = length(record.code) > 80 ? first(record.code, 80) * "..." : record.code
+
+        status_str = "Eval $(record.eval_id) on session $(record.session_key)\n" *
+                     "Status: $(record.status)\n" *
+                     "Code: $code_preview\n" *
+                     "Elapsed: $elapsed_str"
+
+        if !isempty(record.result_preview)
+            status_str *= "\n\nResult preview:\n$(record.result_preview)"
+        end
+
+        status_str
     end
 )

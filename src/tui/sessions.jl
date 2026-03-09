@@ -4,6 +4,12 @@ const _EVAL_SPINNER = ("⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷")
 _eval_icon(tick::Int) = _EVAL_SPINNER[mod1(tick ÷ 4 + 1, length(_EVAL_SPINNER))]
 
 function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
+    # Full-screen session terminal takes over entire tab
+    if m.session_terminal_open && m.session_terminal !== nothing
+        _view_session_terminal(m, area, buf)
+        return
+    end
+
     cols = split_layout(m.sessions_layout, area)
     length(cols) < 2 && return
     render_resize_handles!(buf, m.sessions_layout)
@@ -32,7 +38,7 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
     ext_namespaces = Set(
         ext.config.manifest.namespace for ext in get_managed_extensions()
     )
-    filter!(conn -> !(conn.namespace in ext_namespaces), connections)
+    filter!(conn -> conn.spawned_by != "extension" && !(conn.namespace in ext_namespaces), connections)
 
     items = ListItem[]
     for conn in connections
@@ -53,7 +59,8 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
             conn.status == :stalled ? tstyle(:warning) :
             conn.status == :connecting ? tstyle(:warning) : tstyle(:error)
         dname = isempty(conn.display_name) ? conn.name : conn.display_name
-        label = "$icon $dname"
+        agent_tag = conn.spawned_by == "agent" ? " ⚡" : ""
+        label = "$icon $dname$agent_tag"
         padded = rpad(label, 20)
         status_text = string(conn.status)
         push!(items, ListItem("$padded $status_text", style))
@@ -71,7 +78,7 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
             items;
             selected = m.selected_connection,
             block = Block(
-                title = "REPL Sessions ($(length(connections)))",
+                title = "REPL Sessions ($(length(connections))) [x] shutdown",
                 border_style = _pane_border(m, 2, 1),
                 title_style = _pane_title(m, 2, 1),
             ),
@@ -153,19 +160,29 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
             "off"
         end
         restart_str = conn.allow_restart ? "allowed" : "disabled"
+        spawned_str = conn.spawned_by == "agent" ? "agent ⚡" : "user"
         fields = [
             ("Name", dname),
             ("Status", string(conn.status)),
             ("Path", _short_path(conn.project_path)),
             ("Julia", conn.julia_version),
             ("PID", string(conn.pid)),
+            ("Spawned by", spawned_str),
             ("Uptime", _time_ago(conn.connected_at)),
             ("Last seen", _time_ago(conn.last_seen)),
+        ]
+        if conn.diagnostics !== nothing
+            d = conn.diagnostics
+            push!(fields, ("Memory", "$(round(d.rss_mb; digits=1)) MB"))
+            push!(fields, ("CPU", "$(round(d.cpu_pct; digits=1))%"))
+            push!(fields, ("Diagnosis", _diagnose_activity(d)))
+        end
+        append!(fields, [
             ("Tool calls", string(conn.tool_call_count)),
             ("Mirroring", mirror_str),
             ("Restart", restart_str),
             ("Session", conn.session_id[1:min(8, length(conn.session_id))] * "..."),
-        ]
+        ])
 
         for (label, value) in fields
             in_view(y_virtual) && begin
@@ -260,6 +277,100 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
         m.sessions_detail_max_scroll = 0
     end
 end
+
+# ── Session Terminal (PTY console) ────────────────────────────────────────────
+
+function _view_session_terminal(m::KaimonModel, area::Rect, buf::Buffer)
+    tw = m.session_terminal
+    drain!(tw)  # drain PTY output, feed VT parser
+
+    block = Block(
+        title = "Session Console [$(m.session_terminal_key)]  [Esc] close",
+        border_style = tstyle(:accent),
+        title_style = tstyle(:accent, bold = true),
+    )
+    inner = render(block, area, buf)
+    render(tw, inner, buf)
+end
+
+"""Open a full-screen terminal widget for an agent-spawned session's PTY."""
+function _open_session_terminal!(m::KaimonModel, ms::ManagedSession)
+    ms.pty === nothing && return
+    Tachikoma.pty_alive(ms.pty) || return
+    reopen = m.session_terminal_key == ms.session_key
+    _close_session_terminal!(m)
+    m.session_terminal = TerminalWidget(ms.pty; show_scrollbar = true, focused = true)
+    m.session_terminal_key = ms.session_key
+    m.session_terminal_open = true
+    # On re-open, nudge the REPL so it prints a fresh prompt
+    reopen && Tachikoma.pty_write(ms.pty, "\n")
+end
+
+"""Close the session terminal overlay without killing the PTY."""
+function _close_session_terminal!(m::KaimonModel)
+    # Do NOT call close!(tw) — that kills the PTY/process.
+    # Just drop the widget reference; PTY stays alive in ManagedSession.
+    m.session_terminal = nothing
+    m.session_terminal_key = ""
+    m.session_terminal_open = false
+end
+
+"""Get the filtered list of visible (non-extension) REPL connections."""
+function _visible_connections(m::KaimonModel)
+    m.conn_mgr === nothing && return REPLConnection[]
+    conns = lock(m.conn_mgr.lock) do
+        copy(m.conn_mgr.connections)
+    end
+    ext_namespaces = Set(
+        ext.config.manifest.namespace for ext in get_managed_extensions()
+    )
+    filter!(conn -> conn.spawned_by != "extension" && !(conn.namespace in ext_namespaces), conns)
+    return conns
+end
+
+"""Shutdown the selected session from the Sessions tab."""
+function _shutdown_selected_session!(m::KaimonModel)
+    conns = _visible_connections(m)
+    (m.selected_connection < 1 || m.selected_connection > length(conns)) && return
+    conn = conns[m.selected_connection]
+    sk = short_key(conn)
+    dname = isempty(conn.display_name) ? conn.name : conn.display_name
+    mgr = m.conn_mgr
+
+    # Close terminal widget if open for this session
+    if m.session_terminal_open && m.session_terminal_key == sk
+        _close_session_terminal!(m)
+    end
+
+    # Agent-spawned session: stop the managed process
+    if conn.spawned_by == "agent"
+        ms = find_managed_session(conn.project_path)
+        ms !== nothing && stop_session!(ms)
+    end
+
+    # Send shutdown to gate (tells it to cleanup + exit)
+    send_shutdown!(conn)
+
+    # Immediately remove from connection manager
+    if mgr !== nothing
+        lock(mgr.lock) do
+            _unregister_session_tools!(conn)
+            disconnect!(conn)
+            _remove_session_files(mgr.sock_dir, conn.session_id)
+            idx = findfirst(c -> c === conn, mgr.connections)
+            idx !== nothing && deleteat!(mgr.connections, idx)
+        end
+        _fire_sessions_changed(mgr)
+    end
+
+    # Fix selection bounds
+    n = _visible_session_count(m)
+    m.selected_connection = clamp(m.selected_connection, 1, max(1, n))
+
+    _push_log!(:info, "Shutdown session '$dname' ($sk)")
+end
+
+# ── ECG / Health ─────────────────────────────────────────────────────────────
 
 const _QRS_WAVEFORM = Float64[
     0.5,

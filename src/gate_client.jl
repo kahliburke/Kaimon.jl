@@ -11,6 +11,22 @@
 
 @enum EvalState EVAL_IDLE EVAL_SENDING EVAL_STREAMING
 
+struct EvalRecord
+    eval_id::String           # 8-hex-char ID
+    session_key::String       # first 8 of session_id
+    code::String              # original code (truncated to 500 chars for storage)
+    started_at::Float64       # time()
+    finished_at::Float64      # 0.0 while running
+    status::Symbol            # :running, :completed, :failed, :timeout
+    result_preview::String    # first 500 chars of formatted result (empty while running)
+end
+
+struct ProcessDiagnostics
+    rss_mb::Float64
+    cpu_pct::Float64
+    sampled_at::DateTime
+end
+
 mutable struct REPLConnection
     session_id::String
     name::String
@@ -41,6 +57,8 @@ mutable struct REPLConnection
     allow_mirror::Bool           # Whether mirroring is allowed for this session
     mirror_repl::Bool            # Whether REPL mirroring is currently active
     debug_paused::Bool           # True when session is paused at an @infiltrate breakpoint
+    diagnostics::Union{ProcessDiagnostics,Nothing}  # populated when stalled
+    spawned_by::String           # "user" or "agent" — how this session was started
 end
 
 function REPLConnection(;
@@ -56,6 +74,7 @@ function REPLConnection(;
     session_tools::Vector{Dict{String,Any}} = Dict{String,Any}[],
     namespace::String = "",
     tools_hash::UInt64 = UInt64(0),
+    spawned_by::String = "user",
 )
     t = now()
     REPLConnection(
@@ -88,6 +107,8 @@ function REPLConnection(;
         true,  # allow_mirror — updated from pong
         false, # mirror_repl — updated from pong
         false, # debug_paused
+        nothing, # diagnostics
+        spawned_by,
     )
 end
 
@@ -123,6 +144,44 @@ function _derive_display_name(
     return name
 end
 
+# ── Stalled Session Diagnostics ──────────────────────────────────────────────
+
+"""Probe a process for RSS and CPU% via `ps`. Returns `nothing` on failure."""
+function _probe_process(pid::Int)::Union{ProcessDiagnostics,Nothing}
+    try
+        out = read(pipeline(`ps -o rss=,%cpu= -p $pid`; stderr=devnull), String)
+        parts = split(strip(out))
+        length(parts) >= 2 || return nothing
+        rss_kb = parse(Float64, parts[1])
+        cpu_pct = parse(Float64, parts[2])
+        return ProcessDiagnostics(rss_kb / 1024.0, cpu_pct, now())
+    catch
+        return nothing
+    end
+end
+
+"""Send SIGUSR1 to a Julia process to trigger a backtrace dump to stderr."""
+function _signal_backtrace(pid::Int)
+    try
+        ccall(:uv_kill, Cint, (Cint, Cint), pid, 10)  # 10 = SIGUSR1 on macOS/Linux
+    catch
+    end
+    return nothing
+end
+
+"""Return a human-readable activity assessment from process diagnostics."""
+function _diagnose_activity(diag::ProcessDiagnostics)::String
+    if diag.cpu_pct > 50
+        "actively computing (compilation, GC, or heavy workload)"
+    elseif diag.cpu_pct > 10
+        "moderately active (may be compiling or performing background work)"
+    elseif diag.cpu_pct < 1
+        "process appears idle — may be deadlocked or waiting on I/O"
+    else
+        "low activity"
+    end
+end
+
 # ── Connection Manager ────────────────────────────────────────────────────────
 
 mutable struct ConnectionManager
@@ -134,6 +193,8 @@ mutable struct ConnectionManager
     health_task::Union{Task,Nothing}
     lock::ReentrantLock
     on_sessions_changed::Union{Function,Nothing}  # called when session list changes
+    eval_history::Vector{EvalRecord}       # ring buffer, capped at 64 entries
+    eval_history_lock::ReentrantLock
 end
 
 function ConnectionManager(; sock_dir::String = joinpath(kaimon_cache_dir(), "sock"))
@@ -146,6 +207,8 @@ function ConnectionManager(; sock_dir::String = joinpath(kaimon_cache_dir(), "so
         nothing,
         ReentrantLock(),
         nothing,
+        EvalRecord[],
+        ReentrantLock(),
     )
 end
 
@@ -156,6 +219,52 @@ function _fire_sessions_changed(mgr::ConnectionManager)
         cb()
     catch
     end
+end
+
+# ── Eval History Helpers ─────────────────────────────────────────────────────
+
+const _EVAL_HISTORY_MAX = 64
+
+"""Record the start of an eval in the history ring buffer."""
+function _record_eval_start!(mgr::ConnectionManager, eval_id::String, session_key::String, code::String)
+    record = EvalRecord(
+        eval_id,
+        session_key,
+        first(code, 500),
+        time(),
+        0.0,
+        :running,
+        "",
+    )
+    lock(mgr.eval_history_lock) do
+        push!(mgr.eval_history, record)
+        # Trim to max size
+        while length(mgr.eval_history) > _EVAL_HISTORY_MAX
+            popfirst!(mgr.eval_history)
+        end
+    end
+    return nothing
+end
+
+"""Record the completion of an eval in the history ring buffer."""
+function _record_eval_done!(mgr::ConnectionManager, eval_id::String, status::Symbol, result_preview::String)
+    lock(mgr.eval_history_lock) do
+        for (i, r) in enumerate(mgr.eval_history)
+            if r.eval_id == eval_id
+                mgr.eval_history[i] = EvalRecord(
+                    r.eval_id,
+                    r.session_key,
+                    r.code,
+                    r.started_at,
+                    time(),
+                    status,
+                    first(result_preview, 500),
+                )
+                return
+            end
+        end
+    end
+    return nothing
 end
 
 # ── PID & Stale Session Helpers ──────────────────────────────────────────────
@@ -325,6 +434,7 @@ function discover_sessions(mgr::ConnectionManager)
             project_path = get(meta, "project_path", ""),
             julia_version = get(meta, "julia_version", ""),
             pid = pid,
+            spawned_by = get(meta, "spawned_by", "user"),
         )
 
         # If this session_id was already known (PID changed = process restarted),
@@ -387,9 +497,13 @@ function connect!(mgr::ConnectionManager, conn::REPLConnection)
 
         conn.status = :connected
         conn.last_seen = now()
-        # Apply runtime gate options from persisted preferences.
+        # Apply runtime gate options from persisted preferences,
+        # with per-session overrides taking priority.
         try
-            set_mirror_repl!(conn, get_gate_mirror_repl_preference())
+            session_prefs = load_session_prefs()
+            mirror_val = resolve_session_pref(session_prefs, conn.project_path, :mirror_repl)
+            mirror_enabled = mirror_val !== nothing ? mirror_val : get_gate_mirror_repl_preference()
+            set_mirror_repl!(conn, mirror_enabled)
         catch e
             @debug "Failed to apply mirror_repl preference to gate" exception = e
         end
@@ -555,6 +669,7 @@ function eval_remote_async(
     timeout_ms::Int = 600000,  # 10 min hard timeout (keepalive messages sent meanwhile)
     display_code::String = code,
     on_output::Union{Function,Nothing} = nothing,
+    request_id::String = "",  # caller-supplied ID (used for eval tracking)
 )
     if conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing
         return (
@@ -567,7 +682,9 @@ function eval_remote_async(
     end
 
     # Generate a unique request ID to correlate response with this caller
-    request_id = bytes2hex(rand(UInt8, 8))
+    if isempty(request_id)
+        request_id = bytes2hex(rand(UInt8, 8))
+    end
 
     # Phase 1: Send eval_async request via REQ socket (short lock)
     conn.eval_state[] = EVAL_SENDING
@@ -920,6 +1037,29 @@ function send_restart!(conn::REPLConnection)
     end
 end
 
+"""
+    send_shutdown!(conn::REPLConnection) -> Bool
+
+Send a `:shutdown` command to the gate. Returns `true` if the gate acknowledged.
+The gate will stop its event loop and the Julia process will exit.
+"""
+function send_shutdown!(conn::REPLConnection)
+    (conn.status ∉ (:connected, :evaluating, :stalled) || conn.req_socket === nothing) && return false
+    lock(conn.req_lock) do
+        try
+            io = IOBuffer()
+            serialize(io, (type = :shutdown, name = conn.name))
+            sock = _require_req_socket(conn)
+            send(sock, Message(take!(io)))
+            raw = recv(sock)
+            response = deserialize(IOBuffer(raw))
+            return get(response, :type, :error) == :ok
+        catch
+            return false
+        end
+    end
+end
+
 # ── Debug Protocol ──────────────────────────────────────────────────────────
 
 """
@@ -1116,6 +1256,7 @@ function start!(mgr::ConnectionManager)
                         elseif result !== nothing
                             # Successful pong — session is idle and responsive
                             if conn.status != :connected
+                                conn.diagnostics = nothing
                                 conn.status = :connected
                                 _fire_sessions_changed(mgr)
                             end
@@ -1163,7 +1304,9 @@ function start!(mgr::ConnectionManager)
                             # If the PID is gone, disconnect immediately.
                             if _is_pid_alive(conn.pid)
                                 @debug "Gate ping failed but process alive (GC pause?), marking stalled" name = conn.name pid = conn.pid
+                                conn.diagnostics = _probe_process(conn.pid)
                                 if conn.status != :stalled
+                                    _signal_backtrace(conn.pid)
                                     conn.status = :stalled
                                     _fire_sessions_changed(mgr)
                                 end

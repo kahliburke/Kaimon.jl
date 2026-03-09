@@ -123,9 +123,10 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         m._last_reap_time = time()
     end
 
-    # Monitor managed extensions (check health, auto-restart crashed ones)
+    # Monitor managed extensions and sessions (check health, auto-restart crashed ones)
     if !m._render_mode && m.tick % 30 == 0  # ~1 Hz at 30 fps
         _monitor_extensions!(m.conn_mgr)
+        _monitor_managed_sessions!(m.conn_mgr)
     end
 
     # Deferred server start — kick off on first frame so the TUI is already

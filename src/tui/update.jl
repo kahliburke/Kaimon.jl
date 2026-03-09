@@ -36,6 +36,10 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
             m.log_pane !== nothing && handle_mouse!(m.log_pane, evt)
         end
         2 => begin
+            if m.session_terminal_open && m.session_terminal !== nothing
+                handle_mouse!(m.session_terminal, evt)
+                return  # terminal captures all mouse in full-screen mode
+            end
             handle_resize!(m.sessions_layout, evt)
             handle_resize!(m.sessions_left_layout, evt)
             if Base.contains(m._sessions_detail_area, evt.x, evt.y)
@@ -74,6 +78,7 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
         6 => begin
             handle_resize!(m.config_layout, evt)
             handle_resize!(m.config_left_layout, evt)
+            handle_resize!(m.config_right_layout, evt)
         end
         7 => begin
             handle_resize!(m.debug_layout, evt)
@@ -239,6 +244,16 @@ end
 function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
     # Ignore input while shutting down
     m.shutting_down && return
+
+    # Session terminal captures all input except Escape
+    if m.session_terminal_open && m.session_terminal !== nothing && m.active_tab == 2
+        if evt.key == :escape
+            _close_session_terminal!(m)
+            return
+        end
+        handle_key!(m.session_terminal, evt)
+        return
+    end
 
     # Quit confirmation modal captures all input
     if m.quit_confirm && m.quit_confirm_modal !== nothing
@@ -464,6 +479,11 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
             _ => nothing
         end
 
+        2 => @match evt.char begin
+            'x' => _shutdown_selected_session!(m)
+            _ => nothing
+        end
+
         3 => @match evt.char begin
             'f' => (m.activity_mode == :live && _cycle_activity_filter!(m))
             'F' =>
@@ -491,6 +511,9 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
             'i' => begin_client_config!(m)
             'g' => begin_global_gate!(m)
             'm' => toggle_gate_mirror_repl!(m)
+            'p' => begin_project_add!(m)
+            'D' => begin_project_remove!(m)
+            'e' => begin_project_edit_launch!(m)
             _ => nothing
         end
 
@@ -514,12 +537,23 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
                 m.sessions_detail_scroll = 0
             end
             :down => begin
-                m.conn_mgr !== nothing && begin
-                    n_conns = length(m.conn_mgr.connections)
+                n_conns = _visible_session_count(m)
+                n_conns > 0 && (
                     m.selected_connection =
-                        min(max(1, n_conns), m.selected_connection + 1)
-                end
+                        min(n_conns, m.selected_connection + 1)
+                )
                 m.sessions_detail_scroll = 0
+            end
+            :enter => begin
+                # Open PTY terminal for agent-spawned sessions
+                conns = _visible_connections(m)
+                if m.selected_connection >= 1 && m.selected_connection <= length(conns)
+                    conn = conns[m.selected_connection]
+                    if conn.spawned_by == "agent"
+                        ms = find_managed_session(conn.project_path)
+                        ms !== nothing && _open_session_terminal!(m, ms)
+                    end
+                end
             end
             _ => nothing
         end
@@ -637,10 +671,31 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
         (8, 3) =>
             (m.stress_scroll_pane !== nothing && handle_key!(m.stress_scroll_pane, evt))
 
+        (6, 4) => @match evt.key begin
+            :up => (m.selected_project = max(1, m.selected_project - 1))
+            :down => begin
+                n = length(m.project_entries)
+                n > 0 && (m.selected_project = min(n, m.selected_project + 1))
+            end
+            _ => nothing
+        end
+
         (9, _) => _handle_extensions_nav!(m, evt, fp)
 
         _ => nothing
     end
+end
+
+"""Count visible (non-extension) sessions for nav bounds checking."""
+function _visible_session_count(m::KaimonModel)
+    m.conn_mgr === nothing && return 0
+    conns = lock(m.conn_mgr.lock) do
+        copy(m.conn_mgr.connections)
+    end
+    ext_namespaces = Set(
+        ext.config.manifest.namespace for ext in get_managed_extensions()
+    )
+    return count(c -> c.spawned_by != "extension" && !(c.namespace in ext_namespaces), conns)
 end
 
 """Reset test output panes and tree view (used on run selection change)."""

@@ -73,32 +73,99 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
         set_string!(buf, x + 4, y, "status: $mirror_status", mirror_style)
     end
 
-    # ── Right column: MCP Client Status ──
+    # ── Right column: MCP Clients (top) + Allowed Projects (bottom) ──
+    right_rows = split_layout(m.config_right_layout, cols[2])
+    length(right_rows) < 2 && return
+    render_resize_handles!(buf, m.config_right_layout)
+
+    # ── MCP Client Status ──
     client_block = Block(
         title = "MCP Clients",
-        border_style = _pane_border(m, 4, 3),
-        title_style = _pane_title(m, 4, 3),
+        border_style = _pane_border(m, 6, 3),
+        title_style = _pane_title(m, 6, 3),
     )
-    client_inner = render(client_block, cols[2], buf)
-    client_inner.width < 4 && return
+    client_inner = render(client_block, right_rows[1], buf)
+    if client_inner.width >= 4
+        y = client_inner.y
+        x = client_inner.x + 1
 
-    y = client_inner.y
-    x = client_inner.x + 1
+        for (label, configured) in m.client_statuses
+            y > bottom(client_inner) && break
+            icon = configured ? "●" : "○"
+            icon_style = configured ? tstyle(:success) : tstyle(:text_dim)
+            status_text = configured ? "configured" : "not configured"
+            set_string!(buf, x, y, "$icon ", icon_style)
+            set_string!(buf, x + 2, y, rpad(label, 16), tstyle(:text))
+            set_string!(buf, x + 18, y, status_text, icon_style)
+            y += 1
+        end
 
-    for (label, configured) in m.client_statuses
-        y > bottom(client_inner) && break
-        icon = configured ? "●" : "○"
-        icon_style = configured ? tstyle(:success) : tstyle(:text_dim)
-        status_text = configured ? "configured" : "not configured"
-        set_string!(buf, x, y, "$icon ", icon_style)
-        set_string!(buf, x + 2, y, rpad(label, 16), tstyle(:text))
-        set_string!(buf, x + 18, y, status_text, icon_style)
         y += 1
+        if y + 2 <= bottom(client_inner)
+            set_string!(buf, x, y, "Press [i] to configure a client", tstyle(:text_dim))
+        end
     end
 
-    y += 1
-    if y + 2 <= bottom(client_inner)
-        set_string!(buf, x, y, "Press [i] to configure a client", tstyle(:text_dim))
+    # ── Allowed Projects ──
+    n_projects = length(m.project_entries)
+    managed = get_managed_sessions()
+    proj_block = Block(
+        title = "Allowed Projects ($n_projects)",
+        border_style = _pane_border(m, 6, 4),
+        title_style = _pane_title(m, 6, 4),
+    )
+    proj_inner = render(proj_block, right_rows[2], buf)
+    if proj_inner.width >= 4
+        y = proj_inner.y
+        x = proj_inner.x + 1
+
+        if isempty(m.project_entries)
+            set_string!(buf, x, y, "No projects configured", tstyle(:text_dim))
+            y += 1
+            set_string!(buf, x, y, "Press [p] to add a project", tstyle(:text_dim))
+        else
+            for (i, entry) in enumerate(m.project_entries)
+                y > bottom(proj_inner) - 2 && break
+                # Check if a session is running for this project
+                running = any(ms -> begin
+                    ms_norm = try; realpath(ms.project_path); catch; ms.project_path; end
+                    e_norm = try; realpath(entry.project_path); catch; entry.project_path; end
+                    ms_norm == e_norm && ms.status == :running
+                end, managed)
+
+                marker = i == m.selected_project ? "▸ " : "  "
+                icon = entry.enabled ? (running ? "⚡" : "●") : "○"
+                icon_style = running ? tstyle(:accent) : entry.enabled ? tstyle(:success) : tstyle(:text_dim)
+                name_style = i == m.selected_project ? tstyle(:accent, bold = true) : tstyle(:text)
+                status_text = running ? "running" : entry.enabled ? "enabled" : "disabled"
+
+                set_string!(buf, x, y, marker, name_style)
+                set_string!(buf, x + 2, y, "$icon ", icon_style)
+                set_string!(buf, x + 4, y, _short_path(entry.project_path), name_style)
+                # Show launch config summary after name
+                lc_summary = launch_config_summary(entry.launch_config)
+                if !isempty(lc_summary)
+                    name_len = length(_short_path(entry.project_path))
+                    lc_x = x + 4 + name_len + 1
+                    max_lc_w = right(proj_inner) - length(status_text) - lc_x - 2
+                    if max_lc_w > 4
+                        display_lc = length(lc_summary) > max_lc_w ? lc_summary[1:max_lc_w-1] * "…" : lc_summary
+                        set_string!(buf, lc_x, y, display_lc, tstyle(:text_dim))
+                    end
+                end
+                # Show status at the right edge
+                status_x = right(proj_inner) - length(status_text)
+                if status_x > x + 20
+                    set_string!(buf, status_x, y, status_text, icon_style)
+                end
+                y += 1
+            end
+        end
+
+        y = bottom(proj_inner)
+        if y >= proj_inner.y + 1
+            set_string!(buf, x, y, "[p] Add  [D] Remove  [e] Launch Config", tstyle(:text_dim))
+        end
     end
 end
 
@@ -217,6 +284,136 @@ function view_config_flow(m::KaimonModel, area::Rect, buf::Buffer)
 
     elseif flow == FLOW_CLIENT_RESULT
         _render_result_modal(buf, area, m.flow_success, m.flow_message; tick = m.tick)
+
+    elseif flow == FLOW_PROJECT_ADD_PATH
+        if m.project_path_input !== nothing
+            m.project_path_input.tick = m.tick
+        end
+        _render_text_input_modal(
+            buf,
+            area,
+            "Add Allowed Project",
+            "Enter project path:",
+            m.project_path_input,
+            "[Enter] confirm  [Tab] complete  [Esc] cancel";
+            tick = m.tick,
+        )
+
+    elseif flow == FLOW_PROJECT_ADD_CONFIRM
+        msg = "Allow agents to spawn sessions for this project?\n\nPath: $(_short_path(m.onboard_path))"
+        render(
+            Modal(
+                title = "Confirm",
+                message = msg,
+                confirm_label = "Add",
+                cancel_label = "Cancel",
+                selected = m.flow_modal_selected,
+                tick = m.tick,
+            ),
+            area,
+            buf,
+        )
+
+    elseif flow == FLOW_PROJECT_ADD_RESULT
+        _render_result_modal(buf, area, m.flow_success, m.flow_message; tick = m.tick)
+
+    elseif flow == FLOW_PROJECT_REMOVE_CONFIRM
+        entry = if m.selected_project >= 1 && m.selected_project <= length(m.project_entries)
+            m.project_entries[m.selected_project]
+        else
+            nothing
+        end
+        path_str = entry !== nothing ? _short_path(entry.project_path) : "?"
+        msg = "Remove project from allowed list?\n\nPath: $path_str"
+        render(
+            Modal(
+                title = "Confirm Remove",
+                message = msg,
+                confirm_label = "Remove",
+                cancel_label = "Cancel",
+                selected = m.flow_modal_selected,
+                tick = m.tick,
+            ),
+            area,
+            buf,
+        )
+
+    elseif flow == FLOW_PROJECT_REMOVE_RESULT
+        _render_result_modal(buf, area, m.flow_success, m.flow_message; tick = m.tick)
+
+    elseif flow == FLOW_PROJECT_EDIT_LAUNCH
+        _render_launch_config_modal(m, buf, area)
+    end
+end
+
+function _render_launch_config_modal(m::KaimonModel, buf::Buffer, area::Rect)
+    idx = m.selected_project
+    proj_name = if idx >= 1 && idx <= length(m.project_entries)
+        basename(m.project_entries[idx].project_path)
+    else
+        "?"
+    end
+
+    w = min(50, area.width - 4)
+    h = 11
+    rect = center(area, w, h)
+
+    border_s = tstyle(:accent, bold = true)
+    title = "Launch Config: $proj_name"
+    inner = if animations_enabled()
+        border_shimmer!(buf, rect, border_s.fg, m.tick; box = BOX_HEAVY, intensity = 0.12)
+        if rect.width > 4
+            set_string!(buf, rect.x + 2, rect.y, " $title ", border_s)
+        end
+        Rect(rect.x + 1, rect.y + 1, max(0, rect.width - 2), max(0, rect.height - 2))
+    else
+        render(
+            Block(
+                title = title,
+                border_style = border_s,
+                title_style = border_s,
+                box = BOX_HEAVY,
+            ),
+            rect,
+            buf,
+        )
+    end
+    inner.width < 4 && return
+
+    # Clear interior
+    for row = inner.y:bottom(inner)
+        for col = inner.x:right(inner)
+            set_char!(buf, col, row, ' ', Style())
+        end
+    end
+
+    y = inner.y
+    x = inner.x + 1
+    label_w = 18
+    input_w = max(4, inner.width - label_w - 3)
+
+    field_labels = ["Threads (-t):", "GC threads:", "Heap size hint:", "Extra flags:"]
+    field_keys = [:threads, :gcthreads, :heap_size_hint, :extra_flags]
+
+    for (i, (label, key)) in enumerate(zip(field_labels, field_keys))
+        y > bottom(inner) - 2 && break
+        selected = i == m.launch_config_selected
+        label_style = selected ? tstyle(:accent, bold = true) : tstyle(:text_dim)
+        marker = selected ? "▸ " : "  "
+        set_string!(buf, x, y, marker, label_style)
+        set_string!(buf, x + 2, y, rpad(label, label_w), label_style)
+
+        input = m.launch_config_inputs[key]
+        if selected
+            input.tick = m.tick
+        end
+        render(input, Rect(x + 2 + label_w, y, input_w, 1), buf)
+        y += 1
+    end
+
+    y += 1
+    if y <= bottom(inner)
+        set_string!(buf, x, y, "[Enter] Save  [Esc] Cancel", tstyle(:text_dim))
     end
 end
 
