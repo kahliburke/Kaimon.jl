@@ -1357,14 +1357,18 @@ function _handle_gate_tool_sse(
     progress_token = "tool-$(tool_name_str)-$(round(Int, time()))"
 
     # ── Flush pending notifications (e.g., resource list changes) ─────────
-    # Write an SSE event helper (defined below) is not available yet, so
-    # inline the flush here before the main send_sse_event closure.
+    # Deduplicate: multiple identical notifications (e.g. resources/list_changed)
+    # often queue up between requests — only send each method once.
+    seen_methods = Set{String}()
     while isready(_PENDING_NOTIFICATIONS)
         notif = try
             take!(_PENDING_NOTIFICATIONS)
         catch
             break
         end
+        method = get(notif, "method", "")
+        method in seen_methods && continue
+        push!(seen_methods, method)
         try
             notif_json = JSON.json(notif)
             write(http, "data: $(notif_json)\n\n")
