@@ -62,10 +62,11 @@ ex(e="function f() ... end", q=false)    # Definitions
 
 ## Eval Tracking
 
-Every `ex()` call returns an eval ID **immediately** as its first progress message,
-in the format `[eval_id:XXXXXXXX]`. This ID arrives before the evaluation begins
-executing, so you always have it available even for long-running or timed-out calls.
-The ID is also prepended to the final text result.
+Every `ex()` call returns an eval ID **immediately** as its first progress notification,
+as a structured JSON field `{"eval_id": "XXXXXXXX"}` in the notification params. This ID
+arrives before the evaluation begins executing, so you always have it available even
+for long-running or timed-out calls. The eval ID also appears as a structured field in the
+final result object alongside `content`.
 
 ```julia
 check_eval(eval_id="abc12345")  # status, elapsed time, result preview

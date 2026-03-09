@@ -26,7 +26,9 @@ struct ToolCallResult
     duration_str::String   # "125ms" or "1.2s"
     success::Bool
     session_key::String    # 8-char short key for session routing ("" if none)
+    eval_id::String        # eval ID for ex() calls ("" for other tools)
 end
+ToolCallResult(ts, tn, aj, rt, ds, s, sk) = ToolCallResult(ts, tn, aj, rt, ds, s, sk, "")
 
 # ── In-Flight Tool Calls (live progress) ─────────────────────────────────────
 # Tracks tool calls that are currently executing, displayed at the top of the

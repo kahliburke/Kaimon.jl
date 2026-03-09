@@ -344,12 +344,7 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
         style = r.success ? tstyle(:success) : tstyle(:error)
         sess_name = _session_display_name(r.session_key)
         sess_tag = isempty(filter_key) && !isempty(sess_name) ? " [$sess_name]" : ""
-        eval_tag = if r.tool_name == "ex" && !isempty(r.result_text)
-            eid = _extract_eval_id_from_result(r.result_text)
-            isempty(eid) ? "" : " $eid"
-        else
-            ""
-        end
+        eval_tag = !isempty(r.eval_id) ? " $(r.eval_id)" : ""
         label = "$ts $marker $(r.tool_name)$eval_tag$sess_tag ($(r.duration_str))"
         push!(items, ListItem(label, style))
         if m.selected_inflight == 0 && ri == m.selected_result
@@ -500,9 +495,8 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
                     "Session:  ",
                 )
             end
-            if r.tool_name == "ex" && !isempty(r.result_text)
-                eid = _extract_eval_id_from_result(r.result_text)
-                !isempty(eid) && _detail_span!(spans, eid, :secondary, "Eval ID:  ")
+            if !isempty(r.eval_id)
+                _detail_span!(spans, r.eval_id, :secondary, "Eval ID:  ")
             end
             _build_detail_spans!(spans, r.tool_name, r.args_json, r.result_text)
             wrap_mode = m.result_word_wrap ? word_wrap : no_wrap
@@ -694,11 +688,6 @@ function _extract_eval_id(progress_lines::Vector{String})
         m !== nothing && return String(m.captures[1])
     end
     return ""
-end
-
-function _extract_eval_id_from_result(result_text::String)
-    m = match(r"\[eval_id:([0-9a-f]+)\]", result_text)
-    m !== nothing ? String(m.captures[1]) : ""
 end
 
 # Default values for ex tool args (omitted from compact display)

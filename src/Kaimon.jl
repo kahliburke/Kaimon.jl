@@ -1339,8 +1339,7 @@ function execute_via_gate_streaming(
         max_output,
     )
 
-    # Prepend eval_id to the result text
-    return "[eval_id:$eval_id]\n" * result
+    return result
 end
 
 """

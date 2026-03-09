@@ -100,7 +100,7 @@ d) `qdrant_search_code(query="WebSocket connection handling")` — Semantic sear
 
 **Answers:**
 
-a) The eval ID is available **immediately, before the evaluation begins executing**. It is streamed as the very first progress message in the format `[eval_id:XXXXXXXX]`, so you always have it even if the eval takes a long time or times out. It also appears prepended to the final text result. (5 pts)
+a) The eval ID is available **immediately, before the evaluation begins executing**. It is delivered as a structured JSON field `{"eval_id": "XXXXXXXX"}` in the first progress notification's params, so you always have it even if the eval takes a long time or times out. It also appears as a structured field in the final result object. (5 pts)
 
 b) Use `check_eval(eval_id="XXXXXXXX")` with the eval ID. It returns the current status (:running, :completed, :failed, :timeout), elapsed time, and a preview of the result if available. (5 pts)
 

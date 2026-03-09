@@ -2301,9 +2301,9 @@ Returns whether the eval is still running, completed, or failed, along with
 elapsed time and a preview of the result if available. Use this when a previous
 ex() call timed out or you want to check on a long-running evaluation.
 
-The eval ID is streamed as the first progress message of every ex() call,
-in the format [eval_id:XXXXXXXX]. It also appears prepended to the final
-text result.""",
+The eval ID is delivered as a structured JSON field in two places:
+1. The first progress notification: {"eval_id": "XXXXXXXX"} in params
+2. The final result object: {"eval_id": "XXXXXXXX"} alongside content""",
     Dict(
         "type" => "object",
         "properties" => Dict(

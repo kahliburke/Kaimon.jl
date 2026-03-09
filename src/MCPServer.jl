@@ -1394,18 +1394,34 @@ function _handle_gate_tool_sse(
     # Send progress notification
     # Note: inflight_id is captured from the enclosing scope after it's assigned below
     _sse_inflight_id = Ref{Int}(0)
+    _sse_eval_id = Ref{String}("")
     function send_progress(message::String)
         step_counter[] += 1
+
+        # Detect structured eval_id tag → emit as proper JSON field, not message text
+        eval_id_match = match(r"^\[eval_id:([0-9a-f]+)\]$", message)
+        params = if eval_id_match !== nothing
+            eid = String(eval_id_match.captures[1])
+            _sse_eval_id[] = eid
+            Dict(
+                "progressToken" => progress_token,
+                "progress" => step_counter[],
+                "eval_id" => eid,
+            )
+        else
+            Dict(
+                "progressToken" => progress_token,
+                "progress" => step_counter[],
+                "message" =>
+                    length(message) > 200 ? first(message, 200) * "..." : message,
+            )
+        end
+
         send_sse_event(
             Dict(
                 "jsonrpc" => "2.0",
                 "method" => "notifications/progress",
-                "params" => Dict(
-                    "progressToken" => progress_token,
-                    "progress" => step_counter[],
-                    "message" =>
-                        length(message) > 200 ? first(message, 200) * "..." : message,
-                ),
+                "params" => params,
             ),
         )
         # Push progress to in-flight tracker for TUI display
@@ -1478,22 +1494,30 @@ function _handle_gate_tool_sse(
     end
 
     # Push tool result for TUI Activity inspection
-    elapsed = time() - start_time
-    time_str =
-        elapsed < 1.0 ? @sprintf("%.0fms", elapsed * 1000) : @sprintf("%.1fs", elapsed)
-    rt = string(result_text)
-    ok = tool_ok && !startswith(rt, "ERROR:")
-    sk = string(get(args, "ses", get(args, "session", "")))
-    _push_tool_result!(
-        ToolCallResult(now(), tool.name, JSON.json(args), rt, time_str, ok, sk),
-    )
+    try
+        elapsed = time() - start_time
+        time_str =
+            elapsed < 1.0 ? @sprintf("%.0fms", elapsed * 1000) : @sprintf("%.1fs", elapsed)
+        rt = string(result_text)
+        ok = tool_ok && !startswith(rt, "ERROR:")
+        sk = string(get(args, "ses", get(args, "session", "")))
+        _push_tool_result!(
+            ToolCallResult(now(), tool.name, JSON.json(args), rt, time_str, ok, sk, _sse_eval_id[]),
+        )
+    catch e
+        _push_log!(:warn, "Failed to push tool result for TUI: $(sprint(showerror, e))")
+    end
 
     # Send final JSON-RPC result as last SSE event
+    result_dict = Dict{String,Any}("content" => [Dict("type" => "text", "text" => result_text)])
+    if !isempty(_sse_eval_id[])
+        result_dict["eval_id"] = _sse_eval_id[]
+    end
     send_sse_event(
         Dict(
             "jsonrpc" => "2.0",
             "id" => request_id,
-            "result" => Dict("content" => [Dict("type" => "text", "text" => result_text)]),
+            "result" => result_dict,
         ),
     )
 
@@ -1922,6 +1946,8 @@ function start_mcp_server(
         catch e
             # Client disconnected — no response possible, no need to log
             e isa Base.IOError && return nothing
+
+            _push_log!(:error, "MCP handler error: $(sprint(showerror, e))")
 
             # Attempt a 500 JSON-RPC error response.  Wrap in its own try/catch
             # because startwrite throws if the response was already started
