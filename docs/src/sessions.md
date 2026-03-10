@@ -64,6 +64,29 @@ your machine auto-connects to Kaimon without any project-level setup.
 
 Each REPL that calls `Gate.serve()` registers as a separate session with its own session key.
 
+### Managed sessions
+
+The `start_session` MCP tool spawns Julia processes for projects in the allowed-projects list. This lets AI agents autonomously start sessions for projects they need to work on.
+
+```
+start_session(project_path="/path/to/MyProject")
+# => "Session started. Session key: a3f8b2c1"
+
+start_session()
+# => Lists all allowed projects and their status
+```
+
+When a managed session starts, Kaimon:
+
+1. Spawns a Julia subprocess via PTY (pseudo-terminal).
+2. Activates the project environment and runs `Pkg.instantiate`.
+3. Loads Revise and calls `Gate.serve(spawned_by="agent")`.
+4. Waits up to 120 seconds for the gate connection.
+
+The spawned process connects back as a regular gate session. It appears in the Sessions tab like any other session, but is tagged with `spawned_by: agent` to distinguish it from manually started REPLs.
+
+To configure which projects can be spawned, see [Projects Configuration](configuration.md#projects-configuration).
+
 ## Session Routing
 
 When only one session is connected, agents do not need to specify a target -- all requests are routed to the single active session automatically.
@@ -87,6 +110,21 @@ The TUI (terminal user interface) includes a **Sessions tab** that displays all 
 - The Julia version and active project environment.
 
 This tab provides a real-time overview of which REPLs are available for agents to target.
+
+### Session terminal
+
+For agent-spawned sessions, you can open an embedded terminal by selecting the session and pressing `Enter`. This opens a full-screen PTY console connected to the session's Julia REPL, allowing you to interact with it directly while the agent continues to work through MCP tools.
+
+Press `Esc` to close the terminal overlay. The underlying Julia process and gate connection remain active — closing the terminal only dismisses the view.
+
+### Key reference
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Navigate session list |
+| `Enter` | Open terminal for agent-spawned session |
+| `f` | Filter sessions |
+| `Esc` | Close terminal or filter |
 
 ## Restarting a Session
 
@@ -128,3 +166,28 @@ Kaimon uses a file-based discovery mechanism. When a REPL calls `Gate.serve()`, 
 The Kaimon server watches this directory for new socket files. When a new file appears, the server automatically connects to the corresponding REPL and registers it as a session. When a socket file is removed (e.g., on shutdown), the session is deregistered.
 
 This design means sessions can start and stop independently of the server -- the server discovers them as they appear.
+
+## Session Preferences
+
+Per-project session preferences can be configured in `~/.config/kaimon/projects.json` under the `session_prefs` key. Preferences are matched by project name (case-insensitive basename) or full path, with a `*` wildcard for global defaults:
+
+```json
+{
+  "session_prefs": {
+    "MyProject": {
+      "mirror_repl": true,
+      "allow_restart": false
+    },
+    "*": {
+      "allow_restart": true
+    }
+  }
+}
+```
+
+| Preference | Description |
+|------------|-------------|
+| `mirror_repl` | Mirror agent eval output into the host REPL. Useful for seeing what agents execute in real time. |
+| `allow_restart` | Whether the `manage_repl(command="restart")` command is permitted for this session. |
+
+See [Configuration](configuration.md) for the full `projects.json` format.

@@ -145,6 +145,35 @@ qdrant_search_code(query="function that handles HTTP routing")
 #    ...
 ```
 
+## Session Management
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `start_session` | Spawn a managed Julia session for an allowed project. Call with no arguments to list available projects. | `project_path`, `name` |
+| `check_eval` | Check status of a previous `ex()` evaluation by its eval ID. Returns status, elapsed time, and result preview. | `eval_id` |
+| `extension_info` | List loaded extensions and their tools. With `name`, show detailed tool docs and parameter schemas. | `name` (optional) |
+
+**`start_session` -- Spawn a project session**
+
+```
+start_session()
+# => Lists all allowed projects and their status
+
+start_session(project_path="/path/to/MyProject")
+# => "Session started. Session key: a3f8b2c1"
+```
+
+The project must be in the allowed-projects list (`~/.config/kaimon/projects.json`). See [Sessions](sessions.md#managed-sessions) for details.
+
+**`check_eval` -- Poll a long-running evaluation**
+
+Every `ex()` call returns an eval ID as a structured JSON field `{"eval_id": "XXXXXXXX"}` in its first progress notification. Use `check_eval` to poll for completion:
+
+```
+check_eval(eval_id="abc12345")
+# => status: completed, elapsed: 12.3s, result: "42"
+```
+
 ## Information
 
 | Tool | Description | Key Parameters |

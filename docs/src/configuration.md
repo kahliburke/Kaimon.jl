@@ -31,6 +31,8 @@ The cache directory respects the `XDG_CACHE_HOME` environment variable. On Windo
 Global configuration that applies across all projects:
 
 - **`security.json`** -- Global security settings (see [Security Configuration](@ref security-config) below)
+- **`projects.json`** -- Allowed projects for managed sessions (see [Projects Configuration](@ref projects-config) below)
+- **`extensions.json`** -- Extension registry (see [Extensions](extensions.md))
 
 ### `.kaimon/` (per-project)
 
@@ -74,6 +76,54 @@ Use the security management tools to modify these settings programmatically:
 - `revoke_key` -- Remove an API key
 - `allow_ip` / `deny_ip` -- Manage the IP allowlist
 - `set_security_mode` -- Switch between security modes
+
+## [Projects Configuration](@id projects-config)
+
+The `projects.json` file at `~/.config/kaimon/projects.json` controls which Julia projects can be spawned as managed sessions via the `start_session` MCP tool. It also holds per-project session preferences.
+
+```json
+{
+  "projects": [
+    {
+      "project_path": "/path/to/MyProject",
+      "enabled": true
+    },
+    {
+      "project_path": "/path/to/AnotherProject",
+      "enabled": false
+    }
+  ],
+  "session_prefs": {
+    "MyProject": {
+      "mirror_repl": true,
+      "allow_restart": false
+    },
+    "*": {
+      "allow_restart": true
+    }
+  }
+}
+```
+
+### Projects
+
+| Field | Description |
+|-------|-------------|
+| `project_path` | Absolute path to a Julia project directory (must contain `Project.toml`) |
+| `enabled` | Whether agents can spawn sessions for this project |
+
+Manage the projects list through the TUI Config tab or by editing the file directly. The `start_session` tool called with no arguments lists all allowed projects and their current status.
+
+### Session Preferences
+
+Per-project preferences are matched by project name (case-insensitive directory basename), full path, or `*` wildcard:
+
+| Preference | Type | Description |
+|------------|------|-------------|
+| `mirror_repl` | `Bool` | Mirror agent eval output into the host REPL |
+| `allow_restart` | `Bool` | Whether `manage_repl(command="restart")` is permitted |
+
+See [Sessions](sessions.md#session-preferences) for details on how preferences are resolved.
 
 ## Tools Configuration
 

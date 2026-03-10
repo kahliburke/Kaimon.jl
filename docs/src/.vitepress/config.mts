@@ -84,6 +84,7 @@ export default withMermaid(defineConfig({
           { text: 'Tool Catalog', link: '/tools' },
           { text: 'The Gate', link: '/gate' },
           { text: 'Sessions', link: '/sessions' },
+          { text: 'Extensions', link: '/extensions' },
           { text: 'Debugging', link: '/debugging' },
           { text: 'Semantic Search', link: '/search' },
           { text: 'Security', link: '/security' },
