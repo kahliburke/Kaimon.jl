@@ -1466,7 +1466,7 @@ function _handle_gate_tool_sse(
             code = get(args, "e", "")
             quiet = get(args, "q", true)
             silent = get(args, "s", false)
-            max_output = get(args, "max_output", 6000)
+            max_output = min(get(args, "max_output", 6000), 25000)
             ses = get(args, "ses", "")
             execute_via_gate_streaming(
                 code;
