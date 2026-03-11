@@ -2140,4 +2140,126 @@ function shutdown(; session::String = "")
     call_tool(:manage_repl, Dict("command" => "shutdown", "session" => session))
 end
 
+function (@main)(ARGS)
+    port = 2828
+    theme = :kokaku
+    headless = false
+    use_revise = false
+
+    i = 1
+    while i <= length(ARGS)
+        arg = ARGS[i]
+        if arg in ("--port", "-p") && i < length(ARGS)
+            i += 1
+            port = parse(Int, ARGS[i])
+        elseif arg in ("--theme", "-t") && i < length(ARGS)
+            i += 1
+            theme = Symbol(ARGS[i])
+        elseif arg in ("--revise", "-r")
+            use_revise = true
+        elseif arg == "--headless"
+            headless = true
+        elseif arg in ("--help", "-h")
+            println("""
+            Kaimon — persistent MCP server with terminal dashboard
+
+            Usage: kaimon [options]
+
+            Options:
+              -p, --port PORT    MCP HTTP server port (default: 2828)
+              -t, --theme NAME   Theme: kokaku, esper, motoko, neuromancer (default: kokaku)
+              -r, --revise       Load Revise for live code reloading
+              --headless         Run without TUI (headless MCP server)
+              -h, --help         Show this help""")
+            return
+        else
+            println("Unknown argument: $arg")
+            return
+        end
+        i += 1
+    end
+
+    # Load Revise if requested
+    if use_revise
+        try
+            Main.eval(:(using Revise))
+        catch e
+            @warn "Could not load Revise, continuing without it" exception = e
+        end
+    end
+
+    # Load optional extensions
+    try Main.eval(:(using PDFIO)) catch end
+
+    if headless
+        start!(; port = port)
+        Base.JLOptions().isinteractive == 0 && wait(Condition())
+    else
+        # Check that Kaimon is in the global Julia environment
+        if isa(stdin, Base.TTY)
+            global_env = joinpath(homedir(), ".julia", "environments",
+                                  "v$(VERSION.major).$(VERSION.minor)")
+            global_proj = joinpath(global_env, "Project.toml")
+            in_global = isfile(global_proj) &&
+                haskey(get(Pkg.TOML.parsefile(global_proj), "deps", Dict()), "Kaimon")
+
+            if !in_global
+                println("""
+
+                Kaimon is not installed in your global Julia environment.
+
+                Gate.serve() must be called from your project REPLs to connect them
+                to the Kaimon dashboard. For this to work, Kaimon needs to be
+                available in every Julia session — the global environment is the
+                recommended place to install it.
+                """)
+                print("Add Kaimon to your global Julia environment now? [Y/n]: ")
+                response = strip(readline())
+                if isempty(response) || lowercase(response) in ("y", "yes")
+                    @info "Installing Kaimon in global environment..."
+                    try
+                        kaimon_dir = dirname(@__DIR__)
+                        env = copy(ENV)
+                        delete!(env, "JULIA_PROJECT")
+                        delete!(env, "JULIA_LOAD_PATH")
+                        run(setenv(```$(Base.julia_cmd()) --startup-file=no -e """
+                            using Pkg
+                            Pkg.develop(path=$(repr(kaimon_dir)))
+                            """```, env))
+                        println("\nDone. You can now call `using Kaimon` from any Julia session.\n")
+                    catch e
+                        @warn "Global install failed" exception = e
+                    end
+                else
+                    println()
+                end
+            end
+        end
+
+        # First-time setup: launch security wizard if no config exists
+        has_config = load_security_config() !== nothing ||
+                     load_global_security_config() !== nothing
+        if !has_config
+            result = setup_wizard_tui()
+            result === nothing && return
+        end
+
+        # Revise polling for non-REPL context
+        if use_revise && isdefined(Main, :Revise)
+            Threads.@spawn begin
+                while true
+                    try
+                        Main.Revise.revise()
+                    catch e
+                        e isa InterruptException && break
+                    end
+                    sleep(3)
+                end
+            end
+        end
+
+        tui(; port = port, theme_name = theme)
+    end
+end
+
 end #module
