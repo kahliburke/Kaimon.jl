@@ -884,7 +884,7 @@ qdrant_delete_points_tool = @mcp_tool(
 
 qdrant_search_tool = @mcp_tool(
     :qdrant_search,
-    "Search a Qdrant collection with a pre-computed vector. Returns raw results with scores and payloads.",
+    "Search a Qdrant collection with a pre-computed vector. Returns raw results with scores and payloads. Optional filter narrows results by payload fields (Qdrant filter syntax).",
     Dict(
         "type" => "object",
         "properties" => Dict(
@@ -899,6 +899,10 @@ qdrant_search_tool = @mcp_tool(
                 "type" => "integer",
                 "description" => "Maximum number of results (default: 10)",
             ),
+            "filter" => Dict(
+                "type" => "object",
+                "description" => "Qdrant payload filter (e.g., {\"must\": [{\"key\": \"tier\", \"match\": {\"value\": \"derived\"}}]})",
+            ),
         ),
         "required" => ["collection", "vector"],
     ),
@@ -912,8 +916,9 @@ qdrant_search_tool = @mcp_tool(
         isempty(raw_vector) && return "Error: vector is required"
         vector = Vector{Float64}(raw_vector)
         limit = Int(get(args, "limit", 10))
+        filter = get(args, "filter", nothing)
 
-        return QdrantClient.search(collection, vector; limit = limit)
+        return QdrantClient.search(collection, vector; limit = limit, filter = filter)
     end
 )
 
