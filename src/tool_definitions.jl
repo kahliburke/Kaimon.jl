@@ -125,12 +125,15 @@ ping_tool = @mcp_tool(
         # Connected Julia sessions
         mgr = GATE_CONN_MGR[]
         if mgr !== nothing
-            conns = connected_sessions(mgr)
             all_conns = lock(mgr.lock) do
                 copy(mgr.connections)
             end
-            status *= "\n\nSessions: $(length(conns)) connected / $(length(all_conns)) total"
-            for conn in all_conns
+            # Separate extension sessions from regular sessions
+            ext_conns = filter(c -> c.spawned_by == "extension", all_conns)
+            user_conns = filter(c -> c.spawned_by != "extension", all_conns)
+            connected_count = count(c -> c.status == :connected, user_conns)
+            status *= "\n\nSessions: $(connected_count) connected / $(length(user_conns)) total"
+            for conn in user_conns
                 key = short_key(conn)
                 dname = isempty(conn.display_name) ? conn.name : conn.display_name
                 icon =
@@ -153,6 +156,12 @@ ping_tool = @mcp_tool(
                 end
                 status *= "\n  $icon $key $dname ($(conn.status), Julia $(conn.julia_version), PID $(conn.pid)$tools_info$stalled_info)"
                 status *= "\n    project: $(conn.project_path)"
+            end
+            # Extension session summary
+            if !isempty(ext_conns)
+                active_ext = filter(c -> c.status == :connected || c.status == :evaluating, ext_conns)
+                names = [isempty(c.namespace) ? c.display_name : c.namespace for c in active_ext]
+                status *= "\nExtensions: $(length(active_ext)) active ($(join(names, ", ")))"
             end
         end
 
@@ -272,50 +281,37 @@ server_log_tool = @mcp_tool(
         _format_entry(e::ServerLogEntry) =
             "$(Dates.format(e.timestamp, "yyyy-mm-dd HH:MM:SS")) [$(rpad(uppercase(string(e.level)),5))] $(e.message)"
 
-        if GATE_MODE[]
-            # TUI mode: in-memory ring buffer
-            entries = lock(_TUI_LOG_LOCK) do
-                copy(_TUI_LOG_BUFFER)
-            end
-            entries = _apply_level_filter(entries, level_filter)
-            since_dt !== nothing && filter!(e -> e.timestamp >= since_dt, entries)
-            length(entries) > limit && (entries = entries[end-limit+1:end])
-            isempty(entries) && return "No log entries found matching the specified criteria."
-            return join(_format_entry.(entries), "\n")
-        else
-            # Standalone mode: read from log file
-            log_path = _TUI_LOG_PATH
-            isfile(log_path) || return "Log file not available (server not in TUI mode).\nExpected location: $log_path"
+        log_path = _TUI_LOG_PATH
+        isfile(log_path) || return "No log file found at $log_path"
 
-            all_lines = try
-                readlines(log_path)
-            catch e
-                return "Failed to read log file: $e"
-            end
+        all_lines = try
+            readlines(log_path)
+        catch e
+            return "Failed to read log file: $e"
+        end
 
-            # Filter by since (log line format: "YYYY-MM-DD HH:MM:SS [LEVEL] msg")
-            if since_dt !== nothing
-                filter!(all_lines) do line
-                    length(line) < 19 && return true
-                    try
-                        DateTime(line[1:19], "yyyy-mm-dd HH:MM:SS") >= since_dt
-                    catch
-                        true
-                    end
+        # Filter by since (log line format: "YYYY-MM-DD HH:MM:SS [LEVEL] msg")
+        if since_dt !== nothing
+            filter!(all_lines) do line
+                length(line) < 19 && return true
+                try
+                    DateTime(line[1:19], "yyyy-mm-dd HH:MM:SS") >= since_dt
+                catch
+                    true
                 end
             end
-
-            # Filter by level
-            if level_filter in ("warn", "warning")
-                filter!(l -> contains(l, "[WARN ") || contains(l, "[ERROR"), all_lines)
-            elseif level_filter == "error"
-                filter!(l -> contains(l, "[ERROR"), all_lines)
-            end
-
-            length(all_lines) > limit && (all_lines = all_lines[end-limit+1:end])
-            isempty(all_lines) && return "No log entries found matching the specified criteria."
-            return join(all_lines, "\n")
         end
+
+        # Filter by level
+        if level_filter in ("warn", "warning")
+            filter!(l -> contains(l, "[WARN ") || contains(l, "[ERROR"), all_lines)
+        elseif level_filter == "error"
+            filter!(l -> contains(l, "[ERROR"), all_lines)
+        end
+
+        length(all_lines) > limit && (all_lines = all_lines[end-limit+1:end])
+        isempty(all_lines) && return "No log entries found matching the specified criteria."
+        return join(all_lines, "\n")
     end
 )
 
@@ -614,11 +610,7 @@ Call with no `project_path` to list allowed projects and their status.""",
         end
 
         # Normalize path
-        path = try
-            realpath(expanduser(rstrip(raw_path, ['/', '\\'])))
-        catch
-            expanduser(rstrip(raw_path, ['/', '\\']))
-        end
+        path = normalize_path(raw_path)
 
         # Validate directory and Project.toml
         isdir(path) || return "Error: Directory does not exist: $path"
