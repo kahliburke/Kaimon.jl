@@ -36,10 +36,14 @@ code search.
 
 ## Quick Start
 
+```julia
+]app add https://github.com/kahliburke/Kaimon.jl
+```
+
+This installs the `kaimon` command to `~/.julia/bin/` (make sure it's on your `PATH`). Then:
+
 ```bash
-git clone https://github.com/kahliburke/Kaimon.jl
-cd Kaimon.jl
-./bin/kaimon
+kaimon
 ```
 
 The first run opens a setup wizard (security mode, API key, port). After that, the terminal dashboard launches:
