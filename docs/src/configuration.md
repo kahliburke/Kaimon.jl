@@ -12,35 +12,44 @@ Kaimon uses [Preferences.jl](https://github.com/JuliaPackaging/Preferences.jl) f
 
 Layout preferences for TUI panels (sizes, positions, visibility) are also persisted through the Preferences system.
 
-## Config Directories
+## Directory Layout
 
-Kaimon organizes configuration across three locations:
+Kaimon organizes files across three locations: a global config directory, a cache directory for runtime data, and a per-project `.kaimon/` directory.
 
-### `~/.cache/kaimon/`
+### Global config — `~/.config/kaimon/`
 
-Cache directory for runtime data:
+Respects `XDG_CONFIG_HOME` on Linux/macOS; uses `APPDATA` on Windows.
 
-- Socket files for REPL-to-MCP communication
-- Log files
-- Temporary data
+| File | Purpose |
+|------|---------|
+| `security.json` | Global security settings ([details](@ref security-config)) |
+| `projects.json` | Allowed projects for managed sessions ([details](@ref projects-config)) |
+| `extensions.json` | Extension registry ([details](extensions.md)) |
 
-The cache directory respects the `XDG_CACHE_HOME` environment variable. On Windows, it falls back to `LOCALAPPDATA`.
+### Cache — `~/.cache/kaimon/`
 
-### `~/.config/kaimon/`
+Respects `XDG_CACHE_HOME` on Linux/macOS; uses `LOCALAPPDATA` on Windows.
 
-Global configuration that applies across all projects:
+| File / pattern | Purpose |
+|----------------|---------|
+| `server.log` | Main server log (TUI and standalone modes) |
+| `sessions/<name>.log` | Per managed-session log |
+| `extensions/<namespace>.log` | Per extension subprocess log |
+| `indexer.log` | Qdrant indexer log |
+| `kaimon.db` | SQLite database (activity history, session metadata) |
+| `sessions.json` | Active MCP session registry |
+| `qdrant_projects.json` | Qdrant index tracking (which projects are indexed) |
+| `*.sock` | Unix sockets for REPL-to-MCP communication |
 
-- **`security.json`** -- Global security settings (see [Security Configuration](@ref security-config) below)
-- **`projects.json`** -- Allowed projects for managed sessions (see [Projects Configuration](@ref projects-config) below)
-- **`extensions.json`** -- Extension registry (see [Extensions](extensions.md))
+### Per-project — `.kaimon/`
 
-### `.kaimon/` (per-project)
+Located in the project root directory.
 
-Project-level configuration, located in the project root:
-
-- **`security.json`** -- Project-specific security overrides
-- **`tools.json`** -- Enable or disable individual MCP tools for this project
-- **`sessions.json`** -- Tracks active MCP sessions connected to this project
+| File | Purpose |
+|------|---------|
+| `security.json` | Project-specific security overrides |
+| `tools.json` | Enable or disable individual MCP tools for this project |
+| `sessions.json` | Tracks active MCP sessions connected to this project |
 
 ## [Security Configuration](@id security-config)
 
@@ -142,8 +151,10 @@ This is useful for restricting which operations MCP agents can perform in sensit
 
 | Variable | Platform | Description |
 |----------|----------|-------------|
+| `XDG_CONFIG_HOME` | Linux/macOS | Override the default config directory (`~/.config`). Kaimon stores config in `$XDG_CONFIG_HOME/kaimon/`. |
+| `APPDATA` | Windows | Windows config directory. Kaimon stores config in `$APPDATA/Kaimon/`. |
 | `XDG_CACHE_HOME` | Linux/macOS | Override the default cache directory (`~/.cache`). Kaimon stores data in `$XDG_CACHE_HOME/kaimon/`. |
-| `LOCALAPPDATA` | Windows | Windows equivalent of the cache directory. Kaimon stores data in `$LOCALAPPDATA/kaimon/`. |
+| `LOCALAPPDATA` | Windows | Windows equivalent of the cache directory. Kaimon stores data in `$LOCALAPPDATA/Kaimon/`. |
 
 ## TUI Configuration
 
