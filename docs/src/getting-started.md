@@ -2,6 +2,14 @@
 
 ## 1. Launch Kaimon
 
+If you installed via `]app add` (see [Installation](installation.md)), run:
+
+```bash
+kaimon
+```
+
+Or, if you cloned the repo:
+
 ```bash
 ./bin/kaimon
 ```
@@ -22,9 +30,9 @@ logs, search index status, and configuration — all from one place.
 ### Launch options
 
 ```bash
-./bin/kaimon --port 3000       # custom port
-./bin/kaimon --theme esper     # theme: kokaku, esper, motoko, neuromancer
-./bin/kaimon --revise          # load Revise for live code reloading
+kaimon --port 3000       # custom port
+kaimon --theme esper     # theme: kokaku, esper, motoko, neuromancer
+kaimon --revise          # load Revise for live code reloading
 ```
 
 ## 2. Connect an MCP Client

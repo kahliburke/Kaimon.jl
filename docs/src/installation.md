@@ -6,7 +6,23 @@
 
 ## Install Kaimon
 
-Clone the repository and use `bin/kaimon` as the launcher:
+### Option A: Julia App (Recommended)
+
+Use Julia's package app system to install the `kaimon` command globally:
+
+```julia
+]app add https://github.com/kahliburke/Kaimon.jl
+```
+
+This installs a `kaimon` script to `~/.julia/bin/`. Make sure `~/.julia/bin` is on your `PATH`, then launch from anywhere:
+
+```bash
+kaimon
+```
+
+### Option B: Clone and Run
+
+Clone the repository and use the launcher script directly:
 
 ```bash
 git clone https://github.com/kahliburke/Kaimon.jl
@@ -14,9 +30,11 @@ cd Kaimon.jl
 ./bin/kaimon
 ```
 
-`bin/kaimon` activates the project, installs dependencies on first run, and launches the terminal dashboard. This is the recommended way to run Kaimon.
+`bin/kaimon` activates the project, installs dependencies on first run, and launches the terminal dashboard.
 
-Alternatively, add it as a Julia package for use as a library:
+### As a Library
+
+To use Kaimon as a Julia package (e.g., for `Gate.serve()` in your own projects):
 
 ```julia
 using Pkg
