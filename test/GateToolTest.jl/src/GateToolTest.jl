@@ -34,6 +34,27 @@ function run()
     end
 end
 
-export run, TodoBoardModel, create_tools, debug_fibonacci, debug_data_pipeline, debug_matrix_solver
+"""
+    extension_tools(::Type{GateTool}) -> Vector{GateTool}
+
+Entry point for the Kaimon extension lifecycle. Creates a headless `TodoBoardModel`
+and returns all tools operating on it — no TUI required.
+"""
+function extension_tools(::Type{GateTool})
+    model = TodoBoardModel()
+    return create_tools(model)
+end
+
+"""
+    on_shutdown()
+
+Called by the extension manager before the gate process exits.
+"""
+function on_shutdown()
+    @info "GateToolTest extension shutting down"
+end
+
+export run, TodoBoardModel, create_tools, extension_tools, on_shutdown
+export debug_fibonacci, debug_data_pipeline, debug_matrix_solver
 
 end # module GateToolTest

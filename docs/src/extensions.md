@@ -30,6 +30,7 @@ description = "What this extension does."
 | `module` | Yes | Julia module name to `using` |
 | `tools_function` | Yes | Exported function that returns `Vector{GateTool}` |
 | `description` | No | Human-readable summary for display in the TUI and `extension_info` |
+| `shutdown_function` | No | Exported no-arg function called before the extension process exits (5 s timeout) |
 
 ## Extension Registry
 
@@ -67,6 +68,15 @@ Extensions go through these states:
 | `:crashed` | Process exited unexpectedly |
 
 If an extension crashes, Kaimon automatically restarts it with exponential backoff (5s, 10s, 30s, 60s delays).
+
+### Graceful Shutdown
+
+When an extension is stopped (via the TUI, a restart, or Kaimon exiting), the shutdown sequence is:
+
+1. Gate receives shutdown signal.
+2. If `shutdown_function` is declared, the hook is called with a **5-second timeout**. Use this to flush state, close connections, or log a shutdown message.
+3. If the hook completes or times out, the process exits normally.
+4. If the process does not exit, Kaimon sends `SIGTERM`, then `SIGKILL` after a grace period.
 
 ## Tool Namespacing
 
@@ -130,6 +140,7 @@ namespace = "myext"
 module = "MyExtension"
 tools_function = "tools"
 description = "A minimal example extension."
+# shutdown_function = "on_shutdown"   # optional: called before process exit
 ```
 
 ### `src/MyExtension.jl`
