@@ -9,10 +9,11 @@ Parsed from `kaimon.toml` in the extension project root.
 Declares how Kaimon should load and namespace the extension's tools.
 """
 struct ExtensionManifest
-    namespace::String       # dot-namespace prefix (e.g. "smlabnotes")
-    module_name::String     # Julia module to `using` (e.g. "SMLabNotes")
-    tools_function::String  # exported function returning Vector{GateTool}
-    description::String     # human-readable description (from kaimon.toml, optional)
+    namespace::String           # dot-namespace prefix (e.g. "smlabnotes")
+    module_name::String         # Julia module to `using` (e.g. "SMLabNotes")
+    tools_function::String      # exported function returning Vector{GateTool}
+    description::String         # human-readable description (from kaimon.toml, optional)
+    shutdown_function::String   # optional cleanup function called before process exit
 end
 
 """
@@ -44,7 +45,7 @@ end
 Path to the global extensions registry: `~/.config/kaimon/extensions.json`.
 """
 function get_extensions_config_path()
-    return joinpath(homedir(), ".config", "kaimon", "extensions.json")
+    return joinpath(kaimon_config_dir(), "extensions.json")
 end
 
 # ── kaimon.toml parsing ──────────────────────────────────────────────────────
@@ -70,12 +71,14 @@ function parse_extension_manifest(project_path::AbstractString)
         error("kaimon.toml missing extension.tools_function at $toml_path")
 
     description = String(get(ext, "description", ""))
+    shutdown_function = String(get(ext, "shutdown_function", ""))
 
     return ExtensionManifest(
         String(namespace),
         String(module_name),
         String(tools_function),
         description,
+        shutdown_function,
     )
 end
 

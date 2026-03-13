@@ -86,6 +86,13 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
             m.debug_console_pane !== nothing && handle_mouse!(m.debug_console_pane, evt)
         end
         8 => begin
+            if m.ext_detail_open && m.ext_detail_pane !== nothing
+                handle_mouse!(m.ext_detail_pane, evt)
+            else
+                handle_resize!(m.extensions_layout, evt)
+            end
+        end
+        9 => begin
             handle_resize!(m.advanced_layout, evt)
             if Base.contains(m._stress_horde_area, evt.x, evt.y)
                 if evt.button == mouse_scroll_up
@@ -95,13 +102,6 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
                 end
             end
             m.stress_scroll_pane !== nothing && handle_mouse!(m.stress_scroll_pane, evt)
-        end
-        9 => begin
-            if m.ext_detail_open && m.ext_detail_pane !== nothing
-                handle_mouse!(m.ext_detail_pane, evt)
-            else
-                handle_resize!(m.extensions_layout, evt)
-            end
         end
         _ => nothing
     end
@@ -288,7 +288,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
     end
 
     # When an extension flow is active, route all input there
-    if m.active_tab == 9 && m.ext_flow != :idle
+    if m.active_tab == 8 && m.ext_flow != :idle
         evt.key == :escape && (m.ext_flow = :idle; return)
         _handle_ext_flow_input!(m, evt)
         return
@@ -301,13 +301,13 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
     end
 
     # When a stress modal is open, capture all input
-    if m.active_tab == 8 && m.stress_modal != :none
+    if m.active_tab == 9 && m.stress_modal != :none
         _handle_stress_modal_key!(m, evt)
         return
     end
 
     # When a stress test form field is in edit mode, capture all input
-    if m.active_tab == 8 && m.stress_editing
+    if m.active_tab == 9 && m.stress_editing
         _handle_stress_field_edit!(m, evt)
         return
     end
@@ -430,7 +430,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
                     return
                 end
                 5 => (_handle_tests_escape!(m); return)
-                9 => begin
+                8 => begin
                     if m.ext_flow != :idle
                         m.ext_flow = :idle
                     elseif m.ext_detail_open
@@ -441,7 +441,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
                     end
                     return
                 end
-                8 => begin
+                9 => begin
                     if m.stress_modal != :none
                         m.stress_modal = :none
                     elseif m.stress_state == STRESS_RUNNING
@@ -518,8 +518,8 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
         end
 
         7 => Base.invokelatest(_handle_debug_key!, m, evt)
-        8 => _handle_stress_key!(m, evt)
-        9 => _handle_extensions_key!(m, evt)
+        8 => _handle_extensions_key!(m, evt)
+        9 => _handle_stress_key!(m, evt)
         _ => nothing
     end
 end
@@ -650,7 +650,9 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
             end
         end
 
-        (8, 1) => @match evt.key begin
+        (8, _) => _handle_extensions_nav!(m, evt, fp)
+
+        (9, 1) => @match evt.key begin
             :up => (m.stress_field_idx = max(1, m.stress_field_idx - 1))
             :down => (m.stress_field_idx = min(8, m.stress_field_idx + 1))
             :enter => _handle_stress_enter!(m)
@@ -659,7 +661,7 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
             :pagedown => (m.stress_horde_scroll += 5)
             _ => nothing
         end
-        (8, 2) => begin
+        (9, 2) => begin
             step = evt.key in (:pageup, :pagedown) ? 5 : 1
             @match evt.key begin
                 :up || :pageup =>
@@ -668,7 +670,7 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
                 _ => nothing
             end
         end
-        (8, 3) =>
+        (9, 3) =>
             (m.stress_scroll_pane !== nothing && handle_key!(m.stress_scroll_pane, evt))
 
         (6, 4) => @match evt.key begin
@@ -679,8 +681,6 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
             end
             _ => nothing
         end
-
-        (9, _) => _handle_extensions_nav!(m, evt, fp)
 
         _ => nothing
     end
@@ -827,7 +827,7 @@ function _switch_tab!(m::KaimonModel, tab::Int)
 end
 
 # Tab label lengths for mouse hit testing (must match the TabBar labels in view)
-const _TAB_LABEL_LENS = [8, 10, 10, 8, 7, 8, 7, 10, 12]  # "1 Server", "2 Sessions", "3 Activity", "4 Search", "5 Tests", "6 Config", "7 Debug", "8 Advanced", "9 Extensions"
+const _TAB_LABEL_LENS = [8, 10, 10, 8, 7, 8, 7, 12, 10]  # "1 Server", "2 Sessions", "3 Activity", "4 Search", "5 Tests", "6 Config", "7 Debug", "8 Extensions", "9 Advanced"
 const _TAB_SEPARATOR_LEN = 3  # " │ "
 
 """Determine which tab (1-7) was clicked at `click_x`, or 0 if none."""

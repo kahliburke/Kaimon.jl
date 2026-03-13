@@ -214,7 +214,7 @@ end
     # Tab 1: 1=status, 2=log | Tab 2: 1=gates, 2=agents, 3=detail
     # Tab 3: 1=list, 2=detail | Tab 4: 1=server, 2=actions, 3=clients
     # Tab 5: 1=form, 2=output | Tab 6: 1=runs list, 2=results
-    # Tab 7: 1=form, 2=horde, 3=output | Tab 9: 1=list, 2=detail
+    # Tab 7: 1=form, 2=horde, 3=output | Tab 8: 1=list, 2=detail
     focused_pane::Dict{Int,Int} =
         Dict(1 => 2, 2 => 1, 3 => 1, 4 => 1, 5 => 1, 6 => 1, 7 => 2, 8 => 1, 9 => 1)
 
@@ -234,7 +234,7 @@ end
     test_session_picker_selected::Int = 1
     test_status_msg::String = ""           # shown in the empty-runs pane on error
 
-    # ── Advanced tab (stress test) ──
+    # ── Advanced tab (stress test, tab 9) ──
     stress_state::StressState = STRESS_IDLE
     stress_code::String = "sleep(3); 42"
     stress_tool::String = ""            # MCP tool name; empty = "ex" (eval path)
@@ -369,7 +369,7 @@ end
     launch_config_inputs::Dict{Symbol,Any} = Dict{Symbol,Any}()  # TextInput widgets for threads/gc/heap/extra
     launch_config_selected::Int = 1  # which field is focused (1-4)
 
-    # ── Extensions tab (tab 9) ──
+    # ── Extensions tab (tab 8) ──
     ext_selected::Int = 1                 # selected extension in list
     ext_detail_scroll::Int = 0            # scroll offset in detail pane
     extensions_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(40), Fill()])
@@ -393,8 +393,8 @@ end
 end
 
 # Number of focusable panes per tab
-# Tab order: 1=Server 2=Sessions 3=Activity 4=Search 5=Tests 6=Config 7=Debug 8=Advanced 9=Extensions
-const _PANE_COUNTS = Dict(1 => 2, 2 => 3, 3 => 2, 4 => 3, 5 => 2, 6 => 4, 7 => 2, 8 => 3, 9 => 2)
+# Tab order: 1=Server 2=Sessions 3=Activity 4=Search 5=Tests 6=Config 7=Debug 8=Extensions 9=Advanced
+const _PANE_COUNTS = Dict(1 => 2, 2 => 3, 3 => 2, 4 => 3, 5 => 2, 6 => 4, 7 => 2, 8 => 2, 9 => 3)
 
 """Return the border style for a pane — highlighted if focused."""
 function _pane_border(m::KaimonModel, tab::Int, pane::Int)

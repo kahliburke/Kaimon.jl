@@ -21,8 +21,9 @@ mutable struct ManagedExtension
 end
 
 function ManagedExtension(config::ExtensionConfig)
-    log_dir = kaimon_cache_dir()
-    log_file = joinpath(log_dir, "ext_$(config.manifest.namespace).log")
+    log_dir = joinpath(kaimon_cache_dir(), "extensions")
+    mkpath(log_dir)
+    log_file = joinpath(log_dir, "$(config.manifest.namespace).log")
     ManagedExtension(config, nothing, :stopped, 0.0, 0.0, 0, "", String[], log_file)
 end
 
@@ -46,21 +47,25 @@ Generate the Julia `-e` script that boots the extension subprocess.
 function _build_extension_script(config::ExtensionConfig)
     m = config.manifest
     e = config.entry
-    # The subprocess:
-    # 1. Activates the extension's project so its deps are available
-    # 2. Loads Kaimon (from the dev/global install)
-    # 3. Loads the extension module
-    # 4. Calls the tools_function to get GateTools
-    # 5. Starts the gate with the namespace
+    # The subprocess is launched with --project=<extension path>, so the
+    # extension package and its deps are available immediately.
+    # Kaimon is added to LOAD_PATH explicitly so it doesn't need to be
+    # in the user's global environment.
+    kaimon_dir = pkgdir(Kaimon)
+    on_shutdown_kwarg = if !isempty(m.shutdown_function)
+        ", on_shutdown=$(m.module_name).$(m.shutdown_function)"
+    else
+        ""
+    end
     return """
     try
         using Revise
     catch; end
+    insert!(LOAD_PATH, 1, $(repr(kaimon_dir)))
     using Kaimon
-    import Pkg; Pkg.activate($(repr(e.project_path)); io=devnull)
     using $(m.module_name)
     tools = $(m.module_name).$(m.tools_function)(Kaimon.Gate.GateTool)
-    Kaimon.Gate.serve(tools=tools, namespace=$(repr(m.namespace)), force=true, allow_mirror=false, allow_restart=false, spawned_by="extension")
+    Kaimon.Gate.serve(tools=tools, namespace=$(repr(m.namespace)), force=true, allow_mirror=false, allow_restart=false, spawned_by="extension"$on_shutdown_kwarg)
     while true; sleep(60); end
     """
 end
@@ -80,9 +85,16 @@ function spawn_extension!(ext::ManagedExtension)
     log_io = nothing
 
     try
-        # Use julia with threads for responsiveness
+        # Use julia with threads for responsiveness.
+        # Clear JULIA_LOAD_PATH and JULIA_PROJECT so --project controls the
+        # active environment and the default LOAD_PATH ["@", "@v#.#", "@stdlib"]
+        # is used.  The parent process may have these set (e.g. from the launcher).
         julia_bin = joinpath(Sys.BINDIR, "julia")
-        cmd = `$julia_bin -t auto --startup-file=no -e $script`
+        project = ext.config.entry.project_path
+        env = copy(ENV)
+        delete!(env, "JULIA_LOAD_PATH")
+        delete!(env, "JULIA_PROJECT")
+        cmd = setenv(`$julia_bin -t auto --startup-file=no --project=$project -e $script`, env)
 
         # Redirect output to log file
         log_io = open(ext.log_file, "a")
@@ -140,15 +152,28 @@ function stop_extension!(ext::ManagedExtension; timeout::Float64 = 5.0)
 
     proc = ext.process
     if proc !== nothing && Base.process_running(proc)
-        try
-            kill(proc, Base.SIGTERM)
-        catch
+        # Try graceful gate shutdown first — this lets the on_shutdown hook run
+        gate_ok = _try_gate_shutdown!(ext)
+
+        if gate_ok
+            # Gate acknowledged — wait for the process to exit cleanly
+            deadline = time() + timeout
+            while Base.process_running(proc) && time() < deadline
+                sleep(0.1)
+            end
         end
 
-        # Wait for graceful shutdown
-        deadline = time() + timeout
-        while Base.process_running(proc) && time() < deadline
-            sleep(0.1)
+        # Fall back to SIGTERM if gate shutdown didn't work or process is still alive
+        if Base.process_running(proc)
+            try
+                kill(proc, Base.SIGTERM)
+            catch
+            end
+
+            deadline = time() + timeout
+            while Base.process_running(proc) && time() < deadline
+                sleep(0.1)
+            end
         end
 
         # Force kill if still running
@@ -164,6 +189,35 @@ function stop_extension!(ext::ManagedExtension; timeout::Float64 = 5.0)
     ext.status = :stopped
     ext.session_key = ""
     _push_log!(:info, "Extension '$(ext.config.manifest.namespace)' stopped")
+end
+
+"""
+    _try_gate_shutdown!(ext::ManagedExtension) -> Bool
+
+Attempt to send a `:shutdown` command to the extension's gate connection.
+Returns `true` if the gate acknowledged the shutdown request.
+"""
+function _try_gate_shutdown!(ext::ManagedExtension)
+    mgr = GATE_CONN_MGR[]
+    mgr === nothing && return false
+    ns = ext.config.manifest.namespace
+
+    # Find the extension's connection by namespace
+    conn = nothing
+    for c in connected_sessions(mgr)
+        if c.namespace == ns
+            conn = c
+            break
+        end
+    end
+    conn === nothing && return false
+
+    try
+        return send_shutdown!(conn)
+    catch e
+        _push_log!(:debug, "Gate shutdown failed for '$ns': $(sprint(showerror, e))")
+        return false
+    end
 end
 
 """

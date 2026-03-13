@@ -254,8 +254,8 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
                 m.debug_state == :paused ? tstyle(:error, bold = true) : tstyle(:text),
             ),
         ],
-        [Span("8", tstyle(:warning)), Span(" Advanced", tstyle(:text))],
-        [Span("9", tstyle(:warning)), Span(" Extensions", tstyle(:text))],
+        [Span("8", tstyle(:warning)), Span(" Extensions", tstyle(:text))],
+        [Span("9", tstyle(:warning)), Span(" Advanced", tstyle(:text))],
     ]
 
     # Compute visible tab window that fits in tab_area and includes the active tab.
@@ -346,8 +346,8 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         end
         6 => view_config(m, content_area, buf)
         7 => Base.invokelatest(view_debug, m, content_area, buf)
-        8 => view_advanced(m, content_area, buf)
-        9 => view_extensions(m, content_area, buf)
+        8 => view_extensions(m, content_area, buf)
+        9 => view_advanced(m, content_area, buf)
         _ => nothing
     end
 

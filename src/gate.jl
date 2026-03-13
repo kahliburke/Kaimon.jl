@@ -56,6 +56,7 @@ const _RESTARTING = Ref{Bool}(false)
 # Set by :shutdown handler so the message loop's `finally` block knows
 # to call _cleanup() after the reply has been sent and the loop exits.
 const _SHUTTING_DOWN = Ref{Bool}(false)
+const _ON_SHUTDOWN = Ref{Any}(nothing)
 
 # ── Debug Breakpoint State ───────────────────────────────────────────────────
 # Programmatic breakpoint system for agent-assisted debugging.
@@ -1654,6 +1655,7 @@ function serve(;
     allow_mirror::Bool = true,
     allow_restart::Bool = true,
     spawned_by::String = "user",
+    on_shutdown::Any = nothing,
 )
     _serve(;
         name = basename(dirname(something(Base.active_project(), "julia"))),
@@ -1664,6 +1666,7 @@ function serve(;
         allow_mirror,
         allow_restart,
         spawned_by,
+        on_shutdown,
     )
 end
 
@@ -1676,6 +1679,7 @@ function _serve(;
     allow_mirror::Bool = true,
     allow_restart::Bool = true,
     spawned_by::String = "user",
+    on_shutdown::Any = nothing,
 )
     # Capture original argv for restart replay (once, on first call)
     _capture_original_argv()
@@ -1745,6 +1749,7 @@ function _serve(;
     _SESSION_NAMESPACE[] = namespace
     _ALLOW_MIRROR[] = allow_mirror
     _ALLOW_RESTART[] = allow_restart
+    _ON_SHUTDOWN[] = on_shutdown
 
     # Ensure socket directory exists
     mkpath(SOCK_DIR)
@@ -1810,8 +1815,32 @@ function _serve(;
             @debug "Gate task exited" exception = e
         finally
             if _SHUTTING_DOWN[]
-                # Remote shutdown: clean up and exit the process
+                # Remote shutdown: run optional cleanup hook, then exit
                 _SHUTTING_DOWN[] = false
+                hook = _ON_SHUTDOWN[]
+                if hook !== nothing
+                    try
+                        ch = Channel{Nothing}(1)
+                        @async begin
+                            try
+                                Base.invokelatest(hook)
+                            catch e
+                                @debug "on_shutdown hook error" exception = e
+                            finally
+                                put!(ch, nothing)
+                            end
+                        end
+                        # Wait up to 5s for the hook to complete
+                        timer = Timer(5.0)
+                        @async begin
+                            wait(timer)
+                            isready(ch) || put!(ch, nothing)
+                        end
+                        take!(ch)
+                        close(timer)
+                    catch
+                    end
+                end
                 _cleanup()
                 exit(0)
             end
@@ -1919,6 +1948,7 @@ function _cleanup()
     _ALLOW_RESTART[] = true
     _SESSION_TOOLS[] = GateTool[]
     _SESSION_NAMESPACE[] = ""
+    _ON_SHUTDOWN[] = nothing
 end
 
 """
