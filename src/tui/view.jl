@@ -352,8 +352,17 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
     end
 
     # ── Status bar ──
-    n_conns = m.conn_mgr !== nothing ? length(connected_sessions(m.conn_mgr)) : 0
-    n_total = m.conn_mgr !== nothing ? length(m.conn_mgr.connections) : 0
+    n_sessions, n_exts = if m.conn_mgr !== nothing
+        conns = connected_sessions(m.conn_mgr)
+        ext_namespaces = Set(
+            ext.config.manifest.namespace for ext in get_managed_extensions()
+        )
+        ns = count(c -> c.spawned_by != "extension" && !(c.namespace in ext_namespaces), conns)
+        ne = count(c -> c.spawned_by == "extension" || c.namespace in ext_namespaces, conns)
+        (ns, ne)
+    else
+        (0, 0)
+    end
     n_agents = lock(STANDALONE_SESSIONS_LOCK) do
         count(s -> s.state == Session.INITIALIZED, values(STANDALONE_SESSIONS))
     end
@@ -379,7 +388,9 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
                     ),
                 ),
                 Span("  $(DOT) ", tstyle(:border)),
-                Span("$(n_conns)/$(n_total) sessions", tstyle(:primary)),
+                Span("$(n_sessions) sessions", tstyle(:primary)),
+                Span("  $(DOT) ", tstyle(:border)),
+                Span("$(n_exts) exts", tstyle(:primary)),
                 Span("  $(DOT) ", tstyle(:border)),
                 Span("$(n_agents) agents", tstyle(:secondary)),
             ],

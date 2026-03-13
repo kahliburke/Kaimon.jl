@@ -281,7 +281,15 @@ Uses signal 0 (no actual signal sent) via libuv.
 """
 function _is_pid_alive(pid::Int)
     pid > 0 || return false
-    ccall(:uv_kill, Cint, (Cint, Cint), pid, 0) == 0
+    ccall(:uv_kill, Cint, (Cint, Cint), pid, 0) == 0 || return false
+    # Zombie processes (defunct) still respond to signal 0.
+    # Check the process state to filter them out.
+    try
+        state = strip(read(pipeline(`ps -o state= -p $pid`; stderr=devnull), String))
+        !startswith(state, "Z")
+    catch
+        false
+    end
 end
 
 """
