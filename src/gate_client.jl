@@ -58,6 +58,7 @@ mutable struct REPLConnection
     mirror_repl::Bool            # Whether REPL mirroring is currently active
     debug_paused::Bool           # True when session is paused at an @infiltrate breakpoint
     diagnostics::Union{ProcessDiagnostics,Nothing}  # populated when stalled
+    backtrace_sample::Union{String,Nothing}  # stack sample captured when stalled
     spawned_by::String           # "user" or "agent" — how this session was started
 end
 
@@ -108,6 +109,7 @@ function REPLConnection(;
         false, # mirror_repl — updated from pong
         false, # debug_paused
         nothing, # diagnostics
+        nothing, # backtrace_sample
         spawned_by,
     )
 end
@@ -164,11 +166,39 @@ function _probe_process(pid::Int)::Union{ProcessDiagnostics,Nothing}
     end
 end
 
-"""Send SIGUSR1 to a Julia process to trigger a backtrace dump to stderr."""
-function _signal_backtrace(pid::Int)
+"""
+    trigger_backtrace(conn::REPLConnection) -> Union{String, Nothing}
+
+Send SIGINFO/SIGUSR1 to a stalled session to trigger a profile peek.
+The gate overrides `Profile.peek_report[]` to write to a file instead of
+stderr. Waits briefly for the file to appear, then reads and returns it.
+
+Returns the backtrace text, or `nothing` if the file doesn't appear in time.
+"""
+function trigger_backtrace(conn::REPLConnection)::Union{String,Nothing}
+    bt_path = joinpath(Gate.SOCK_DIR, "$(conn.session_id)-backtrace.txt")
+    # Remove stale file from previous trigger
+    rm(bt_path; force=true)
+    # Send the signal
+    sig = Sys.isbsd() ? 29 : 10
     try
-        ccall(:uv_kill, Cint, (Cint, Cint), pid, 10)  # 10 = SIGUSR1 on macOS/Linux
+        ccall(:uv_kill, Cint, (Cint, Cint), conn.pid, sig)
     catch
+        return nothing
+    end
+    # Poll for the file (profile peek takes ~1s by default + write time)
+    for _ in 1:30  # up to 3s
+        if isfile(bt_path) && filesize(bt_path) > 0
+            sleep(0.2)  # let it finish writing
+            try
+                txt = read(bt_path, String)
+                conn.backtrace_sample = txt
+                return txt
+            catch
+                return nothing
+            end
+        end
+        sleep(0.1)
     end
     return nothing
 end
@@ -1333,7 +1363,6 @@ function start!(mgr::ConnectionManager)
                                 @debug "Gate ping failed but process alive (GC pause?), marking stalled" name = conn.name pid = conn.pid
                                 conn.diagnostics = _probe_process(conn.pid)
                                 if conn.status != :stalled
-                                    _signal_backtrace(conn.pid)
                                     conn.status = :stalled
                                     _fire_sessions_changed(mgr)
                                 end

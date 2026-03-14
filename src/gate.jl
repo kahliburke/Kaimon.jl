@@ -27,6 +27,32 @@ const _GATE_CACHE_DIR = let
     d
 end
 const SOCK_DIR = joinpath(_GATE_CACHE_DIR, "sock")
+
+"""
+    _install_peek_report_override(session_id::String)
+
+Override `Profile.peek_report[]` so that SIGINFO/SIGUSR1 writes the profile
+report to `SOCK_DIR/<session_id>-backtrace.txt` instead of stderr. This avoids
+deadlocking PTY-backed sessions where the kernel buffer is small.
+"""
+function _install_peek_report_override(session_id::String)
+    try
+        Profile = Base.require(Base.PkgId(Base.UUID("9abbd945-dff8-562f-b5e8-e1ebf5ef1b79"), "Profile"))
+        bt_path = joinpath(SOCK_DIR, "$(session_id)-backtrace.txt")
+        Profile.peek_report[] = function ()
+            try
+                open(bt_path, "w") do io
+                    Base.invokelatest(Profile.print, io; groupby = [:thread, :task])
+                end
+            catch e
+                # Fall back to stderr if file write fails
+                @debug "peek_report file write failed" exception = e
+            end
+        end
+    catch
+        # Profile not available — skip
+    end
+end
 const GATE_LOCK = ReentrantLock()
 const _PUB_LOCK = ReentrantLock()
 
@@ -1871,6 +1897,12 @@ function _serve(;
         catch
         end
     end)
+
+    # Override Profile peek report to write to a file instead of stderr.
+    # When SIGINFO/SIGUSR1 fires, the C runtime prints a small message to
+    # stderr, but the bulk profile output goes through this Julia function.
+    # Writing to a file avoids filling the PTY buffer and deadlocking.
+    _install_peek_report_override(sid)
 
     emoticon = try
         parentmodule(@__MODULE__).load_personality()
