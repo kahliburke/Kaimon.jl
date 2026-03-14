@@ -95,6 +95,7 @@ end
     # REPL connections (managed by ConnectionManager)
     conn_mgr::Union{ConnectionManager,Nothing} = nothing
     selected_connection::Int = 1
+    sessions_table::Union{DataTable,Nothing} = nothing  # DataTable for REPL sessions list
     sessions_detail_scroll::Int = 0     # vertical scroll offset for the detail pane
     sessions_detail_max_scroll::Int = 0 # updated each frame by view_sessions
     _sessions_detail_area::Rect = Rect() # cached for mouse hit-testing
@@ -150,6 +151,13 @@ end
     total_tool_calls::Int = 0
     start_time::Float64 = time()
     personality_icon::String = load_personality()
+
+    # Backtrace capture
+    backtrace_collecting::Bool = false
+    backtrace_modal::Any = nothing          # Modal while collecting
+    backtrace_viewer::Any = nothing         # ScrollPane showing result
+    backtrace_result::Union{String,Nothing} = nothing  # raw trace text for saving
+    backtrace_conn_name::String = ""
 
     # Config flow state machine
     config_flow::ConfigFlow = FLOW_IDLE
@@ -391,6 +399,8 @@ end
     _code_stale::Bool = false
     _code_last_check::Float64 = 0.0
     _code_last_revise::Float64 = time()  # treat startup as "fresh"
+    _revise_polling::Bool = false         # true when Revise auto-poll is active
+    _revise_mod::Any = nothing            # Revise module ref for pre_render! hook
     _restart_requested::Bool = false      # unused, kept for struct stability
     _render_mode::Bool = false            # true during asset generation — disables all side effects
 end

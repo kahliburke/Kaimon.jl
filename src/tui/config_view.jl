@@ -56,9 +56,6 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
     if act.width >= 4
         y = act.y
         x = act.x + 1
-        set_string!(buf, x, y, "[o]", tstyle(:accent, bold = true))
-        set_string!(buf, x + 4, y, "Onboard project (gate setup)", tstyle(:text))
-        y += 1
         set_string!(buf, x, y, "[g]", tstyle(:accent, bold = true))
         set_string!(buf, x + 4, y, "Global gate (startup.jl)", tstyle(:text))
         y += 1
@@ -71,6 +68,11 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
         mirror_status = m.gate_mirror_repl ? "enabled" : "disabled"
         mirror_style = m.gate_mirror_repl ? tstyle(:success) : tstyle(:text_dim)
         set_string!(buf, x + 4, y, "status: $mirror_status", mirror_style)
+        y += 1
+        set_string!(buf, x, y, "[E]", tstyle(:accent, bold = true))
+        set_string!(buf, x + 4, y, "Editor for file links", tstyle(:text))
+        y += 1
+        set_string!(buf, x + 4, y, "current: $(m.editor)", tstyle(:success))
     end
 
     # ── Right column: MCP Clients (top) + Allowed Projects (bottom) ──
@@ -175,39 +177,7 @@ function view_config_flow(m::KaimonModel, area::Rect, buf::Buffer)
     # Dim background
     _dim_area!(buf, area)
 
-    if flow == FLOW_ONBOARD_PATH
-        if m.path_input !== nothing
-            m.path_input.tick = m.tick
-        end
-        _render_text_input_modal(
-            buf,
-            area,
-            "Add Project",
-            "Enter project path:",
-            m.path_input,
-            "[Enter] confirm  [Esc] cancel";
-            tick = m.tick,
-        )
-
-    elseif flow == FLOW_ONBOARD_CONFIRM
-        msg = "Install gate snippet?\n\nPath: $(_short_path(m.onboard_path))\nScope: project-level"
-        render(
-            Modal(
-                title = "Confirm Setup",
-                message = msg,
-                confirm_label = "Install",
-                cancel_label = "Cancel",
-                selected = m.flow_modal_selected,
-                tick = m.tick,
-            ),
-            area,
-            buf,
-        )
-
-    elseif flow == FLOW_ONBOARD_RESULT
-        _render_result_modal(buf, area, m.flow_success, m.flow_message; tick = m.tick)
-
-    elseif flow == FLOW_CLIENT_SELECT
+    if flow == FLOW_CLIENT_SELECT
         _render_selection_modal(
             buf,
             area,

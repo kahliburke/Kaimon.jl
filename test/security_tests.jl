@@ -22,33 +22,6 @@ using JSON
             @test key != key2
         end
 
-        @testset "Security Config - Save and Load" begin
-            # Create config
-            api_keys = [Kaimon.generate_api_key()]
-            allowed_ips = ["127.0.0.1", "::1", "192.168.1.1"]
-            config = Kaimon.SecurityConfig(:strict, api_keys, allowed_ips)
-
-            # Save
-            @test Kaimon.save_security_config(config, test_dir)
-
-            # Verify file exists
-            config_path = Kaimon.get_security_config_path(test_dir)
-            @test isfile(config_path)
-
-            # Load
-            loaded = Kaimon.load_security_config(test_dir)
-            @test loaded !== nothing
-            @test loaded.mode == :strict
-            @test loaded.api_keys == api_keys
-            @test loaded.allowed_ips == allowed_ips
-
-            # Verify .gitignore was created/updated
-            gitignore_path = joinpath(test_dir, ".gitignore")
-            @test isfile(gitignore_path)
-            gitignore_content = read(gitignore_path, String)
-            @test contains(gitignore_content, ".kaimon")
-        end
-
         @testset "API Key Validation" begin
             valid_key = Kaimon.generate_api_key()
             invalid_key = "invalid_key_123"
@@ -91,62 +64,18 @@ using JSON
             @test !Kaimon.validate_ip("192.168.1.1", config_lax)
         end
 
-        @testset "Config Creation and Persistence" begin
-            # Remove any existing config
-            config_dir = joinpath(test_dir, ".kaimon")
-            if isdir(config_dir)
-                rm(config_dir; recursive = true)
-            end
-
-            # Create lax config
+        @testset "SecurityConfig Construction" begin
+            # Convenience constructor defaults
             config = Kaimon.SecurityConfig(:lax, String[], ["127.0.0.1", "::1"], 3000)
-            Kaimon.save_security_config(config, test_dir)
             @test config.mode == :lax
-            @test length(config.api_keys) == 0  # No keys in lax mode
+            @test length(config.api_keys) == 0
             @test "127.0.0.1" in config.allowed_ips
+            @test config.port == 3000
+            @test config.editor == "vscode"  # default
 
-            # Verify it was saved
-            loaded = Kaimon.load_security_config(test_dir)
-            @test loaded !== nothing
-            @test loaded.mode == :lax
-        end
-
-        @testset "Security Management Functions" begin
-            # Start fresh
-            config_dir = joinpath(test_dir, ".kaimon")
-            if isdir(config_dir)
-                rm(config_dir; recursive = true)
-            end
-
-            # Create initial strict config
-            config = Kaimon.SecurityConfig(:strict, String[], ["127.0.0.1", "::1"], 3000)
-            Kaimon.save_security_config(config, test_dir)
-
-            # Generate new key
-            key = Kaimon.add_api_key!(test_dir)
-            @test startswith(key, "kaimon_")
-            loaded = Kaimon.load_security_config(test_dir)
-            @test key in loaded.api_keys
-
-            # Remove key
-            @test Kaimon.remove_api_key!(key, test_dir)
-            loaded = Kaimon.load_security_config(test_dir)
-            @test !(key in loaded.api_keys)
-
-            # Add IP
-            @test Kaimon.add_allowed_ip!("10.0.0.1", test_dir)
-            loaded = Kaimon.load_security_config(test_dir)
-            @test "10.0.0.1" in loaded.allowed_ips
-
-            # Remove IP
-            @test Kaimon.remove_allowed_ip!("10.0.0.1", test_dir)
-            loaded = Kaimon.load_security_config(test_dir)
-            @test !("10.0.0.1" in loaded.allowed_ips)
-
-            # Change mode
-            @test Kaimon.change_security_mode!(:relaxed, test_dir)
-            loaded = Kaimon.load_security_config(test_dir)
-            @test loaded.mode == :relaxed
+            # With custom editor
+            config2 = Kaimon.SecurityConfig(:strict, ["key"], ["127.0.0.1"], 0, "cursor")
+            @test config2.editor == "cursor"
         end
 
         @testset "Server Authentication" begin
@@ -155,7 +84,6 @@ using JSON
             api_key = Kaimon.generate_api_key()
             security_config =
                 Kaimon.SecurityConfig(:strict, [api_key], ["127.0.0.1", "::1"])
-            Kaimon.save_security_config(security_config, test_dir)
 
             # Create simple test tool
             test_tool = Kaimon.@mcp_tool(

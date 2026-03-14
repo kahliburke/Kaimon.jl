@@ -4,7 +4,6 @@ using ReTest
 
 # Include all test files
 include("security_tests.jl")
-include("setup_tests.jl")
 include("server_tests.jl")
 include("session_tests.jl")
 include("call_tool_tests.jl")

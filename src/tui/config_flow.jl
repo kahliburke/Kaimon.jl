@@ -1,12 +1,5 @@
 # ── Config Flow: Begin ───────────────────────────────────────────────────────
 
-function begin_onboarding!(m::KaimonModel)
-    m.config_flow = FLOW_ONBOARD_PATH
-    m.path_input = TextInput(text = string(pwd()), label = "Path: ", tick = m.tick)
-    m.flow_selected = 1
-    m.flow_modal_selected = :confirm
-end
-
 function begin_client_config!(m::KaimonModel)
     m.config_flow = FLOW_CLIENT_SELECT
     m.flow_selected = 1
@@ -76,31 +69,7 @@ const CLIENT_LABEL = Dict(
 function handle_flow_input!(m::KaimonModel, evt::KeyEvent)
     flow = m.config_flow
 
-    if flow == FLOW_ONBOARD_PATH
-        @match evt.key begin
-            :enter => begin
-                m.onboard_path = Tachikoma.text(m.path_input)
-                m.flow_modal_selected = :confirm
-                m.config_flow = FLOW_ONBOARD_CONFIRM
-            end
-            :tab => _complete_path!(m.path_input)
-            _ => handle_key!(m.path_input, evt)
-        end
-    elseif flow == FLOW_ONBOARD_CONFIRM
-        @match evt.key begin
-            :left || :right => begin
-                m.flow_modal_selected =
-                    m.flow_modal_selected == :cancel ? :confirm : :cancel
-            end
-            :enter => begin
-                m.flow_modal_selected == :confirm ? execute_onboarding!(m) :
-                (m.config_flow = FLOW_IDLE)
-            end
-            _ => nothing
-        end
-    elseif flow == FLOW_ONBOARD_RESULT
-        m.config_flow = FLOW_IDLE
-    elseif flow == FLOW_CLIENT_SELECT
+    if flow == FLOW_CLIENT_SELECT
         @match evt.key begin
             :up => (m.flow_selected = max(1, m.flow_selected - 1))
             :down => (m.flow_selected = min(length(CLIENT_OPTIONS), m.flow_selected + 1))
@@ -184,30 +153,9 @@ end
 
 # ── Config Flow: Execution ───────────────────────────────────────────────────
 
-function execute_onboarding!(m::KaimonModel)
-    if m._render_mode
-        m.flow_message = "(render mode — no files written)"
-        m.flow_success = true
-        m.config_flow = FLOW_ONBOARD_RESULT
-        return
-    end
-    try
-        path = normalize_path(m.onboard_path)
-        isdir(path) || mkpath(path)
-        startup_file = joinpath(path, ".julia-startup.jl")
-        write(startup_file, Generate.render_template("julia-startup.jl"))
-        m.flow_message = "Created $(_short_path(startup_file))\n\nAdd to your project's startup:\n  include(\".julia-startup.jl\")"
-        m.flow_success = true
-    catch e
-        m.flow_message = "Error: $(sprint(showerror, e))"
-        m.flow_success = false
-    end
-    m.config_flow = FLOW_ONBOARD_RESULT
-end
-
-"""Get the first API key from security config, or `nothing` if lax/unconfigured."""
+"""Get the first API key from global config, or `nothing` if lax/unconfigured."""
 function _get_api_key()
-    cfg = load_global_security_config()
+    cfg = load_global_config()
     cfg === nothing && return nothing
     cfg.mode == :lax && return nothing
     isempty(cfg.api_keys) && return nothing
@@ -341,6 +289,24 @@ function execute_project_edit_launch!(m::KaimonModel)
         _push_log!(:error, "Failed to save launch config: $(sprint(showerror, e))")
     end
     m.config_flow = FLOW_IDLE
+end
+
+function cycle_editor!(m::KaimonModel)
+    m._render_mode && return
+    idx = findfirst(==(m.editor), EDITOR_OPTIONS)
+    next_idx = idx === nothing ? 1 : mod1(idx + 1, length(EDITOR_OPTIONS))
+    m.editor = EDITOR_OPTIONS[next_idx]
+
+    # Persist to global config
+    cfg = load_global_config()
+    if cfg !== nothing
+        new_cfg = SecurityConfig(
+            cfg.mode, cfg.api_keys, cfg.allowed_ips, cfg.port,
+            cfg.created_at, m.editor,
+        )
+        save_global_config(new_cfg)
+    end
+    _push_log!(:info, "Editor set to $(m.editor)")
 end
 
 function toggle_gate_mirror_repl!(m::KaimonModel)

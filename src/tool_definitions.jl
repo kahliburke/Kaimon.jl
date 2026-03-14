@@ -1509,10 +1509,9 @@ or when LSP goto_definition doesn't work.
                 return "Error: File does not exist: $abs_path"
             end
 
-            # Use VS Code URI with line and column position
-            # Format: vscode://file/path/to/file:line:column
-            vscode_uri = "vscode://file$(abs_path):$(line):$(column)"
-            trigger_vscode_uri(vscode_uri)
+            # Use configured editor URI with line and column position
+            uri = editor_file_url(abs_path; line=line, col=column)
+            trigger_vscode_uri(uri)
 
             return "Navigated to $abs_path:$line:$column"
         catch e

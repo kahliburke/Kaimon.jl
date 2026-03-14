@@ -1,5 +1,20 @@
 # ── View ──────────────────────────────────────────────────────────────────────
 
+"""
+    file_link_style(path::String; line::Int=0) -> Style
+
+Return accent/underline style with an OSC 8 hyperlink to the configured editor,
+or dim style if no URL can be constructed.
+"""
+function file_link_style(path::String; line::Int=0)
+    url = editor_file_url(path; line=line)
+    if isempty(url)
+        return tstyle(:text_dim, italic = true)
+    else
+        return tstyle(:accent, italic = true, underline = true, hyperlink = url)
+    end
+end
+
 function Tachikoma.view(m::KaimonModel, f::Frame)
     m.tick += 1
     _advance_ecg!(m)
@@ -147,7 +162,7 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
 
         _push_log!(:info, "Starting MCP server on port $(m.server_port)...")
         Threads.@spawn try
-            security_config = load_global_security_config()
+            security_config = load_global_config()
             tools = collect_tools()
             m.mcp_server = start_mcp_server(
                 tools,
@@ -402,6 +417,25 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         status_area,
         buf,
     )
+
+    # Backtrace viewer overlay (full-screen ScrollPane with trace)
+    if m.backtrace_viewer !== nothing
+        _dim_area!(buf, f.area)
+        margin = 2
+        overlay = Rect(
+            f.area.x + margin,
+            f.area.y + margin,
+            f.area.width - 2 * margin,
+            f.area.height - 2 * margin,
+        )
+        render(m.backtrace_viewer, overlay, buf)
+    end
+
+    # Backtrace modal (collecting or timeout)
+    if m.backtrace_modal !== nothing
+        m.backtrace_modal.tick = m.tick
+        render(m.backtrace_modal, f.area, buf)
+    end
 
     # Quit confirmation modal
     if m.quit_confirm

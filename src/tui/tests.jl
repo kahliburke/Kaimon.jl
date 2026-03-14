@@ -230,12 +230,18 @@ function _build_test_tree(run::TestRun)::TreeNode
         for (i, f) in enumerate(run.failures)
             loc = "$(f.file):$(f.line)"
             detail = isempty(f.expression) ? loc : "$loc — $(f.expression)"
+            loc_url = editor_file_url(f.file; line=f.line)
+            node_style = if isempty(loc_url)
+                tstyle(:error, bold = true)
+            else
+                tstyle(:error, bold = true, underline = true, hyperlink = loc_url)
+            end
             push!(
                 fail_group.children,
                 TreeNode(
                     "$i) $detail";
                     expanded = false,
-                    style = tstyle(:error, bold = true),
+                    style = node_style,
                 ),
             )
         end

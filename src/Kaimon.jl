@@ -55,7 +55,7 @@ end
 
 # ── Shared config directory ───────────────────────────────────────────────────
 # Single source of truth for ~/.config/kaimon (respects XDG_CONFIG_HOME).
-# All user configuration files (projects.json, security.json, extensions.json) go here.
+# All user configuration files (projects.json, config.json, extensions.json) go here.
 
 """
     kaimon_config_dir() -> String
@@ -270,7 +270,6 @@ include("setup_wizard_tui.jl")
 include("repl_status.jl")
 include("tool_definitions.jl")
 include("MCPServer.jl")
-include("config_utils.jl")
 include("vscode.jl")
 include("reflection_tools.jl")
 include("qdrant_tools.jl")
@@ -430,7 +429,30 @@ end
 # VS Code URI Helpers
 # ============================================================================
 
-# Helper function to trigger VS Code commands via URI
+# Supported editors for file:line clickable links
+const EDITOR_OPTIONS = ["vscode", "cursor", "zed", "windsurf"]
+
+"""
+    editor_file_url(path::String; line::Int=0, col::Int=0) -> String
+
+Build a clickable URI for the configured editor. Returns `""` if path is empty.
+Reads the editor setting from the global config (`~/.config/kaimon/config.json`).
+
+Supported editors: vscode, cursor, zed, windsurf — all use `<scheme>://file/path:line:col`.
+"""
+function editor_file_url(path::String; line::Int=0, col::Int=0)::String
+    isempty(path) && return ""
+    cfg = load_global_config()
+    editor = cfg !== nothing ? cfg.editor : "vscode"
+    uri = "$editor://file$path"
+    if line > 0
+        uri *= ":$line"
+        col > 0 && (uri *= ":$col")
+    end
+    return uri
+end
+
+# Helper function to trigger editor commands via URI
 function trigger_vscode_uri(uri::String)
     if Sys.isapple()
         run(`open $uri`)
@@ -1553,12 +1575,12 @@ Start the Kaimon MCP server.
 - `workspace_dir::String=pwd()`: Project root directory
 
 # Dynamic Port Assignment
-Set `port=0` (or use `"port": 0` in security.json) to automatically find and use an available port.
+Set `port=0` (or use `"port": 0` in config.json) to automatically find and use an available port.
 The server will search ports 40000-49999 for the first free port. This higher range avoids conflicts with common services.
 
 # Examples
 ```julia
-# Use configured port from security.json
+# Use configured port from config.json
 Kaimon.start!()
 
 # Use specific port
@@ -1605,14 +1627,8 @@ function start!(;
     end
 
     # Load or prompt for security configuration
-    # Use workspace_dir (project root) not pwd() (which may be agent dir)
-    @debug "Loading security config" workspace_dir = workspace_dir
-    security_config = load_security_config(workspace_dir)
-
-    # Fall back to global config
-    if security_config === nothing
-        security_config = load_global_security_config()
-    end
+    @debug "Loading config"
+    security_config = load_global_config()
 
     if security_config === nothing
         # Stop spinner before launching wizard
@@ -1630,7 +1646,7 @@ function start!(;
             security_config.mode
     end
 
-    # Determine port: function arg overrides config, otherwise use what load_security_config() found
+    # Determine port: function arg overrides config
     actual_port = if port !== nothing
         if port == 0
             # Port 0 means find a free port dynamically
@@ -1641,7 +1657,7 @@ function start!(;
             port
         end
     else
-        # load_security_config already loaded the right port
+        # Use port from global config
         config_port = security_config.port
         if config_port == 0
             # Port 0 in config means find a free port dynamically
@@ -1670,9 +1686,8 @@ function start!(;
             security_config.api_keys,
             security_config.allowed_ips,
             security_config.port,
-            security_config.index_dirs,
-            security_config.index_extensions,
             security_config.created_at,
+            security_config.editor,
         )
     end
 
@@ -1906,9 +1921,9 @@ function test_server(
             # Prefer explicit env var when present
             env_key = get(ENV, "JULIA_MCP_API_KEY", "")
 
-            # Load workspace security config (if available)
+            # Load global config (if available)
             security_config = try
-                load_security_config()
+                load_global_config()
             catch
                 nothing
             end
@@ -1962,7 +1977,7 @@ end
 Display current security configuration.
 """
 function security_status()
-    config = load_security_config()
+    config = load_global_config()
     if config === nothing
         printstyled("\n⚠️  No security configuration found\n", color = :yellow, bold = true)
         println("Run Kaimon.setup_security() to configure")
@@ -1979,10 +1994,7 @@ Launch the security setup wizard.
 """
 function setup_security(; force::Bool = false, mode::Symbol = :auto)
     if !force
-        existing = load_global_security_config()
-        if existing === nothing
-            existing = load_security_config()
-        end
+        existing = load_global_config()
         if existing !== nothing
             println()
             printstyled(
@@ -2002,46 +2014,128 @@ end
 """
     generate_key()
 
-Generate and add a new API key to the current configuration.
+Generate and add a new API key to the global configuration.
 """
 function generate_key()
-    return add_api_key!(pwd())
+    config = load_global_config()
+    if config === nothing
+        error("No configuration found. Run Kaimon.setup_security() first.")
+    end
+    new_key = generate_api_key()
+    new_config = SecurityConfig(
+        config.mode, vcat(config.api_keys, [new_key]), config.allowed_ips,
+        config.port, config.created_at, config.editor,
+    )
+    if save_global_config(new_config)
+        println("✅ Added new API key: $new_key")
+        println("⚠️  Save this key securely - it won't be shown again!")
+        return new_key
+    else
+        error("Failed to save configuration")
+    end
 end
 
 """
     revoke_key(key::String)
 
-Revoke (remove) an API key from the configuration.
+Revoke (remove) an API key from the global configuration.
 """
 function revoke_key(key::String)
-    return remove_api_key!(key, pwd())
+    config = load_global_config()
+    if config === nothing
+        error("No configuration found. Run Kaimon.setup_security() first.")
+    end
+    if !(key in config.api_keys)
+        @warn "API key not found in configuration"
+        return false
+    end
+    new_config = SecurityConfig(
+        config.mode, filter(k -> k != key, config.api_keys), config.allowed_ips,
+        config.port, config.created_at, config.editor,
+    )
+    if save_global_config(new_config)
+        println("✅ Removed API key")
+        return true
+    else
+        error("Failed to save configuration")
+    end
 end
 
 """
     allow_ip(ip::String)
 
-Add an IP address to the allowlist.
+Add an IP address to the global allowlist.
 """
 function allow_ip(ip::String)
-    return add_allowed_ip!(ip, pwd())
+    config = load_global_config()
+    if config === nothing
+        error("No configuration found. Run Kaimon.setup_security() first.")
+    end
+    if ip in config.allowed_ips
+        @warn "IP address already in allowlist"
+        return false
+    end
+    new_config = SecurityConfig(
+        config.mode, config.api_keys, vcat(config.allowed_ips, [ip]),
+        config.port, config.created_at, config.editor,
+    )
+    if save_global_config(new_config)
+        println("✅ Added IP address to allowlist: $ip")
+        return true
+    else
+        error("Failed to save configuration")
+    end
 end
 
 """
     deny_ip(ip::String)
 
-Remove an IP address from the allowlist.
+Remove an IP address from the global allowlist.
 """
 function deny_ip(ip::String)
-    return remove_allowed_ip!(ip, pwd())
+    config = load_global_config()
+    if config === nothing
+        error("No configuration found. Run Kaimon.setup_security() first.")
+    end
+    if !(ip in config.allowed_ips)
+        @warn "IP address not found in allowlist"
+        return false
+    end
+    new_config = SecurityConfig(
+        config.mode, config.api_keys, filter(i -> i != ip, config.allowed_ips),
+        config.port, config.created_at, config.editor,
+    )
+    if save_global_config(new_config)
+        println("✅ Removed IP address from allowlist: $ip")
+        return true
+    else
+        error("Failed to save configuration")
+    end
 end
 
 """
     set_security_mode(mode::Symbol)
 
-Change the security mode (:strict, :relaxed, or :lax).
+Change the security mode (:strict, :relaxed, or :lax) in the global configuration.
 """
 function set_security_mode(mode::Symbol)
-    return change_security_mode!(mode, pwd())
+    if !(mode in [:strict, :relaxed, :lax])
+        error("Invalid security mode. Must be :strict, :relaxed, or :lax")
+    end
+    config = load_global_config()
+    if config === nothing
+        error("No configuration found. Run Kaimon.setup_security() first.")
+    end
+    new_config = SecurityConfig(
+        mode, config.api_keys, config.allowed_ips,
+        config.port, config.created_at, config.editor,
+    )
+    if save_global_config(new_config)
+        println("✅ Changed security mode to: $mode")
+        return true
+    else
+        error("Failed to save configuration")
+    end
 end
 
 """
@@ -2183,8 +2277,16 @@ function shutdown(; session::String = "")
 end
 
 function (@main)(ARGS)
+    # Fire-and-forget: resolve the user's global environment in the background.
+    # When Kaimon gains new deps, the global env manifest (where Kaimon is dev'd)
+    # becomes stale — this ensures `using Kaimon` in startup.jl works next time.
+    kaimon_dir = dirname(@__DIR__)
+    julia = joinpath(Sys.BINDIR, "julia")
+    cmd = `$julia --startup-file=no --project=$kaimon_dir -e "using Pkg; Pkg.resolve(io=devnull); Pkg.instantiate(io=devnull)"`
+    run(pipeline(cmd; stdout=devnull, stderr=devnull); wait=false)
+
     port = 2828
-    theme = :kokaku
+    theme = nothing
     headless = false
     use_revise = false
 
@@ -2221,13 +2323,32 @@ function (@main)(ARGS)
         i += 1
     end
 
-    # Load Revise if requested
+    # Load Revise if requested — as a weak dep it may not be in the app's
+    # isolated environment, so temporarily add the user's shared env to LOAD_PATH.
+    _Revise = nothing
     if use_revise
+        shared_env = joinpath(homedir(), ".julia", "environments",
+                              "v$(VERSION.major).$(VERSION.minor)")
+        added_shared = false
+        if isdir(shared_env) && shared_env ∉ Base.load_path()
+            pushfirst!(LOAD_PATH, shared_env)
+            added_shared = true
+        end
         try
-            Main.eval(:(using Revise))
+            _Revise = Base.require(Base.PkgId(Base.UUID("295af30f-e4ad-537b-8983-00126c2a3abe"), "Revise"))
+            pkgid = Base.PkgId(@__MODULE__)
+            pkgdata = Base.invokelatest(_Revise.watch_package, pkgid)
+            if pkgdata !== nothing
+                nfiles = Base.invokelatest(() -> length(_Revise.srcfiles(pkgdata)))
+                @info "Revise tracking $nfiles source files for Kaimon"
+            else
+                @warn "Revise: watch_package returned nothing"
+            end
         catch e
+            _Revise = nothing
             @warn "Could not load Revise, continuing without it" exception = e
         end
+        added_shared && popfirst!(LOAD_PATH)
     end
 
     # Load optional extensions
@@ -2279,29 +2400,22 @@ function (@main)(ARGS)
         end
 
         # First-time setup: launch security wizard if no config exists
-        has_config = load_security_config() !== nothing ||
-                     load_global_security_config() !== nothing
+        has_config = load_global_config() !== nothing
         if !has_config
             result = setup_wizard_tui()
             result === nothing && return
         end
 
-        # Revise polling for non-REPL context
-        if use_revise && isdefined(Main, :Revise)
-            Threads.@spawn begin
-                while true
-                    try
-                        Main.Revise.revise()
-                    catch e
-                        e isa InterruptException && break
-                    end
-                    sleep(3)
-                end
-            end
+        _revise_active = use_revise && _Revise !== nothing
+        if _revise_active
+            @info "Revise loaded — watching for file changes"
+            Base.invokelatest(_start_revise_watcher!, _Revise)
         end
 
-        tui(; port = port, theme_name = theme)
+        tui(; port = port, theme_name = theme, revise_polling = _revise_active, revise_mod = _Revise)
     end
 end
+
+include("precompile.jl")
 
 end #module

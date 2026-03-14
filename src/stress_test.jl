@@ -91,7 +91,11 @@ tool_args_json = length(ARGS) >= 8 ? ARGS[8] : "{}"
 BASE_URL = "http://localhost:\$(port)/mcp"
 
 function load_api_key()
-    cfg = joinpath(homedir(), ".config", "kaimon", "security.json")
+    # Try config.json first, fall back to legacy security.json
+    cfg = joinpath(homedir(), ".config", "kaimon", "config.json")
+    if !isfile(cfg)
+        cfg = joinpath(homedir(), ".config", "kaimon", "security.json")
+    end
     isfile(cfg) || return nothing
     try
         data = JSON.parse(read(cfg, String))

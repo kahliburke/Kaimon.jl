@@ -321,6 +321,7 @@ Tachikoma.task_queue(m::KaimonModel) = m._task_queue
 
 """Check if any source files have been modified since the last Revise reload."""
 function _check_code_stale!(m::KaimonModel)
+    m._revise_polling && return  # Revise handles staleness via pre_render!
     now = time()
     now - m._code_last_check < 3.0 && return  # check every 3 seconds
     m._code_last_check = now
@@ -341,6 +342,41 @@ function _check_code_stale!(m::KaimonModel)
         end
     end
     m._code_stale = false
+end
+
+const _REVISE_PENDING = Threads.Atomic{Bool}(false)
+
+"""Start a background task that waits on Revise's file-change event and sets an atomic flag."""
+function _start_revise_watcher!(_Revise)
+    Threads.@spawn begin
+        evt = _Revise.revision_event
+        while true
+            try
+                wait(evt)
+                reset(evt)
+                _REVISE_PENDING[] = true
+                _push_log!(:info, "Revise: file changes detected")
+            catch e
+                e isa InterruptException && break
+            end
+        end
+    end
+end
+
+function Tachikoma.pre_render!(m::KaimonModel)
+    m._revise_polling || return
+    _REVISE_PENDING[] || return
+    _Revise = m._revise_mod
+    _Revise === nothing && return
+    _REVISE_PENDING[] = false
+    try
+        _Revise.revise()
+        m._code_stale = false
+        m._code_last_revise = time()
+        _push_log!(:info, "Revise: applied source changes")
+    catch e
+        _push_log!(:warn, "Revise.revise() failed: $e")
+    end
 end
 
 """Request TUI restart — sets flag so app() exits, tui() loop calls Revise and re-enters."""
@@ -371,7 +407,7 @@ connections in `~/.cache/kaimon/sock/`.
 - `port::Int=2828`: Port for the MCP HTTP server
 - `theme::Symbol=:kokaku`: Tachikoma theme name
 """
-function tui(; port::Int = 2828, theme_name::Union{Symbol,Nothing} = nothing)
+function tui(; port::Int = 2828, theme_name::Union{Symbol,Nothing} = nothing, revise_polling::Bool = false, revise_mod::Any = nothing)
     if Threads.nthreads() < 2
         @warn """Kaimon TUI running with only 1 thread — UI may be unresponsive.
                  Start Julia with: julia -t auto
@@ -386,7 +422,7 @@ function tui(; port::Int = 2828, theme_name::Union{Symbol,Nothing} = nothing)
     if theme_name !== nothing
         set_theme!(theme_name)
     end
-    model = KaimonModel(server_port = port)
+    model = KaimonModel(server_port = port, _revise_polling = revise_polling, _revise_mod = revise_mod)
 
     while true
         # invokelatest so that after Revise updates, the new method bodies

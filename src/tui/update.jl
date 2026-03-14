@@ -15,6 +15,22 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
         return
     end
 
+    # Backtrace viewer captures mouse (scrolling)
+    if m.backtrace_viewer !== nothing
+        handle_mouse!(m.backtrace_viewer, evt)
+        return
+    end
+
+    # Backtrace modal captures mouse
+    if m.backtrace_modal !== nothing
+        result = handle_mouse!(m.backtrace_modal, evt)
+        if result == :cancel || result == :confirm
+            m.backtrace_modal = nothing
+            m.backtrace_collecting = false
+        end
+        return
+    end
+
     # Debug consent modal captures all mouse input
     if m.debug_agent_continue_pending
         Base.invokelatest(_handle_debug_consent_key!, m, evt)
@@ -61,8 +77,9 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
         end
         4 => begin
             handle_resize!(m.search_layout, evt)
-            if m.search_manage_open && m.search_manage_pane !== nothing
-                handle_mouse!(m.search_manage_pane, evt)
+            if m.search_manage_open && m.search_manage_table !== nothing
+                handle_mouse!(m.search_manage_table, evt)
+                m.search_manage_selected = m.search_manage_table.selected
             end
             m.search_results_pane !== nothing &&
                 handle_mouse!(m.search_results_pane, evt)
@@ -252,6 +269,35 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
             return
         end
         handle_key!(m.session_terminal, evt)
+        return
+    end
+
+    # Backtrace viewer overlay (ScrollPane with trace results)
+    if m.backtrace_viewer !== nothing
+        if evt.key == :escape
+            m.backtrace_viewer = nothing
+            m.backtrace_result = nothing
+            return
+        elseif evt.key == :char && evt.char == 's'
+            _save_backtrace!(m)
+            return
+        else
+            handle_key!(m.backtrace_viewer, evt)
+            return
+        end
+    end
+
+    # Backtrace modal (collecting spinner or timeout message)
+    if m.backtrace_modal !== nothing
+        result = if evt isa MouseEvent
+            handle_mouse!(m.backtrace_modal, evt)
+        else
+            handle_key!(m.backtrace_modal, evt)
+        end
+        if result == :cancel || result == :confirm || evt.key == :escape
+            m.backtrace_modal = nothing
+            m.backtrace_collecting = false
+        end
         return
     end
 
@@ -481,6 +527,51 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
 
         2 => @match evt.char begin
             'x' => _shutdown_selected_session!(m)
+            't' => begin
+                conns = _visible_connections(m)
+                if m.selected_connection >= 1 && m.selected_connection <= length(conns)
+                    conn = conns[m.selected_connection]
+                    if conn.status in (:connected, :evaluating, :stalled)
+                        m.backtrace_collecting = true
+                        m.backtrace_result = nothing
+                        m.backtrace_conn_name = conn.name
+                        m.backtrace_modal = Modal(
+                            title = "Profile Trace",
+                            message = "Collecting profile trace\nfor $(conn.name)...",
+                            confirm_label = "Cancel",
+                            cancel_label = "",
+                            selected = :confirm,
+                        )
+                        @async begin
+                            name = conn.name
+                            bt = GateClient.trigger_backtrace(conn)
+                            m.backtrace_collecting = false
+                            if bt !== nothing
+                                m.backtrace_result = bt
+                                m.backtrace_modal = nothing
+                                sp = ScrollPane(; following = false)
+                                sp.block = Block(
+                                    title = "Profile Trace — $name  [s] save  [Esc] close",
+                                    border_style = tstyle(:accent),
+                                    title_style = tstyle(:accent, bold = true),
+                                )
+                                for line in split(bt, '\n')
+                                    push_line!(sp, [Span(line, tstyle(:text))])
+                                end
+                                m.backtrace_viewer = sp
+                            else
+                                m.backtrace_modal = Modal(
+                                    title = "Profile Trace",
+                                    message = "Timed out — no trace received.",
+                                    confirm_label = "OK",
+                                    cancel_label = "",
+                                    selected = :confirm,
+                                )
+                            end
+                        end
+                    end
+                end
+            end
             _ => nothing
         end
 
@@ -507,13 +598,13 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
         5 => _handle_tests_key!(m, evt)
 
         6 => @match evt.char begin
-            'o' => begin_onboarding!(m)
             'i' => begin_client_config!(m)
             'g' => begin_global_gate!(m)
             'm' => toggle_gate_mirror_repl!(m)
             'p' => begin_project_add!(m)
             'D' => begin_project_remove!(m)
             'e' => begin_project_edit_launch!(m)
+            'E' => cycle_editor!(m)
             _ => nothing
         end
 

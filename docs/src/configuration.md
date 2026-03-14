@@ -22,7 +22,7 @@ Respects `XDG_CONFIG_HOME` on Linux/macOS; uses `APPDATA` on Windows.
 
 | File | Purpose |
 |------|---------|
-| `security.json` | Global security settings ([details](@ref security-config)) |
+| `config.json` | Global security and editor settings ([details](@ref security-config)) |
 | `projects.json` | Allowed projects for managed sessions ([details](@ref projects-config)) |
 | `extensions.json` | Extension registry ([details](extensions.md)) |
 
@@ -47,13 +47,12 @@ Located in the project root directory.
 
 | File | Purpose |
 |------|---------|
-| `security.json` | Project-specific security overrides |
 | `tools.json` | Enable or disable individual MCP tools for this project |
 | `sessions.json` | Tracks active MCP sessions connected to this project |
 
 ## [Security Configuration](@id security-config)
 
-The `security.json` file controls access to the MCP server. It can exist at both the global (`~/.config/kaimon/`) and per-project (`.kaimon/`) levels:
+The security config controls access to the MCP server via `config.json` at `~/.config/kaimon/`:
 
 ```json
 {

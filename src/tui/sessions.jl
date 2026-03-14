@@ -78,7 +78,7 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
             items;
             selected = m.selected_connection,
             block = Block(
-                title = "REPL Sessions ($(length(connections))) [x] shutdown",
+                title = "REPL Sessions ($(length(connections))) [x] shutdown [t] trace",
                 border_style = _pane_border(m, 2, 1),
                 title_style = _pane_title(m, 2, 1),
             ),
@@ -176,6 +176,9 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
             push!(fields, ("Memory", "$(round(d.rss_mb; digits=1)) MB"))
             push!(fields, ("CPU", "$(round(d.cpu_pct; digits=1))%"))
             push!(fields, ("Diagnosis", _diagnose_activity(d)))
+        end
+        if conn.status in (:connected, :evaluating, :stalled)
+            push!(fields, ("Trace", "[t] profile"))
         end
         append!(fields, [
             ("Tool calls", string(conn.tool_call_count)),
@@ -368,6 +371,30 @@ function _shutdown_selected_session!(m::KaimonModel)
     m.selected_connection = clamp(m.selected_connection, 1, max(1, n))
 
     _push_log!(:info, "Shutdown session '$dname' ($sk)")
+end
+
+"""Save the current backtrace result to a file near the session's project."""
+function _save_backtrace!(m::KaimonModel)
+    bt = m.backtrace_result
+    bt === nothing && return
+    conns = _visible_connections(m)
+    dir = if m.selected_connection >= 1 && m.selected_connection <= length(conns)
+        conn = conns[m.selected_connection]
+        isempty(conn.project_path) ? tempdir() : conn.project_path
+    else
+        tempdir()
+    end
+    ts = Dates.format(now(), "yyyymmdd_HHMMss")
+    fname = "profile_trace_$(ts).txt"
+    path = joinpath(dir, fname)
+    try
+        write(path, bt)
+        _push_log!(:info, "Saved profile trace to $path")
+    catch
+        path = joinpath(tempdir(), fname)
+        write(path, bt)
+        _push_log!(:info, "Saved profile trace to $path")
+    end
 end
 
 # ── ECG / Health ─────────────────────────────────────────────────────────────

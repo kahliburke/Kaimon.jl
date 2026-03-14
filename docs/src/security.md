@@ -68,27 +68,17 @@ When the allowlist is empty, all IPs are permitted (subject to API key requireme
 
 ## Configuration
 
-Security settings are stored in JSON configuration files. Kaimon checks two locations:
-
-### Per-Project Configuration
+Security settings are stored in a global JSON configuration file:
 
 ```
-.kaimon/security.json
+~/.config/kaimon/config.json
 ```
 
-Place this file in your project root to configure security settings specific to that project. Per-project settings override global settings when working within that project.
-
-### Global Configuration
-
-```
-~/.config/kaimon/security.json
-```
-
-Global settings apply to all projects unless overridden by a per-project configuration.
+Legacy `security.json` files are automatically migrated to `config.json` on first access.
 
 ### Configuration Format
 
-A typical `security.json` file:
+A typical `config.json` file:
 
 ```json
 {

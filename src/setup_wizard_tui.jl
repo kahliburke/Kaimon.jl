@@ -2,7 +2,7 @@
 # Setup Wizard TUI — 3-Mode Animated Security Setup
 #
 # Tachikoma-based TUI wizard with Dragon, Butterfly, and Neuromancer personality
-# modes. Collects security configuration and saves to ~/.config/kaimon/security.json.
+# modes. Collects security configuration and saves to ~/.config/kaimon/config.json.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Additional Tachikoma imports not already brought in by tui.jl
@@ -801,17 +801,18 @@ function do_save!(m::SetupWizardModel)
             api_keys,
             m.allowed_ips,
             m.port,
-            m.index_dirs,
-            DEFAULT_INDEX_EXTENSIONS,
         )
-        global_path = get_global_security_config_path()
+        global_path = get_global_config_path()
         global_dir = dirname(global_path)
         if !isdir(global_dir)
             mkpath(global_dir)
         end
-        save_global_security_config(config)
+        save_global_config(config)
         # Save personality mode as extra metadata in the config JSON
         _save_personality(global_path, m.mode)
+        # Persist the theme matching the personality
+        theme_name = m.mode == STANDARD ? "kaneda" : m.mode == GENTLE ? "catppuccin" : "neuromancer"
+        save_theme(theme_name)
         m.save_success = true
         m.save_message = "Config saved to $global_path"
     catch e
@@ -1872,7 +1873,7 @@ function view_done(m::SetupWizardModel, f::Frame)
         )
         y += 2
 
-        path = get_global_security_config_path()
+        path = get_global_config_path()
         path_msg = "Config: $path"
         set_string!(
             buf,
@@ -2473,7 +2474,7 @@ Launch the animated TUI setup wizard for Kaimon security configuration.
 - `:gentle` — gentle sparkles and supportive messages
 - `:l33t` — cyberpunk matrix rain aesthetic
 
-Configuration is saved globally to `~/.config/kaimon/security.json`.
+Configuration is saved globally to `~/.config/kaimon/config.json`.
 """
 function _randomize_face_params!()
     Dict{Symbol,Float64}(
@@ -2505,5 +2506,5 @@ function setup_wizard_tui(; mode::Symbol = :auto)
     end
 
     app(model; fps = 60)
-    model.save_success ? load_global_security_config() : nothing
+    model.save_success ? load_global_config() : nothing
 end

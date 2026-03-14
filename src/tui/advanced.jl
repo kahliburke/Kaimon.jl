@@ -453,10 +453,62 @@ function view_advanced(m::KaimonModel, area::Rect, buf::Buffer)
     # ── Top pane: Configuration form ──
     _view_stress_form(m, panes[1], buf)
 
-    # ── Bottom pane: Output with live agent visualization ──
-    _view_stress_output(m, panes[2], buf)
+    # ── Bottom pane: split into output + revise status ──
+    if m._revise_polling
+        bottom_cols = tsplit(Layout(Horizontal, [Fill(), Fixed(30)]), panes[2])
+        _view_stress_output(m, bottom_cols[1], buf)
+        _view_revise_status(m, bottom_cols[2], buf)
+    else
+        _view_stress_output(m, panes[2], buf)
+    end
 
     render_resize_handles!(buf, m.advanced_layout)
+end
+
+function _view_revise_status(m::KaimonModel, area::Rect, buf::Buffer)
+    blk = Block(
+        title = "Revise",
+        border_style = tstyle(:accent),
+        title_style = tstyle(:accent, bold = true),
+    )
+    inner = render(blk, area, buf)
+    inner.height < 1 && return
+
+    _R = m._revise_mod
+    nfiles = 0
+    npending = 0
+    nerrors = 0
+    if _R !== nothing
+        try
+            pkgid = Base.PkgId(Kaimon)
+            pkgdata = get(_R.pkgdatas, pkgid, nothing)
+            if pkgdata !== nothing
+                nfiles = length(_R.srcfiles(pkgdata))
+            end
+            npending = length(_R.revision_queue)
+            nerrors = length(_R.queue_errors)
+        catch
+        end
+    end
+
+    stale_str = m._code_stale ? "yes" : "no"
+    stale_style = m._code_stale ? tstyle(:warning, bold = true) : tstyle(:success)
+
+    lines = [
+        [Span("Status:  ", tstyle(:text_dim)), Span("active", tstyle(:success, bold = true))],
+        [Span("Files:   ", tstyle(:text_dim)), Span("$nfiles", tstyle(:text))],
+        [Span("Pending: ", tstyle(:text_dim)), Span("$npending", npending > 0 ? tstyle(:warning) : tstyle(:text))],
+        [Span("Errors:  ", tstyle(:text_dim)), Span("$nerrors", nerrors > 0 ? tstyle(:error, bold = true) : tstyle(:text))],
+        [Span("Stale:   ", tstyle(:text_dim)), Span(stale_str, stale_style)],
+    ]
+    for (i, spans) in enumerate(lines)
+        i > inner.height && break
+        x = inner.x
+        for sp in spans
+            set_string!(buf, x, inner.y + i - 1, sp.content, sp.style)
+            x += length(sp.content)
+        end
+    end
 end
 
 """Render the stress test configuration form."""
