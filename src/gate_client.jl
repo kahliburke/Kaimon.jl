@@ -37,7 +37,7 @@ mutable struct REPLConnection
     req_socket::Union{ZMQ.Socket,Nothing}
     sub_socket::Union{ZMQ.Socket,Nothing}   # SUB for streaming stdout/stderr
     zmq_context::Union{ZMQ.Context,Nothing} # shared context for socket recreation
-    req_lock::ReentrantLock      # protects REQ socket access
+    req_lock::ReentrantLock      # protects REQ socket access (connect/disconnect)
     eval_state::Ref{EvalState}   # current eval lifecycle state
     _eval_inboxes::Dict{String,Channel{Any}}  # per-request_id channels for concurrent evals
     _eval_inboxes_lock::ReentrantLock          # protects _eval_inboxes dict
@@ -520,7 +520,7 @@ function connect!(mgr::ConnectionManager, conn::REPLConnection)
         socket.linger = 0        # don't block on close
         connect(socket, conn.endpoint)
         conn.req_socket = socket
-        conn.zmq_context = mgr.zmq_context  # store for _reconnect_req!
+        conn.zmq_context = mgr.zmq_context  # shared context for ephemeral sockets
 
         # Connect SUB socket for streaming output (non-blocking)
         if !isempty(conn.stream_endpoint)
@@ -590,46 +590,87 @@ function disconnect!(conn::REPLConnection)
     end
 end
 
-"""
-Reset a poisoned REQ socket after a ZMQ timeout. REQ sockets enter
-an invalid state when a send completes but recv times out — they can
-never send again. The only fix is to close and reconnect.
+# ── Async REQ Send/Recv ──────────────────────────────────────────────────────
+# Each request spawns its own async task with an ephemeral REQ socket. This
+# means a stalled or timed-out request on one socket cannot block any other
+# requests — they're fully independent. The ZMQ context is shared (thread-safe)
+# and multiple REQ sockets can connect to the same REP endpoint simultaneously.
 
-Reuses the provided ZMQ context instead of creating a new one (which
-leaked contexts and caused resource exhaustion).
 """
-function _reconnect_req!(conn::REPLConnection)
-    lock(conn.req_lock) do
-        ctx = conn.zmq_context
-        if ctx === nothing
-            conn.req_socket = nothing
-            conn.status = :disconnected
-            return
-        end
-        old = conn.req_socket
+    _req_send_recv(conn, request; caller_timeout=10.0) -> NamedTuple
+
+Send a request to the gate asynchronously and wait up to `caller_timeout`
+seconds for the response. Returns `(ok=true, response=...)` on success, or
+`(ok=false, error="...")` on failure/timeout.
+
+Internally spawns an async task with an ephemeral REQ socket, so the calling
+task never blocks on ZMQ. Multiple concurrent calls are fully independent —
+a stalled request cannot starve others.
+"""
+function _req_send_recv(conn::REPLConnection, request; caller_timeout::Float64 = 10.0)
+    ctx = conn.zmq_context
+    if ctx === nothing || conn.status ∉ (:connected, :evaluating, :stalled)
+        return (ok = false, error = "Gate not connected (status=$(conn.status))")
+    end
+
+    endpoint = conn.endpoint
+    io = IOBuffer()
+    serialize(io, request)
+    request_bytes = take!(io)
+
+    # Response channel — the async task puts its result here
+    response_ch = Channel{Any}(1)
+
+    @async begin
+        local sock = nothing
         try
-            old.linger = 0
-            close(old)
-        catch
-        end
-        try
-            socket = Socket(ctx, REQ)
-            socket.rcvtimeo = 5000
-            socket.sndtimeo = 2000
-            socket.linger = 0
-            connect(socket, conn.endpoint)
-            conn.req_socket = socket
-        catch
-            conn.req_socket = nothing
-            conn.status = :disconnected
+            sock = Socket(ctx, REQ)
+            sock.rcvtimeo = min(round(Int, caller_timeout * 1000), 30000)
+            sock.sndtimeo = 2000
+            sock.linger = 0
+            connect(sock, endpoint)
+            send(sock, Message(request_bytes))
+            raw = recv(sock)
+            response = deserialize(IOBuffer(raw))
+            conn.last_seen = now()
+            put!(response_ch, (ok = true, response = response))
+        catch e
+            msg = if e isa ZMQ.TimeoutError
+                "Gate request timed out"
+            else
+                "Connection error: $(sprint(showerror, e))"
+            end
+            try
+                put!(response_ch, (ok = false, error = msg))
+            catch
+            end
+        finally
+            if sock !== nothing
+                try
+                    close(sock)
+                catch
+                end
+            end
         end
     end
-end
 
-@inline function _require_req_socket(conn::REPLConnection)
-    sock = conn.req_socket
-    sock === nothing && error("Gate REQ socket unavailable (session=$(conn.session_id))")
-    return sock
+    # Wait for result with timeout (polling Julia Channel, not ZMQ)
+    deadline = time() + caller_timeout
+    while time() < deadline
+        if isready(response_ch)
+            result = try
+                take!(response_ch)
+            catch
+                return (ok = false, error = "Response channel error")
+            end
+            return result
+        end
+        sleep(0.05)
+    end
+
+    # Timed out — the async task may still complete later, but we don't care
+    close(response_ch)
+    return (ok = false, error = "Caller timeout after $(caller_timeout)s")
 end
 
 # ── Eval / Communication ─────────────────────────────────────────────────────
@@ -640,54 +681,31 @@ function eval_remote(
     timeout_ms::Int = 30000,
     display_code::String = code,
 )
+    _no_conn = (
+        stdout = "",
+        stderr = "",
+        value_repr = "",
+        exception = "Gate not connected (session=$(conn.session_id), status=$(conn.status))",
+        backtrace = nothing,
+    )
     if conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing
+        return _no_conn
+    end
+
+    request = (type = :eval, code = code, display_code = display_code)
+    result = _req_send_recv(conn, request; caller_timeout = timeout_ms / 1000.0)
+
+    if result.ok
+        conn.tool_call_count += 1
+        return result.response
+    else
         return (
             stdout = "",
             stderr = "",
             value_repr = "",
-            exception = "Gate not connected (session=$(conn.session_id), status=$(conn.status))",
+            exception = result.error,
             backtrace = nothing,
         )
-    end
-
-    request = (type = :eval, code = code, display_code = display_code)
-    lock(conn.req_lock) do
-        try
-            # Serialize and send
-            io = IOBuffer()
-            serialize(io, request)
-            sock = _require_req_socket(conn)
-            send(sock, Message(take!(io)))
-
-            # Receive response
-            raw = recv(sock)
-            response = deserialize(IOBuffer(raw))
-            conn.last_seen = now()
-            conn.tool_call_count += 1
-            return response
-        catch e
-            if e isa ZMQ.TimeoutError
-                # REQ socket is now in a broken state (sent request, never got
-                # reply). We must close and reconnect or all future calls fail.
-                _reconnect_req!(conn)
-                return (
-                    stdout = "",
-                    stderr = "",
-                    value_repr = "",
-                    exception = "Gate eval timed out after $(timeout_ms)ms",
-                    backtrace = nothing,
-                )
-            end
-            # Connection likely broken — mark disconnected
-            conn.status = :disconnected
-            return (
-                stdout = "",
-                stderr = "",
-                value_repr = "",
-                exception = "Gate communication error: $(sprint(showerror, e))",
-                backtrace = nothing,
-            )
-        end
     end
 end
 
@@ -728,35 +746,20 @@ function eval_remote_async(
         request_id = bytes2hex(rand(UInt8, 8))
     end
 
-    # Phase 1: Send eval_async request via REQ socket (short lock)
+    # Phase 1: Send eval_async request via REQ worker (non-blocking)
     conn.eval_state[] = EVAL_SENDING
-    ack = lock(conn.req_lock) do
-        try
-            request = (
-                type = :eval_async,
-                code = code,
-                display_code = display_code,
-                request_id = request_id,
-            )
-            io = IOBuffer()
-            serialize(io, request)
-            sock = _require_req_socket(conn)
-            send(sock, Message(take!(io)))
-            raw = recv(sock)
-            response = deserialize(IOBuffer(raw))
-            conn.last_seen = now()
-            return response
-        catch e
-            if e isa ZMQ.TimeoutError
-                _reconnect_req!(conn)
-                return (type = :error, message = "Gate eval_async handshake timed out")
-            end
-            conn.status = :disconnected
-            return (
-                type = :error,
-                message = "Gate communication error: $(sprint(showerror, e))",
-            )
-        end
+    request = (
+        type = :eval_async,
+        code = code,
+        display_code = display_code,
+        request_id = request_id,
+    )
+    result = _req_send_recv(conn, request; caller_timeout = 10.0)
+
+    ack = if result.ok
+        result.response
+    else
+        (type = :error, message = result.error)
     end
 
     # Check handshake result
@@ -936,52 +939,16 @@ function get_remote_options(conn::REPLConnection)
     if conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing
         return nothing
     end
-    lock(conn.req_lock) do
-        req = (type = :get_options,)
-        try
-            io = IOBuffer()
-            serialize(io, req)
-            sock = _require_req_socket(conn)
-            send(sock, Message(take!(io)))
-            raw = recv(sock)
-            response = deserialize(IOBuffer(raw))
-            conn.last_seen = now()
-            return response
-        catch e
-            if e isa ZMQ.TimeoutError
-                _reconnect_req!(conn)
-            else
-                conn.status = :disconnected
-            end
-            return nothing
-        end
-    end
+    result = _req_send_recv(conn, (type = :get_options,); caller_timeout = 10.0)
+    return result.ok ? result.response : nothing
 end
 
 function set_mirror_repl!(conn::REPLConnection, enabled::Bool)
     if conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing
         return false
     end
-    lock(conn.req_lock) do
-        req = (type = :set_option, key = "mirror_repl", value = enabled)
-        try
-            io = IOBuffer()
-            serialize(io, req)
-            sock = _require_req_socket(conn)
-            send(sock, Message(take!(io)))
-            raw = recv(sock)
-            response = deserialize(IOBuffer(raw))
-            conn.last_seen = now()
-            return get(response, :type, :error) == :ok
-        catch e
-            if e isa ZMQ.TimeoutError
-                _reconnect_req!(conn)
-            else
-                conn.status = :disconnected
-            end
-            return false
-        end
-    end
+    result = _req_send_recv(conn, (type = :set_option, key = "mirror_repl", value = enabled); caller_timeout = 10.0)
+    return result.ok && get(result.response, :type, :error) == :ok
 end
 
 """
@@ -993,26 +960,8 @@ Call `restore_tty!()` after the TUI exits to resume the shell and restore echo.
 """
 function set_tty!(conn::REPLConnection, path::String)
     conn.status in (:connected, :evaluating) && conn.req_socket !== nothing || return false
-    lock(conn.req_lock) do
-        req = (type = :set_tty, path = path)
-        try
-            io = IOBuffer()
-            serialize(io, req)
-            sock = _require_req_socket(conn)
-            send(sock, Message(take!(io)))
-            raw = recv(sock)
-            response = deserialize(IOBuffer(raw))
-            conn.last_seen = now()
-            return get(response, :type, :error) == :ok
-        catch e
-            if e isa ZMQ.TimeoutError
-                _reconnect_req!(conn)
-            else
-                conn.status = :disconnected
-            end
-            return false
-        end
-    end
+    result = _req_send_recv(conn, (type = :set_tty, path = path); caller_timeout = 10.0)
+    return result.ok && get(result.response, :type, :error) == :ok
 end
 
 function ping(conn::REPLConnection)
@@ -1020,32 +969,16 @@ function ping(conn::REPLConnection)
         return nothing
     end
 
-    # Use trylock so we don't block the health checker during long evals.
-    # If the lock is held (eval in progress), return :busy so the caller
-    # can check PID liveness directly.
-    acquired = trylock(conn.req_lock)
-    acquired || return :busy
-    try
-        io = IOBuffer()
-        serialize(io, (type = :ping,))
-        sock = _require_req_socket(conn)
-        send(sock, Message(take!(io)))
-
-        raw = recv(sock)
-        response = deserialize(IOBuffer(raw))
-        conn.last_seen = now()
+    # Short timeout — ping should be fast. If the worker is busy processing
+    # a long eval handshake, the request queues behind it but we don't wait
+    # forever. Return :busy equivalent (nothing) on timeout so the health
+    # checker can fall back to PID liveness.
+    result = _req_send_recv(conn, (type = :ping,); caller_timeout = 8.0)
+    if result.ok
         conn.last_ping = now()
-        return response
-    catch e
-        if e isa ZMQ.TimeoutError
-            # REQ socket is poisoned after timeout — must reconnect
-            _reconnect_req!(conn)
-        else
-            conn.status = :disconnected
-        end
+        return result.response
+    else
         return nothing
-    finally
-        unlock(conn.req_lock)
     end
 end
 
@@ -1058,25 +991,8 @@ The gate will exec a fresh Julia process after replying.
 """
 function send_restart!(conn::REPLConnection)
     (conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing) && return false
-    lock(conn.req_lock) do
-        try
-            io = IOBuffer()
-            serialize(io, (type = :restart, name = conn.name))
-            sock = _require_req_socket(conn)
-            send(sock, Message(take!(io)))
-            raw = recv(sock)
-            response = deserialize(IOBuffer(raw))
-            conn.last_seen = now()
-            return get(response, :type, :error) == :ok
-        catch e
-            if e isa ZMQ.TimeoutError
-                _reconnect_req!(conn)
-            else
-                conn.status = :disconnected
-            end
-            return false
-        end
-    end
+    result = _req_send_recv(conn, (type = :restart, name = conn.name); caller_timeout = 10.0)
+    return result.ok && get(result.response, :type, :error) == :ok
 end
 
 """
@@ -1087,19 +1003,8 @@ The gate will stop its event loop and the Julia process will exit.
 """
 function send_shutdown!(conn::REPLConnection)
     (conn.status ∉ (:connected, :evaluating, :stalled) || conn.req_socket === nothing) && return false
-    lock(conn.req_lock) do
-        try
-            io = IOBuffer()
-            serialize(io, (type = :shutdown, name = conn.name))
-            sock = _require_req_socket(conn)
-            send(sock, Message(take!(io)))
-            raw = recv(sock)
-            response = deserialize(IOBuffer(raw))
-            return get(response, :type, :error) == :ok
-        catch
-            return false
-        end
-    end
+    result = _req_send_recv(conn, (type = :shutdown, name = conn.name); caller_timeout = 10.0)
+    return result.ok && get(result.response, :type, :error) == :ok
 end
 
 # ── Debug Protocol ──────────────────────────────────────────────────────────
@@ -1114,24 +1019,11 @@ function _gate_send_recv(conn::REPLConnection, request::NamedTuple)
     if conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing
         return (type = :error, message = "Gate not connected (status=$(conn.status))")
     end
-    lock(conn.req_lock) do
-        try
-            io = IOBuffer()
-            serialize(io, request)
-            sock = _require_req_socket(conn)
-            send(sock, Message(take!(io)))
-            raw = recv(sock)
-            response = deserialize(IOBuffer(raw))
-            conn.last_seen = now()
-            return response
-        catch e
-            if e isa ZMQ.TimeoutError
-                _reconnect_req!(conn)
-                return (type = :error, message = "Gate request timed out")
-            end
-            conn.status = :disconnected
-            return (type = :error, message = "Connection error: $e")
-        end
+    result = _req_send_recv(conn, request; caller_timeout = 10.0)
+    if result.ok
+        return result.response
+    else
+        return (type = :error, message = result.error)
     end
 end
 
@@ -1597,33 +1489,21 @@ function _call_session_tool(conn::REPLConnection, tool_name::String, args::Dict)
         return "Error: Gate not connected (session=$(conn.session_id))"
     end
 
-    lock(conn.req_lock) do
-        try
-            request = (
-                type = :tool_call,
-                name = tool_name,
-                arguments = Dict{String,Any}(string(k) => v for (k, v) in args),
-            )
-            io = IOBuffer()
-            Serialization.serialize(io, request)
-            sock = _require_req_socket(conn)
-            send(sock, Message(take!(io)))
-            raw = recv(sock)
-            response = Serialization.deserialize(IOBuffer(raw))
-            conn.last_seen = now()
-            resp_type = get(response, :type, :error)
-            if resp_type == :error
-                return "Error: $(get(response, :message, "unknown"))"
-            end
-            return string(get(response, :value, ""))
-        catch e
-            if e isa ZMQ.TimeoutError
-                _reconnect_req!(conn)
-                return "Error: Gate tool call timed out"
-            end
-            conn.status = :disconnected
-            return "Error: $(sprint(showerror, e))"
+    request = (
+        type = :tool_call,
+        name = tool_name,
+        arguments = Dict{String,Any}(string(k) => v for (k, v) in args),
+    )
+    result = _req_send_recv(conn, request; caller_timeout = 30.0)
+    if result.ok
+        conn.tool_call_count += 1
+        resp_type = get(result.response, :type, :error)
+        if resp_type == :error
+            return "Error: $(get(result.response, :message, "unknown"))"
         end
+        return string(get(result.response, :value, ""))
+    else
+        return "Error: $(result.error)"
     end
 end
 
@@ -1656,34 +1536,19 @@ function _call_session_tool_async(
     # Generate a unique request ID to correlate response with this caller
     request_id = bytes2hex(rand(UInt8, 8))
 
-    # Phase 1: Send tool_call_async request via REQ socket (short lock)
-    ack = lock(conn.req_lock) do
-        try
-            request = (
-                type = :tool_call_async,
-                name = tool_name,
-                arguments = Dict{String,Any}(string(k) => v for (k, v) in args),
-                request_id = request_id,
-            )
-            io = IOBuffer()
-            Serialization.serialize(io, request)
-            sock = _require_req_socket(conn)
-            send(sock, Message(take!(io)))
-            raw = recv(sock)
-            response = Serialization.deserialize(IOBuffer(raw))
-            conn.last_seen = now()
-            return response
-        catch e
-            if e isa ZMQ.TimeoutError
-                _reconnect_req!(conn)
-                return (type = :error, message = "Gate tool_call_async handshake timed out")
-            end
-            conn.status = :disconnected
-            return (
-                type = :error,
-                message = "Gate communication error: $(sprint(showerror, e))",
-            )
-        end
+    # Phase 1: Send tool_call_async request via REQ worker (non-blocking)
+    request = (
+        type = :tool_call_async,
+        name = tool_name,
+        arguments = Dict{String,Any}(string(k) => v for (k, v) in args),
+        request_id = request_id,
+    )
+    hs_result = _req_send_recv(conn, request; caller_timeout = 10.0)
+
+    ack = if hs_result.ok
+        hs_result.response
+    else
+        (type = :error, message = hs_result.error)
     end
 
     # Check handshake result
