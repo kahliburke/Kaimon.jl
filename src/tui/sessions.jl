@@ -345,14 +345,14 @@ function _shutdown_selected_session!(m::KaimonModel)
         _close_session_terminal!(m)
     end
 
-    # Agent-spawned session: stop the managed process
-    if conn.spawned_by == "agent"
-        ms = find_managed_session(conn.project_path)
-        ms !== nothing && stop_session!(ms)
+    # Fire-and-forget: shutdown gate + stop managed process without blocking the TUI
+    @async begin
+        send_shutdown!(conn)
+        if conn.spawned_by == "agent"
+            ms = find_managed_session(conn.project_path)
+            ms !== nothing && stop_session!(ms)
+        end
     end
-
-    # Send shutdown to gate (tells it to cleanup + exit)
-    send_shutdown!(conn)
 
     # Immediately remove from connection manager
     if mgr !== nothing
