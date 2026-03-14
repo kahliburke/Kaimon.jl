@@ -621,7 +621,7 @@ function _req_send_recv(conn::REPLConnection, request; caller_timeout::Float64 =
     # Response channel — the async task puts its result here
     response_ch = Channel{Any}(1)
 
-    @async begin
+    Threads.@spawn begin
         local sock = nothing
         try
             sock = Socket(ctx, REQ)

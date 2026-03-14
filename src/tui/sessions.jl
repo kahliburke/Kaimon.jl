@@ -346,7 +346,7 @@ function _shutdown_selected_session!(m::KaimonModel)
     end
 
     # Fire-and-forget: shutdown gate + stop managed process without blocking the TUI
-    @async begin
+    Threads.@spawn begin
         send_shutdown!(conn)
         if conn.spawned_by == "agent"
             ms = find_managed_session(conn.project_path)
