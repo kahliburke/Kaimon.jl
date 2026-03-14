@@ -31,6 +31,27 @@ const DEFAULT_INDEX_EXTENSIONS = [".jl", ".ts", ".tsx", ".jsx", ".md"]
 # Additional directories can be specified via index_project(extra_dirs=...)
 const DEFAULT_SOURCE_DIRS = ["src", "test", "scripts"]
 
+# Known source file extensions for auto-detection (superset of per-language lists)
+const SOURCE_EXTENSIONS = Set([
+    ".jl", ".py", ".rs", ".go", ".ts", ".tsx", ".js", ".jsx",
+    ".c", ".cpp", ".cc", ".h", ".hpp", ".java", ".kt", ".kts",
+    ".rb", ".ex", ".exs", ".zig", ".nim", ".lua", ".swift", ".m",
+    ".cs", ".fs", ".scala", ".clj", ".cljs", ".erl", ".hrl",
+    ".hs", ".ml", ".mli", ".r", ".R", ".jl", ".sh", ".bash",
+    ".md", ".mdx", ".rst", ".toml", ".yaml", ".yml", ".json",
+    ".xml", ".html", ".css", ".scss", ".sass", ".less",
+    ".sql", ".graphql", ".gql", ".proto", ".tf", ".hcl",
+    ".vue", ".svelte",
+])
+
+# Directories to skip during walkdir and auto-detection, even if tracked by git
+const IGNORED_DIRS = Set([
+    "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache",
+    "vendor", "dist", "build", "_build", ".next", ".nuxt",
+    "coverage", ".tox", "target", ".gradle", ".cache",
+    ".eggs", ".egg-info", "venv", ".venv", "env",
+])
+
 # Get embedding config for a model
 function get_embedding_config(model::String)
     return get(EMBEDDING_CONFIGS, model, (dims=768, context_tokens=512, context_chars=2000))
@@ -99,21 +120,91 @@ function check_and_notify_index_errors()
     end
 end
 
-# ── Project Registry ──────────────────────────────────────────────────────────
-# Central JSON file at ~/.cache/kaimon/projects.json that persists indexing
-# config for all projects (gate-connected and manually added external ones).
-# External projects store their index state inside the registry entry to avoid
-# writing any files to the target project directory.
+# ── Search Config (user preferences) ─────────────────────────────────────────
+# User search configuration lives in ~/.config/kaimon/search.json so it
+# survives cache clears.  Only regenerable index state stays in the cache
+# at ~/.cache/kaimon/projects.json.
 
-"""Path to the project registry JSON file."""
+"""Path to the search config JSON file (user preferences)."""
+_search_config_path() = joinpath(kaimon_config_dir(), "search.json")
+
+"""Path to the index cache JSON file (regenerable state)."""
 _project_registry_path() = joinpath(kaimon_cache_dir(), "projects.json")
+
+const _CONFIG_FIELDS = ("collection", "dirs", "extensions", "auto_index", "source")
+
+"""
+    load_search_config() -> Dict
+
+Load search configuration from `~/.config/kaimon/search.json`.
+On first call, migrates config fields from the old cache-only
+`projects.json` if `search.json` doesn't exist yet.
+"""
+function load_search_config()
+    path = _search_config_path()
+    if isfile(path)
+        try
+            parsed = JSON.parse(read(path, String))
+            if !haskey(parsed, "version")
+                parsed["version"] = 1
+            end
+            if !haskey(parsed, "projects")
+                parsed["projects"] = Dict{String,Any}()
+            end
+            return parsed
+        catch e
+            @warn "Failed to load search config, starting fresh" exception = e
+            return Dict("version" => 1, "projects" => Dict{String,Any}())
+        end
+    end
+
+    # No search.json yet — start fresh (projects get added as you use them)
+    return Dict("version" => 1, "projects" => Dict{String,Any}())
+end
+
+"""
+    save_search_config(config::AbstractDict)
+
+Write search configuration to `~/.config/kaimon/search.json`.
+"""
+function save_search_config(config::AbstractDict)
+    path = _search_config_path()
+    try
+        write(path, JSON.json(config, 2))
+    catch e
+        @error "Failed to save search config" exception = e
+    end
+end
+
+# ── Index Cache (regenerable state) ──────────────────────────────────────────
+# ~/.cache/kaimon/projects.json holds only per-file index state (mtimes, chunk
+# counts). Cleared safely without losing user preferences.
 
 """
     load_project_registry() -> Dict
 
-Load the project registry from disk. Returns an empty registry if missing.
+Load search config (project listing). Returns the same shape as the old
+cache registry so callers don't change.
 """
 function load_project_registry()
+    return load_search_config()
+end
+
+"""
+    save_project_registry(registry::AbstractDict)
+
+Write search config. Kept for internal compatibility.
+"""
+function save_project_registry(registry::AbstractDict)
+    save_search_config(registry)
+end
+
+"""
+    _load_index_cache() -> Dict
+
+Load the index cache from `~/.cache/kaimon/projects.json`.
+"""
+function _load_index_cache()
     path = _project_registry_path()
     if !isfile(path)
         return Dict("version" => 1, "projects" => Dict{String,Any}())
@@ -128,22 +219,22 @@ function load_project_registry()
         end
         return parsed
     catch e
-        @warn "Failed to load project registry, starting fresh" exception = e
+        @warn "Failed to load index cache, starting fresh" exception = e
         return Dict("version" => 1, "projects" => Dict{String,Any}())
     end
 end
 
 """
-    save_project_registry(registry::Dict)
+    _save_index_cache(cache::AbstractDict)
 
-Write the project registry to disk.
+Write the index cache to `~/.cache/kaimon/projects.json`.
 """
-function save_project_registry(registry::AbstractDict)
+function _save_index_cache(cache::AbstractDict)
     path = _project_registry_path()
     try
-        write(path, JSON.json(registry, 2))
+        write(path, JSON.json(cache, 2))
     catch e
-        @error "Failed to save project registry" exception = e
+        @error "Failed to save index cache" exception = e
     end
 end
 
@@ -152,9 +243,10 @@ end
                        extensions::Vector{String}=DEFAULT_INDEX_EXTENSIONS,
                        auto_index::Bool=true, source::String="gate")
 
-Upsert a project entry in the registry. `source` is either `"gate"` (auto-indexed
-from a REPL connection) or `"manual"` (user-added via the search manage UI);
-it controls which UI section a project appears in.
+Upsert a project entry in the search config (`~/.config/kaimon/search.json`).
+`source` is either `"gate"` (auto-indexed from a REPL connection) or `"manual"`
+(user-added via the search manage UI); it controls which UI section a project
+appears in.
 """
 function register_project!(
     path::String;
@@ -165,44 +257,48 @@ function register_project!(
     source::String = "gate",
 )
     path = abspath(path)
-    registry = load_project_registry()
+    config = load_search_config()
     if isempty(collection)
         collection = get_project_collection_name(path)
     end
-    existing = get(registry["projects"], path, Dict{String,Any}())
+    existing = get(config["projects"], path, Dict{String,Any}())
     existing["collection"] = collection
     existing["dirs"] = dirs
     existing["extensions"] = extensions
     existing["auto_index"] = auto_index
     existing["source"] = source
-    if !haskey(existing, "index_state")
-        existing["index_state"] = Dict{String,Any}()
-    end
-    registry["projects"][path] = existing
-    save_project_registry(registry)
+    config["projects"][path] = existing
+    save_search_config(config)
 end
 
 """
     unregister_project!(path::String)
 
-Remove a project entry from the registry.
+Remove a project from both search config and index cache.
 """
 function unregister_project!(path::String)
     path = abspath(path)
-    registry = load_project_registry()
-    delete!(registry["projects"], path)
-    save_project_registry(registry)
+    config = load_search_config()
+    delete!(config["projects"], path)
+    save_search_config(config)
+
+    # Also clean up cache entry
+    cache = _load_index_cache()
+    if haskey(cache["projects"], path)
+        delete!(cache["projects"], path)
+        _save_index_cache(cache)
+    end
 end
 
 """
     get_project_config(path::String) -> Union{Dict, Nothing}
 
-Look up a project's config by absolute path.
+Look up a project's config by absolute path from the search config.
 """
 function get_project_config(path::String)
     path = abspath(path)
-    registry = load_project_registry()
-    return get(registry["projects"], path, nothing)
+    config = load_search_config()
+    return get(config["projects"], path, nothing)
 end
 
 """
@@ -289,8 +385,8 @@ function _fallback_detect(project_path::String)
         # Limit depth to 2 levels
         depth = count(==('/'), relpath(root, project_path))
         depth > 2 && (empty!(dirs); continue)
-        # Skip hidden dirs and node_modules
-        filter!(d -> !startswith(d, ".") && d != "node_modules" && d != "__pycache__", dirs)
+        # Skip hidden dirs and well-known noise directories
+        filter!(d -> !startswith(d, ".") && d ∉ IGNORED_DIRS, dirs)
         for f in files
             ext = lowercase(splitext(f)[2])
             if ext in source_exts
@@ -309,16 +405,114 @@ function _fallback_detect(project_path::String)
     return (type = "unknown", dirs = found_dirs, extensions = top_exts)
 end
 
+"""
+    _git_tracked_files(project_path::String) -> Union{Vector{String}, Nothing}
+
+Get list of tracked + untracked-but-not-ignored files via `git ls-files`.
+Returns `nothing` if the path is not a git repository or git is unavailable.
+"""
+function _git_tracked_files(project_path::String)
+    try
+        output = read(
+            `git -C $project_path ls-files --cached --others --exclude-standard`,
+            String,
+        )
+        files = filter(!isempty, split(output, '\n'))
+        return String.(files)
+    catch
+        return nothing
+    end
+end
+
+"""
+    auto_detect_project_config(project_path::String) -> NamedTuple{(:type, :dirs, :extensions, :git_aware), Tuple{String, Vector{String}, Vector{String}, Bool}}
+
+Improved project detection that uses git to filter ignored/generated files.
+
+For git repos:
+- Discovers unique source extensions from tracked files (filtered by SOURCE_EXTENSIONS whitelist)
+- Collapses file paths to minimal covering top-level directories
+- Excludes well-known noise directories (IGNORED_DIRS) even if tracked
+- Falls back to marker-based `detect_project_type()` for non-git projects
+"""
+function auto_detect_project_config(project_path::String)
+    path = abspath(project_path)
+
+    # Try git-aware detection first
+    git_files = _git_tracked_files(path)
+    if git_files !== nothing && !isempty(git_files)
+        # Discover unique extensions, filtered to source whitelist
+        ext_counts = Dict{String,Int}()
+        for f in git_files
+            ext = lowercase(splitext(f)[2])
+            if ext in SOURCE_EXTENSIONS
+                ext_counts[ext] = get(ext_counts, ext, 0) + 1
+            end
+        end
+
+        # Top extensions by frequency
+        sorted_exts = sort(collect(ext_counts); by=last, rev=true)
+        detected_exts = [first(p) for p in sorted_exts[1:min(10, length(sorted_exts))]]
+        if isempty(detected_exts)
+            detected_exts = copy(DEFAULT_INDEX_EXTENSIONS)
+        end
+
+        # Collapse file paths to minimal covering top-level dirs
+        top_dirs = Set{String}()
+        has_root_files = false
+        for f in git_files
+            ext = lowercase(splitext(f)[2])
+            ext in SOURCE_EXTENSIONS || continue
+            parts = splitpath(f)
+            if length(parts) >= 2
+                top_dir = parts[1]
+                # Skip ignored dirs and hidden dirs
+                if !startswith(top_dir, ".") && top_dir ∉ IGNORED_DIRS
+                    push!(top_dirs, top_dir)
+                end
+            else
+                has_root_files = true
+            end
+        end
+        # Only include project root if no subdirectories were found —
+        # a few root-level files aren't worth recursing the entire tree.
+        if isempty(top_dirs) && has_root_files
+            push!(top_dirs, ".")
+        end
+
+        # Convert to absolute paths, filter to existing dirs
+        abs_dirs = String[]
+        for d in sort(collect(top_dirs))
+            full = d == "." ? path : joinpath(path, d)
+            isdir(full) && push!(abs_dirs, full)
+        end
+        if isempty(abs_dirs)
+            push!(abs_dirs, path)
+        end
+
+        # Determine project type from markers (for the type label)
+        marker_result = detect_project_type(path)
+        ptype = marker_result.type
+
+        return (type=ptype, dirs=abs_dirs, extensions=detected_exts, git_aware=true)
+    end
+
+    # Non-git fallback
+    result = detect_project_type(path)
+    return (type=result.type, dirs=result.dirs, extensions=result.extensions, git_aware=false)
+end
+
 # Lightweight file tracking for indexing state.
-# All state is stored centrally in ~/.cache/kaimon/projects.json — we never
-# write into the user's project directories.
+# Config (dirs, extensions) lives in ~/.config/kaimon/search.json.
+# Per-file index state lives in ~/.cache/kaimon/projects.json.
+# We never write into the user's project directories.
 
 """
     load_index_state(project_path::String) -> Dict
 
-Load the index state for a project from the central registry
-(~/.cache/kaimon/projects.json). Returns a default empty state if the
-project has not been indexed yet.
+Load the index state for a project. Config (dirs, extensions) comes from the
+search config (`~/.config/kaimon/search.json`); per-file tracking comes from
+the index cache (`~/.cache/kaimon/projects.json`).
 
 Structure:
 - "config": Dict with "dirs" (full list of indexed directories) and "extensions"
@@ -333,37 +527,58 @@ function load_index_state(project_path::String)
         "files" => Dict{String,Any}(),
     )
 
-    config = get_project_config(project_path)
-    config === nothing && return _default_state()
-    idx_state = get(config, "index_state", Dict())
-    parsed_config = Dict(
-        "dirs" => String.(get(idx_state, "dirs", get(config, "dirs", String[]))),
-        "extensions" => String.(get(idx_state, "extensions", get(config, "extensions", DEFAULT_INDEX_EXTENSIONS))),
-    )
+    # Read dirs/extensions from search config
+    search_cfg = get_project_config(project_path)
+
+    # Read per-file state from index cache
+    ap = abspath(project_path)
+    cache = _load_index_cache()
+    cache_entry = get(cache["projects"], ap, Dict{String,Any}())
+    idx_state = get(cache_entry, "index_state", Dict())
+
+    # Config priority: search config → cache (backward compat) → defaults
+    if search_cfg !== nothing
+        dirs = String.(get(search_cfg, "dirs", String[]))
+        exts = String.(get(search_cfg, "extensions", DEFAULT_INDEX_EXTENSIONS))
+    elseif !isempty(idx_state)
+        # Backward compat: old cache entries may still have dirs/extensions
+        dirs = String.(get(idx_state, "dirs", String[]))
+        exts = String.(get(idx_state, "extensions", DEFAULT_INDEX_EXTENSIONS))
+    else
+        return _default_state()
+    end
+
     files = Dict(get(idx_state, "files", Dict()))
-    return Dict{String,Any}("config" => parsed_config, "files" => files)
+    return Dict{String,Any}(
+        "config" => Dict{String,Any}("dirs" => dirs, "extensions" => exts),
+        "files" => files,
+    )
 end
 
 """
     save_index_state(project_path::String, state::Dict)
 
-Persist the index state for a project into the central registry
-(~/.cache/kaimon/projects.json). Creates the registry entry if it does not
-exist yet, so state is never silently dropped for unregistered projects.
+Persist the index state for a project. Only file-level tracking data goes to
+the index cache (`~/.cache/kaimon/projects.json`). Config fields (dirs,
+extensions) are managed via `register_project!` in the search config.
 """
 function save_index_state(project_path::String, state)
     try
-        registry = load_project_registry()
+        cache = _load_index_cache()
         ap = abspath(project_path)
-        entry = get!(registry["projects"], ap, Dict{String,Any}())
-        entry["index_state"] = Dict(
-            "dirs" => get(get(state, "config", Dict()), "dirs", String[]),
-            "extensions" => get(get(state, "config", Dict()), "extensions", DEFAULT_INDEX_EXTENSIONS),
+        entry = get!(cache["projects"], ap, Dict{String,Any}())
+        idx = Dict{String,Any}(
             "files" => get(state, "files", Dict()),
         )
-        save_project_registry(registry)
+        # Preserve last_indexed timestamp if present
+        last_indexed = get(state, "last_indexed", nothing)
+        if last_indexed !== nothing
+            idx["last_indexed"] = last_indexed
+        end
+        entry["index_state"] = idx
+        _save_index_cache(cache)
     catch e
-        @error "Failed to save index state to registry" exception = e
+        @error "Failed to save index state to cache" exception = e
     end
 end
 
@@ -407,10 +622,10 @@ function get_stale_files(project_path::String, src_dir::String; extensions::Vect
     files_state = load_index_state(project_path)["files"]
 
     onerr = e -> begin
-        with_index_logger(() -> @warn "Skipping unreadable directory during stale scan" exception = e)
+        with_index_logger(() -> @warn "Skipping unreadable directory during stale scan" project = project_path src_dir = src_dir exception = e)
     end
     for (root, dirs, files) in walkdir(src_dir; onerror=onerr)
-        filter!(d -> !startswith(d, ".") && d != "node_modules", dirs)
+        filter!(d -> !startswith(d, ".") && d ∉ IGNORED_DIRS, dirs)
 
         for file in files
             if any(ext -> endswith(file, ext), extensions)
@@ -1292,11 +1507,11 @@ function index_directory(
     # Find all matching files
     files = String[]
     onerr = e -> begin
-        with_index_logger(() -> @warn "Skipping unreadable directory during indexing" exception = e)
+        with_index_logger(() -> @warn "Skipping unreadable directory during indexing" dir = dir_path collection = collection exception = e)
     end
     for (root, dirs, filenames) in walkdir(dir_path; onerror=onerr)
-        # Skip hidden directories and node_modules
-        filter!(d -> !startswith(d, ".") && d != "node_modules", dirs)
+        # Skip hidden directories and well-known noise directories
+        filter!(d -> !startswith(d, ".") && d ∉ IGNORED_DIRS, dirs)
 
         for filename in filenames
             # Check if file matches any of the supported extensions
@@ -1341,11 +1556,9 @@ Index a Julia project into Qdrant. Uses project directory name as collection if 
 Total number of chunks indexed across all directories.
 
 # Configuration
-Default directories and extensions can be configured in .kaimon/security.json:
-- `index_dirs`: Array of directories relative to project root (e.g., ["src", "lib", "dashboard-ui/src"])
-- `index_extensions`: Array of file extensions to index (e.g., [".jl", ".ts", ".md"])
-
-Use `Kaimon.set_index_dirs!()` and `Kaimon.set_index_extensions!()` to update config.
+Directories and extensions are resolved from the search config
+(`~/.config/kaimon/search.json`), which stores per-project `dirs` and `extensions`
+arrays. Use the Search Config panel in the TUI to update these settings.
 """
 function index_project(
     project_path::String=pwd();
@@ -1359,28 +1572,25 @@ function index_project(
     # Use project name as collection if not specified; always normalize
     col_name = collection === nothing ? get_project_collection_name(project_path) : normalize_collection_name(collection)
 
-    # Config resolution priority: explicit args → registry → security.json → defaults
+    # Config resolution priority: explicit args → registry → defaults
     registry_config = get_project_config(project_path)
 
-    config = load_security_config(project_path)
-    config_dirs = config !== nothing ? config.index_dirs : String[]
-    config_extensions = config !== nothing ? config.index_extensions : DEFAULT_INDEX_EXTENSIONS
+    config_dirs = String[]
+    config_extensions = DEFAULT_INDEX_EXTENSIONS
 
-    # Use registry dirs/extensions as intermediate fallback
-    if isempty(config_dirs) && registry_config !== nothing
+    # Use registry dirs/extensions if available
+    if registry_config !== nothing
         reg_dirs = get(registry_config, "dirs", String[])
         if !isempty(reg_dirs)
             config_dirs = String.(reg_dirs)
         end
-    end
-    if registry_config !== nothing && extensions === nothing
         reg_exts = get(registry_config, "extensions", nothing)
         if reg_exts !== nothing && !isempty(reg_exts)
             config_extensions = String.(reg_exts)
         end
     end
 
-    # Use provided extensions or fall back to config/defaults
+    # Use provided extensions or fall back to registry/defaults
     actual_extensions = extensions !== nothing ? extensions : config_extensions
 
     # Build list of directories to index
@@ -1397,13 +1607,10 @@ function index_project(
             end
         end
     else
-        # Fall back to existing behavior: add src/ if it exists
+        # Fall back to src/ if it exists; don't blindly recurse the project root
         src_dir = joinpath(project_path, "src")
         if isdir(src_dir)
             push!(dirs_to_index, src_dir)
-        elseif isempty(extra_dirs)
-            # If no src/ and no extra dirs, index entire project
-            push!(dirs_to_index, project_path)
         end
     end
 
@@ -1458,10 +1665,8 @@ function index_project(
         total_chunks += chunks
     end
 
-    # Save indexing configuration and completion timestamp
+    # Save completion timestamp to index cache
     state = load_index_state(project_path)
-    state["config"]["dirs"] = dirs_to_index
-    state["config"]["extensions"] = actual_extensions
     state["last_indexed"] = round(Int, time())
     save_index_state(project_path, state)
 
@@ -1512,9 +1717,12 @@ function sync_index(
         src_dir = joinpath(project_path, "src")
         if isdir(src_dir)
             push!(dirs_to_sync, src_dir)
-        else
-            push!(dirs_to_sync, project_path)
         end
+    end
+    if isempty(dirs_to_sync)
+        !silent && verbose && println("⚠️  No indexable directories found for '$col_name'")
+        with_index_logger(() -> @warn "No indexable directories found" collection = col_name project = project_path)
+        return (reindexed=0, deleted=0, chunks=0)
     end
 
     !silent && verbose && println("🔄 Syncing index for collection '$col_name' ($(length(dirs_to_sync)) director$(length(dirs_to_sync) == 1 ? "y" : "ies"))...")
