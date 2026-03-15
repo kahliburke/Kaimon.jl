@@ -747,6 +747,15 @@ function eval_remote_async(
         request_id = bytes2hex(rand(UInt8, 8))
     end
 
+    # Register the per-request inbox BEFORE sending the request.
+    # Fast evals can complete and publish eval_complete on PUB before the
+    # REQ/REP round-trip finishes, so the drain loop must already have an
+    # inbox to route the message into.
+    my_inbox = Channel{Any}(Inf)
+    lock(conn._eval_inboxes_lock) do
+        conn._eval_inboxes[request_id] = my_inbox
+    end
+
     # Phase 1: Send eval_async request via REQ worker (non-blocking)
     conn.eval_state[] = EVAL_SENDING
     request = (
@@ -767,6 +776,10 @@ function eval_remote_async(
     ack_type = get(ack, :type, :error)
     if ack_type == :error
         conn.eval_state[] = EVAL_IDLE
+        lock(conn._eval_inboxes_lock) do
+            delete!(conn._eval_inboxes, request_id)
+        end
+        close(my_inbox)
         msg = get(ack, :message, "Unknown handshake error")
         return (
             stdout = "",
@@ -778,6 +791,10 @@ function eval_remote_async(
     end
     if ack_type != :accepted
         conn.eval_state[] = EVAL_IDLE
+        lock(conn._eval_inboxes_lock) do
+            delete!(conn._eval_inboxes, request_id)
+        end
+        close(my_inbox)
         return (
             stdout = "",
             stderr = "",
@@ -787,18 +804,8 @@ function eval_remote_async(
         )
     end
 
-    # Phase 2: Wait for eval_complete/eval_error on a per-request inbox channel.
-    # The TUI drain loop reads the SUB socket and routes messages by request_id
-    # to the correct inbox so concurrent evals don't steal each other's results.
+    # Phase 2: Wait for eval_complete/eval_error on the inbox.
     conn.eval_state[] = EVAL_STREAMING
-
-    # Register a per-request inbox channel.
-    # Use unbounded capacity so put! in drain_stream_messages! never blocks
-    # (a full Channel blocks the drain loop which holds mgr.lock, stalling the TUI).
-    my_inbox = Channel{Any}(Inf)
-    lock(conn._eval_inboxes_lock) do
-        conn._eval_inboxes[request_id] = my_inbox
-    end
 
     start_time = time()
     last_activity = start_time  # tracks last stdout/stderr/any message
@@ -1045,10 +1052,17 @@ function drain_stream_messages!(mgr::ConnectionManager)
             n_drained = 0
             while n_drained < 500
                 n_drained += 1
+                # Check for pending data before recv to avoid the costly
+                # throw→backtrace path when no messages are available.
+                try
+                    (conn.sub_socket.events & ZMQ.POLLIN) == 0 && break
+                catch
+                    break  # socket error — skip this connection
+                end
                 raw = try
                     recv(conn.sub_socket)
                 catch
-                    break  # timeout or error — no more messages
+                    break  # recv error — no more messages
                 end
                 msg = try
                     deserialize(IOBuffer(raw))
@@ -1537,6 +1551,13 @@ function _call_session_tool_async(
     # Generate a unique request ID to correlate response with this caller
     request_id = bytes2hex(rand(UInt8, 8))
 
+    # Register inbox BEFORE sending request — fast tool calls can complete
+    # and publish on PUB before the REQ/REP round-trip finishes.
+    my_inbox = Channel{Any}(Inf)
+    lock(conn._eval_inboxes_lock) do
+        conn._eval_inboxes[request_id] = my_inbox
+    end
+
     # Phase 1: Send tool_call_async request via REQ worker (non-blocking)
     request = (
         type = :tool_call_async,
@@ -1555,19 +1576,21 @@ function _call_session_tool_async(
     # Check handshake result
     ack_type = get(ack, :type, :error)
     if ack_type == :error
+        lock(conn._eval_inboxes_lock) do
+            delete!(conn._eval_inboxes, request_id)
+        end
+        close(my_inbox)
         return "Error: $(get(ack, :message, "Unknown handshake error"))"
     end
     if ack_type != :accepted
+        lock(conn._eval_inboxes_lock) do
+            delete!(conn._eval_inboxes, request_id)
+        end
+        close(my_inbox)
         return "Error: Unexpected ack type: $ack_type"
     end
 
-    # Phase 2: Wait for tool_complete/tool_error on a per-request inbox channel.
-    # The drain loop reads the SUB socket and routes messages by request_id.
-    # Use unbounded capacity so put! in drain_stream_messages! never blocks.
-    my_inbox = Channel{Any}(Inf)
-    lock(conn._eval_inboxes_lock) do
-        conn._eval_inboxes[request_id] = my_inbox
-    end
+    # Phase 2: Wait for tool_complete/tool_error on the inbox.
 
     try
         deadline = time() + timeout_ms / 1000.0
