@@ -93,7 +93,7 @@ end
 
 ping_tool = @mcp_tool(
     :ping,
-    "Check if the MCP server is responsive and return Revise.jl status.",
+    "Check if the MCP server is responsive and list connected Julia sessions.",
     Dict(
         "type" => "object",
         "properties" => Dict(
@@ -109,18 +109,6 @@ ping_tool = @mcp_tool(
             v === true || v == "true" || v == "1"
         end
         status = "✓ MCP Server is healthy and responsive\n"
-
-        # Check Revise status
-        if isdefined(Main, :Revise)
-            revise_errors = Main.Revise.errors()
-            if revise_errors === nothing
-                status *= "Revise: active (no errors)"
-            else
-                status *= "Revise: active (has errors - call Revise.errors() for details)"
-            end
-        else
-            status *= "Revise: not loaded"
-        end
 
         # Connected Julia sessions
         mgr = GATE_CONN_MGR[]
