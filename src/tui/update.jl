@@ -648,11 +648,11 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
                 m.sessions_detail_scroll = 0
             end
             :enter => begin
-                # Open PTY terminal for agent-spawned sessions
+                # Open PTY terminal for agent-spawned sessions (skip stalled)
                 conns = _visible_connections(m)
                 if m.selected_connection >= 1 && m.selected_connection <= length(conns)
                     conn = conns[m.selected_connection]
-                    if conn.spawned_by == "agent"
+                    if conn.spawned_by == "agent" && conn.status != :stalled
                         ms = find_managed_session(conn.project_path)
                         ms !== nothing && _open_session_terminal!(m, ms)
                     end
@@ -868,16 +868,33 @@ end
 function _handle_activity_mouse!(m::KaimonModel, evt::MouseEvent)
     w = m._activity_list_widget
     w === nothing && return
+    n = length(w.items)
+    n == 0 && return
 
+    # Scroll wheel: move selection (like arrow keys) so the detail pane updates
+    is_scroll = evt.button in (mouse_scroll_up, mouse_scroll_down) &&
+                evt.action == mouse_press &&
+                Base.contains(w.last_area, evt.x, evt.y)
+    if is_scroll
+        m.activity_follow = false
+        step = evt.button == mouse_scroll_up ? -3 : 3
+        new_sel = clamp(w.selected + step, 1, n)
+        if new_sel != w.selected
+            w.selected = new_sel
+            m._activity_list_offset = w.offset
+            _select_activity_by_display_index!(m, new_sel)
+            m.focused_pane[3] = 1
+        end
+        return
+    end
+
+    # Click: delegate to widget
     prev_sel = w.selected
-    prev_off = w.offset
     handled = handle_mouse!(w, evt)
     handled || return
 
-    # Sync offset back to model
     m._activity_list_offset = w.offset
 
-    # If selection changed (click), map display index to inflight/completed
     if w.selected != prev_sel
         m.activity_follow = false
         _select_activity_by_display_index!(m, w.selected)
