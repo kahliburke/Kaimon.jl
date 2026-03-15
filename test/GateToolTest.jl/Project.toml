@@ -10,7 +10,7 @@ Tachikoma = "468859d6-42d8-48b7-8ad9-1d312e0e3b0a"
 
 [compat]
 Infiltrator = "1.9.8"
-Tachikoma = "1.1.1"
+Tachikoma = "1.1.2"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
