@@ -451,7 +451,10 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
 
     # Capture text snapshot every ~1s (every 30 frames at 30fps) for the screenshot tool
     if m.tick % 30 == 0
-        TUI_LAST_FRAME[] = buffer_to_text(buf, f.area)
+        try
+            TUI_LAST_FRAME[] = buffer_to_text(buf, f.area)
+        catch
+        end
     end
 end
 
