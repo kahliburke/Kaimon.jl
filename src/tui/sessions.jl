@@ -40,93 +40,19 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
     )
     filter!(conn -> conn.spawned_by != "extension" && !(conn.namespace in ext_namespaces), connections)
 
-    items = ListItem[]
-    for conn in connections
-        icon = if conn.status == :connected
-            "⬤"
-        elseif conn.status == :evaluating
-            _eval_icon(m.tick)
-        elseif conn.status == :stalled
-            "⬤"
-        elseif conn.status == :connecting
-            "◌"
-        else
-            "⬤"
-        end
-        style =
-            conn.status == :connected ? tstyle(:success) :
-            conn.status == :evaluating ? tstyle(:accent) :
-            conn.status == :stalled ? tstyle(:warning) :
-            conn.status == :connecting ? tstyle(:warning) : tstyle(:error)
-        dname = isempty(conn.display_name) ? conn.name : conn.display_name
-        agent_tag = conn.spawned_by == "agent" ? " $(m.personality_icon)" : ""
-        label = "$icon $dname$agent_tag"
-        padded = rpad(label, 20)
-        status_text = string(conn.status)
-        push!(items, ListItem("$padded $status_text", style))
+    _sync_sessions_table!(m, connections)
+    dt = m.sessions_table
+    if dt !== nothing
+        dt.tick = m.tick
+        render(dt, left_rows[1], buf)
     end
-
-    if isempty(items)
-        push!(items, ListItem("  No REPL sessions found", tstyle(:text_dim)))
-        push!(items, ListItem("", tstyle(:text_dim)))
-        push!(items, ListItem("  Start a gate in your REPL:", tstyle(:text_dim)))
-        push!(items, ListItem("  Gate.serve()", tstyle(:accent)))
-    end
-
-    render(
-        SelectableList(
-            items;
-            selected = m.selected_connection,
-            block = Block(
-                title = "REPL Sessions ($(length(connections))) [x] shutdown [t] trace",
-                border_style = _pane_border(m, 2, 1),
-                title_style = _pane_title(m, 2, 1),
-            ),
-            highlight_style = tstyle(:accent, bold = true),
-            tick = m.tick,
-        ),
-        left_rows[1],
-        buf,
-    )
 
     # ── MCP agents table ──
-    if isempty(agent_sessions)
-        agent_block = Block(
-            title = "Agents",
-            border_style = _pane_border(m, 2, 2),
-            title_style = _pane_title(m, 2, 2),
-        )
-        inner = render(agent_block, left_rows[2], buf)
-        if inner.width >= 4
-            set_string!(buf, inner.x + 1, inner.y, "No agents connected", tstyle(:text_dim))
-        end
-    else
-        header = ["CLIENT", "SESSION", "ACTIVE"]
-        rows = Vector{String}[]
-        for s in agent_sessions
-            client_name = get(s.client_info, "name", "unknown")
-            push!(
-                rows,
-                [
-                    string(client_name),
-                    s.id[1:min(8, length(s.id))] * "…",
-                    _time_ago(s.last_activity),
-                ],
-            )
-        end
-        render(
-            Table(
-                header,
-                rows;
-                block = Block(
-                    title = "Agents ($(length(agent_sessions)))",
-                    border_style = _pane_border(m, 2, 2),
-                    title_style = _pane_title(m, 2, 2),
-                ),
-            ),
-            left_rows[2],
-            buf,
-        )
+    _sync_agents_table!(m, agent_sessions)
+    adt = m.agents_table
+    if adt !== nothing
+        adt.tick = m.tick
+        render(adt, left_rows[2], buf)
     end
 
     # ── Right: detail panel for selected gate connection ──
@@ -332,6 +258,140 @@ function _close_session_terminal!(m::KaimonModel)
     m.session_terminal = nothing
     m.session_terminal_key = ""
     m.session_terminal_open = false
+end
+
+"""Build/rebuild the sessions DataTable from live connections."""
+function _sync_sessions_table!(m::KaimonModel, connections::Vector{REPLConnection})
+    n = length(connections)
+    dt_hash = hash((n, m.selected_connection, m.tick ÷ 4))
+    old_dt = m.sessions_table
+
+    if old_dt !== nothing && old_dt._hash == dt_hash
+        return
+    end
+
+    col_names = Any[]
+    col_status = Any[]
+    col_pid = Any[]
+    row_styles = Style[]
+
+    for conn in connections
+        icon = if conn.status == :connected
+            "⬤"
+        elseif conn.status == :evaluating
+            _eval_icon(m.tick)
+        elseif conn.status == :stalled
+            "⬤"
+        elseif conn.status == :connecting
+            "◌"
+        else
+            "⬤"
+        end
+        style =
+            conn.status == :connected ? tstyle(:success) :
+            conn.status == :evaluating ? tstyle(:accent) :
+            conn.status == :stalled ? tstyle(:warning) :
+            conn.status == :connecting ? tstyle(:warning) : tstyle(:error)
+        dname = isempty(conn.display_name) ? conn.name : conn.display_name
+        agent_tag = conn.spawned_by == "agent" ? " $(m.personality_icon)" : ""
+        push!(col_names, Span("$icon $dname$agent_tag", style))
+        push!(col_status, Span(string(conn.status), style))
+        push!(col_pid, string(conn.pid))
+        push!(row_styles, style)
+    end
+
+    if isempty(col_names)
+        push!(col_names, "No REPL sessions")
+        push!(col_status, "")
+        push!(col_pid, "")
+        push!(row_styles, tstyle(:text_dim))
+    end
+
+    dt = DataTable(
+        [
+            DataColumn("Name", col_names),
+            DataColumn("Status", col_status; width=12),
+            DataColumn("PID", col_pid; width=7),
+        ];
+        selected = n > 0 ? clamp(m.selected_connection, 1, n) : 0,
+        block = Block(
+            title = "REPL Sessions ($n) [x] shutdown [t] trace",
+            border_style = _pane_border(m, 2, 1),
+            title_style = _pane_title(m, 2, 1),
+        ),
+        tick = m.tick,
+        row_styles = row_styles,
+    )
+    dt._hash = dt_hash
+
+    # Preserve mouse/drag state across rebuilds
+    if old_dt !== nothing
+        dt.last_content_area = old_dt.last_content_area
+        dt.last_col_positions = old_dt.last_col_positions
+        dt.last_widths = old_dt.last_widths
+        dt.offset = old_dt.offset
+        dt.col_widths = old_dt.col_widths
+        dt.col_drag = old_dt.col_drag
+        dt.col_drag_start_x = old_dt.col_drag_start_x
+        dt.col_drag_start_w = old_dt.col_drag_start_w
+    end
+    m.sessions_table = dt
+end
+
+"""Build/rebuild the agents DataTable from live MCP sessions."""
+function _sync_agents_table!(m::KaimonModel, agent_sessions)
+    n = length(agent_sessions)
+    dt_hash = hash((n, m.tick ÷ 8))
+    old_dt = m.agents_table
+
+    if old_dt !== nothing && old_dt._hash == dt_hash
+        return
+    end
+
+    col_client = Any[]
+    col_session = Any[]
+    col_active = Any[]
+
+    if isempty(agent_sessions)
+        push!(col_client, "No agents connected")
+        push!(col_session, "")
+        push!(col_active, "")
+    else
+        for s in agent_sessions
+            client_name = get(s.client_info, "name", "unknown")
+            push!(col_client, string(client_name))
+            push!(col_session, s.id[1:min(8, length(s.id))] * "…")
+            push!(col_active, _time_ago(s.last_activity))
+        end
+    end
+
+    dt = DataTable(
+        [
+            DataColumn("Client", col_client),
+            DataColumn("Session", col_session; width=10),
+            DataColumn("Active", col_active; width=8),
+        ];
+        selected = 0,
+        block = Block(
+            title = n > 0 ? "Agents ($n)" : "Agents",
+            border_style = _pane_border(m, 2, 2),
+            title_style = _pane_title(m, 2, 2),
+        ),
+        tick = m.tick,
+    )
+    dt._hash = dt_hash
+
+    if old_dt !== nothing
+        dt.last_content_area = old_dt.last_content_area
+        dt.last_col_positions = old_dt.last_col_positions
+        dt.last_widths = old_dt.last_widths
+        dt.offset = old_dt.offset
+        dt.col_widths = old_dt.col_widths
+        dt.col_drag = old_dt.col_drag
+        dt.col_drag_start_x = old_dt.col_drag_start_x
+        dt.col_drag_start_w = old_dt.col_drag_start_w
+    end
+    m.agents_table = dt
 end
 
 """Get the filtered list of visible (non-extension) REPL connections."""

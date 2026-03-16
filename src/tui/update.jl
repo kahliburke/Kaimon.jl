@@ -56,9 +56,29 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
                 handle_mouse!(m.session_terminal, evt)
                 return  # terminal captures all mouse in full-screen mode
             end
-            handle_resize!(m.sessions_layout, evt)
-            handle_resize!(m.sessions_left_layout, evt)
-            if Base.contains(m._sessions_detail_area, evt.x, evt.y)
+            # Prioritize col_drag on either DataTable
+            _st_drag = m.sessions_table !== nothing && m.sessions_table.col_drag > 0
+            _at_drag = m.agents_table !== nothing && m.agents_table.col_drag > 0
+            if !_st_drag && !_at_drag
+                handle_resize!(m.sessions_layout, evt)
+                handle_resize!(m.sessions_left_layout, evt)
+            end
+            _lr = m.sessions_left_layout.rects
+            _rr = m.sessions_layout.rects
+            _in_pane(rects, i, e) = length(rects) >= i && Base.contains(rects[i], e.x, e.y)
+            if m.sessions_table !== nothing &&
+               (m.sessions_table.col_drag > 0 || _in_pane(_lr, 1, evt))
+                prev = m.sessions_table.selected
+                handle_mouse!(m.sessions_table, evt)
+                if m.sessions_table.selected != prev && m.sessions_table.selected > 0
+                    m.selected_connection = m.sessions_table.selected
+                    m.sessions_detail_scroll = 0
+                    m.focused_pane[2] = 1
+                end
+            elseif m.agents_table !== nothing &&
+                   (m.agents_table.col_drag > 0 || _in_pane(_lr, 2, evt))
+                handle_mouse!(m.agents_table, evt)
+            elseif _in_pane(_rr, 2, evt)
                 if evt.button == mouse_scroll_up
                     m.sessions_detail_scroll = max(0, m.sessions_detail_scroll - 1)
                 elseif evt.button == mouse_scroll_down
@@ -646,31 +666,28 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
     @match (tab, fp) begin
         (1, 2) => (m.log_pane !== nothing && handle_key!(m.log_pane, evt))
 
-        (2, 1) => @match evt.key begin
-            :up => begin
-                m.selected_connection = max(1, m.selected_connection - 1)
-                m.sessions_detail_scroll = 0
-            end
-            :down => begin
-                n_conns = _visible_session_count(m)
-                n_conns > 0 && (
-                    m.selected_connection =
-                        min(n_conns, m.selected_connection + 1)
-                )
-                m.sessions_detail_scroll = 0
-            end
-            :enter => begin
-                # Open PTY terminal for agent-spawned sessions (skip stalled)
-                conns = _visible_connections(m)
-                if m.selected_connection >= 1 && m.selected_connection <= length(conns)
-                    conn = conns[m.selected_connection]
-                    if conn.spawned_by == "agent" && conn.status != :stalled
-                        ms = find_managed_session(conn.project_path)
-                        ms !== nothing && _open_session_terminal!(m, ms)
+        (2, 1) => begin
+            dt = m.sessions_table
+            if dt !== nothing
+                prev = dt.selected
+                if evt.key == :enter
+                    # Open PTY terminal for agent-spawned sessions (skip stalled)
+                    conns = _visible_connections(m)
+                    if m.selected_connection >= 1 && m.selected_connection <= length(conns)
+                        conn = conns[m.selected_connection]
+                        if conn.spawned_by == "agent" && conn.status != :stalled
+                            ms = find_managed_session(conn.project_path)
+                            ms !== nothing && _open_session_terminal!(m, ms)
+                        end
+                    end
+                else
+                    handle_key!(dt, evt)
+                    if dt.selected != prev && dt.selected > 0
+                        m.selected_connection = dt.selected
+                        m.sessions_detail_scroll = 0
                     end
                 end
             end
-            _ => nothing
         end
 
         (2, 3) => @match evt.key begin

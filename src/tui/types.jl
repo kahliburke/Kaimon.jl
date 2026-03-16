@@ -96,6 +96,7 @@ end
     conn_mgr::Union{ConnectionManager,Nothing} = nothing
     selected_connection::Int = 1
     sessions_table::Union{DataTable,Nothing} = nothing  # DataTable for REPL sessions list
+    agents_table::Union{DataTable,Nothing} = nothing   # DataTable for MCP agents list
     sessions_detail_scroll::Int = 0     # vertical scroll offset for the detail pane
     sessions_detail_max_scroll::Int = 0 # updated each frame by view_sessions
     _sessions_detail_area::Rect = Rect() # cached for mouse hit-testing
