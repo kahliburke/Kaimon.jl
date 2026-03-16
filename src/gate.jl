@@ -78,6 +78,7 @@ const _REVISE_WATCHER_TASK = Ref{Union{Task,Nothing}}(nothing)
 const _SESSION_NAMESPACE = Ref{String}("")
 const _ALLOW_RESTART = Ref{Bool}(true)
 const _ORIGINAL_ARGV = Ref{Vector{String}}(String[])
+const _MODE = Ref{Symbol}(:ipc)
 const _GATE_TTY_PATH = Ref{Union{String,Nothing}}(nothing)
 const _GATE_TTY_SIZE =
     Ref{Union{Nothing,NamedTuple{(:rows, :cols),Tuple{Int,Int}}}}(nothing)
@@ -1903,6 +1904,7 @@ function _serve(;
     socket = Socket(ctx, REP)
     _GATE_CONTEXT[] = ctx
     _GATE_SOCKET[] = socket
+    _MODE[] = mode
 
     # 1s receive timeout so message loop can check _RUNNING periodically.
     # linger=0: close() returns immediately without blocking to drain.
@@ -2080,10 +2082,24 @@ function _cleanup()
     end
     _REVISE_WATCHER_TASK[] = nothing
 
-    # Don't explicitly close ZMQ sockets/context here — Julia's GC finalizers
-    # handle it. Explicit close + finalize during atexit was causing intermittent
-    # segfaults in LLVM's JIT compiler on Julia 1.12.5.
-    # Just null the refs so our code doesn't use them after cleanup.
+    # IPC mode: don't explicitly close ZMQ sockets/context — GC finalizers handle
+    # it. Explicit close during atexit was causing intermittent segfaults in LLVM's
+    # JIT compiler on Julia 1.12.5.
+    # TCP mode: must close explicitly so the port is released immediately. Without
+    # this, restarting a TCP gate on the same port fails until GC runs. This is safe
+    # because TCP stop is user-initiated (not atexit).
+    if _MODE[] == :tcp
+        for sock in (_GATE_SOCKET, _STREAM_SOCKET, _SERVICE_SOCKET)
+            s = sock[]
+            if s !== nothing
+                try; close(s); catch; end
+            end
+        end
+        ctx = _GATE_CONTEXT[]
+        if ctx !== nothing
+            try; close(ctx); catch; end
+        end
+    end
     _GATE_SOCKET[] = nothing
     _STREAM_SOCKET[] = nothing
     _SERVICE_SOCKET[] = nothing
@@ -2101,6 +2117,7 @@ function _cleanup()
     _ALLOW_RESTART[] = true
     _SESSION_TOOLS[] = GateTool[]
     _SESSION_NAMESPACE[] = ""
+    _MODE[] = :ipc
     _ON_SHUTDOWN[] = nothing
 end
 
