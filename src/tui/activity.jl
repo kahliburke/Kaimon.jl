@@ -421,7 +421,7 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
     # Build or update DataTable — use a hash to detect when rebuild is needed
     dt_hash = hash((n_items, n_inflight, display_sel, m.tick ÷ 4))
     old_dt = m.activity_table
-    if old_dt === nothing || old_dt._hash != dt_hash
+    if old_dt === nothing || m._activity_table_hash != dt_hash
         dt = DataTable(
             [
                 DataColumn("Time", col_times; width=9),
@@ -439,7 +439,7 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
             tick = m.tick,
             row_styles = row_styles,
         )
-        dt._hash = dt_hash
+        m._activity_table_hash = dt_hash
         # Preserve state from old DataTable across rebuilds
         if old_dt !== nothing
             dt.last_content_area = old_dt.last_content_area

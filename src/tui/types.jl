@@ -96,7 +96,9 @@ end
     conn_mgr::Union{ConnectionManager,Nothing} = nothing
     selected_connection::Int = 1
     sessions_table::Union{DataTable,Nothing} = nothing  # DataTable for REPL sessions list
+    _sessions_table_hash::UInt64 = UInt64(0)
     agents_table::Union{DataTable,Nothing} = nothing   # DataTable for MCP agents list
+    _agents_table_hash::UInt64 = UInt64(0)
     sessions_detail_scroll::Int = 0     # vertical scroll offset for the detail pane
     sessions_detail_max_scroll::Int = 0 # updated each frame by view_sessions
     _sessions_detail_area::Rect = Rect() # cached for mouse hit-testing
@@ -133,6 +135,7 @@ end
     detail_paragraph::Union{Paragraph,Nothing} = nothing  # cached for scroll state
     _detail_for_result::Int = -1   # which selected_result the paragraph was built for
     activity_table::Union{DataTable,Nothing} = nothing  # DataTable for tool call list
+    _activity_table_hash::UInt64 = UInt64(0)
     _activity_detail_area::Rect = Rect()   # cached inner area of detail pane
 
     # In-flight tool calls — currently executing, shown at top of Activity list

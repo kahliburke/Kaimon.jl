@@ -266,7 +266,7 @@ function _sync_sessions_table!(m::KaimonModel, connections::Vector{REPLConnectio
     dt_hash = hash((n, m.selected_connection, m.tick ÷ 4))
     old_dt = m.sessions_table
 
-    if old_dt !== nothing && old_dt._hash == dt_hash
+    if old_dt !== nothing && m._sessions_table_hash == dt_hash
         return
     end
 
@@ -322,7 +322,7 @@ function _sync_sessions_table!(m::KaimonModel, connections::Vector{REPLConnectio
         tick = m.tick,
         row_styles = row_styles,
     )
-    dt._hash = dt_hash
+    m._sessions_table_hash = dt_hash
 
     # Preserve mouse/drag state across rebuilds
     if old_dt !== nothing
@@ -344,7 +344,7 @@ function _sync_agents_table!(m::KaimonModel, agent_sessions)
     dt_hash = hash((n, m.tick ÷ 8))
     old_dt = m.agents_table
 
-    if old_dt !== nothing && old_dt._hash == dt_hash
+    if old_dt !== nothing && m._agents_table_hash == dt_hash
         return
     end
 
@@ -379,7 +379,7 @@ function _sync_agents_table!(m::KaimonModel, agent_sessions)
         ),
         tick = m.tick,
     )
-    dt._hash = dt_hash
+    m._agents_table_hash = dt_hash
 
     if old_dt !== nothing
         dt.last_content_area = old_dt.last_content_area
