@@ -34,11 +34,8 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
         REPLConnection[]
     end
 
-    # Filter out extension connections (they appear in the Extensions tab)
-    ext_namespaces = Set(
-        ext.config.manifest.namespace for ext in get_managed_extensions()
-    )
-    filter!(conn -> conn.spawned_by != "extension" && !(conn.namespace in ext_namespaces), connections)
+    # Filter out extension-spawned connections (they appear in the Extensions tab)
+    filter!(conn -> conn.spawned_by != "extension", connections)
 
     _sync_sessions_table!(m, connections)
     dt = m.sessions_table
@@ -490,38 +487,62 @@ const _QRS_WAVEFORM = Float64[
     0.5,  # T-wave + return to baseline
 ]
 
+function _get_ecg!(m::KaimonModel, key::String)
+    get!(m.ecg_states, key) do
+        ECGState()
+    end
+end
+
 function _advance_ecg!(m::KaimonModel)
-    new = _ECG_NEW_COMPLETIONS[]
-    if new > 0
-        _ECG_NEW_COMPLETIONS[] = 0
-        m.ecg_pending_blips += new
+    # Collect new tool completions per session
+    completions = lock(_ECG_NEW_COMPLETIONS_LOCK) do
+        if isempty(_ECG_NEW_COMPLETIONS)
+            nothing
+        else
+            snap = copy(_ECG_NEW_COMPLETIONS)
+            empty!(_ECG_NEW_COMPLETIONS)
+            snap
+        end
     end
-    # Heartbeat from gate health-check pings — one blip per new ping
+    if completions !== nothing
+        for (sk, count) in completions
+            isempty(sk) && continue
+            ecg = _get_ecg!(m, sk)
+            ecg.pending_blips += count
+        end
+    end
+
+    # Heartbeat from gate health-check pings — per connection
     if m.conn_mgr !== nothing
-        latest = lock(m.conn_mgr.lock) do
-            foldl((acc, c) -> max(acc, c.last_ping), m.conn_mgr.connections; init = DateTime(0))
+        lock(m.conn_mgr.lock) do
+            for c in m.conn_mgr.connections
+                key = c.session_id[1:min(8, length(c.session_id))]
+                ecg = _get_ecg!(m, key)
+                if c.last_ping > ecg.last_ping
+                    ecg.last_ping = c.last_ping
+                    ecg.pending_blips += 1
+                end
+            end
         end
-        if latest > m.ecg_last_ping_seen
-            m.ecg_pending_blips += 1
-            m.ecg_last_ping_seen = latest
+    end
+
+    # Advance all active ECG traces
+    for ecg in values(m.ecg_states)
+        if ecg.inject_countdown <= 0 && ecg.pending_blips > 0
+            ecg.inject_countdown = length(_QRS_WAVEFORM)
+            ecg.pending_blips -= 1
         end
-    end
-    if m.ecg_inject_countdown <= 0 && m.ecg_pending_blips > 0
-        m.ecg_inject_countdown = length(_QRS_WAVEFORM)
-        m.ecg_pending_blips -= 1
-    end
-    # Scroll left
-    trace = m.ecg_trace
-    for i = 1:(length(trace)-1)
-        trace[i] = trace[i+1]
-    end
-    # New rightmost value
-    if m.ecg_inject_countdown > 0
-        idx = length(_QRS_WAVEFORM) - m.ecg_inject_countdown + 1
-        trace[end] = _QRS_WAVEFORM[idx]
-        m.ecg_inject_countdown -= 1
-    else
-        trace[end] = 0.5
+        trace = ecg.trace
+        for i = 1:(length(trace)-1)
+            trace[i] = trace[i+1]
+        end
+        if ecg.inject_countdown > 0
+            idx = length(_QRS_WAVEFORM) - ecg.inject_countdown + 1
+            trace[end] = _QRS_WAVEFORM[idx]
+            ecg.inject_countdown -= 1
+        else
+            trace[end] = 0.5
+        end
     end
 end
 
@@ -533,10 +554,12 @@ function _render_ecg_trace(m::KaimonModel, rect::Rect, buf::Buffer, key::String 
     style =
         health >= 0.7 ? tstyle(:success) : health >= 0.3 ? tstyle(:warning) : tstyle(:error)
 
+    ecg = get(m.ecg_states, key, nothing)
+    trace = ecg !== nothing ? ecg.trace : fill(0.5, 240)
+
     c = PixelCanvas(w, h; style = style)
     dot_w = w * 2
     dot_h = h * 4
-    trace = m.ecg_trace
     n = length(trace)
     start_idx = max(1, n - dot_w + 1)
 

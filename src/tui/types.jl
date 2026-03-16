@@ -80,6 +80,15 @@ end
 # Stress test state machine
 @enum StressState STRESS_IDLE STRESS_RUNNING STRESS_COMPLETE STRESS_ERROR
 
+# ── Per-session ECG state ─────────────────────────────────────────────────────
+
+@kwdef mutable struct ECGState
+    trace::Vector{Float64} = fill(0.5, 240)
+    pending_blips::Int = 0
+    inject_countdown::Int = 0
+    last_ping::DateTime = DateTime(0)
+end
+
 # ── Model ─────────────────────────────────────────────────────────────────────
 
 @kwdef mutable struct KaimonModel <: Model
@@ -197,11 +206,8 @@ end
     last_tool_success::Float64 = 0.0    # time() of last successful tool call
     last_tool_error::Float64 = 0.0      # time() of last failed tool call
 
-    # ECG heartbeat trace
-    ecg_trace::Vector{Float64} = fill(0.5, 240)  # rolling Y-values, scrolls left each tick
-    ecg_pending_blips::Int = 0                    # queued QRS complexes waiting to fire
-    ecg_inject_countdown::Int = 0                 # countdown within current QRS injection
-    ecg_last_ping_seen::DateTime = DateTime(0)    # latest last_ping we've consumed
+    # ECG heartbeat trace — per-session keyed by session_id prefix
+    ecg_states::Dict{String,ECGState} = Dict{String,ECGState}()
 
     # Session reaping (wall-clock based, fps-independent)
     _last_reap_time::Float64 = time()

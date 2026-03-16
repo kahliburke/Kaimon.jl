@@ -300,7 +300,8 @@ const _TUI_TOOL_RESULTS_LOCK = ReentrantLock()
 
 const _LAST_TOOL_SUCCESS = Ref{Float64}(0.0)
 const _LAST_TOOL_ERROR = Ref{Float64}(0.0)
-const _ECG_NEW_COMPLETIONS = Ref{Int}(0)
+const _ECG_NEW_COMPLETIONS = Dict{String,Int}()  # session_key → count of new completions
+const _ECG_NEW_COMPLETIONS_LOCK = ReentrantLock()
 
 function _push_tool_result!(r::ToolCallResult)
     lock(_TUI_TOOL_RESULTS_LOCK) do
@@ -316,7 +317,10 @@ function _push_tool_result!(r::ToolCallResult)
     else
         _LAST_TOOL_ERROR[] = t
     end
-    _ECG_NEW_COMPLETIONS[] += 1
+    lock(_ECG_NEW_COMPLETIONS_LOCK) do
+        k = r.session_key
+        _ECG_NEW_COMPLETIONS[k] = get(_ECG_NEW_COMPLETIONS, k, 0) + 1
+    end
 end
 
 """
