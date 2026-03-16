@@ -1298,11 +1298,12 @@ function start!(mgr::ConnectionManager)
                                 _fire_sessions_changed(mgr)
                             end
                             # Update project_path from live pong data.
-                            # TCP sessions keep their user-chosen display name.
+                            # TCP sessions with a user-chosen name keep it;
+                            # those with default name ("tcp") derive from pong.
                             new_path = get(result, :project_path, "")
                             if !isempty(new_path) && new_path != conn.project_path
                                 conn.project_path = new_path
-                                if !_is_tcp(conn)
+                                if !_is_tcp(conn) || conn.name == "tcp"
                                     existing = lock(mgr.lock) do
                                         [c.display_name for c in mgr.connections if c !== conn]
                                     end
