@@ -1262,19 +1262,22 @@ function start!(mgr::ConnectionManager)
                                 conn.status = :connected
                                 _fire_sessions_changed(mgr)
                             end
-                            # Update project_path from live pong data
+                            # Update project_path from live pong data.
+                            # TCP sessions keep their user-chosen display name.
                             new_path = get(result, :project_path, "")
                             if !isempty(new_path) && new_path != conn.project_path
                                 conn.project_path = new_path
-                                existing = lock(mgr.lock) do
-                                    [c.display_name for c in mgr.connections if c !== conn]
+                                if !_is_tcp(conn)
+                                    existing = lock(mgr.lock) do
+                                        [c.display_name for c in mgr.connections if c !== conn]
+                                    end
+                                    conn.display_name = _derive_display_name(
+                                        new_path,
+                                        conn.julia_version,
+                                        existing;
+                                        namespace = conn.namespace,
+                                    )
                                 end
-                                conn.display_name = _derive_display_name(
-                                    new_path,
-                                    conn.julia_version,
-                                    existing;
-                                    namespace = conn.namespace,
-                                )
                                 _fire_sessions_changed(mgr)
                             end
 

@@ -1930,8 +1930,11 @@ function _serve(;
     bind(pub_socket, stream_endpoint)
     _STREAM_SOCKET[] = pub_socket
 
-    # Write metadata file for session discovery
-    write_metadata(sid, name, endpoint, stream_endpoint; spawned_by, mode)
+    # Write metadata file for session discovery (IPC only — TCP sessions
+    # are connected manually via connect_tcp! and don't use file-based discovery)
+    if mode != :tcp
+        write_metadata(sid, name, endpoint, stream_endpoint; spawned_by, mode)
+    end
 
     # Register cleanup
     atexit(() -> stop())
