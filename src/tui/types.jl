@@ -126,7 +126,7 @@ end
 
     # Config tab layouts (resizable)
     config_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(50), Fill()])
-    config_left_layout::ResizableLayout = ResizableLayout(Vertical, [Fixed(8), Fill()])
+    config_left_layout::ResizableLayout = ResizableLayout(Vertical, [Fixed(7), Fill()])
     config_right_layout::ResizableLayout = ResizableLayout(Vertical, [Percent(55), Fill()])
 
     # Activity feed — unified timeline of tool calls + streaming output

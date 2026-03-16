@@ -20,37 +20,61 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
     # Server info
     srv_block = Block(
         title = "Server",
-        border_style = _pane_border(m, 4, 1),
-        title_style = _pane_title(m, 4, 1),
+        border_style = _pane_border(m, 6, 1),
+        title_style = _pane_title(m, 6, 1),
     )
     srv = render(srv_block, left_rows[1], buf)
     if srv.width >= 4
         y = srv.y
         x = srv.x + 1
-        n_conns = m.conn_mgr !== nothing ? length(connected_sessions(m.conn_mgr)) : 0
+        n_conns = 0
+        n_exts = 0
+        if m.conn_mgr !== nothing
+            for c in connected_sessions(m.conn_mgr)
+                if c.spawned_by == "extension"
+                    n_exts += 1
+                else
+                    n_conns += 1
+                end
+            end
+        end
         status_icon = m.server_running ? "●" : "○"
         status_style = m.server_running ? tstyle(:success) : tstyle(:error)
         set_string!(buf, x, y, "$status_icon ", status_style)
         set_string!(buf, x + 2, y, "Port $(m.server_port)", tstyle(:text))
-        y += 1
-        set_string!(buf, x, y, rpad("Status", 14), tstyle(:text_dim))
-        set_string!(buf, x + 14, y, m.server_running ? "running" : "stopped", status_style)
+        status_text = m.server_running ? "running" : "stopped"
+        status_x = x + 2 + length("Port $(m.server_port)") + 2
+        if status_x + length(status_text) <= right(srv)
+            set_string!(buf, status_x, y, status_text, status_style)
+        end
         y += 1
         set_string!(buf, x, y, rpad("Sessions", 14), tstyle(:text_dim))
-        set_string!(buf, x + 14, y, "$n_conns connected", tstyle(:text))
+        session_str = "$n_conns connected"
+        n_exts > 0 && (session_str *= " · $n_exts ext")
+        set_string!(buf, x + 14, y, session_str, tstyle(:text))
         y += 1
         set_string!(buf, x, y, rpad("Tool Calls", 14), tstyle(:text_dim))
         set_string!(buf, x + 14, y, string(m.total_tool_calls), tstyle(:text))
         y += 1
-        set_string!(buf, x, y, rpad("Socket Dir", 14), tstyle(:text_dim))
-        set_string!(buf, x + 14, y, "~/.cache/kaimon/sock", tstyle(:text))
+        set_string!(buf, x, y, rpad("Uptime", 14), tstyle(:text_dim))
+        uptime_s = round(Int, (time() - m.start_time))
+        uptime_str = if uptime_s < 60
+            "$(uptime_s)s"
+        elseif uptime_s < 3600
+            "$(uptime_s ÷ 60)m $(uptime_s % 60)s"
+        else
+            h = uptime_s ÷ 3600
+            mins = (uptime_s % 3600) ÷ 60
+            "$(h)h $(mins)m"
+        end
+        set_string!(buf, x + 14, y, uptime_str, tstyle(:text))
     end
 
     # Actions
     act_block = Block(
         title = "Actions",
-        border_style = _pane_border(m, 4, 2),
-        title_style = _pane_title(m, 4, 2),
+        border_style = _pane_border(m, 6, 2),
+        title_style = _pane_title(m, 6, 2),
     )
     act = render(act_block, left_rows[2], buf)
     if act.width >= 4
@@ -90,21 +114,27 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
     if client_inner.width >= 4
         y = client_inner.y
         x = client_inner.x + 1
+        max_x = right(client_inner)
 
         for (label, configured) in m.client_statuses
-            y > bottom(client_inner) && break
+            y > bottom(client_inner) - 2 && break
             icon = configured ? "●" : "○"
             icon_style = configured ? tstyle(:success) : tstyle(:text_dim)
-            status_text = configured ? "configured" : "not configured"
+            name_style = configured ? tstyle(:text) : tstyle(:text_dim)
+            status_text = configured ? "configured" : "—"
             set_string!(buf, x, y, "$icon ", icon_style)
-            set_string!(buf, x + 2, y, rpad(label, 16), tstyle(:text))
-            set_string!(buf, x + 18, y, status_text, icon_style)
+            set_string!(buf, x + 2, y, label, name_style)
+            # Right-align status
+            status_x = max_x - length(status_text)
+            if status_x > x + 2 + length(label) + 1
+                set_string!(buf, status_x, y, status_text, icon_style)
+            end
             y += 1
         end
 
-        y += 1
-        if y + 2 <= bottom(client_inner)
-            set_string!(buf, x, y, "Press [i] to configure a client", tstyle(:text_dim))
+        hint_y = bottom(client_inner)
+        if hint_y > client_inner.y
+            set_string!(buf, x, hint_y, "[i] configure a client", tstyle(:text_dim))
         end
     end
 
