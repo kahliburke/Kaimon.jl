@@ -114,6 +114,9 @@ function REPLConnection(;
     )
 end
 
+"""TCP sessions have no local socket file — identified by empty socket_path."""
+_is_tcp(conn::REPLConnection) = isempty(conn.socket_path)
+
 # ── Display Name Derivation ───────────────────────────────────────────────────
 
 """
@@ -371,7 +374,9 @@ function cleanup_stale_sessions!(sock_dir::String)
             0
         end
 
-        if !_is_pid_alive(pid)
+        # TCP sessions may run on remote machines — skip PID liveness check
+        session_mode = Symbol(get(meta, "mode", "ipc"))
+        if session_mode != :tcp && !_is_pid_alive(pid)
             @debug "Cleaning stale session" session_id pid
             _remove_session_files(sock_dir, session_id)
             delete!(json_sessions, session_id)
@@ -447,8 +452,10 @@ function discover_sessions(mgr::ConnectionManager)
             continue
         end
 
-        # Skip and clean up sessions whose PID is no longer alive
-        if !_is_pid_alive(pid)
+        # Skip and clean up sessions whose PID is no longer alive.
+        # TCP sessions may run on remote machines — skip PID liveness check.
+        session_mode = Symbol(get(meta, "mode", "ipc"))
+        if session_mode != :tcp && !_is_pid_alive(pid)
             _remove_session_files(mgr.sock_dir, session_id)
             continue
         end
@@ -464,15 +471,12 @@ function discover_sessions(mgr::ConnectionManager)
             continue
         end
 
+        ipc_sock = joinpath(mgr.sock_dir, "$(session_id).sock")
         conn = REPLConnection(
             session_id = session_id,
             name = name,
-            socket_path = joinpath(mgr.sock_dir, "$(session_id).sock"),
-            endpoint = get(
-                meta,
-                "endpoint",
-                "ipc://$(joinpath(mgr.sock_dir, "$(session_id).sock"))",
-            ),
+            socket_path = session_mode == :tcp ? "" : ipc_sock,
+            endpoint = get(meta, "endpoint", "ipc://$(ipc_sock)"),
             stream_endpoint = get(meta, "stream_endpoint", ""),
             project_path = get(meta, "project_path", ""),
             julia_version = get(meta, "julia_version", ""),
@@ -1193,8 +1197,8 @@ function start!(mgr::ConnectionManager)
                     if conn.status in (:connected, :evaluating, :stalled)
                         result = ping(conn)
                         if result === :busy
-                            # Socket locked (eval in progress) — check PID
-                            if !_is_pid_alive(conn.pid)
+                            # Socket locked (eval in progress) — check PID (local sessions only)
+                            if !_is_tcp(conn) && !_is_pid_alive(conn.pid)
                                 @debug "Gate process dead (busy socket), removing session" name = conn.name pid = conn.pid
                                 disconnect!(conn)
                                 push!(to_remove, conn)
@@ -1266,9 +1270,11 @@ function start!(mgr::ConnectionManager)
                             # If it is, this is likely a GC pause or CPU stall —
                             # mark as stalled so the user sees why it's unresponsive.
                             # If the PID is gone, disconnect immediately.
-                            if _is_pid_alive(conn.pid)
+                            if _is_tcp(conn) || _is_pid_alive(conn.pid)
                                 @debug "Gate ping failed but process alive (GC pause?), marking stalled" name = conn.name pid = conn.pid
-                                conn.diagnostics = _probe_process(conn.pid)
+                                if !_is_tcp(conn)
+                                    conn.diagnostics = _probe_process(conn.pid)
+                                end
                                 if conn.status != :stalled
                                     conn.status = :stalled
                                     _fire_sessions_changed(mgr)
@@ -1280,7 +1286,8 @@ function start!(mgr::ConnectionManager)
                             end
                         end
                     elseif conn.status == :disconnected
-                        if ispath(conn.socket_path)
+                        # TCP sessions have no socket file — always try to reconnect
+                        if isempty(conn.socket_path) || ispath(conn.socket_path)
                             connect!(mgr, conn)
                         else
                             push!(to_remove, conn)
