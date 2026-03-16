@@ -242,12 +242,17 @@ end
     # ── Tests tab (tab 6) ──
     test_runs::Vector{TestRun} = TestRun[]
     selected_test_run::Int = 0             # 0 = none, 1+ = index into test_runs
-    tests_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(35), Fill()])
+    tests_layout::ResizableLayout = ResizableLayout(Vertical, [Percent(30), Fill()])
+    tests_table::Union{DataTable,Nothing} = nothing
+    _tests_table_hash::UInt64 = UInt64(0)
     test_view_mode::Symbol = :results      # :results or :output (raw)
     test_follow::Bool = true               # follow mode: auto-select newest run
     test_output_pane::Union{ScrollPane,Nothing} = nothing
     _test_output_synced::Int = 0           # raw_output lines pushed to scroll pane
-    test_tree_view::Union{TreeView,Nothing} = nothing
+    test_results_pane::Union{ScrollPane,Nothing} = nothing
+    _test_tree_root::Union{TreeNode,Nothing} = nothing
+    _test_tree_flat::Vector{Any} = Any[]   # Vector{TreeFlatRow} (avoid import dep)
+    _test_tree_selected::Int = 1           # selected row in flat view
     _test_tree_synced::Int = 0             # raw_output length when tree was last built
     test_session_picker_open::Bool = false
     test_session_picker_items::Vector{@NamedTuple{label::String, project_path::String}} =

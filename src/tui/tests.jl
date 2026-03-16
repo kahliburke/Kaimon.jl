@@ -4,10 +4,15 @@ function view_tests(m::KaimonModel, area::Rect, buf::Buffer)
     panes = split_layout(m.tests_layout, area)
     length(panes) < 2 && return
 
-    # ── Left pane: test runs list ──
-    _view_test_runs_list(m, panes[1], buf)
+    # ── Top pane: test runs DataTable ──
+    _sync_tests_table!(m)
+    dt = m.tests_table
+    if dt !== nothing
+        dt.tick = m.tick
+        render(dt, panes[1], buf)
+    end
 
-    # ── Right pane: results or raw output ──
+    # ── Bottom pane: results or raw output ──
     _view_test_detail(m, panes[2], buf)
 
     render_resize_handles!(buf, m.tests_layout)
@@ -17,79 +22,111 @@ function view_tests(m::KaimonModel, area::Rect, buf::Buffer)
     end
 end
 
-"""Render the list of test runs in the left pane (newest first)."""
-function _view_test_runs_list(m::KaimonModel, area::Rect, buf::Buffer)
+"""Build/update the test runs DataTable (newest first)."""
+function _sync_tests_table!(m::KaimonModel)
     runs = m.test_runs
-    items = ListItem[]
+    n = length(runs)
+
+    dt_hash = hash((n, m.selected_test_run, m.tick ÷ 4,
+                     n > 0 ? (runs[end].status, runs[end].total_pass, length(runs[end].raw_output)) : nothing))
+    old_dt = m.tests_table
+    if old_dt !== nothing && m._tests_table_hash == dt_hash
+        return
+    end
+
+    col_status = Any[]
+    col_project = Any[]
+    col_pass = Any[]
+    col_fail = Any[]
+    col_duration = Any[]
+    row_styles = Style[]
 
     # Display newest first (reversed)
-    for i in reverse(eachindex(runs))
+    display_sel = 0
+    for (di, i) in enumerate(reverse(eachindex(runs)))
         run = runs[i]
         project_name = basename(run.project_path)
         elapsed = if run.finished_at !== nothing
-            dt = Dates.value(run.finished_at - run.started_at) / 1000.0
-            "$(round(dt, digits=1))s"
+            dt_s = Dates.value(run.finished_at - run.started_at) / 1000.0
+            "$(round(dt_s, digits=1))s"
         else
-            dt = Dates.value(now() - run.started_at) / 1000.0
-            "$(round(dt, digits=0))s..."
+            dt_s = Dates.value(now() - run.started_at) / 1000.0
+            "$(round(dt_s, digits=0))s…"
         end
 
-        text, style = if run.status == RUN_RUNNING
+        status_span, rs = if run.status == RUN_RUNNING
             si = mod1(m.tick ÷ 3, length(SPINNER_BRAILLE))
-            ("$(SPINNER_BRAILLE[si]) $project_name $elapsed", tstyle(:accent))
+            (Span("$(SPINNER_BRAILLE[si]) Running", tstyle(:accent)), tstyle(:accent))
         elseif run.status == RUN_PASSED
-            (". $project_name $(run.total_pass) pass $elapsed", tstyle(:success))
+            (Span("✓ Passed", tstyle(:success)), tstyle(:success))
         elseif run.status == RUN_FAILED
-            (
-                "X $project_name $(run.total_pass) pass, $(run.total_fail) fail $elapsed",
-                tstyle(:error),
-            )
+            (Span("✗ Failed", tstyle(:error)), tstyle(:error))
         elseif run.status == RUN_ERROR
-            ("! $project_name error $elapsed", tstyle(:error))
+            (Span("! Error", tstyle(:error)), tstyle(:error))
         elseif run.status == RUN_CANCELLED
-            ("- $project_name cancelled", tstyle(:text_dim))
+            (Span("- Cancelled", tstyle(:text_dim)), tstyle(:text_dim))
         else
-            ("  $project_name", tstyle(:text))
+            (Span("  Pending", tstyle(:text)), tstyle(:text))
         end
 
-        push!(items, ListItem(text, style))
-    end
+        push!(col_status, status_span)
+        push!(col_project, project_name)
 
-    if isempty(items)
-        if !isempty(m.test_status_msg)
-            push!(items, ListItem("  " * m.test_status_msg, tstyle(:error)))
-        else
-            push!(
-                items,
-                ListItem("  No test runs yet. Press [r] to run tests.", tstyle(:text_dim)),
-            )
+        pass_str = run.total_pass > 0 ? string(run.total_pass) : ""
+        fail_total = run.total_fail + run.total_error
+        fail_str = fail_total > 0 ? string(fail_total) : ""
+        push!(col_pass, run.total_pass > 0 ? Span(pass_str, tstyle(:success)) : "")
+        push!(col_fail, fail_total > 0 ? Span(fail_str, tstyle(:error)) : "")
+        push!(col_duration, elapsed)
+        push!(row_styles, rs)
+
+        if i == m.selected_test_run
+            display_sel = di
         end
     end
 
-    # Map selected_test_run (1-based index into runs) to reversed display position
-    n = length(runs)
-    display_selected = if m.selected_test_run >= 1 && m.selected_test_run <= n
-        n - m.selected_test_run + 1
-    else
-        0
+    if isempty(col_status)
+        msg = !isempty(m.test_status_msg) ? m.test_status_msg : "No test runs yet. Press [r] to run tests."
+        push!(col_status, "")
+        push!(col_project, Span(msg, tstyle(:text_dim)))
+        push!(col_pass, "")
+        push!(col_fail, "")
+        push!(col_duration, "")
+        push!(row_styles, tstyle(:text_dim))
+        display_sel = 0
     end
 
     follow_str = m.test_follow ? "[F]ollow:on" : "[F]ollow:off"
-    render(
-        SelectableList(
-            items;
-            selected = display_selected,
-            block = Block(
-                title = "Test Runs ($n) $follow_str",
-                border_style = _pane_border(m, 6, 1),
-                title_style = _pane_title(m, 6, 1),
-            ),
-            highlight_style = tstyle(:accent, bold = true),
-            tick = m.tick,
+    dt = DataTable(
+        [
+            DataColumn("Status", col_status; width=12),
+            DataColumn("Project", col_project),
+            DataColumn("Pass", col_pass; width=7),
+            DataColumn("Fail", col_fail; width=7),
+            DataColumn("Duration", col_duration; width=10),
+        ];
+        selected = display_sel,
+        block = Block(
+            title = "Test Runs ($n) [r]un [x]cancel $follow_str",
+            border_style = _pane_border(m, 5, 1),
+            title_style = _pane_title(m, 5, 1),
         ),
-        area,
-        buf,
+        tick = m.tick,
+        row_styles = row_styles,
     )
+    m._tests_table_hash = dt_hash
+
+    if old_dt !== nothing
+        dt.last_content_area = old_dt.last_content_area
+        dt.last_col_positions = old_dt.last_col_positions
+        dt.last_widths = old_dt.last_widths
+        dt.offset = old_dt.offset
+        dt.col_widths = old_dt.col_widths
+        dt.col_drag = old_dt.col_drag
+        dt.col_drag_start_x = old_dt.col_drag_start_x
+        dt.col_drag_start_w = old_dt.col_drag_start_w
+    end
+    m.tests_table = dt
 end
 
 """Render the test detail view (results table or raw output)."""
@@ -99,8 +136,8 @@ function _view_test_detail(m::KaimonModel, area::Rect, buf::Buffer)
         render(
             Block(
                 title = "Results",
-                border_style = _pane_border(m, 6, 2),
-                title_style = _pane_title(m, 6, 2),
+                border_style = _pane_border(m, 5, 2),
+                title_style = _pane_title(m, 5, 2),
             ),
             area,
             buf,
@@ -110,7 +147,8 @@ function _view_test_detail(m::KaimonModel, area::Rect, buf::Buffer)
 
     run = m.test_runs[sel]
     mode_str = m.test_view_mode == :results ? "Results" : "Output"
-    title = "$mode_str [o]toggle"
+    extra = m.test_view_mode == :results ? " [e]xpand [c]ollapse" : ""
+    title = "$mode_str [o]toggle$extra"
 
     if m.test_view_mode == :output
         # Raw output scroll pane
@@ -264,7 +302,31 @@ function _build_test_tree(run::TestRun)::TreeNode
     # Auto-expand nodes that contain errors (walk tree, expand ancestors of error nodes)
     _auto_expand_errors!(root)
 
+    # For passing runs, expand first level so testset breakdown is visible
+    if run.status == RUN_PASSED
+        for child in root.children
+            child.expanded = true
+        end
+    end
+
+    # Dim leaf nodes so branches (with ▾/▸) stand out
+    _style_leaves!(root)
+
     root
+end
+
+"""Dim leaf nodes to visually distinguish them from expandable branches."""
+function _style_leaves!(node::TreeNode)
+    for child in node.children
+        if isempty(child.children)
+            # Leaf: use dimmed version of current style
+            s = child.style
+            child.style = Style(fg=s.fg, dim=true, bold=false,
+                                italic=s.italic, underline=s.underline)
+        else
+            _style_leaves!(child)
+        end
+    end
 end
 
 """Recursively expand nodes that have error descendants."""
@@ -285,7 +347,7 @@ function _auto_expand_errors!(node::TreeNode)::Bool
     has_error_child || node.style == tstyle(:error)
 end
 
-"""Render structured test results as a collapsible TreeView."""
+"""Render structured test results in a ScrollPane with tree rendering callback."""
 function _view_test_results(
     m::KaimonModel,
     run::TestRun,
@@ -295,29 +357,244 @@ function _view_test_results(
 )
     # Build/rebuild tree when output changes
     cur_len = length(run.raw_output) + length(run.results)
-    if m.test_tree_view === nothing || m._test_tree_synced != cur_len
-        root = _build_test_tree(run)
-        m.test_tree_view = TreeView(
-            root;
-            selected = 1,
+    if m._test_tree_root === nothing || m._test_tree_synced != cur_len
+        m._test_tree_root = _build_test_tree(run)
+        m._test_tree_flat = _flatten_tree(m._test_tree_root)
+        m._test_tree_selected = clamp(m._test_tree_selected, 1, max(1, length(m._test_tree_flat)))
+        m._test_tree_synced = cur_len
+    end
+
+    flat = m._test_tree_flat
+    total = length(flat)
+
+    if m.test_results_pane === nothing
+        m.test_results_pane = ScrollPane(
+            (buf2, ta, off) -> _render_tree_rows!(buf2, ta, off, m),
+            total;
             block = Block(
                 title = title,
-                border_style = _pane_border(m, 6, 2),
-                title_style = _pane_title(m, 6, 2),
+                border_style = _pane_border(m, 5, 2),
+                title_style = _pane_title(m, 5, 2),
             ),
-            show_root = true,
+            show_scrollbar = true,
+            following = false,
         )
-        m._test_tree_synced = cur_len
     else
-        # Update block title (may change dynamically)
-        m.test_tree_view.block = Block(
+        sp = m.test_results_pane
+        # Update render callback + total (callback captures m, always reads latest state)
+        sp.content = (
+            (buf2, ta, off) -> _render_tree_rows!(buf2, ta, off, m),
+            total,
+        )
+        sp.block = Block(
             title = title,
-            border_style = _pane_border(m, 6, 2),
-            title_style = _pane_title(m, 6, 2),
+            border_style = _pane_border(m, 5, 2),
+            title_style = _pane_title(m, 5, 2),
         )
     end
 
-    render(m.test_tree_view, area, buf)
+    render(m.test_results_pane, area, buf)
+end
+
+# ── Tree flattening (local, avoids unexported Tachikoma internals) ────────
+
+struct TreeFlatRow
+    label::String
+    depth::Int
+    is_last::Bool
+    parent_lasts::Vector{Bool}
+    has_children::Bool
+    expanded::Bool
+    style::Style
+    node::TreeNode
+end
+
+function _flatten_tree(root::TreeNode)::Vector{TreeFlatRow}
+    rows = TreeFlatRow[]
+    _flatten_node!(rows, root, 0, true, Bool[])
+    rows
+end
+
+function _flatten_node!(rows, node, depth, is_last, parent_lasts)
+    push!(rows, TreeFlatRow(
+        node.label, depth, is_last, copy(parent_lasts),
+        !isempty(node.children), node.expanded, node.style, node))
+    if node.expanded
+        new_lasts = vcat(parent_lasts, is_last)
+        for (i, child) in enumerate(node.children)
+            _flatten_node!(rows, child, depth + 1,
+                           i == length(node.children), new_lasts)
+        end
+    end
+end
+
+# ── Render callback for ScrollPane ────────────────────────────────────────
+
+const _TREE_INDENT = 2
+
+function _render_tree_rows!(buf::Buffer, text_area::Rect, offset::Int, m::KaimonModel)
+    flat = m._test_tree_flat
+    sel = m._test_tree_selected
+    conn_style = tstyle(:primary)
+    sel_style = tstyle(:accent, bold=true)
+    visible_h = text_area.height
+    max_cx = right(text_area)
+    n = length(flat)
+
+    for i in 1:visible_h
+        idx = offset + i
+        idx > n && break
+        row = flat[idx]
+        y = text_area.y + i - 1
+        cx = text_area.x
+
+        # Tree connectors
+        if row.depth > 0
+            for d in 1:(row.depth - 1)
+                if cx <= max_cx && d <= length(row.parent_lasts) && !row.parent_lasts[d]
+                    set_char!(buf, cx, y, '│', conn_style)
+                end
+                cx += _TREE_INDENT
+            end
+            connector = row.is_last ? '└' : '├'
+            cx <= max_cx && set_char!(buf, cx, y, connector, conn_style)
+            cx += 1
+            cx <= max_cx && set_char!(buf, cx, y, '─', conn_style)
+            cx += 1
+        end
+
+        # Expand/collapse indicator
+        if row.has_children && cx <= max_cx
+            indicator = row.expanded ? '▾' : '▸'
+            set_char!(buf, cx, y, indicator, conn_style)
+            cx += 1
+        end
+
+        # Label with selection highlight
+        cx > max_cx && continue
+        style = (sel == idx) ? sel_style : row.style
+        if sel == idx
+            set_char!(buf, cx, y, ' ', style)
+            cx += 1
+        end
+        set_string!(buf, cx, y, row.label, style; max_x=max_cx)
+    end
+end
+
+# ── Scroll offset management ─────────────────────────────────────────────
+
+function _scroll_tree_to_selected!(m::KaimonModel)
+    sp = m.test_results_pane
+    sp === nothing && return
+    sel = m._test_tree_selected
+    sel < 1 && return
+    visible_h = max(1, sp.last_area.height)
+    visible_h < 1 && return
+    if sel - 1 < sp.offset
+        sp.offset = sel - 1
+    elseif sel > sp.offset + visible_h
+        sp.offset = sel - visible_h
+    end
+end
+
+# ── Tree keyboard navigation ─────────────────────────────────────────────
+
+function _handle_tree_nav_key!(m::KaimonModel, evt::KeyEvent)
+    flat = m._test_tree_flat
+    n = length(flat)
+    n == 0 && return
+    prev_sel = m._test_tree_selected
+
+    if evt.key == :up
+        m._test_tree_selected = m._test_tree_selected > 1 ? m._test_tree_selected - 1 : n
+    elseif evt.key == :down
+        m._test_tree_selected = m._test_tree_selected < n ? m._test_tree_selected + 1 : 1
+    elseif evt.key == :home
+        m._test_tree_selected = 1
+    elseif evt.key == :end_key
+        m._test_tree_selected = n
+    elseif evt.key == :pageup
+        sp = m.test_results_pane
+        page = sp !== nothing ? max(1, sp.last_area.height) : 10
+        m._test_tree_selected = max(1, m._test_tree_selected - page)
+    elseif evt.key == :pagedown
+        sp = m.test_results_pane
+        page = sp !== nothing ? max(1, sp.last_area.height) : 10
+        m._test_tree_selected = min(n, m._test_tree_selected + page)
+    elseif evt.key == :left
+        sel = m._test_tree_selected
+        if sel >= 1 && sel <= n
+            row = flat[sel]
+            if row.has_children && row.expanded
+                row.node.expanded = false
+                _reflatten_tree!(m)
+            elseif row.depth > 0
+                target_depth = row.depth - 1
+                for j in (sel - 1):-1:1
+                    if flat[j].depth == target_depth
+                        m._test_tree_selected = j
+                        break
+                    end
+                end
+            end
+        end
+    elseif evt.key == :right
+        sel = m._test_tree_selected
+        if sel >= 1 && sel <= n
+            row = flat[sel]
+            if row.has_children && !row.expanded
+                row.node.expanded = true
+                _reflatten_tree!(m)
+            elseif row.has_children && row.expanded && sel < n
+                m._test_tree_selected += 1
+            end
+        end
+    elseif evt.key == :enter || (evt.key == :char && evt.char == ' ')
+        sel = m._test_tree_selected
+        if sel >= 1 && sel <= n
+            row = flat[sel]
+            if row.has_children
+                row.node.expanded = !row.node.expanded
+                _reflatten_tree!(m)
+            end
+        end
+    end
+
+    # Scroll to keep selection visible when it changed
+    m._test_tree_selected != prev_sel && _scroll_tree_to_selected!(m)
+end
+
+function _reflatten_tree!(m::KaimonModel)
+    m._test_tree_root === nothing && return
+    m._test_tree_flat = _flatten_tree(m._test_tree_root)
+    m._test_tree_selected = clamp(m._test_tree_selected, 1, max(1, length(m._test_tree_flat)))
+    sp = m.test_results_pane
+    sp !== nothing && set_total!(sp, length(m._test_tree_flat))
+end
+
+# ── Tree mouse click handling ─────────────────────────────────────────────
+
+function _handle_tree_click!(m::KaimonModel, evt::MouseEvent)
+    sp = m.test_results_pane
+    sp === nothing && return
+    evt.button == mouse_left && evt.action == mouse_press || return
+    Base.contains(sp.last_area, evt.x, evt.y) || return
+
+    row_idx = sp.offset + (evt.y - sp.last_area.y) + 1
+    flat = m._test_tree_flat
+    (row_idx < 1 || row_idx > length(flat)) && return
+
+    if m._test_tree_selected == row_idx
+        # Click on same row → toggle expand/collapse
+        row = flat[row_idx]
+        if row.has_children
+            row.node.expanded = !row.node.expanded
+            _reflatten_tree!(m)
+        end
+    else
+        m._test_tree_selected = row_idx
+        _scroll_tree_to_selected!(m)
+    end
 end
 
 """Render raw test output in a ScrollPane."""
@@ -352,8 +629,8 @@ function _view_test_raw_output(
             reverse = false,
             block = Block(
                 title = title,
-                border_style = _pane_border(m, 6, 2),
-                title_style = _pane_title(m, 6, 2),
+                border_style = _pane_border(m, 5, 2),
+                title_style = _pane_title(m, 5, 2),
             ),
             show_scrollbar = true,
         )
@@ -400,12 +677,35 @@ function _handle_tests_key!(m::KaimonModel, evt::KeyEvent)
         end
         ' ' => begin
             # Space toggles expand/collapse in tree view
-            fp = get(m.focused_pane, 6, 1)
-            if fp == 2 && m.test_view_mode == :results && m.test_tree_view !== nothing
-                handle_key!(m.test_tree_view, evt)
+            fp = get(m.focused_pane, 5, 1)
+            if fp == 2 && m.test_view_mode == :results
+                _handle_tree_nav_key!(m, evt)
+            end
+        end
+        'e' => begin
+            # Expand all nodes in tree view
+            if m.test_view_mode == :results && m._test_tree_root !== nothing
+                _set_expanded_all!(m._test_tree_root, true)
+                _reflatten_tree!(m)
+            end
+        end
+        'c' => begin
+            # Collapse all nodes in tree view (except root)
+            if m.test_view_mode == :results && m._test_tree_root !== nothing
+                _set_expanded_all!(m._test_tree_root, false)
+                m._test_tree_root.expanded = true  # keep root open
+                _reflatten_tree!(m)
             end
         end
         _ => nothing
+    end
+end
+
+"""Recursively set expanded state on all nodes."""
+function _set_expanded_all!(node::TreeNode, expanded::Bool)
+    node.expanded = expanded
+    for child in node.children
+        _set_expanded_all!(child, expanded)
     end
 end
 

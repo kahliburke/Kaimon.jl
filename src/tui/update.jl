@@ -111,11 +111,30 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
                 handle_mouse!(m.search_results_pane, evt)
         end
         5 => begin
-            handle_resize!(m.tests_layout, evt)
-            if m.test_view_mode == :results && m.test_tree_view !== nothing
-                handle_mouse!(m.test_tree_view, evt)
-            elseif m.test_output_pane !== nothing
-                handle_mouse!(m.test_output_pane, evt)
+            _dt_drag5 = m.tests_table !== nothing && m.tests_table.col_drag > 0
+            if !_dt_drag5
+                handle_resize!(m.tests_layout, evt)
+            end
+            _tr = m.tests_layout.rects
+            if m.tests_table !== nothing &&
+               (m.tests_table.col_drag > 0 || (length(_tr) >= 1 && Base.contains(_tr[1], evt.x, evt.y)))
+                prev = m.tests_table.selected
+                handle_mouse!(m.tests_table, evt)
+                if m.tests_table.selected != prev
+                    n = length(m.test_runs)
+                    m.test_follow = false
+                    m.selected_test_run = n - m.tests_table.selected + 1
+                    _reset_test_panes!(m)
+                end
+            elseif length(_tr) >= 2 && Base.contains(_tr[2], evt.x, evt.y)
+                if m.test_view_mode == :results && m.test_results_pane !== nothing
+                    handled = handle_mouse!(m.test_results_pane, evt)
+                    if !handled
+                        _handle_tree_click!(m, evt)
+                    end
+                elseif m.test_output_pane !== nothing
+                    handle_mouse!(m.test_output_pane, evt)
+                end
             end
         end
         6 => begin
@@ -769,23 +788,21 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
         (5, 1) => begin
             n = length(m.test_runs)
             n > 0 || return
-            m.test_follow = false
-            @match evt.key begin
-                :up => begin
-                    m.selected_test_run = min(n, m.selected_test_run + 1)
+            dt = m.tests_table
+            if dt !== nothing
+                prev = dt.selected
+                handle_key!(dt, evt)
+                if dt.selected != prev
+                    m.test_follow = false
+                    # DataTable shows newest first (reversed), convert back to runs index
+                    m.selected_test_run = n - dt.selected + 1
                     _reset_test_panes!(m)
                 end
-                :down => begin
-                    m.selected_test_run = max(1, m.selected_test_run - 1)
-                    _reset_test_panes!(m)
-                end
-                _ => nothing
             end
         end
         (5, 2) => begin
-            # TreeView handles up/down/left/right/enter/home/end_key
-            if m.test_view_mode == :results && m.test_tree_view !== nothing
-                handle_key!(m.test_tree_view, evt)
+            if m.test_view_mode == :results
+                _handle_tree_nav_key!(m, evt)
             elseif m.test_output_pane !== nothing
                 handle_key!(m.test_output_pane, evt)
             end
@@ -853,7 +870,10 @@ end
 function _reset_test_panes!(m::KaimonModel)
     m._test_output_synced = 0
     m.test_output_pane = nothing
-    m.test_tree_view = nothing
+    m.test_results_pane = nothing
+    m._test_tree_root = nothing
+    m._test_tree_flat = Any[]
+    m._test_tree_selected = 1
     m._test_tree_synced = 0
 end
 
