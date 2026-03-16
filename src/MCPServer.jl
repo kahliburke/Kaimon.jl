@@ -1779,6 +1779,53 @@ function start_mcp_server(
                 end
             end
 
+            # ── REST API: /api/connect_tcp ─────────────────────────────────
+            # REST endpoint for programmatic TCP gate connections. Auth is
+            # handled by the standard API key check above — no special
+            # CORS or origin bypass needed.
+            if req.target == "/api/connect_tcp" && req.method == "POST"
+                try
+                    data = JSON.parse(body; dicttype = Dict{String,Any})
+                    host = get(data, "host", nothing)
+                    port = get(data, "port", nothing)
+                    name = get(data, "name", "remote")
+
+                    if host === nothing || port === nothing
+                        HTTP.setstatus(http, 400)
+                        HTTP.setheader(http, "Content-Type" => "application/json")
+                        HTTP.startwrite(http)
+                        write(http, JSON.json(Dict("error" => "host and port are required")))
+                        return nothing
+                    end
+
+                    port_int = Int(port)
+                    if port_int < 1 || port_int > 65535
+                        HTTP.setstatus(http, 400)
+                        HTTP.setheader(http, "Content-Type" => "application/json")
+                        HTTP.startwrite(http)
+                        write(http, JSON.json(Dict("error" => "port must be between 1 and 65535")))
+                        return nothing
+                    end
+
+                    conn = Kaimon.connect_tcp_to_active_manager(string(host), port_int; name=string(name))
+
+                    HTTP.setstatus(http, 200)
+                    HTTP.setheader(http, "Content-Type" => "application/json")
+                    HTTP.startwrite(http)
+                    write(http, JSON.json(Dict(
+                        "status" => "connected",
+                        "session_id" => conn !== nothing ? conn.session_id : nothing,
+                    )))
+                    return nothing
+                catch e
+                    HTTP.setstatus(http, 500)
+                    HTTP.setheader(http, "Content-Type" => "application/json")
+                    HTTP.startwrite(http)
+                    write(http, JSON.json(Dict("error" => sprint(showerror, e))))
+                    return nothing
+                end
+            end
+
             # Handle GET requests on MCP endpoint — open SSE stream per 2025-11-25 spec.
             # Kaimon has no server-initiated messages, so we open the stream and hold it
             # open with periodic keepalive comments until the client disconnects.
