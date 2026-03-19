@@ -39,6 +39,7 @@ function _sync_tests_table!(m::KaimonModel)
     col_pass = Any[]
     col_fail = Any[]
     col_duration = Any[]
+    row_styles = Style[]
 
     # Display newest first (reversed)
     display_sel = 0
@@ -53,19 +54,19 @@ function _sync_tests_table!(m::KaimonModel)
             "$(round(dt_s, digits=0))s…"
         end
 
-        status_span = if run.status == RUN_RUNNING
+        status_span, rs = if run.status == RUN_RUNNING
             si = mod1(m.tick ÷ 3, length(SPINNER_BRAILLE))
-            Span("$(SPINNER_BRAILLE[si]) Running", tstyle(:accent))
+            (Span("$(SPINNER_BRAILLE[si]) Running", tstyle(:accent)), tstyle(:accent))
         elseif run.status == RUN_PASSED
-            Span("✓ Passed", tstyle(:success))
+            (Span("✓ Passed", tstyle(:success)), tstyle(:success))
         elseif run.status == RUN_FAILED
-            Span("✗ Failed", tstyle(:error))
+            (Span("✗ Failed", tstyle(:error)), tstyle(:error))
         elseif run.status == RUN_ERROR
-            Span("! Error", tstyle(:error))
+            (Span("! Error", tstyle(:error)), tstyle(:error))
         elseif run.status == RUN_CANCELLED
-            Span("- Cancelled", tstyle(:text_dim))
+            (Span("- Cancelled", tstyle(:text_dim)), tstyle(:text_dim))
         else
-            Span("  Pending", tstyle(:text))
+            (Span("  Pending", tstyle(:text)), tstyle(:text))
         end
 
         push!(col_status, status_span)
@@ -77,6 +78,7 @@ function _sync_tests_table!(m::KaimonModel)
         push!(col_pass, run.total_pass > 0 ? Span(pass_str, tstyle(:success)) : "")
         push!(col_fail, fail_total > 0 ? Span(fail_str, tstyle(:error)) : "")
         push!(col_duration, elapsed)
+        push!(row_styles, rs)
         if i == m.selected_test_run
             display_sel = di
         end
@@ -89,6 +91,7 @@ function _sync_tests_table!(m::KaimonModel)
         push!(col_pass, "")
         push!(col_fail, "")
         push!(col_duration, "")
+        push!(row_styles, tstyle(:text_dim))
         display_sel = 0
     end
 
@@ -108,6 +111,7 @@ function _sync_tests_table!(m::KaimonModel)
             title_style = _pane_title(m, 5, 1),
         ),
         tick = m.tick,
+        row_styles = row_styles,
     )
     m._tests_table_hash = dt_hash
 

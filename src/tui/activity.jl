@@ -441,6 +441,7 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
     col_sessions = Any[]
     col_durations = Any[]
     col_preview = Any[]
+    row_styles = Style[]
     display_sel = 0
     item_idx = 0
 
@@ -464,6 +465,7 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
             isempty(ifc.last_progress) ? "running…" : _truncate(ifc.last_progress, 40)
         end
         push!(col_preview, preview)
+        push!(row_styles, tstyle(:warning))
         if m.selected_inflight == ii
             display_sel = item_idx
         end
@@ -486,6 +488,7 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
             _tool_preview(r)
         end
         push!(col_preview, Span(preview, tstyle(:text_dim)))
+        push!(row_styles, r.success ? tstyle(:success) : tstyle(:error))
         if m.selected_inflight == 0 && ri == m.selected_result
             display_sel = item_idx
         end
@@ -511,6 +514,7 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
         push!(col_sessions, "")
         push!(col_durations, "")
         push!(col_preview, "")
+        push!(row_styles, tstyle(:text_dim))
         display_sel = 0
     end
 
@@ -533,6 +537,7 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
                 title_style = _pane_title(m, 3, 1),
             ),
             tick = m.tick,
+            row_styles = row_styles,
         )
         m._activity_table_hash = dt_hash
         # Preserve state from old DataTable across rebuilds

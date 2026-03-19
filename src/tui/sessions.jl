@@ -270,6 +270,7 @@ function _sync_sessions_table!(m::KaimonModel, connections::Vector{REPLConnectio
     col_names = Any[]
     col_status = Any[]
     col_pid = Any[]
+    row_styles = Style[]
     for conn in connections
         icon = if conn.status == :connected
             "⬤"
@@ -292,12 +293,14 @@ function _sync_sessions_table!(m::KaimonModel, connections::Vector{REPLConnectio
         push!(col_names, Span("$icon $dname$agent_tag", style))
         push!(col_status, Span(string(conn.status), style))
         push!(col_pid, string(conn.pid))
+        push!(row_styles, style)
     end
 
     if isempty(col_names)
         push!(col_names, "No REPL sessions")
         push!(col_status, "")
         push!(col_pid, "")
+        push!(row_styles, tstyle(:text_dim))
     end
 
     dt = DataTable(
@@ -313,6 +316,7 @@ function _sync_sessions_table!(m::KaimonModel, connections::Vector{REPLConnectio
             title_style = _pane_title(m, 2, 1),
         ),
         tick = m.tick,
+        row_styles = row_styles,
     )
     m._sessions_table_hash = dt_hash
 
