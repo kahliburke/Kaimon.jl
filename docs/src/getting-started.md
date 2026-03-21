@@ -2,8 +2,15 @@
 
 ## 1. Launch Kaimon
 
+### Option A: From the Terminal
+
+Run the executable directly (example below assumes you are in the Kaimon source directory):
+
 ```bash
 ./bin/kaimon
+./bin/kaimon --port 3000       # custom port
+./bin/kaimon --theme esper     # theme: kokaku, esper, motoko, neuromancer
+./bin/kaimon --revise          # load Revise for live code reloading
 ```
 
 On the first run, Kaimon installs dependencies, precompiles, then launches the
@@ -19,12 +26,15 @@ Once setup completes, the dashboard opens:
 The dashboard shows connected REPL sessions, live tool call activity, server
 logs, search index status, and configuration — all from one place.
 
-### Launch options
+### Option B: From Julia
+
+If you have already configured Kaimon by calling it as described above, you can launch the TUI directly from Julia. Launch it in a **new terminal window** to keep your current REPL free for normal work:
 
 ```bash
-./bin/kaimon --port 3000       # custom port
-./bin/kaimon --theme esper     # theme: kokaku, esper, motoko, neuromancer
-./bin/kaimon --revise          # load Revise for live code reloading
+julia
+using Kaimon
+tui() # opens dashboard
+tui(port=3000, theme_name=:esper) # With custom options
 ```
 
 ## 2. Connect an MCP Client
