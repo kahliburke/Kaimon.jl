@@ -703,31 +703,35 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
         error("Failed to connect to TCP gate at $endpoint")
     end
 
-    # Eagerly ping to discover PUB stream endpoint and connect SUB socket
+    # Verify the gate is actually reachable with a ping
     pong = ping(conn)
-    if pong !== nothing
-        pong_stream = string(get(pong, :stream_endpoint, ""))
-        if !isempty(pong_stream) && conn.sub_socket === nothing
-            conn.stream_endpoint = pong_stream
-            try
-                sub = Socket(mgr.zmq_context, SUB)
-                sub.rcvtimeo = 0
-                sub.linger = 0
-                sub.rcvhwm = 0
-                subscribe(sub, "")
-                ZMQ.connect(sub, pong_stream)
-                conn.sub_socket = sub
-                _push_log!(:info, "TCP stream connected: $pong_stream ($(conn.display_name))")
-            catch e
-                _push_log!(:warn, "TCP stream connect failed: $pong_stream — $(sprint(showerror, e))")
-            end
-        end
-        # Update metadata from pong
-        new_path = string(get(pong, :project_path, ""))
-        !isempty(new_path) && (conn.project_path = new_path)
-        conn.julia_version = string(get(pong, :julia_version, ""))
-        conn.pid = Int(get(pong, :pid, 0))
+    if pong === nothing
+        # Gate not responding — clean up the socket and bail
+        disconnect!(conn)
+        error("TCP gate at $endpoint is not responding")
     end
+
+    # Populate connection from pong
+    pong_stream = string(get(pong, :stream_endpoint, ""))
+    if !isempty(pong_stream)
+        conn.stream_endpoint = pong_stream
+        try
+            sub = Socket(mgr.zmq_context, SUB)
+            sub.rcvtimeo = 0
+            sub.linger = 0
+            sub.rcvhwm = 0
+            subscribe(sub, "")
+            ZMQ.connect(sub, pong_stream)
+            conn.sub_socket = sub
+            _push_log!(:info, "TCP stream connected: $pong_stream ($(conn.display_name))")
+        catch e
+            _push_log!(:warn, "TCP stream connect failed: $pong_stream — $(sprint(showerror, e))")
+        end
+    end
+    new_path = string(get(pong, :project_path, ""))
+    !isempty(new_path) && (conn.project_path = new_path)
+    conn.julia_version = string(get(pong, :julia_version, ""))
+    conn.pid = Int(get(pong, :pid, 0))
 
     lock(mgr.lock) do
         push!(mgr.connections, conn)
@@ -740,7 +744,11 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
     return conn
 end
 
-"""Poll registered TCP gate endpoints and connect any that are reachable but not yet connected."""
+# Backoff state for TCP gate polling — keyed by "host:port"
+const _TCP_POLL_BACKOFF = Dict{String, @NamedTuple{failures::Int, next_try::Float64}}()
+const _TCP_POLL_BACKOFF_SCHEDULE = [5.0, 15.0, 30.0, 60.0, 120.0]  # seconds
+
+"""Poll registered TCP gate endpoints with exponential backoff on failure."""
 function _poll_tcp_gates!(mgr::ConnectionManager)
     entries = load_tcp_gates_config()
     isempty(entries) && return
@@ -750,19 +758,35 @@ function _poll_tcp_gates!(mgr::ConnectionManager)
         isempty(entry.host) && continue
 
         sid = "tcp-$(entry.host)-$(entry.port)"
+        backoff_key = "$(entry.host):$(entry.port)"
 
         # Already connected?
         already = lock(mgr.lock) do
             any(c -> c.session_id == sid && c.status in (:connected, :evaluating, :stalled, :connecting), mgr.connections)
         end
-        already && continue
+        if already
+            # Reset backoff on active connection
+            delete!(_TCP_POLL_BACKOFF, backoff_key)
+            continue
+        end
 
-        # Try to connect (non-blocking attempt with short timeout)
+        # Check backoff — don't retry too soon
+        state = get(_TCP_POLL_BACKOFF, backoff_key, nothing)
+        if state !== nothing && time() < state.next_try
+            continue
+        end
+
+        # Try to connect
         try
             connect_tcp!(mgr, entry.host, entry.port; name = entry.name, token = entry.token)
-            @debug "TCP gate connected" host = entry.host port = entry.port
+            delete!(_TCP_POLL_BACKOFF, backoff_key)
+            _push_log!(:info, "TCP gate connected: $(entry.name) ($(entry.host):$(entry.port))")
         catch
-            # Gate not reachable — will retry next poll
+            # Failed — increase backoff
+            failures = state !== nothing ? state.failures + 1 : 1
+            idx = min(failures, length(_TCP_POLL_BACKOFF_SCHEDULE))
+            delay = _TCP_POLL_BACKOFF_SCHEDULE[idx]
+            _TCP_POLL_BACKOFF[backoff_key] = (failures = failures, next_try = time() + delay)
         end
     end
 end

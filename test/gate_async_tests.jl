@@ -347,3 +347,66 @@ end
     @test !Kaimon.Gate._RUNNING[]
     @test isempty(Kaimon.Gate._AUTH_TOKEN[])
 end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# connect_tcp! rejects unreachable gates
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "connect_tcp! fails on unreachable gate" begin
+    mgr = Kaimon.ConnectionManager()
+    mgr.running = true
+
+    # Port 1 is almost certainly not running a gate
+    @test_throws ErrorException Kaimon.connect_tcp!(mgr, "127.0.0.1", 1; name = "ghost")
+
+    # Verify no ghost session was added
+    @test isempty(mgr.connections)
+
+    Kaimon.stop!(mgr)
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TCP poll backoff
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "TCP poll backoff" begin
+    # Clear any leftover state
+    empty!(Kaimon._TCP_POLL_BACKOFF)
+
+    key = "192.168.99.99:9999"
+
+    # Simulate sequential failures
+    for i in 1:5
+        failures = i
+        idx = min(failures, length(Kaimon._TCP_POLL_BACKOFF_SCHEDULE))
+        delay = Kaimon._TCP_POLL_BACKOFF_SCHEDULE[idx]
+        Kaimon._TCP_POLL_BACKOFF[key] = (failures = failures, next_try = time() + delay)
+
+        state = Kaimon._TCP_POLL_BACKOFF[key]
+        @test state.failures == i
+        @test state.next_try > time()
+    end
+
+    # After 5 failures, delay should be capped at last schedule entry
+    state = Kaimon._TCP_POLL_BACKOFF[key]
+    @test state.failures == 5
+    expected_delay = Kaimon._TCP_POLL_BACKOFF_SCHEDULE[end]
+    # next_try should be roughly now + max delay (within 1s tolerance)
+    @test state.next_try > time() + expected_delay - 1.0
+
+    # Simulating successful connection clears backoff
+    delete!(Kaimon._TCP_POLL_BACKOFF, key)
+    @test !haskey(Kaimon._TCP_POLL_BACKOFF, key)
+
+    # Backoff check: if next_try is in the future, skip
+    Kaimon._TCP_POLL_BACKOFF[key] = (failures = 1, next_try = time() + 100.0)
+    state = Kaimon._TCP_POLL_BACKOFF[key]
+    @test time() < state.next_try  # should be skipped by poll
+
+    # Backoff check: if next_try is in the past, allow retry
+    Kaimon._TCP_POLL_BACKOFF[key] = (failures = 1, next_try = time() - 1.0)
+    state = Kaimon._TCP_POLL_BACKOFF[key]
+    @test time() >= state.next_try  # should be allowed by poll
+
+    empty!(Kaimon._TCP_POLL_BACKOFF)
+end

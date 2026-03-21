@@ -231,7 +231,20 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
                 name_style = i == m.selected_tcp_gate ? tstyle(:accent, bold = true) : tstyle(:text)
 
                 label = isempty(entry.name) ? "$(entry.host):$(entry.port)" : entry.name
-                status_text = connected ? "connected" : entry.enabled ? "waiting" : "disabled"
+                status_text = if connected
+                    "connected"
+                elseif !entry.enabled
+                    "disabled"
+                else
+                    backoff_key = "$(entry.host):$(entry.port)"
+                    bstate = get(_TCP_POLL_BACKOFF, backoff_key, nothing)
+                    if bstate !== nothing && bstate.next_try > time()
+                        secs = round(Int, bstate.next_try - time())
+                        "retry $(secs)s"
+                    else
+                        "waiting"
+                    end
+                end
 
                 set_string!(buf, x, y, marker, name_style)
                 set_string!(buf, x + 2, y, "$icon ", icon_style)
