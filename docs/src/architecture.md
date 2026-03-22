@@ -90,7 +90,7 @@ The server (`src/MCPServer.jl`) is an HTTP.jl server that handles:
 
 ### Standalone vs. TUI Mode
 
-| | Standalone (`start!()`) | TUI (`tui()`) |
+| | Standalone (`Kaimon.start!()`) | TUI (`Kaimon.tui()`) |
 |---|---|---|
 | Process model | Server + REPL in one process | Server in TUI process, REPLs connect via Gate |
 | Code execution | Direct `Core.eval(Main, expr)` | Forwarded over ZMQ to external REPL |

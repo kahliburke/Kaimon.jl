@@ -78,11 +78,11 @@ The security config controls access to the MCP server via `config.json` at `~/.c
 
 Use the security management tools to modify these settings programmatically:
 
-- `security_status` -- View current security configuration
-- `setup_security` -- Run the interactive security setup
-- `generate_key` -- Create a new API key
-- `revoke_key` -- Remove an API key
-- `allow_ip` / `deny_ip` -- Manage the IP allowlist
+- `Kaimon.security_status()` -- View current security configuration
+- `Kaimon.setup_security()` -- Run the interactive security setup
+- `Kaimon.generate_key()` -- Create a new API key
+- `Kaimon.revoke_key()` -- Remove an API key
+- `Kaimon.allow_ip()` / `Kaimon.deny_ip()` -- Manage the IP allowlist
 - `set_security_mode` -- Switch between security modes
 
 ## [Projects Configuration](@id projects-config)

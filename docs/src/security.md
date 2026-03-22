@@ -37,9 +37,9 @@ Kaimon provides functions to manage API keys:
 
 | Function | Description |
 |---|---|
-| `generate_key()` | Generate a new API key and register it with the server. |
-| `revoke_key()` | Revoke an existing API key so it can no longer be used. |
-| `security_status()` | Display the current security mode, active keys, and IP allowlist. |
+| `Kaimon.generate_key()` | Generate a new API key and register it with the server. |
+| `Kaimon.revoke_key()` | Revoke an existing API key so it can no longer be used. |
+| `Kaimon.security_status()` | Display the current security mode, active keys, and IP allowlist. |
 
 ### Using API Keys with MCP Clients
 

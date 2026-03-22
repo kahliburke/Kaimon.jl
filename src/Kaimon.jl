@@ -24,8 +24,9 @@ using UUIDs
 using Tachikoma
 using Match
 
-export @mcp_tool, MCPTool
-export start!, stop!, test_server
+# Only export Gate (primary user-facing API) and @mcp_tool (for tool authors).
+# Everything else is accessible as Kaimon.foo() to avoid namespace pollution.
+export Gate, @mcp_tool, MCPTool
 
 # ── Shared cache directory ────────────────────────────────────────────────────
 # Single source of truth for ~/.cache/kaimon (respects XDG_CACHE_HOME).
@@ -113,14 +114,14 @@ include("test_runner.jl")
 include("tui.jl")
 
 # Export public API functions
-export start!, stop!, test_server
-export setup_security, security_status, generate_key, revoke_key
-export allow_ip, deny_ip, set_security_mode
-export call_tool, list_tools, tool_help
-export tui  # TUI server entry point
-export setup_wizard_tui  # Animated security setup wizard
-export Gate  # Eval gate module (includes GateTool for session-scoped tools)
-export get_gate_mirror_repl_preference, set_gate_mirror_repl_preference!
+# Public API — accessible as Kaimon.foo() but not imported by `using Kaimon`
+public start!, stop!, test_server
+public setup_security, security_status, generate_key, revoke_key
+public allow_ip, deny_ip, set_security_mode
+public call_tool, list_tools, tool_help
+public tui
+public setup_wizard_tui
+public get_gate_mirror_repl_preference, set_gate_mirror_repl_preference!
 
 # ============================================================================
 # Port Management
