@@ -1,5 +1,0 @@
-[gate]
-  mode = "tcp"
-  port = 10015
-  stream_port = 10017
-  force=true
