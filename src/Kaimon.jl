@@ -1436,6 +1436,12 @@ function execute_via_gate_streaming(
         Database.persist_job!(eval_id, short_key(conn), code,
             mgr !== nothing ? mgr.eval_history[end].started_at : time(), promoted_at)
 
+        # Push activity event so promotion is visible in the TUI
+        dname = isempty(conn.display_name) ? conn.name : conn.display_name
+        code_preview = length(code) > 60 ? first(code, 60) * "..." : code
+        _push_activity!(:job_promoted, "ex", dname,
+            "⏳ Job $eval_id promoted after $(round(Int, promoted_at - (mgr !== nothing ? mgr.eval_history[end].started_at : time())))s: $code_preview")
+
         # Background task to collect the result when it completes
         Threads.@spawn begin
             try
@@ -1465,6 +1471,11 @@ function execute_via_gate_streaming(
                         result = formatted,
                         result_preview = preview,
                         finished_at = time())
+                    elapsed = round(time() - promoted_at, digits=1)
+                    _push_activity!(status == :completed ? :job_completed : :job_failed,
+                        "ex", dname,
+                        "$(status == :completed ? "✓" : "✗") Job $eval_id $status after $(elapsed)s";
+                        success = status == :completed)
                 end
             catch e
                 err_msg = sprint(showerror, e)
@@ -1472,6 +1483,8 @@ function execute_via_gate_streaming(
                 Database.update_job!(eval_id;
                     status = "failed", result = err_msg,
                     result_preview = first(err_msg, 500), finished_at = time())
+                _push_activity!(:job_failed, "ex", dname,
+                    "✗ Job $eval_id failed: $(first(err_msg, 80))"; success = false)
             end
         end
 
