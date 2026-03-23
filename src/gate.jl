@@ -2275,6 +2275,93 @@ function progress(message::String)
     _publish_stream("tool_progress", message; request_id = string(rid))
 end
 
+# ── Job Safehouse ─────────────────────────────────────────────────────────────
+# Allows long-running evals/tools to stash intermediate values that can be
+# inspected while the job is still running (like Infiltrator's @exfiltrate).
+
+const _JOB_SAFEHOUSE = Dict{String, Dict{String, Any}}()
+const _JOB_SAFEHOUSE_LOCK = ReentrantLock()
+
+"""
+    stash(key::String, value; job_id::String="")
+
+Stash a value in the current job's safehouse. If called from within a GateTool
+handler or async eval, the job ID is detected automatically. Otherwise, pass
+`job_id` explicitly.
+
+Retrieve stashed values with `check_eval` or `inspect_job`.
+
+# Example
+```julia
+for epoch in 1:100
+    loss = train_epoch!(model)
+    Gate.stash("epoch", epoch)
+    Gate.stash("loss", loss)
+    Gate.stash("lr", get_lr(optimizer))
+    Gate.progress("Epoch \$epoch: loss=\$loss")
+end
+```
+"""
+function stash(key::String, value; job_id::String="")
+    if isempty(job_id)
+        job_id = string(get(task_local_storage(), :gate_request_id, ""))
+    end
+    isempty(job_id) && return
+    lock(_JOB_SAFEHOUSE_LOCK) do
+        if !haskey(_JOB_SAFEHOUSE, job_id)
+            _JOB_SAFEHOUSE[job_id] = Dict{String, Any}()
+        end
+        _JOB_SAFEHOUSE[job_id][key] = value
+    end
+    nothing
+end
+
+"""
+    stash(pairs::Pair...; job_id::String="")
+
+Stash multiple values at once.
+
+# Example
+```julia
+Gate.stash("epoch" => epoch, "loss" => loss, "accuracy" => acc)
+```
+"""
+function stash(pairs::Pair{String}...; job_id::String="")
+    for (k, v) in pairs
+        stash(k, v; job_id)
+    end
+end
+
+"""
+    get_stash(job_id::String) -> Dict{String, Any}
+
+Retrieve all stashed values for a job. Returns empty Dict if none.
+"""
+function get_stash(job_id::String)
+    lock(_JOB_SAFEHOUSE_LOCK) do
+        for (k, v) in _JOB_SAFEHOUSE
+            if startswith(k, job_id)
+                return copy(v)
+            end
+        end
+        return Dict{String, Any}()
+    end
+end
+
+"""
+    clear_stash(job_id::String)
+
+Clear the safehouse for a job. Called automatically when check_eval retrieves
+a completed job's result.
+"""
+function clear_stash(job_id::String)
+    lock(_JOB_SAFEHOUSE_LOCK) do
+        for k in collect(keys(_JOB_SAFEHOUSE))
+            startswith(k, job_id) && delete!(_JOB_SAFEHOUSE, k)
+        end
+    end
+end
+
 # ── Service Client (reverse channel to Kaimon server) ─────────────────────────
 # Extensions call Gate.call_tool(name, args) to invoke any registered Kaimon
 # MCP tool. This is the reverse of the existing gate protocol: instead of

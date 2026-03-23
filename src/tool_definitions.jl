@@ -2438,6 +2438,19 @@ The eval ID is delivered as a structured JSON field in two places:
             status_str *= "\n\nResult preview:\n$(record.result_preview)"
         end
 
+        # Include stashed values from the job safehouse
+        stash = Gate.get_stash(record.eval_id)
+        if !isempty(stash)
+            status_str *= "\n\nStashed values:"
+            for (k, v) in sort(collect(stash); by=first)
+                repr_v = try; repr(v); catch; "$(typeof(v))(...)"; end
+                if length(repr_v) > 200
+                    repr_v = first(repr_v, 200) * "..."
+                end
+                status_str *= "\n  $k = $repr_v"
+            end
+        end
+
         status_str
     end
 )
