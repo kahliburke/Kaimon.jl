@@ -93,10 +93,11 @@ function _build_extension_script(config::ExtensionConfig)
     using Kaimon
     # Auto-flushing logger so extension output is visible immediately in the log file
     using LoggingExtras, Logging, Dates
-    global_logger(FormatLogger(stderr; always_flush=true) do io, args
-        ts = Dates.format(now(), dateformat"HH:MM:SS")
-        println(io, "[", ts, " ", args.level, "] ", args.message)
-    end)
+    let _fmt = DateFormat("HH:MM:SS")
+        global_logger(FormatLogger(stderr; always_flush=true) do io, args
+            println(io, "[", Dates.format(now(), _fmt), " ", args.level, "] ", args.message)
+        end)
+    end
     using $(m.module_name)
     tools = $(m.module_name).$(m.tools_function)(Kaimon.Gate.GateTool)
     Kaimon.Gate.serve(tools=tools, namespace=$(repr(m.namespace)), force=true, allow_mirror=false, allow_restart=false, spawned_by="extension"$on_shutdown_kwarg)
@@ -112,6 +113,26 @@ Launch the extension subprocess. Non-blocking.
 """
 function spawn_extension!(ext::ManagedExtension)
     ext.status == :running && return
+
+    # Kill any existing process before spawning a new one.
+    # This prevents orphan processes when an extension is marked as crashed
+    # (e.g. startup timeout) but the old process is still alive.
+    if ext.process !== nothing && Base.process_running(ext.process)
+        try
+            kill(ext.process, Base.SIGTERM)
+            # Give it a moment to exit gracefully
+            t0 = time()
+            while Base.process_running(ext.process) && time() - t0 < 3.0
+                sleep(0.1)
+            end
+            if Base.process_running(ext.process)
+                kill(ext.process, Base.SIGKILL)
+            end
+        catch
+        end
+    end
+    ext.process = nothing
+
     ext.status = :starting
     ext.started_at = time()
     empty!(ext.error_log)
