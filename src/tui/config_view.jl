@@ -97,6 +97,16 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
         set_string!(buf, x + 4, y, "Editor for file links", tstyle(:text))
         y += 1
         set_string!(buf, x + 4, y, "current: $(m.editor)", tstyle(:success))
+        y += 1
+        set_string!(buf, x, y, "[Q]", tstyle(:accent, bold = true))
+        set_string!(buf, x + 4, y, "Qdrant collection prefix", tstyle(:text))
+        y += 1
+        prefix = get_collection_prefix()
+        if isempty(prefix)
+            set_string!(buf, x + 4, y, "none (default)", tstyle(:text_dim))
+        else
+            set_string!(buf, x + 4, y, "prefix: $prefix", tstyle(:success))
+        end
     end
 
     # ── Right column: MCP Clients (top) + Projects & TCP Gates side-by-side (bottom) ──
@@ -420,6 +430,44 @@ function view_config_flow(m::KaimonModel, area::Rect, buf::Buffer)
 
     elseif flow == FLOW_TCP_GATE_ADD_RESULT
         _render_result_modal(buf, area, m.flow_success, m.flow_message; tick = m.tick)
+
+    elseif flow == FLOW_QDRANT_PREFIX
+        _render_qdrant_prefix_modal(m, buf, area)
+
+    elseif flow == FLOW_QDRANT_PREFIX_RESULT
+        _render_result_modal(buf, area, m.flow_success, m.flow_message; tick = m.tick)
+    end
+end
+
+function _render_qdrant_prefix_modal(m::KaimonModel, buf::Buffer, area::Rect)
+    w = min(50, area.width - 4)
+    h = 6
+    rect = center(area, w, h)
+
+    border_s = tstyle(:accent, bold = true)
+    inner = render(
+        Block(title = "Qdrant Collection Prefix", border_style = border_s, title_style = border_s, box = BOX_HEAVY),
+        rect, buf,
+    )
+    inner.width < 4 && return
+
+    for row = inner.y:bottom(inner)
+        for col = inner.x:right(inner)
+            set_char!(buf, col, row, ' ', Style(bg = Tachikoma.theme().bg))
+        end
+    end
+
+    y = inner.y
+    x = inner.x + 1
+    set_string!(buf, x, y, "Prefix for shared Qdrant (empty = none):", tstyle(:text_dim))
+    y += 1
+    if m.qdrant_prefix_input !== nothing
+        m.qdrant_prefix_input.tick = m.tick
+        render(m.qdrant_prefix_input, Rect(x, y, inner.width - 2, 1), buf)
+    end
+    y += 2
+    if y <= bottom(inner)
+        set_string!(buf, x, y, "[Enter] save  [Esc] cancel", tstyle(:text_dim))
     end
 end
 

@@ -78,6 +78,8 @@ end
 
     FLOW_TCP_GATE_ADD           # TextInput for host:port
     FLOW_TCP_GATE_ADD_RESULT    # Success/failure feedback
+    FLOW_QDRANT_PREFIX          # TextInput for qdrant prefix
+    FLOW_QDRANT_PREFIX_RESULT   # Success/failure feedback
 end
 
 # Stress test state machine
@@ -419,6 +421,7 @@ end
     tcp_gate_name_input::Any = nothing  # TextInput for display name
     tcp_gate_token_input::Any = nothing # TextInput for auth token
     tcp_gate_stream_port_input::Any = nothing  # TextInput for PUB stream port
+    qdrant_prefix_input::Any = nothing         # TextInput for qdrant prefix
     _tcp_gate_field::Int = 1            # 1=host:port, 2=name, 3=token, 4=stream_port
 
     # ── Extensions tab (tab 8) ──

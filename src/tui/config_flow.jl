@@ -86,6 +86,37 @@ function _execute_tcp_gate_add!(m::KaimonModel)
     m.config_flow = FLOW_TCP_GATE_ADD_RESULT
 end
 
+function _cycle_qdrant_prefix!(m::KaimonModel)
+    current = get_collection_prefix()
+    m.qdrant_prefix_input = TextInput(text = current, label = "Prefix: ", tick = m.tick)
+    m.config_flow = FLOW_QDRANT_PREFIX
+end
+
+function _execute_qdrant_prefix!(m::KaimonModel)
+    prefix = strip(Tachikoma.text(m.qdrant_prefix_input))
+    set_collection_prefix!(prefix)
+
+    # Persist to config
+    try
+        config = load_global_config()
+        if config !== nothing
+            new_config = KaimonConfig(
+                config.mode, config.api_keys, config.allowed_ips,
+                config.port, config.editor, prefix)
+            save_global_config(new_config)
+        end
+    catch
+    end
+
+    if isempty(prefix)
+        m.flow_message = "Qdrant prefix cleared (using default collection names)"
+    else
+        m.flow_message = "Qdrant prefix set to: $prefix"
+    end
+    m.flow_success = true
+    m.config_flow = FLOW_QDRANT_PREFIX_RESULT
+end
+
 function _remove_tcp_gate!(m::KaimonModel)
     isempty(m.tcp_gate_entries) && return
     idx = m.selected_tcp_gate
@@ -219,6 +250,15 @@ function handle_flow_input!(m::KaimonModel, evt::KeyEvent)
             input !== nothing && handle_key!(input, evt)
         end
     elseif flow == FLOW_TCP_GATE_ADD_RESULT
+        m.config_flow = FLOW_IDLE
+
+    elseif flow == FLOW_QDRANT_PREFIX
+        if evt.key == :enter
+            _execute_qdrant_prefix!(m)
+        else
+            m.qdrant_prefix_input !== nothing && handle_key!(m.qdrant_prefix_input, evt)
+        end
+    elseif flow == FLOW_QDRANT_PREFIX_RESULT
         m.config_flow = FLOW_IDLE
 
     elseif flow == FLOW_PROJECT_EDIT_LAUNCH

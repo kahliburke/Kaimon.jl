@@ -8,29 +8,34 @@ using JSON
 using TOML
 
 # Global configuration structure
-struct SecurityConfig
+struct KaimonConfig
     mode::Symbol  # :strict, :relaxed, or :lax
     api_keys::Vector{String}
     allowed_ips::Vector{String}
     port::Int
     created_at::Int64
     editor::String  # Editor for file:line links: "vscode", "cursor", "zed", "windsurf"
+    qdrant_prefix::String  # Prefix for Qdrant collection names (for shared instances)
 end
 
-function SecurityConfig(
+const SecurityConfig = KaimonConfig  # backwards compatibility alias
+
+function KaimonConfig(
     mode::Symbol,
     api_keys::Vector{String},
     allowed_ips::Vector{String},
     port::Int = 0,
     editor::String = "vscode",
+    qdrant_prefix::String = "",
 )
-    return SecurityConfig(
+    return KaimonConfig(
         mode,
         api_keys,
         allowed_ips,
         port,
         Int64(round(time())),
         editor,
+        qdrant_prefix,
     )
 end
 
@@ -88,7 +93,7 @@ function load_personality()
 end
 
 """
-    load_global_config() -> Union{SecurityConfig, Nothing}
+    load_global_config() -> Union{KaimonConfig, Nothing}
 
 Load the global configuration from `~/.config/kaimon/config.json`.
 """
@@ -109,14 +114,16 @@ function load_global_config()
         port = get(data, "port", 0)
         created_at = get(data, "created_at", time())
         editor = get(data, "editor", "vscode")
+        qdrant_prefix = String(get(data, "qdrant_prefix", ""))
 
-        return SecurityConfig(
+        return KaimonConfig(
             mode,
             api_keys,
             allowed_ips,
             port,
             created_at,
             editor,
+            qdrant_prefix,
         )
     catch e
         @warn "Failed to load global config" exception = e
@@ -155,6 +162,9 @@ function save_global_config(config::SecurityConfig)
         existing["port"] = config.port
         existing["created_at"] = config.created_at
         existing["editor"] = config.editor
+        if !isempty(config.qdrant_prefix)
+            existing["qdrant_prefix"] = config.qdrant_prefix
+        end
 
         json_str = JSON.json(existing, 2)
         write(config_path, json_str)

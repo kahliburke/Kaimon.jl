@@ -2558,6 +2558,20 @@ end
 include("precompile.jl")
 
 function __init__()
+    # Set Qdrant collection prefix from env var or config
+    env_prefix = get(ENV, "KAIMON_QDRANT_PREFIX", "")
+    if !isempty(env_prefix)
+        set_collection_prefix!(env_prefix)
+    else
+        try
+            config = load_global_config()
+            if config !== nothing && !isempty(config.qdrant_prefix)
+                set_collection_prefix!(config.qdrant_prefix)
+            end
+        catch
+        end
+    end
+
     # Auto-start TCP gate if configured via env vars or kaimon.toml [gate]
     Gate._auto_serve!()
 end

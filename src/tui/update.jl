@@ -697,6 +697,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
             'D' => begin_project_remove!(m)
             'e' => begin_project_edit_launch!(m)
             'E' => cycle_editor!(m)
+            'Q' => _cycle_qdrant_prefix!(m)
             'T' => begin_tcp_gate_add!(m)
             'X' => _remove_tcp_gate!(m)
             _ => nothing
