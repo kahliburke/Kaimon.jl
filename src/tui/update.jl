@@ -140,6 +140,20 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
             handle_resize!(m.config_layout, evt)
             handle_resize!(m.config_left_layout, evt)
             handle_resize!(m.config_right_layout, evt)
+            # Click on config actions
+            if evt.button == mouse_left && evt.action == mouse_press
+                a = m._config_actions_area
+                if Base.contains(a, evt.x, evt.y)
+                    row = evt.y - a.y
+                    if row == 0; begin_global_gate!(m)
+                    elseif row == 1; begin_client_config!(m)
+                    elseif row == 2; toggle_gate_mirror_repl!(m)
+                    elseif row == 4; cycle_editor!(m)
+                    elseif row == 6; _cycle_qdrant_prefix!(m)
+                    elseif row == 8; _install_vscode_remote_control!(m)
+                    end
+                end
+            end
         end
         $TAB_DEBUG => begin
             handle_resize!(m.debug_layout, evt)

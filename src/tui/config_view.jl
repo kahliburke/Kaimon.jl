@@ -77,15 +77,19 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
         title_style = _pane_title(m, 6, 2),
     )
     act = render(act_block, left_rows[2], buf)
+    m._config_actions_area = act
     if act.width >= 4
         y = act.y
         x = act.x + 1
+        # Row 0: [g] Global gate
         set_string!(buf, x, y, "[g]", tstyle(:accent, bold = true))
         set_string!(buf, x + 4, y, "Global gate (startup.jl)", tstyle(:text))
         y += 1
+        # Row 1: [i] Install MCP
         set_string!(buf, x, y, "[i]", tstyle(:accent, bold = true))
         set_string!(buf, x + 4, y, "Install MCP client config", tstyle(:text))
         y += 1
+        # Row 2: [m] Mirror
         set_string!(buf, x, y, "[m]", tstyle(:accent, bold = true))
         set_string!(buf, x + 4, y, "Mirror host REPL output", tstyle(:text))
         y += 1
@@ -93,11 +97,13 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
         mirror_style = m.gate_mirror_repl ? tstyle(:success) : tstyle(:text_dim)
         set_string!(buf, x + 4, y, "status: $mirror_status", mirror_style)
         y += 1
+        # Row 4: [E] Editor
         set_string!(buf, x, y, "[E]", tstyle(:accent, bold = true))
         set_string!(buf, x + 4, y, "Editor for file links", tstyle(:text))
         y += 1
         set_string!(buf, x + 4, y, "current: $(m.editor)", tstyle(:success))
         y += 1
+        # Row 6: [Q] Qdrant prefix
         set_string!(buf, x, y, "[Q]", tstyle(:accent, bold = true))
         set_string!(buf, x + 4, y, "Qdrant collection prefix", tstyle(:text))
         y += 1
@@ -108,6 +114,7 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
             set_string!(buf, x + 4, y, "prefix: $prefix", tstyle(:success))
         end
         y += 1
+        # Row 8: [v] VSCode
         set_string!(buf, x, y, "[v]", tstyle(:accent, bold = true))
         set_string!(buf, x + 4, y, "VSCode Remote Control ext", tstyle(:text))
     end
