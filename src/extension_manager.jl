@@ -94,9 +94,12 @@ function _build_extension_script(config::ExtensionConfig)
     # Auto-flushing logger so extension output is visible immediately in the log file
     using LoggingExtras, Logging, Dates
     let _fmt = DateFormat("HH:MM:SS")
-        global_logger(FormatLogger(stderr; always_flush=true) do io, args
-            println(io, "[", Dates.format(now(), _fmt), " ", args.level, "] ", args.message)
-        end)
+        global_logger(MinLevelLogger(
+            FormatLogger(stderr; always_flush=true) do io, args
+                println(io, "[", Dates.format(now(), _fmt), " ", args.level, "] ", args.message)
+            end,
+            Logging.Info,
+        ))
     end
     using $(m.module_name)
     tools = $(m.module_name).$(m.tools_function)(Kaimon.Gate.GateTool)

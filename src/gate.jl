@@ -1699,6 +1699,14 @@ function handle_message(request::NamedTuple)
         put!(resume_ch, :continue)
         return (type = :ok, message = "Execution resumed")
 
+    elseif msg_type == :cancel_job
+        eid = string(get(request, :eval_id, ""))
+        if !isempty(eid)
+            cancel_job!(eid)
+            return (type = :ok, message = "Job $eid marked for cancellation")
+        end
+        return (type = :error, message = "Missing eval_id")
+
     else
         return (type = :error, message = "unknown request type: $msg_type")
     end
@@ -2282,6 +2290,52 @@ end
 
 const _JOB_SAFEHOUSE = Dict{String, Dict{String, Any}}()
 const _JOB_SAFEHOUSE_LOCK = ReentrantLock()
+
+# ── Cooperative Cancellation ─────────────────────────────────────────────────
+# Set by the TUI when cancel_eval is called. User code checks via is_cancelled().
+
+const _CANCELLED_JOBS = Set{String}()
+const _CANCELLED_JOBS_LOCK = ReentrantLock()
+
+"""
+    cancel_job!(eval_id::String)
+
+Mark a job as cancelled. Called from the TUI side (via PUB/SUB or direct).
+"""
+function cancel_job!(eval_id::String)
+    lock(_CANCELLED_JOBS_LOCK) do
+        push!(_CANCELLED_JOBS, eval_id)
+    end
+end
+
+"""
+    is_cancelled(; job_id::String="") -> Bool
+
+Check if the current job has been cancelled. Call this in long-running loops
+to support cooperative cancellation.
+
+If called from within a GateTool handler or async eval, the job ID is
+detected automatically. Otherwise, pass `job_id` explicitly.
+
+# Example
+```julia
+for epoch in 1:1000
+    Gate.is_cancelled() && break
+    loss = train_epoch!(model)
+    Gate.stash("epoch", epoch)
+    Gate.progress("Epoch \$epoch: loss=\$loss")
+end
+```
+"""
+function is_cancelled(; job_id::String="")
+    if isempty(job_id)
+        job_id = string(get(task_local_storage(), :gate_request_id, ""))
+    end
+    isempty(job_id) && return false
+    lock(_CANCELLED_JOBS_LOCK) do
+        job_id in _CANCELLED_JOBS
+    end
+end
 
 """
     stash(key::String, value; job_id::String="")

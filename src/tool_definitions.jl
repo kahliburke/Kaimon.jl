@@ -2454,9 +2454,10 @@ cancel_eval_tool = @mcp_tool(
     :cancel_eval,
     """Cancel a running background job by eval ID.
 
-Marks the job as cancelled in the database. Note: this does not interrupt the
-Julia computation on the gate side (Julia doesn't support thread interruption).
-The result will still be collected but marked as cancelled.""",
+Sends a cancellation signal to the gate session and marks the job in the database.
+Running code that calls `Gate.is_cancelled()` in its loop will stop cooperatively.
+Julia doesn't support forced thread interruption, so cancellation is cooperative —
+the running code must check `Gate.is_cancelled()` periodically.""",
     Dict(
         "type" => "object",
         "properties" => Dict(
@@ -2471,7 +2472,8 @@ The result will still be collected but marked as cancelled.""",
         eval_id = get(args, "eval_id", "")
         isempty(eval_id) && return "Error: eval_id is required."
 
-        # Check in-memory first
+        # Find the session key and notify the gate process
+        session_key = ""
         mgr = GATE_CONN_MGR[]
         if mgr !== nothing
             lock(mgr.eval_history_lock) do
@@ -2479,6 +2481,20 @@ The result will still be collected but marked as cancelled.""",
                     if startswith(r.eval_id, eval_id) && r.status in (:running, :promoted)
                         r.status = :cancelled
                         r.finished_at = time()
+                        session_key = r.session_key
+                    end
+                end
+            end
+
+            # Send cancel to the gate session so Gate.is_cancelled() returns true
+            if !isempty(session_key)
+                conn = get_connection_by_key(mgr, session_key)
+                if conn !== nothing
+                    try
+                        _req_send_recv(conn,
+                            (type = :cancel_job, eval_id = eval_id);
+                            caller_timeout = 5.0)
+                    catch
                     end
                 end
             end
@@ -2487,7 +2503,7 @@ The result will still be collected but marked as cancelled.""",
         # Update database
         Database.update_job!(eval_id; status="cancelled", cancelled=true, finished_at=time())
 
-        "Job $eval_id marked as cancelled."
+        "Job $eval_id marked as cancelled. Running code can check Gate.is_cancelled() to stop cooperatively."
     end
 )
 
