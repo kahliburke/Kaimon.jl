@@ -2158,15 +2158,9 @@ Generate and add a new API key to the global configuration.
 """
 function generate_key()
     config = load_global_config()
-    if config === nothing
-        error("No configuration found. Run Kaimon.setup_security() first.")
-    end
+    config === nothing && error("No configuration found. Run Kaimon.setup_security() first.")
     new_key = generate_api_key()
-    new_config = SecurityConfig(
-        config.mode, vcat(config.api_keys, [new_key]), config.allowed_ips,
-        config.port, config.created_at, config.editor, config.qdrant_prefix,
-    )
-    if save_global_config(new_config)
+    if update_global_config!(api_keys = vcat(config.api_keys, [new_key]))
         println("✅ Added new API key: $new_key")
         println("⚠️  Save this key securely - it won't be shown again!")
         return new_key
@@ -2189,11 +2183,7 @@ function revoke_key(key::String)
         @warn "API key not found in configuration"
         return false
     end
-    new_config = SecurityConfig(
-        config.mode, filter(k -> k != key, config.api_keys), config.allowed_ips,
-        config.port, config.created_at, config.editor, config.qdrant_prefix,
-    )
-    if save_global_config(new_config)
+    if update_global_config!(api_keys = filter(k -> k != key, config.api_keys))
         println("✅ Removed API key")
         return true
     else
@@ -2215,11 +2205,7 @@ function allow_ip(ip::String)
         @warn "IP address already in allowlist"
         return false
     end
-    new_config = SecurityConfig(
-        config.mode, config.api_keys, vcat(config.allowed_ips, [ip]),
-        config.port, config.created_at, config.editor, config.qdrant_prefix,
-    )
-    if save_global_config(new_config)
+    if update_global_config!(allowed_ips = vcat(config.allowed_ips, [ip]))
         println("✅ Added IP address to allowlist: $ip")
         return true
     else
@@ -2241,11 +2227,7 @@ function deny_ip(ip::String)
         @warn "IP address not found in allowlist"
         return false
     end
-    new_config = SecurityConfig(
-        config.mode, config.api_keys, filter(i -> i != ip, config.allowed_ips),
-        config.port, config.created_at, config.editor, config.qdrant_prefix,
-    )
-    if save_global_config(new_config)
+    if update_global_config!(allowed_ips = filter(i -> i != ip, config.allowed_ips))
         println("✅ Removed IP address from allowlist: $ip")
         return true
     else
@@ -2262,19 +2244,11 @@ function set_security_mode(mode::Symbol)
     if !(mode in [:strict, :relaxed, :lax])
         error("Invalid security mode. Must be :strict, :relaxed, or :lax")
     end
-    config = load_global_config()
-    if config === nothing
-        error("No configuration found. Run Kaimon.setup_security() first.")
-    end
-    new_config = SecurityConfig(
-        mode, config.api_keys, config.allowed_ips,
-        config.port, config.created_at, config.editor, config.qdrant_prefix,
-    )
-    if save_global_config(new_config)
+    if update_global_config!(mode = mode)
         println("✅ Changed security mode to: $mode")
         return true
     else
-        error("Failed to save configuration")
+        error("Failed to save configuration. Run Kaimon.setup_security() first.")
     end
 end
 

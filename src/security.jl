@@ -132,6 +132,43 @@ function load_global_config()
 end
 
 """
+    update_global_config!(; kwargs...) -> Bool
+
+Load the current config, update specified fields, and save. Returns false
+if no config exists. This is the preferred way to modify individual config
+fields without manually reconstructing the entire struct.
+
+# Examples
+```julia
+update_global_config!(editor="cursor")
+update_global_config!(api_keys=vcat(config.api_keys, [new_key]))
+update_global_config!(qdrant_prefix="myteam")
+```
+"""
+function update_global_config!(; kwargs...)
+    config = load_global_config()
+    config === nothing && return false
+    fields = Dict{Symbol,Any}(
+        :mode => config.mode,
+        :api_keys => config.api_keys,
+        :allowed_ips => config.allowed_ips,
+        :port => config.port,
+        :created_at => config.created_at,
+        :editor => config.editor,
+        :qdrant_prefix => config.qdrant_prefix,
+    )
+    for (k, v) in kwargs
+        haskey(fields, k) || error("Unknown config field: $k")
+        fields[k] = v
+    end
+    new_config = KaimonConfig(
+        fields[:mode], fields[:api_keys], fields[:allowed_ips],
+        fields[:port], fields[:created_at], fields[:editor], fields[:qdrant_prefix],
+    )
+    save_global_config(new_config)
+end
+
+"""
     save_global_config(config::SecurityConfig) -> Bool
 
 Save configuration to the global path `~/.config/kaimon/config.json`.

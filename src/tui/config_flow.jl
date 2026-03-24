@@ -424,14 +424,7 @@ function cycle_editor!(m::KaimonModel)
     m.editor = EDITOR_OPTIONS[next_idx]
 
     # Persist to global config
-    cfg = load_global_config()
-    if cfg !== nothing
-        new_cfg = KaimonConfig(
-            cfg.mode, cfg.api_keys, cfg.allowed_ips, cfg.port,
-            cfg.created_at, m.editor, cfg.qdrant_prefix,
-        )
-        save_global_config(new_cfg)
-    end
+    update_global_config!(editor = m.editor)
     _push_log!(:info, "Editor set to $(m.editor)")
 end
 

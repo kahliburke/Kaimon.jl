@@ -40,23 +40,24 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
         end
         status_icon = m.server_running ? "●" : "○"
         status_style = m.server_running ? tstyle(:success) : tstyle(:error)
-        set_string!(buf, x, y, "$status_icon ", status_style)
-        set_string!(buf, x + 2, y, "Port $(m.server_port)", tstyle(:text))
+        srx = right(srv)
+        set_string!(buf, x, y, "$status_icon ", status_style; max_x=srx)
+        set_string!(buf, x + 2, y, "Port $(m.server_port)", tstyle(:text); max_x=srx)
         status_text = m.server_running ? "running" : "stopped"
         status_x = x + 2 + length("Port $(m.server_port)") + 2
-        if status_x + length(status_text) <= right(srv)
-            set_string!(buf, status_x, y, status_text, status_style)
+        if status_x + length(status_text) <= srx
+            set_string!(buf, status_x, y, status_text, status_style; max_x=srx)
         end
         y += 1
-        set_string!(buf, x, y, rpad("Sessions", 14), tstyle(:text_dim))
+        set_string!(buf, x, y, rpad("Sessions", 14), tstyle(:text_dim); max_x=srx)
         session_str = "$n_conns connected"
         n_exts > 0 && (session_str *= " · $n_exts ext")
-        set_string!(buf, x + 14, y, session_str, tstyle(:text))
+        set_string!(buf, x + 14, y, session_str, tstyle(:text); max_x=srx)
         y += 1
-        set_string!(buf, x, y, rpad("Tool Calls", 14), tstyle(:text_dim))
-        set_string!(buf, x + 14, y, string(m.total_tool_calls), tstyle(:text))
+        set_string!(buf, x, y, rpad("Tool Calls", 14), tstyle(:text_dim); max_x=srx)
+        set_string!(buf, x + 14, y, string(m.total_tool_calls), tstyle(:text); max_x=srx)
         y += 1
-        set_string!(buf, x, y, rpad("Uptime", 14), tstyle(:text_dim))
+        set_string!(buf, x, y, rpad("Uptime", 14), tstyle(:text_dim); max_x=srx)
         uptime_s = round(Int, (time() - m.start_time))
         uptime_str = if uptime_s < 60
             "$(uptime_s)s"
@@ -67,7 +68,7 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
             mins = (uptime_s % 3600) ÷ 60
             "$(h)h $(mins)m"
         end
-        set_string!(buf, x + 14, y, uptime_str, tstyle(:text))
+        set_string!(buf, x + 14, y, uptime_str, tstyle(:text); max_x=srx)
     end
 
     # Actions
@@ -81,42 +82,43 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
     if act.width >= 4
         y = act.y
         x = act.x + 1
+        arx = right(act)
         # Row 0: [g] Global gate
-        set_string!(buf, x, y, "[g]", tstyle(:accent, bold = true))
-        set_string!(buf, x + 4, y, "Global gate (startup.jl)", tstyle(:text))
+        set_string!(buf, x, y, "[g]", tstyle(:accent, bold = true); max_x=arx)
+        set_string!(buf, x + 4, y, "Global gate (startup.jl)", tstyle(:text); max_x=arx)
         y += 1
         # Row 1: [i] Install MCP
-        set_string!(buf, x, y, "[i]", tstyle(:accent, bold = true))
-        set_string!(buf, x + 4, y, "Install MCP client config", tstyle(:text))
+        set_string!(buf, x, y, "[i]", tstyle(:accent, bold = true); max_x=arx)
+        set_string!(buf, x + 4, y, "Install MCP client config", tstyle(:text); max_x=arx)
         y += 1
         # Row 2: [m] Mirror
-        set_string!(buf, x, y, "[m]", tstyle(:accent, bold = true))
-        set_string!(buf, x + 4, y, "Mirror host REPL output", tstyle(:text))
+        set_string!(buf, x, y, "[m]", tstyle(:accent, bold = true); max_x=arx)
+        set_string!(buf, x + 4, y, "Mirror host REPL output", tstyle(:text); max_x=arx)
         y += 1
         mirror_status = m.gate_mirror_repl ? "enabled" : "disabled"
         mirror_style = m.gate_mirror_repl ? tstyle(:success) : tstyle(:text_dim)
-        set_string!(buf, x + 4, y, "status: $mirror_status", mirror_style)
+        set_string!(buf, x + 4, y, "status: $mirror_status", mirror_style; max_x=arx)
         y += 1
         # Row 4: [E] Editor
-        set_string!(buf, x, y, "[E]", tstyle(:accent, bold = true))
-        set_string!(buf, x + 4, y, "Editor for file links", tstyle(:text))
+        set_string!(buf, x, y, "[E]", tstyle(:accent, bold = true); max_x=arx)
+        set_string!(buf, x + 4, y, "Editor for file links", tstyle(:text); max_x=arx)
         y += 1
-        set_string!(buf, x + 4, y, "current: $(m.editor)", tstyle(:success))
+        set_string!(buf, x + 4, y, "current: $(m.editor)", tstyle(:success); max_x=arx)
         y += 1
         # Row 6: [Q] Qdrant prefix
-        set_string!(buf, x, y, "[Q]", tstyle(:accent, bold = true))
-        set_string!(buf, x + 4, y, "Qdrant collection prefix", tstyle(:text))
+        set_string!(buf, x, y, "[Q]", tstyle(:accent, bold = true); max_x=arx)
+        set_string!(buf, x + 4, y, "Qdrant collection prefix", tstyle(:text); max_x=arx)
         y += 1
         prefix = get_collection_prefix()
         if isempty(prefix)
-            set_string!(buf, x + 4, y, "none (default)", tstyle(:text_dim))
+            set_string!(buf, x + 4, y, "none (default)", tstyle(:text_dim); max_x=arx)
         else
-            set_string!(buf, x + 4, y, "prefix: $prefix", tstyle(:success))
+            set_string!(buf, x + 4, y, "prefix: $prefix", tstyle(:success); max_x=arx)
         end
         y += 1
         # Row 8: [v] VSCode
-        set_string!(buf, x, y, "[v]", tstyle(:accent, bold = true))
-        set_string!(buf, x + 4, y, "VSCode Remote Control ext", tstyle(:text))
+        set_string!(buf, x, y, "[v]", tstyle(:accent, bold = true); max_x=arx)
+        set_string!(buf, x + 4, y, "VSCode Remote Control ext", tstyle(:text); max_x=arx)
     end
 
     # ── Right column: MCP Clients (top) + Projects & TCP Gates side-by-side (bottom) ──
