@@ -184,24 +184,25 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
                 name_style = i == m.selected_project ? tstyle(:accent, bold = true) : tstyle(:text)
                 status_text = running ? "running" : entry.enabled ? "enabled" : "disabled"
 
-                set_string!(buf, x, y, marker, name_style)
-                set_string!(buf, x + 2, y, "$icon ", icon_style)
-                set_string!(buf, x + 4, y, _short_path(entry.project_path), name_style)
+                rx = right(proj_inner)
+                set_string!(buf, x, y, marker, name_style; max_x=rx)
+                set_string!(buf, x + 2, y, "$icon ", icon_style; max_x=rx)
+                set_string!(buf, x + 4, y, _short_path(entry.project_path), name_style; max_x=rx)
                 # Show launch config summary after name
                 lc_summary = launch_config_summary(entry.launch_config)
                 if !isempty(lc_summary)
                     name_len = length(_short_path(entry.project_path))
                     lc_x = x + 4 + name_len + 1
-                    max_lc_w = right(proj_inner) - length(status_text) - lc_x - 2
+                    max_lc_w = rx - length(status_text) - lc_x - 2
                     if max_lc_w > 4
                         display_lc = length(lc_summary) > max_lc_w ? lc_summary[1:max_lc_w-1] * "…" : lc_summary
-                        set_string!(buf, lc_x, y, display_lc, tstyle(:text_dim))
+                        set_string!(buf, lc_x, y, display_lc, tstyle(:text_dim); max_x=rx)
                     end
                 end
                 # Show status at the right edge
-                status_x = right(proj_inner) - length(status_text)
+                status_x = rx - length(status_text)
                 if status_x > x + 20
-                    set_string!(buf, status_x, y, status_text, icon_style)
+                    set_string!(buf, status_x, y, status_text, icon_style; max_x=rx)
                 end
                 y += 1
             end
@@ -260,20 +261,21 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
                     end
                 end
 
-                set_string!(buf, x, y, marker, name_style)
-                set_string!(buf, x + 2, y, "$icon ", icon_style)
-                set_string!(buf, x + 4, y, label, name_style)
+                trx = right(tcp_inner)
+                set_string!(buf, x, y, marker, name_style; max_x=trx)
+                set_string!(buf, x + 2, y, "$icon ", icon_style; max_x=trx)
+                set_string!(buf, x + 4, y, label, name_style; max_x=trx)
                 # Host:port after name if name is set
                 if !isempty(entry.name)
                     addr = "$(entry.host):$(entry.port)"
                     addr_x = x + 4 + length(label) + 1
-                    if addr_x + length(addr) < right(tcp_inner) - length(status_text) - 2
-                        set_string!(buf, addr_x, y, addr, tstyle(:text_dim))
+                    if addr_x + length(addr) < trx - length(status_text) - 2
+                        set_string!(buf, addr_x, y, addr, tstyle(:text_dim); max_x=trx)
                     end
                 end
-                status_x = right(tcp_inner) - length(status_text)
+                status_x = trx - length(status_text)
                 if status_x > x + 20
-                    set_string!(buf, status_x, y, status_text, icon_style)
+                    set_string!(buf, status_x, y, status_text, icon_style; max_x=trx)
                 end
                 y += 1
             end
