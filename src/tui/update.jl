@@ -46,11 +46,11 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
 
     # Route mouse events to scroll panes and resizable layouts
     @match m.tab_bar.active begin
-        TAB_SERVER => begin
+        $TAB_SERVER => begin
             handle_resize!(m.server_layout, evt)
             m.log_pane !== nothing && handle_mouse!(m.log_pane, evt)
         end
-        TAB_SESSIONS => begin
+        $TAB_SESSIONS => begin
             if m.session_terminal_open && m.session_terminal !== nothing
                 handle_mouse!(m.session_terminal, evt)
                 return  # terminal captures all mouse in full-screen mode
@@ -86,7 +86,7 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
                 end
             end
         end
-        TAB_ACTIVITY => begin
+        $TAB_ACTIVITY => begin
             _dt_drag3 = m.activity_table !== nothing && m.activity_table.col_drag > 0
             if !_dt_drag3
                 handle_resize!(m.activity_layout, evt)
@@ -100,7 +100,7 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
                 handle_mouse!(m.detail_paragraph, evt)
             end
         end
-        TAB_SEARCH => begin
+        $TAB_SEARCH => begin
             handle_resize!(m.search_layout, evt)
             if m.search_manage_open && m.search_manage_table !== nothing
                 handle_mouse!(m.search_manage_table, evt)
@@ -109,7 +109,7 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
             m.search_results_pane !== nothing &&
                 handle_mouse!(m.search_results_pane, evt)
         end
-        TAB_TESTS => begin
+        $TAB_TESTS => begin
             _dt_drag5 = m.tests_table !== nothing && m.tests_table.col_drag > 0
             if !_dt_drag5
                 handle_resize!(m.tests_layout, evt)
@@ -136,17 +136,17 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
                 end
             end
         end
-        TAB_CONFIG => begin
+        $TAB_CONFIG => begin
             handle_resize!(m.config_layout, evt)
             handle_resize!(m.config_left_layout, evt)
             handle_resize!(m.config_right_layout, evt)
         end
-        TAB_DEBUG => begin
+        $TAB_DEBUG => begin
             handle_resize!(m.debug_layout, evt)
             m.debug_locals_pane !== nothing && handle_mouse!(m.debug_locals_pane, evt)
             m.debug_console_pane !== nothing && handle_mouse!(m.debug_console_pane, evt)
         end
-        TAB_EXTENSIONS => begin
+        $TAB_EXTENSIONS => begin
             if m.ext_detail_open && m.ext_detail_pane !== nothing
                 handle_mouse!(m.ext_detail_pane, evt)
             else
@@ -159,7 +159,7 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
                 end
             end
         end
-        TAB_ADVANCED => begin
+        $TAB_ADVANCED => begin
             handle_resize!(m.advanced_layout, evt)
             if Base.contains(m._stress_horde_area, evt.x, evt.y)
                 if evt.button == mouse_scroll_up
@@ -545,7 +545,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
             # spurious KeyEvent(:escape) events within the first second.
             time() - m.start_time < 1.0 && return
             @match tab begin
-                TAB_DEBUG => begin
+                $TAB_DEBUG => begin
                     if m.debug_input_editing
                         m.debug_input_editing = false
                     else
@@ -553,8 +553,8 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
                     end
                     return
                 end
-                TAB_TESTS => (_handle_tests_escape!(m); return)
-                TAB_EXTENSIONS => begin
+                $TAB_TESTS => (_handle_tests_escape!(m); return)
+                $TAB_EXTENSIONS => begin
                     if m.ext_panel !== nothing
                         close_ext_panel!(m)
                     elseif m.ext_flow != :idle
@@ -567,7 +567,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
                     end
                     return
                 end
-                TAB_ADVANCED => begin
+                $TAB_ADVANCED => begin
                     if m.stress_modal != :none
                         m.stress_modal = :none
                     elseif m.stress_state == STRESS_RUNNING
@@ -577,7 +577,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
                     end
                     return
                 end
-                TAB_SEARCH => begin
+                $TAB_SEARCH => begin
                     if m.search_query_editing
                         m.search_query_editing = false
                     else
@@ -597,7 +597,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
     evt.key == :char || return
 
     @match tab begin
-        TAB_SERVER => @match evt.char begin
+        $TAB_SERVER => @match evt.char begin
             'w' => (m.log_word_wrap = !m.log_word_wrap; _rebuild_log_pane!(m, m._log_pane_width))
             'F' => (
                 m.log_pane !== nothing && (m.log_pane.following = !m.log_pane.following)
@@ -605,7 +605,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
             _ => nothing
         end
 
-        TAB_SESSIONS => @match evt.char begin
+        $TAB_SESSIONS => @match evt.char begin
             'x' => _shutdown_selected_session!(m)
             't' => begin
                 conns = _visible_connections(m)
@@ -667,7 +667,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
             _ => nothing
         end
 
-        TAB_ACTIVITY => @match evt.char begin
+        $TAB_ACTIVITY => @match evt.char begin
             'f' => (m.activity_mode == :live && _open_activity_filter!(m))
             'F' =>
                 (m.activity_mode == :live && (m.activity_follow = !m.activity_follow))
@@ -686,10 +686,10 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
             _ => nothing
         end
 
-        TAB_SEARCH => _handle_search_key!(m, evt)
-        TAB_TESTS => _handle_tests_key!(m, evt)
+        $TAB_SEARCH => _handle_search_key!(m, evt)
+        $TAB_TESTS => _handle_tests_key!(m, evt)
 
-        TAB_CONFIG => @match evt.char begin
+        $TAB_CONFIG => @match evt.char begin
             'i' => begin_client_config!(m)
             'g' => begin_global_gate!(m)
             'm' => toggle_gate_mirror_repl!(m)
@@ -704,9 +704,9 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
             _ => nothing
         end
 
-        TAB_DEBUG => Base.invokelatest(_handle_debug_key!, m, evt)
-        TAB_EXTENSIONS => _handle_extensions_key!(m, evt)
-        TAB_ADVANCED => _handle_stress_key!(m, evt)
+        $TAB_DEBUG => Base.invokelatest(_handle_debug_key!, m, evt)
+        $TAB_EXTENSIONS => _handle_extensions_key!(m, evt)
+        $TAB_ADVANCED => _handle_stress_key!(m, evt)
         _ => nothing
     end
 end
@@ -716,9 +716,9 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
     fp = get(m.focused_pane, tab, 1)
 
     @match (tab, fp) begin
-        (TAB_SERVER, 2) => (m.log_pane !== nothing && handle_key!(m.log_pane, evt))
+        ($TAB_SERVER, 2) => (m.log_pane !== nothing && handle_key!(m.log_pane, evt))
 
-        (TAB_SESSIONS, 1) => begin
+        ($TAB_SESSIONS, 1) => begin
             dt = m.sessions_table
             if dt !== nothing
                 prev = dt.selected
@@ -742,7 +742,7 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
             end
         end
 
-        (TAB_SESSIONS, 3) => @match evt.key begin
+        ($TAB_SESSIONS, 3) => @match evt.key begin
             :up => (m.sessions_detail_scroll = max(0, m.sessions_detail_scroll - 1))
             :down => (
                 m.sessions_detail_scroll =
@@ -759,7 +759,7 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
             _ => nothing
         end
 
-        (TAB_ACTIVITY, _) => begin
+        ($TAB_ACTIVITY, _) => begin
             m.activity_mode == :analytics && return
             if fp == 1
                 dt = m.activity_table
@@ -776,7 +776,7 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
             end
         end
 
-        (TAB_SEARCH, 1) => @match evt.key begin
+        ($TAB_SEARCH, 1) => @match evt.key begin
             :left => begin
                 n = length(m.search_collections)
                 n > 0 && (
@@ -799,7 +799,7 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
             end
             _ => nothing
         end
-        (TAB_SEARCH, 2) => @match evt.key begin
+        ($TAB_SEARCH, 2) => @match evt.key begin
             :enter => begin
                 m.search_query_editing = true
                 if m.search_query_input === nothing
@@ -809,10 +809,10 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
             end
             _ => nothing
         end
-        (TAB_SEARCH, 3) =>
+        ($TAB_SEARCH, 3) =>
             (m.search_results_pane !== nothing && handle_key!(m.search_results_pane, evt))
 
-        (TAB_TESTS, 1) => begin
+        ($TAB_TESTS, 1) => begin
             n = length(m.test_runs)
             n > 0 || return
             dt = m.tests_table
@@ -827,7 +827,7 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
                 end
             end
         end
-        (TAB_TESTS, 2) => begin
+        ($TAB_TESTS, 2) => begin
             if m.test_view_mode == :results
                 _handle_tree_nav_key!(m, evt)
             elseif m.test_output_pane !== nothing
@@ -835,9 +835,9 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
             end
         end
 
-        (TAB_DEBUG, 1) =>
+        ($TAB_DEBUG, 1) =>
             (m.debug_locals_pane !== nothing && handle_key!(m.debug_locals_pane, evt))
-        (TAB_DEBUG, 2) => begin
+        ($TAB_DEBUG, 2) => begin
             if m.debug_input_editing && m.debug_input !== nothing
                 handle_key!(m.debug_input, evt)
             elseif m.debug_console_pane !== nothing
@@ -845,7 +845,7 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
             end
         end
 
-        (TAB_EXTENSIONS, _) => _handle_extensions_nav!(m, evt, fp)
+        ($TAB_EXTENSIONS, _) => _handle_extensions_nav!(m, evt, fp)
 
         (9, 1) => @match evt.key begin
             :up => (m.stress_field_idx = max(1, m.stress_field_idx - 1))
