@@ -327,6 +327,7 @@ function _handle_add_config_edit!(m::KaimonModel, evt::KeyEvent)
         path = m.search_manage_config_path
         dirs_raw = filter(!isempty, strip.(split(m.search_manage_config_dirs, ",")))
         exts_raw = filter(!isempty, strip.(split(m.search_manage_config_exts, ",")))
+        exclude_raw = filter(!isempty, strip.(split(m.search_manage_config_exclude, ",")))
 
         abs_dirs = String[]
         for d in dirs_raw
@@ -340,6 +341,7 @@ function _handle_add_config_edit!(m::KaimonModel, evt::KeyEvent)
             collection = col_name,
             dirs = abs_dirs,
             extensions = Vector{String}(exts_raw),
+            exclude_dirs = Vector{String}(exclude_raw),
             source = "manual",
         )
 

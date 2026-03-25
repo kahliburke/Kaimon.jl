@@ -289,6 +289,7 @@ function register_project!(
     collection::String = "",
     dirs::Vector{String} = String[],
     extensions::Vector{String} = DEFAULT_INDEX_EXTENSIONS,
+    exclude_dirs::Vector{String} = String[],
     auto_index::Bool = true,
     source::String = "gate",
 )
@@ -301,6 +302,7 @@ function register_project!(
     existing["collection"] = collection
     existing["dirs"] = dirs
     existing["extensions"] = extensions
+    existing["exclude_dirs"] = exclude_dirs
     existing["auto_index"] = auto_index
     existing["source"] = source
     config["projects"][path] = existing
@@ -651,17 +653,20 @@ end
 Get list of files that need re-indexing. Loads the index state once for the
 whole directory scan rather than once per file.
 """
-function get_stale_files(project_path::String, src_dir::String; extensions::Vector{String}=DEFAULT_INDEX_EXTENSIONS)
+function get_stale_files(project_path::String, src_dir::String;
+                         extensions::Vector{String}=DEFAULT_INDEX_EXTENSIONS,
+                         exclude_dirs::Vector{String}=String[])
     stale = String[]
     isdir(src_dir) || return stale
 
+    exclude_set = union(IGNORED_DIRS, Set(exclude_dirs))
     files_state = load_index_state(project_path)["files"]
 
     onerr = e -> begin
         with_index_logger(() -> @warn "Skipping unreadable directory during stale scan" project = project_path src_dir = src_dir exception = e)
     end
     for (root, dirs, files) in walkdir(src_dir; onerror=onerr)
-        filter!(d -> !startswith(d, ".") && d ∉ IGNORED_DIRS, dirs)
+        filter!(d -> !startswith(d, ".") && d ∉ exclude_set, dirs)
 
         for file in files
             if any(ext -> endswith(file, ext), extensions)
@@ -1535,11 +1540,15 @@ function index_directory(
     collection::String;
     project_path::String=pwd(),
     extensions::Vector{String}=DEFAULT_INDEX_EXTENSIONS,
+    exclude_dirs::Vector{String}=String[],
     verbose::Bool=true,
     silent::Bool=false,
 )
     total_chunks = 0
     isdir(dir_path) || return total_chunks
+
+    # Build exclude set from user config + built-in ignores
+    exclude_set = union(IGNORED_DIRS, Set(exclude_dirs))
 
     # Find all matching files
     files = String[]
@@ -1547,8 +1556,8 @@ function index_directory(
         with_index_logger(() -> @warn "Skipping unreadable directory during indexing" dir = dir_path collection = collection exception = e)
     end
     for (root, dirs, filenames) in walkdir(dir_path; onerror=onerr)
-        # Skip hidden directories and well-known noise directories
-        filter!(d -> !startswith(d, ".") && d ∉ IGNORED_DIRS, dirs)
+        # Skip hidden directories, well-known noise, and user-excluded dirs
+        filter!(d -> !startswith(d, ".") && d ∉ exclude_set, dirs)
 
         for filename in filenames
             # Check if file matches any of the supported extensions
@@ -1615,7 +1624,9 @@ function index_project(
     config_dirs = String[]
     config_extensions = DEFAULT_INDEX_EXTENSIONS
 
-    # Use registry dirs/extensions if available
+    config_exclude_dirs = String[]
+
+    # Use registry dirs/extensions/exclude if available
     if registry_config !== nothing
         reg_dirs = get(registry_config, "dirs", String[])
         if !isempty(reg_dirs)
@@ -1624,6 +1635,10 @@ function index_project(
         reg_exts = get(registry_config, "extensions", nothing)
         if reg_exts !== nothing && !isempty(reg_exts)
             config_extensions = String.(reg_exts)
+        end
+        reg_exclude = get(registry_config, "exclude_dirs", String[])
+        if !isempty(reg_exclude)
+            config_exclude_dirs = String.(reg_exclude)
         end
     end
 
@@ -1692,13 +1707,15 @@ function index_project(
         collection = col_name,
         dirs = dirs_to_index,
         extensions = actual_extensions,
+        exclude_dirs = config_exclude_dirs,
         source = source,
     )
 
     # Index each directory and sum total chunks
     total_chunks = 0
     for dir in dirs_to_index
-        chunks = index_directory(dir, col_name; project_path=project_path, silent=silent, extensions=actual_extensions)
+        chunks = index_directory(dir, col_name; project_path=project_path, silent=silent,
+            extensions=actual_extensions, exclude_dirs=config_exclude_dirs)
         total_chunks += chunks
     end
 
@@ -1736,6 +1753,8 @@ function sync_index(
     dirs_to_sync = state["config"]["dirs"]
     extensions = state["config"]["extensions"]
 
+    exclude_dirs = String[]
+
     # Fallback chain: index state → registry → src/ heuristic
     if isempty(dirs_to_sync)
         reg_config = get_project_config(project_path)
@@ -1747,6 +1766,10 @@ function sync_index(
             reg_exts = get(reg_config, "extensions", nothing)
             if reg_exts !== nothing && !isempty(reg_exts)
                 extensions = String.(reg_exts)
+            end
+            reg_exclude = get(reg_config, "exclude_dirs", String[])
+            if !isempty(reg_exclude)
+                exclude_dirs = String.(reg_exclude)
             end
         end
     end
@@ -1768,7 +1791,7 @@ function sync_index(
     # Get files that need re-indexing from all directories
     stale_files = String[]
     for dir in dirs_to_sync
-        append!(stale_files, get_stale_files(project_path, dir; extensions=extensions))
+        append!(stale_files, get_stale_files(project_path, dir; extensions=extensions, exclude_dirs=exclude_dirs))
     end
 
     deleted_files = get_deleted_files(project_path)
