@@ -77,6 +77,35 @@ function populate_global_collection!(; verbose::Bool=true)
     total = 0
     for col in collections
         col == gc_name && continue
+
+        # Validate this is a Kaimon-indexed collection by sampling a point
+        # and checking for our schema fields. Skip foreign collections.
+        is_kaimon = try
+            # Check vector dimensions match our embedding model
+            info = QdrantClient.collection_info(col)
+            col_dims = get(get(get(info, "config", Dict()), "params", Dict()), "size", 0)
+            expected_dims = get_embedding_config(DEFAULT_EMBEDDING_MODEL).dims
+            if col_dims != expected_dims
+                false
+            else
+                # Sample a point and check for Kaimon payload fields
+                sample = QdrantClient.scroll(col; limit=1, with_vectors=false)
+                points = get(sample, "points", [])
+                if !isempty(points)
+                    payload = get(first(points), "payload", Dict())
+                    haskey(payload, "file") && haskey(payload, "type") && haskey(payload, "text")
+                else
+                    false
+                end
+            end
+        catch
+            false
+        end
+        if !is_kaimon
+            verbose && println("  Skipping $col (not a Kaimon index)")
+            continue
+        end
+
         verbose && print("  Copying $col... ")
         try
             # Scroll through all points in the collection
@@ -1530,6 +1559,10 @@ function index_file(
                     "type" => embedded_chunk["type"],
                     "name" => embedded_chunk["name"],
                     "text" => first(embedded_chunk["text"], 2000),  # Truncate for storage (Unicode-safe)
+                    "project_path" => project_path,
+                    "collection" => collection,
+                    "indexed_at" => round(Int, time()),
+                    "kaimon_schema" => 1,  # schema version for future migrations
                 )
 
                 # Add optional metadata fields if they exist
