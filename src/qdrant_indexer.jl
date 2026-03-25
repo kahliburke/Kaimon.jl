@@ -63,6 +63,46 @@ function _upsert_to_global!(points::Vector{Dict})
     end
 end
 
+"""
+    populate_global_collection!(; verbose=true)
+
+One-time migration: copy all vectors from per-project collections into the
+global cross-project collection. Safe to run multiple times — uses upsert
+so duplicates are overwritten.
+"""
+function populate_global_collection!(; verbose::Bool=true)
+    _ensure_global_collection!()
+    gc_name = global_collection_name()
+    collections = QdrantClient.list_collections()
+    total = 0
+    for col in collections
+        col == gc_name && continue
+        verbose && print("  Copying $col... ")
+        try
+            # Scroll through all points in the collection
+            offset = nothing
+            col_count = 0
+            while true
+                result = QdrantClient.scroll(col; limit=100, offset=offset, with_vectors=true)
+                points = get(result, "points", [])
+                isempty(points) && break
+                QdrantClient.upsert_points(gc_name, points)
+                col_count += length(points)
+                # Get next offset
+                next_offset = get(result, "next_page_offset", nothing)
+                next_offset === nothing && break
+                offset = next_offset
+            end
+            verbose && println("$col_count vectors")
+            total += col_count
+        catch e
+            verbose && println("failed: $(sprint(showerror, e))")
+        end
+    end
+    verbose && println("✅ Global collection populated: $total vectors from $(length(collections)-1) collections")
+    return total
+end
+
 """Apply the collection prefix to a name, if configured."""
 function _prefixed(name::String)
     prefix = _QDRANT_COLLECTION_PREFIX[]

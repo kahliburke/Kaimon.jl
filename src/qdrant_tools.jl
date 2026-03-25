@@ -395,7 +395,16 @@ qdrant_search_code_tool = @mcp_tool(
         collection = if cross_project
             gc = global_collection_name()
             if gc ∉ collections
-                return "Error: Cross-project collection '$gc' not found. Index at least one project first."
+                # Auto-create and populate from existing collections
+                try
+                    populate_global_collection!(; verbose=false)
+                catch
+                end
+                gc = global_collection_name()
+                collections = QdrantClient.list_collections()
+                if gc ∉ collections
+                    return "Error: No indexed projects found. Index at least one project first."
+                end
             end
             gc
         else
