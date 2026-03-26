@@ -140,6 +140,7 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
             handle_resize!(m.config_layout, evt)
             handle_resize!(m.config_left_layout, evt)
             handle_resize!(m.config_right_layout, evt)
+            handle_resize!(m.config_bottom_layout, evt)
             # Click on config actions
             if evt.button == mouse_left && evt.action == mouse_press
                 a = m._config_actions_area

@@ -125,8 +125,9 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
     right_rows = split_layout(m.config_right_layout, cols[2])
     length(right_rows) < 2 && return
     render_resize_handles!(buf, m.config_right_layout)
-    # Split bottom row into two columns for Projects and TCP Gates
-    bottom_cols = tsplit(Layout(Horizontal, [Percent(55), Fill()]), right_rows[2])
+    # Split bottom row into two columns for Projects and TCP Gates (draggable)
+    bottom_cols = split_layout(m.config_bottom_layout, right_rows[2])
+    render_resize_handles!(buf, m.config_bottom_layout)
 
     # ── MCP Client Status ──
     client_block = Block(

@@ -1,3 +1,16 @@
+"""Save embedding model choice to search.json."""
+function _save_embedding_model(model::String)
+    config = load_search_config()
+    config["embedding_model"] = model
+    save_search_config(config)
+end
+
+"""Load embedding model from search.json, or return the default."""
+function _load_embedding_model()
+    config = load_search_config()
+    get(config, "embedding_model", DEFAULT_EMBEDDING_MODEL)
+end
+
 """Handle per-tab char keys on the Search tab."""
 function _handle_search_key!(m::KaimonModel, evt::KeyEvent)
     @match evt.char begin
@@ -357,6 +370,7 @@ function _handle_search_config_key!(m::KaimonModel, evt::KeyEvent)
             custom_name = strip(Tachikoma.text(m.search_config_custom_input))
             if !isempty(custom_name)
                 m.search_embedding_model = custom_name
+                _save_embedding_model(custom_name)
                 m.search_config_reindex_paths = _collect_session_collections(m)
                 if !isempty(m.search_config_reindex_paths)
                     m.search_config_confirm = true
@@ -399,6 +413,7 @@ function _handle_search_config_key!(m::KaimonModel, evt::KeyEvent)
                 end
                 if new_model != m.search_embedding_model
                     m.search_embedding_model = new_model
+                    _save_embedding_model(new_model)
                     m.search_model_available = m.search_config_models[sel].installed
                     # Collect session collections that exist in Qdrant
                     m.search_config_reindex_paths = _collect_session_collections(m)

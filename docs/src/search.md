@@ -105,7 +105,6 @@ Use `definitions` when looking for a specific function or type. Use `windows` wh
 | `o` | Open embedding model configuration |
 | `m` | Open collection manager |
 | `r` | Force-refresh service health |
-| `p` | Pull the active embedding model via Ollama |
 
 ## Embedding Model Configuration
 
@@ -113,26 +112,24 @@ Press `o` to open the model configuration overlay. This shows all supported embe
 
 | Model | Dimensions | Context | Notes |
 |---|---|---|---|
-| `qwen3-embedding:0.6b` | 1024 | 8192 tokens | Default — fast, small |
-| `qwen3-embedding:4b` | 2560 | 8192 tokens | Better quality, larger |
-| `qwen3-embedding:8b` | 4096 | 8192 tokens | Highest quality |
-| `qwen3-embedding` (latest) | 4096 | 8192 tokens | Latest qwen3 release |
-| `snowflake-arctic-embed` | 1024 | 512 tokens | Alternative model |
-| `nomic-embed-text` | 768 | 512 tokens | Lightweight alternative |
+| `qwen3-embedding:0.6b` | 1024 | 8192 tokens | **Default** — best balance of quality, speed, and size |
+| `qwen3-embedding:4b` | 2560 | 8192 tokens | Highest quality, 4x larger |
+| `qwen3-embedding:8b` | 4096 | 8192 tokens | Largest model |
+| `embeddinggemma:latest` | 768 | 2048 tokens | Most consistent on Julia code |
+| `nomic-embed-text:latest` | 768 | 512 tokens | Lightweight alternative |
+| `snowflake-arctic-embed:latest` | 1024 | 512 tokens | Not recommended |
+
+For a detailed comparison of these models with benchmark results across 15 queries, see [Embedding Models](../embedding-models.md).
 
 ### Switching Models
 
-Press `o` from the Search tab to open the model configuration overlay:
+Press `o` from the Search tab to open the model configuration overlay. Navigate with `↑`/`↓` and press `Enter` to select a model. Select "Custom..." at the bottom to enter any Ollama model name manually.
 
-![Kaimon search model configuration](./assets/kaimon_search_config.gif)
+If the new model has a different vector dimension than the current collection, Kaimon will warn you and prompt you to reindex (`y`/`n`). Press `y` to reindex all connected project collections with the new model.
 
-Navigate with `↑`/`↓` and press `Enter` to select a model. Installed models are marked. If the new model has a different vector dimension than the current collection, Kaimon will warn you and prompt you to reindex (`y`/`n`). Press `y` to reindex all connected project collections with the new model.
+Your model choice is saved to `~/.config/kaimon/search.json` and persists across restarts.
 
 Changing the embedding model requires reindexing — vectors from different models are not compatible. If you search and see a "dimension mismatch" error, press `o`, confirm the correct model is selected, and reindex.
-
-### Installing a Model
-
-If a model shows as not installed, press `p` to pull it from Ollama. The pull runs in the background and the status updates when complete.
 
 ## Collection Manager
 

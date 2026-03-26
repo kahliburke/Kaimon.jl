@@ -432,6 +432,7 @@ function tui(; port::Int = 2828, theme_name::Union{Symbol,Nothing} = nothing, re
         set_theme!(theme_name)
     end
     model = KaimonModel(server_port = port, _revise_polling = revise_polling, _revise_mod = revise_mod)
+    model.search_embedding_model = _load_embedding_model()
 
     while true
         # invokelatest so that after Revise updates, the new method bodies
