@@ -326,6 +326,69 @@ function Tachikoma.update!(m::KaimonModel, evt::TaskEvent)
         key = info.session_id[1:min(8, length(info.session_id))]
         ecg = _get_ecg!(m, key)
         ecg.pending_blips += 1
+    elseif evt.id == :mcp_server_started
+        result = evt.value::NamedTuple
+        if result.success
+            m.mcp_server = result.server
+            SERVER[] = result.server
+            ALL_TOOLS[] = result.tools
+            m.server_running = true
+            GATE_PORT[] = result.port
+            _push_log!(:info, "MCP server listening on port $(result.port)")
+        else
+            m.server_running = false
+            _push_log!(:error, "Server failed: $(result.error_msg)")
+        end
+    elseif evt.id == :backtrace_result
+        result = evt.value::NamedTuple
+        m.backtrace_collecting = false
+        if result.success
+            bt = result.trace
+            if bt !== nothing
+                m.backtrace_result = bt
+                m.backtrace_modal = nothing
+                sp = ScrollPane(Vector{Span}[]; following = false)
+                sp.block = Block(
+                    title = "Profile Trace — $(result.name)  [s] save  [Esc] close",
+                    border_style = tstyle(:accent),
+                    title_style = tstyle(:accent, bold = true),
+                )
+                for line in split(bt, '\n')
+                    push_line!(sp, [Span(line, tstyle(:text))])
+                end
+                m.backtrace_viewer = sp
+            else
+                m.backtrace_modal = Modal(
+                    title = "Profile Trace",
+                    message = "Timed out — no trace received.",
+                    confirm_label = "OK",
+                    cancel_label = "",
+                    selected = :confirm,
+                )
+            end
+        else
+            _push_log!(:warn, "Profile trace error: $(result.error_msg)")
+            m.backtrace_modal = Modal(
+                title = "Profile Trace",
+                message = "Error: $(result.error_msg)",
+                confirm_label = "OK",
+                cancel_label = "",
+                selected = :confirm,
+            )
+        end
+    elseif evt.id == :ext_panel_loaded
+        result = evt.value::NamedTuple
+        panel = m.ext_panel
+        if panel !== nothing
+            if result.success
+                panel.ext_mod = result.ext_mod
+                panel.state = result.state
+                panel.loading = false
+            else
+                panel.error_msg = result.error_msg
+                panel.loading = false
+            end
+        end
     end
 end
 
@@ -637,43 +700,14 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
                             cancel_label = "",
                             selected = :confirm,
                         )
-                        Threads.@spawn begin
-                            try
-                                name = conn.name
-                                bt = trigger_backtrace(conn)
-                                m.backtrace_collecting = false
-                                if bt !== nothing
-                                    m.backtrace_result = bt
-                                    m.backtrace_modal = nothing
-                                    sp = ScrollPane(Vector{Span}[]; following = false)
-                                    sp.block = Block(
-                                        title = "Profile Trace — $name  [s] save  [Esc] close",
-                                        border_style = tstyle(:accent),
-                                        title_style = tstyle(:accent, bold = true),
-                                    )
-                                    for line in split(bt, '\n')
-                                        push_line!(sp, [Span(line, tstyle(:text))])
-                                    end
-                                    m.backtrace_viewer = sp
-                                else
-                                    m.backtrace_modal = Modal(
-                                        title = "Profile Trace",
-                                        message = "Timed out — no trace received.",
-                                        confirm_label = "OK",
-                                        cancel_label = "",
-                                        selected = :confirm,
-                                    )
+                        let name = conn.name
+                            spawn_task!(m._task_queue, :backtrace_result) do
+                                try
+                                    bt = trigger_backtrace(conn)
+                                    (success=true, name=name, trace=bt)
+                                catch e
+                                    (success=false, name=name, error_msg=sprint(showerror, e))
                                 end
-                            catch e
-                                _push_log!(:warn, "Profile trace error: $(sprint(showerror, e))")
-                                m.backtrace_collecting = false
-                                m.backtrace_modal = Modal(
-                                    title = "Profile Trace",
-                                    message = "Error: $(sprint(showerror, e))",
-                                    confirm_label = "OK",
-                                    cancel_label = "",
-                                    selected = :confirm,
-                                )
                             end
                         end
                     end

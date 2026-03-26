@@ -944,13 +944,13 @@ function _req_send_recv(conn::REPLConnection, request; caller_timeout::Float64 =
             conn.last_seen = now()
             put!(response_ch, (ok = true, response = response))
         catch e
-            msg = if e isa ZMQ.TimeoutError
+            err_msg = if e isa ZMQ.TimeoutError
                 "Gate request timed out"
             else
                 "Connection error: $(sprint(showerror, e))"
             end
             try
-                put!(response_ch, (ok = false, error = msg))
+                put!(response_ch, (ok = false, error = err_msg))
             catch
             end
         finally

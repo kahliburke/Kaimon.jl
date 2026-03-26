@@ -77,7 +77,9 @@ function _launch_stress_test!(m::KaimonModel)
 
     Threads.@spawn try
         process = open(cmd, "r")
-        m.stress_process = process
+        lock(m.stress_output_lock) do
+            m.stress_process = process
+        end
         while !eof(process)
             line = readline(process; keep = false)
             isempty(line) && continue
@@ -92,7 +94,9 @@ function _launch_stress_test!(m::KaimonModel)
         catch
             -1
         end
-        m.stress_process = nothing
+        lock(m.stress_output_lock) do
+            m.stress_process = nothing
+        end
 
         # Write results file
         _write_stress_results!(m, tool_name == "ex" ? code : tool_name, sess_key, n_agents, stagger_val, timeout_val)
@@ -104,22 +108,24 @@ function _launch_stress_test!(m::KaimonModel)
         agents = _parse_stress_results(all_output)
         has_failures = any(a -> a.status == :fail, agents)
 
-        if exit_code != 0
-            m.stress_state = STRESS_ERROR
-        elseif has_failures
-            m.stress_state = STRESS_ERROR
-        else
-            m.stress_state = STRESS_COMPLETE
+        lock(m.stress_output_lock) do
+            if exit_code != 0
+                m.stress_state = STRESS_ERROR
+            elseif has_failures
+                m.stress_state = STRESS_ERROR
+            else
+                m.stress_state = STRESS_COMPLETE
+            end
         end
     catch e
-        m.stress_process = nothing
         lock(m.stress_output_lock) do
+            m.stress_process = nothing
             push!(
                 m.stress_output,
                 "ERROR agent=0 elapsed=0.0 message=$(sprint(showerror, e))",
             )
+            m.stress_state = STRESS_ERROR
         end
-        m.stress_state = STRESS_ERROR
     end
 end
 

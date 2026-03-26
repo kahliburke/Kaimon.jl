@@ -224,25 +224,22 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         end
 
         _push_log!(:info, "Starting MCP server on port $(m.server_port)...")
-        Threads.@spawn try
-            security_config = load_global_config()
-            tools = collect_tools()
-            m.mcp_server = start_mcp_server(
-                tools,
-                m.server_port;
-                verbose = false,
-                security_config = security_config,
-            )
-            # Populate module-level refs so _register_dynamic_tools! works
-            SERVER[] = m.mcp_server
-            ALL_TOOLS[] = tools
-            m.server_running = true
-            GATE_PORT[] = m.server_port
-            _push_log!(:info, "MCP server listening on port $(m.server_port)")
-
-        catch e
-            m.server_running = false
-            _push_log!(:error, "Server failed: $(sprint(showerror, e))")
+        let port = m.server_port
+            spawn_task!(m._task_queue, :mcp_server_started) do
+                try
+                    security_config = load_global_config()
+                    tools = collect_tools()
+                    server = start_mcp_server(
+                        tools,
+                        port;
+                        verbose = false,
+                        security_config = security_config,
+                    )
+                    (success=true, server=server, tools=tools, port=port)
+                catch e
+                    (success=false, error_msg=sprint(showerror, e))
+                end
+            end
         end
     end
 

@@ -118,25 +118,26 @@ function open_ext_panel!(m::KaimonModel, ext::ManagedExtension)
     m.ext_panel = panel
 
     # Load on background thread so precompilation doesn't freeze the TUI
-    Threads.@spawn try
-        mod_name = Symbol("_ExtPanel_", dname, "_", rand(UInt16))
-        ext_mod = Module(mod_name)
-        Base.include(ext_mod, abs_path)
+    let panel=panel, ctx=ctx, dname=dname, abs_path=abs_path
+        spawn_task!(m._task_queue, :ext_panel_loaded) do
+            try
+                mod_name = Symbol("_ExtPanel_", dname, "_", rand(UInt16))
+                ext_mod = Module(mod_name)
+                Base.include(ext_mod, abs_path)
 
-        for fn in (:init, :view, :cleanup!)
-            isdefined(ext_mod, fn) || error("TUI module missing required function: $fn")
+                for fn in (:init, :view, :cleanup!)
+                    isdefined(ext_mod, fn) || error("TUI module missing required function: $fn")
+                end
+
+                state = Base.invokelatest() do
+                    ext_mod.init(ctx)
+                end
+
+                (success=true, ext_mod=ext_mod, state=state)
+            catch e
+                (success=false, error_msg=sprint(showerror, e))
+            end
         end
-
-        state = Base.invokelatest() do
-            ext_mod.init(ctx)
-        end
-
-        panel.ext_mod = ext_mod
-        panel.state = state
-        panel.loading = false
-    catch e
-        panel.error_msg = sprint(showerror, e)
-        panel.loading = false
     end
 
     return true
