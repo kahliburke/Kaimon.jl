@@ -7,6 +7,12 @@
 
 # ZMQ, Serialization, Dates, JSON are available from the Kaimon module scope.
 
+# Thread-safe recv: uses recv(sock, Vector{UInt8}) which avoids creating
+# Message objects with finalizers. See gate.jl header comment for rationale.
+function _zmq_recv(sock::ZMQ.Socket)::Vector{UInt8}
+    return recv(sock, Vector{UInt8})
+end
+
 # ── Types ─────────────────────────────────────────────────────────────────────
 
 @enum EvalState EVAL_IDLE EVAL_SENDING EVAL_STREAMING
@@ -939,7 +945,7 @@ function _req_send_recv(conn::REPLConnection, request; caller_timeout::Float64 =
             sock.linger = 0
             connect(sock, endpoint)
             send(sock, Message(request_bytes))
-            raw = recv(sock)
+            raw = _zmq_recv(sock)
             response = deserialize(IOBuffer(raw))
             conn.last_seen = now()
             put!(response_ch, (ok = true, response = response))
@@ -1369,7 +1375,7 @@ function drain_stream_messages!(mgr::ConnectionManager)
                     break  # socket error — skip this connection
                 end
                 raw = try
-                    recv(conn.sub_socket)
+                    _zmq_recv(conn.sub_socket)
                 catch
                     break  # recv error — no more messages
                 end

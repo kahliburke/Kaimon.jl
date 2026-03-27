@@ -47,7 +47,7 @@ function start_service_endpoint!()
     _SERVICE_TASK[] = @async begin
         while _SERVICE_RUNNING[]
             try
-                raw = recv(sock)
+                raw = Gate._zmq_recv(sock)
                 request = Serialization.deserialize(IOBuffer(raw))
                 response = Base.invokelatest(_dispatch_service, request)
                 io = IOBuffer()

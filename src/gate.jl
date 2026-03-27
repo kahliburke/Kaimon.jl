@@ -14,6 +14,20 @@ using Serialization
 using Dates
 using TOML
 
+# ── Thread-safe ZMQ recv ──────────────────────────────────────────────────────
+# ZMQ Message objects have finalizers that call zmq_msg_close, which is NOT
+# thread-safe. If a Message escapes to GC and gets finalized on a worker
+# thread during parallel computation (e.g. @threads kNN), it segfaults.
+#
+# Fix: use recv(sock, Vector{UInt8}) which internally uses ZMQ._Message
+# (a stack-allocated struct with NO finalizer), copies bytes out, and closes
+# immediately. No Message object is ever created, so nothing escapes to GC.
+
+"""Receive from a ZMQ socket, returning raw bytes (no finalizer-bearing objects)."""
+function _zmq_recv(sock::ZMQ.Socket)::Vector{UInt8}
+    return recv(sock, Vector{UInt8})
+end
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 const _GATE_CACHE_DIR = let
@@ -1737,7 +1751,7 @@ function message_loop(socket::ZMQ.Socket)
     while _RUNNING[]
         try
             # recv with timeout — throws TimeoutError on timeout
-            raw = recv(socket)
+            raw = _zmq_recv(socket)
             request = deserialize(IOBuffer(raw))
 
             # invokelatest so handle_message (and everything it calls) runs
@@ -2501,7 +2515,7 @@ function _service_request(request)
         serialize(io, request)
         send(sock, Message(take!(io)))
 
-        raw = recv(sock)
+        raw = _zmq_recv(sock)
         response = deserialize(IOBuffer(raw))
 
         status = if hasproperty(response, :status)
