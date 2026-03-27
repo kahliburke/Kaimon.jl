@@ -95,6 +95,9 @@ const _SESSION_NAMESPACE = Ref{String}("")
 const _ALLOW_RESTART = Ref{Bool}(true)
 const _ORIGINAL_ARGV = Ref{Vector{String}}(String[])
 const _MODE = Ref{Symbol}(:ipc)
+const _TCP_HOST = Ref{String}("127.0.0.1")
+const _TCP_PORT = Ref{Int}(0)          # actual bound port (resolved from ephemeral)
+const _TCP_STREAM_PORT = Ref{Int}(0)   # actual bound PUB port
 const _AUTH_TOKEN = Ref{String}("")  # non-empty = require token on TCP requests
 const _PING_COUNT = Ref{Int}(0)
 const _MSG_COUNT = Ref{Int}(0)       # total messages handled (pings + evals + tool calls + ...)
@@ -1473,9 +1476,19 @@ function _exec_restart(name::String, session_id::String, project_path::String)
         ns      = _SESSION_NAMESPACE[]
         mirror  = _ALLOW_MIRROR[]
         restart = _ALLOW_RESTART[]
+        mode    = _MODE[]
         ns_kwarg      = isempty(ns) ? "" : ", namespace=$(repr(ns))"
         mirror_kwarg  = mirror  ? "" : ", allow_mirror=false"
         restart_kwarg = restart ? "" : ", allow_restart=false"
+        # TCP mode: replay host, port, stream_port so the gate rebinds on the same address
+        tcp_kwargs = if mode == :tcp
+            host = _TCP_HOST[]
+            port = _TCP_PORT[]
+            sp   = _TCP_STREAM_PORT[]
+            ", mode=:tcp, host=$(repr(host)), port=$port, stream_port=$sp"
+        else
+            ""
+        end
         # The injected -e code runs after startup.jl.  If startup.jl already
         # called Gate.serve() and picked up KAIMON_RESTART_SESSION, the gate
         # will already be running with the correct session_id; our serve() call
@@ -1485,7 +1498,7 @@ function _exec_restart(name::String, session_id::String, project_path::String)
         try; using Revise; catch; end
         using Kaimon
         delete!(ENV, "KAIMON_RESTART_SESSION")
-        Gate.serve(session_id=$(repr(session_id))$ns_kwarg$mirror_kwarg$restart_kwarg)
+        Gate.serve(session_id=$(repr(session_id))$ns_kwarg$mirror_kwarg$restart_kwarg$tcp_kwargs)
         """
         vcat(julia_args, ["--project=$project_path", "-i", "-e", serve_code])
     end
@@ -2049,6 +2062,10 @@ function _serve(;
     if mode == :tcp
         bind(socket, "tcp://$(host):$(port)")
         endpoint = rstrip(ZMQ._get_last_endpoint(socket), '\0')
+        # Store resolved TCP settings for restart replay
+        _TCP_HOST[] = host
+        m = match(r":(\d+)$", endpoint)
+        _TCP_PORT[] = m !== nothing ? parse(Int, m.captures[1]) : port
     else
         sock_path = joinpath(SOCK_DIR, "$(sid).sock")
         endpoint = "ipc://$(sock_path)"
@@ -2064,6 +2081,8 @@ function _serve(;
     if mode == :tcp
         bind(pub_socket, "tcp://$(host):$(stream_port)")
         stream_endpoint = rstrip(ZMQ._get_last_endpoint(pub_socket), '\0')
+        m = match(r":(\d+)$", stream_endpoint)
+        _TCP_STREAM_PORT[] = m !== nothing ? parse(Int, m.captures[1]) : stream_port
     else
         stream_endpoint = "ipc://$(joinpath(SOCK_DIR, "$(sid)-stream.sock"))"
         bind(pub_socket, stream_endpoint)
