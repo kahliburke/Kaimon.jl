@@ -1977,9 +1977,8 @@ function _serve(;
     # Store session tools and namespace
     _SESSION_TOOLS[] = tools
     _SESSION_NAMESPACE[] = namespace
-    # TCP mode: disable mirror and restart (they're IPC/REPL-specific features)
-    _ALLOW_MIRROR[] = mode == :tcp ? false : allow_mirror
-    _ALLOW_RESTART[] = mode == :tcp ? false : allow_restart
+    _ALLOW_MIRROR[] = allow_mirror
+    _ALLOW_RESTART[] = allow_restart
     _ON_SHUTDOWN[] = on_shutdown
 
     # Ensure socket directory exists
