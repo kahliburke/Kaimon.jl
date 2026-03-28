@@ -232,21 +232,6 @@ function _diagnose_activity(diag::ProcessDiagnostics)::String
     end
 end
 
-# ── Event Listeners ──────────────────────────────────────────────────────────
-
-"""
-    EventListener
-
-A subscriber for gate stream events. Kaimon forwards matching messages
-to the listener's callback using Serialization + zstd over a ZMQ PUSH socket
-(for out-of-process listeners) or a direct callback (for in-process).
-"""
-struct EventListener
-    id::String                      # unique identifier (e.g. extension namespace)
-    topics::Set{String}             # channel names to match ("" = all)
-    callback::Function              # (channel::String, data::String, session_name::String) -> Nothing
-end
-
 # ── Connection Manager ────────────────────────────────────────────────────────
 
 mutable struct ConnectionManager
@@ -260,8 +245,7 @@ mutable struct ConnectionManager
     on_sessions_changed::Union{Function,Nothing}  # called when session list changes
     eval_history::Vector{EvalRecord}       # ring buffer, capped at 64 entries
     eval_history_lock::ReentrantLock
-    event_listeners::Vector{EventListener}
-    event_listeners_lock::ReentrantLock
+    event_pub_socket::Union{ZMQ.Socket,Nothing}  # global PUB for extension events
     task_queue::Any  # Tachikoma.TaskQueue (or nothing if headless)
 end
 
@@ -278,55 +262,47 @@ function ConnectionManager(; sock_dir::String = joinpath(kaimon_cache_dir(), "so
         nothing,
         EvalRecord[],
         ReentrantLock(),
-        EventListener[],
-        ReentrantLock(),
+        nothing,
         task_queue,
     )
 end
 
-"""
-    add_event_listener!(mgr, listener) -> Nothing
+# ── Global Event PUB ─────────────────────────────────────────────────────────
+# Re-broadcasts gate stream events on a single PUB socket so extensions can
+# SUB to one well-known endpoint with topic filtering.
 
-Register an event listener that receives forwarded gate stream messages.
-"""
-function add_event_listener!(mgr::ConnectionManager, listener::EventListener)
-    lock(mgr.event_listeners_lock) do
-        # Replace existing listener with same id
-        filter!(l -> l.id != listener.id, mgr.event_listeners)
-        push!(mgr.event_listeners, listener)
-    end
-    return nothing
+"""Start the global event PUB socket. Extensions SUB to this."""
+function _start_event_pub!(mgr::ConnectionManager)
+    sock_path = joinpath(mgr.sock_dir, "kaimon-events.sock")
+    ispath(sock_path) && rm(sock_path)
+    pub = Socket(mgr.zmq_context, PUB)
+    pub.sndhwm = 10000  # drop events if extensions can't keep up
+    pub.linger = 0
+    bind(pub, "ipc://$sock_path")
+    mgr.event_pub_socket = pub
 end
 
-"""
-    remove_event_listener!(mgr, id) -> Bool
-
-Remove an event listener by id. Returns true if found.
-"""
-function remove_event_listener!(mgr::ConnectionManager, id::String)
-    lock(mgr.event_listeners_lock) do
-        n = length(mgr.event_listeners)
-        filter!(l -> l.id != id, mgr.event_listeners)
-        return length(mgr.event_listeners) < n
+"""Stop the global event PUB socket."""
+function _stop_event_pub!(mgr::ConnectionManager)
+    pub = mgr.event_pub_socket
+    if pub !== nothing
+        try; close(pub); catch; end
+        mgr.event_pub_socket = nothing
     end
+    sock_path = joinpath(mgr.sock_dir, "kaimon-events.sock")
+    ispath(sock_path) && try; rm(sock_path); catch; end
 end
 
-"""
-    _notify_event_listeners(mgr, channel, data, session_name)
-
-Forward a stream message to all matching event listeners.
-"""
-function _notify_event_listeners(mgr::ConnectionManager, channel::String, data::String, session_name::String)
-    lock(mgr.event_listeners_lock) do
-        for listener in mgr.event_listeners
-            if isempty(listener.topics) || channel in listener.topics
-                try
-                    Base.invokelatest(listener.callback, channel, data, session_name)
-                catch e
-                    @debug "Event listener '$(listener.id)' error" exception=e
-                end
-            end
-        end
+"""Re-publish a gate event on the global PUB socket (2-frame: topic + payload)."""
+function _republish_event!(mgr::ConnectionManager, channel::String, data::String, session_name::String)
+    pub = mgr.event_pub_socket
+    pub === nothing && return
+    try
+        io = IOBuffer()
+        Serialization.serialize(io, (channel=channel, data=data, session_name=session_name))
+        send(pub, channel, more=true)    # frame 1: topic for ZMQ filtering
+        send(pub, take!(io))             # frame 2: serialized payload
+    catch
     end
 end
 
@@ -944,7 +920,7 @@ function _req_send_recv(conn::REPLConnection, request; caller_timeout::Float64 =
             sock.sndtimeo = 2000
             sock.linger = 0
             connect(sock, endpoint)
-            send(sock, Message(request_bytes))
+            send(sock, request_bytes)
             raw = _zmq_recv(sock)
             response = deserialize(IOBuffer(raw))
             conn.last_seen = now()
@@ -1360,7 +1336,7 @@ Returns a vector of `(channel, data, session_name)` tuples.
 """
 function drain_stream_messages!(mgr::ConnectionManager)
     messages = NamedTuple{(:channel, :data, :session_name),Tuple{String,String,String}}[]
-    listener_events = Tuple{String,String,String}[]  # (channel, data, session_name) for deferred notification
+    pub_events = Tuple{String,String,String}[]  # (channel, data, session_name) for global PUB re-broadcast
     lock(mgr.lock) do
         for conn in mgr.connections
             conn.sub_socket === nothing && continue
@@ -1453,9 +1429,9 @@ function drain_stream_messages!(mgr::ConnectionManager)
                     routed = true
                 end
 
-                # Collect for deferred event listener notification (outside mgr.lock)
-                dname_for_listener = isempty(conn.display_name) ? conn.name : conn.display_name
-                push!(listener_events, (ch, data, dname_for_listener))
+                # Collect for deferred global PUB re-broadcast (outside mgr.lock)
+                dname_for_pub = isempty(conn.display_name) ? conn.name : conn.display_name
+                push!(pub_events, (ch, data, dname_for_pub))
 
                 if !routed
                     dname = isempty(conn.display_name) ? conn.name : conn.display_name
@@ -1480,9 +1456,9 @@ function drain_stream_messages!(mgr::ConnectionManager)
             end
         end
     end
-    # Notify event listeners outside mgr.lock to avoid holding it during ZMQ sends
-    for (ch, data, sname) in listener_events
-        _notify_event_listeners(mgr, ch, data, sname)
+    # Re-broadcast events on the global PUB (outside mgr.lock to avoid deadlock)
+    for (ch, data, sname) in pub_events
+        _republish_event!(mgr, ch, data, sname)
     end
     return messages
 end
@@ -1492,6 +1468,14 @@ end
 function start!(mgr::ConnectionManager)
     mgr.running = true
     mkpath(mgr.sock_dir)
+
+    # Global event PUB socket for extensions
+    _start_event_pub!(mgr)
+
+    # Clean up stale per-extension event sockets from old PUSH/PULL system
+    for f in readdir(mgr.sock_dir; join=true)
+        endswith(f, ".events.sock") && try; rm(f); catch; end
+    end
 
     # Socket directory watcher — discovers new gate sessions
     mgr.watcher_task = Threads.@spawn begin
@@ -1753,6 +1737,9 @@ end
 
 function stop!(mgr::ConnectionManager)
     mgr.running = false
+
+    # Stop global event PUB
+    _stop_event_pub!(mgr)
 
     # Disconnect all sockets immediately (linger=0 ensures close doesn't block)
     lock(mgr.lock) do

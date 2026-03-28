@@ -52,7 +52,7 @@ function start_service_endpoint!()
                 response = Base.invokelatest(_dispatch_service, request)
                 io = IOBuffer()
                 Serialization.serialize(io, response)
-                send(sock, Message(take!(io)))
+                send(sock, take!(io))
             catch e
                 if !_SERVICE_RUNNING[]
                     break
@@ -67,7 +67,7 @@ function start_service_endpoint!()
                 try
                     io = IOBuffer()
                     Serialization.serialize(io, (status = :error, message = sprint(showerror, e)))
-                    send(sock, Message(take!(io)))
+                    send(sock, take!(io))
                 catch
                 end
             end

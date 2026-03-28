@@ -1119,7 +1119,7 @@ function _publish_stream(channel::String, data; request_id::String = "")
                 isempty(request_id) ? (channel = channel, data = data) :
                 (channel = channel, data = data, request_id = request_id)
             serialize(io, msg)
-            send(pub, Message(take!(io)))
+            send(pub, take!(io))
         catch e
             # Log failures for eval lifecycle messages — the caller hangs if these are lost
             if channel in ("eval_complete", "eval_error", "tool_complete", "tool_error")
@@ -1775,7 +1775,7 @@ function message_loop(socket::ZMQ.Socket)
             # Serialize and send response
             io = IOBuffer()
             serialize(io, response)
-            send(socket, Message(take!(io)))
+            send(socket, take!(io))
         catch e
             if !_RUNNING[]
                 break  # Clean shutdown
@@ -1792,7 +1792,7 @@ function message_loop(socket::ZMQ.Socket)
             try
                 io = IOBuffer()
                 serialize(io, (type = :error, message = sprint(showerror, e)))
-                send(socket, Message(take!(io)))
+                send(socket, take!(io))
             catch
                 # If we can't even send the error, just continue
             end
@@ -2532,7 +2532,7 @@ function _service_request(request)
 
         io = IOBuffer()
         serialize(io, request)
-        send(sock, Message(take!(io)))
+        send(sock, take!(io))
 
         raw = _zmq_recv(sock)
         response = deserialize(IOBuffer(raw))
