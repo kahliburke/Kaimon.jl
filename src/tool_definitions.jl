@@ -142,7 +142,7 @@ ping_tool = @mcp_tool(
                 else
                     "$(uptime_secs ÷ 3600)h $(uptime_secs % 3600 ÷ 60)m"
                 end
-                stalled_info = if conn.status == :stalled
+                extra = if conn.status == :stalled
                     ago = round(Int, Dates.value(now() - conn.last_seen) / 1000)
                     diag = conn.diagnostics
                     if diag !== nothing
@@ -150,10 +150,14 @@ ping_tool = @mcp_tool(
                     else
                         ", last seen $(ago)s ago"
                     end
+                elseif conn.status == :evaluating || conn.eval_state[] != EVAL_IDLE
+                    ", busy"
+                elseif conn.spawned_by == "agent"
+                    ", agent-spawned"
                 else
-                    ""
+                    ", free"
                 end
-                status *= "\n  $icon $key $dname ($(conn.status), up $(uptime_str), PID $(conn.pid)$tools_info$stalled_info)"
+                status *= "\n  $icon $key $dname ($(conn.status), up $(uptime_str), PID $(conn.pid)$tools_info$extra)"
             end
             # Extension session summary (internal only, not addressable via tools)
             if !isempty(ext_conns)
