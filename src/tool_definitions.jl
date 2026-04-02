@@ -120,6 +120,8 @@ ping_tool = @mcp_tool(
             ext_conns = filter(c -> c.spawned_by == "extension", all_conns)
             user_conns = filter(c -> c.spawned_by != "extension", all_conns)
             connected_count = count(c -> c.status == :connected, user_conns)
+            # Sort by connected_at descending (newest first)
+            sort!(user_conns; by=c -> c.connected_at, rev=true)
             status *= "\n\nSessions: $(connected_count) connected / $(length(user_conns)) total"
             for conn in user_conns
                 key = short_key(conn)
@@ -131,6 +133,15 @@ ping_tool = @mcp_tool(
                     conn.status == :connecting ? "◐" : "○"
                 ntools = length(conn.session_tools)
                 tools_info = ntools > 0 ? ", $(ntools) tools" : ""
+                # Uptime from connected_at
+                uptime_secs = round(Int, Dates.value(now() - conn.connected_at) / 1000)
+                uptime_str = if uptime_secs < 60
+                    "$(uptime_secs)s"
+                elseif uptime_secs < 3600
+                    "$(uptime_secs ÷ 60)m"
+                else
+                    "$(uptime_secs ÷ 3600)h $(uptime_secs % 3600 ÷ 60)m"
+                end
                 stalled_info = if conn.status == :stalled
                     ago = round(Int, Dates.value(now() - conn.last_seen) / 1000)
                     diag = conn.diagnostics
@@ -142,8 +153,7 @@ ping_tool = @mcp_tool(
                 else
                     ""
                 end
-                status *= "\n  $icon $key $dname ($(conn.status), Julia $(conn.julia_version), PID $(conn.pid)$tools_info$stalled_info)"
-                status *= "\n    project: $(conn.project_path)"
+                status *= "\n  $icon $key $dname ($(conn.status), up $(uptime_str), PID $(conn.pid)$tools_info$stalled_info)"
             end
             # Extension session summary (internal only, not addressable via tools)
             if !isempty(ext_conns)
