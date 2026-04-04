@@ -24,8 +24,9 @@ using UUIDs
 using Tachikoma
 using Match
 
-export @mcp_tool, MCPTool
-export start!, stop!, test_server
+# Only export Gate (primary user-facing API) and @mcp_tool (for tool authors).
+# Everything else is accessible as Kaimon.foo() to avoid namespace pollution.
+export Gate, @mcp_tool, MCPTool
 
 # ── Shared cache directory ────────────────────────────────────────────────────
 # Single source of truth for ~/.cache/kaimon (respects XDG_CACHE_HOME).
@@ -53,6 +54,48 @@ function kaimon_cache_dir()
     return dir
 end
 
+# ── Shared config directory ───────────────────────────────────────────────────
+# Single source of truth for ~/.config/kaimon (respects XDG_CONFIG_HOME).
+# All user configuration files (projects.json, config.json, extensions.json) go here.
+
+"""
+    kaimon_config_dir() -> String
+
+Return the path to the Kaimon config directory, creating it if needed.
+Respects `XDG_CONFIG_HOME` on Unix; uses `APPDATA` on Windows.
+Defaults to `~/.config/kaimon`.
+"""
+function kaimon_config_dir()
+    dir = if Sys.iswindows()
+        joinpath(
+            get(ENV, "APPDATA", joinpath(homedir(), "AppData", "Roaming")),
+            "Kaimon",
+        )
+    else
+        joinpath(get(ENV, "XDG_CONFIG_HOME", joinpath(homedir(), ".config")), "kaimon")
+    end
+    mkpath(dir)
+    return dir
+end
+
+# ── Path normalization ────────────────────────────────────────────────────────
+
+"""
+    normalize_path(path::String) -> String
+
+Expand `~`, resolve symlinks and `..` segments. Falls back to `expanduser` +
+`normpath` when the target doesn't exist yet (e.g. a path the user is about
+to create).
+"""
+function normalize_path(path::String)
+    expanded = expanduser(path)
+    try
+        realpath(expanded)
+    catch
+        normpath(expanded)
+    end
+end
+
 include("utils.jl")
 include("database.jl")
 include("qdrant_client.jl")
@@ -61,20 +104,24 @@ include("Generate.jl")
 include("gate_prefs.jl")
 include("gate.jl")
 include("gate_client.jl")
+include("extensions.jl")
+include("extension_manager.jl")
+include("projects_config.jl")
+include("session_manager.jl")
 include("stress_test.jl")
 include("test_output_parser.jl")
 include("test_runner.jl")
 include("tui.jl")
 
 # Export public API functions
-export start!, stop!, test_server
-export setup_security, security_status, generate_key, revoke_key
-export allow_ip, deny_ip, set_security_mode
-export call_tool, list_tools, tool_help
-export tui  # TUI server entry point
-export setup_wizard_tui  # Animated security setup wizard
-export Gate  # Eval gate module (includes GateTool for session-scoped tools)
-export get_gate_mirror_repl_preference, set_gate_mirror_repl_preference!
+# Public API — accessible as Kaimon.foo() but not imported by `using Kaimon`
+public start!, stop!, test_server
+public setup_security, security_status, generate_key, revoke_key
+public allow_ip, deny_ip, set_security_mode
+public call_tool, list_tools, tool_help
+public tui
+public setup_wizard_tui
+public get_gate_mirror_repl_preference, set_gate_mirror_repl_preference!
 
 # ============================================================================
 # Port Management
@@ -224,11 +271,11 @@ include("setup_wizard_tui.jl")
 include("repl_status.jl")
 include("tool_definitions.jl")
 include("MCPServer.jl")
-include("config_utils.jl")
 include("vscode.jl")
 include("reflection_tools.jl")
 include("qdrant_tools.jl")
 include("qdrant_indexer.jl")
+include("service_endpoint.jl")
 
 # ============================================================================
 # VS Code Response Storage for Bidirectional Communication
@@ -383,7 +430,30 @@ end
 # VS Code URI Helpers
 # ============================================================================
 
-# Helper function to trigger VS Code commands via URI
+# Supported editors for file:line clickable links
+const EDITOR_OPTIONS = ["vscode", "cursor", "zed", "windsurf"]
+
+"""
+    editor_file_url(path::String; line::Int=0, col::Int=0) -> String
+
+Build a clickable URI for the configured editor. Returns `""` if path is empty.
+Reads the editor setting from the global config (`~/.config/kaimon/config.json`).
+
+Supported editors: vscode, cursor, zed, windsurf — all use `<scheme>://file/path:line:col`.
+"""
+function editor_file_url(path::String; line::Int=0, col::Int=0)::String
+    isempty(path) && return ""
+    cfg = load_global_config()
+    editor = cfg !== nothing ? cfg.editor : "vscode"
+    uri = "$editor://file$path"
+    if line > 0
+        uri *= ":$line"
+        col > 0 && (uri *= ":$col")
+    end
+    return uri
+end
+
+# Helper function to trigger editor commands via URI
 function trigger_vscode_uri(uri::String)
     if Sys.isapple()
         run(`open $uri`)
@@ -450,7 +520,14 @@ function _serialize_expr(expr)
         parts = String[]
         for arg in expr.args
             arg isa LineNumberNode && continue
-            push!(parts, sprint(Base.show_unquoted, arg, 0, 0))
+            # Recursively handle nested :toplevel exprs (produced by
+            # Base.parse_input_line for multi-statement code)
+            if arg isa Expr && arg.head == :toplevel
+                s = _serialize_expr(arg)
+                !isempty(s) && push!(parts, s)
+            else
+                push!(parts, sprint(Base.show_unquoted, arg, 0, 0))
+            end
         end
         return join(parts, "\n")
     else
@@ -1105,6 +1182,20 @@ end
 
 const GATE_MODE = Ref{Bool}(false)
 const GATE_CONN_MGR = Ref{Union{Nothing,ConnectionManager}}(nothing)
+const _LAST_SESSION_KEY = Ref{String}("")  # last session used by ex/tools — for default collection resolution
+
+"""Get the project path of the last session the agent interacted with."""
+function _last_session_project_path()
+    key = _LAST_SESSION_KEY[]
+    isempty(key) && return ""
+    mgr = GATE_CONN_MGR[]
+    mgr === nothing && return ""
+    conn = get_connection_by_key(mgr, key)
+    conn === nothing && return ""
+    return conn.project_path
+end
+const TUI_MODEL = Ref{Any}(nothing)
+const TUI_LAST_FRAME = Ref{String}("")
 
 # ── Debug consent coordination ────────────────────────────────────────────
 # MCP tool writes a request, TUI reads it and shows consent prompt.
@@ -1147,19 +1238,44 @@ function _resolve_gate_conn(session::String)
         return (nothing, "ERROR: No session matched '$(session)'. Available: $available")
     end
 
+    # Track last used session for default collection resolution
+    _LAST_SESSION_KEY[] = short_key(conn)
+
     # Stalled sessions: return a status message instead of letting tools timeout
     if conn.status == :stalled
         ago = round(Int, Dates.value(now() - conn.last_seen) / 1000)
         dname = isempty(conn.display_name) ? conn.name : conn.display_name
+        diag_str = if conn.diagnostics !== nothing
+            d = conn.diagnostics
+            activity = _diagnose_activity(d)
+            "\nProcess stats: $(round(d.rss_mb; digits=1)) MB RSS, $(round(d.cpu_pct; digits=1))% CPU — $activity."
+        else
+            ""
+        end
         return (
             nothing,
-            "Session '$dname' ($(short_key(conn))) is stalled — last seen $(ago)s ago. " *
-            "It may be performing a long-running task (compilation, GC, etc). " *
+            "Session '$dname' ($(short_key(conn))) is stalled — last seen $(ago)s ago.$diag_str\n" *
+            "A backtrace was sent to the session's terminal. " *
             "Try again shortly or use manage_repl to restart it.",
         )
     end
 
     return (conn, nothing)
+end
+
+"""
+    connect_tcp_to_active_manager(host, port; name="remote") -> REPLConnection
+
+Connect to a TCP gate at `host:port` using the active ConnectionManager.
+Used by the REST API endpoint to allow browser-driven gate connections.
+Throws if no ConnectionManager is available or connection fails.
+"""
+function connect_tcp_to_active_manager(host::String, port::Int; name::String = "remote")
+    mgr = GATE_CONN_MGR[]
+    if mgr === nothing
+        error("No ConnectionManager available — gate services not running")
+    end
+    return connect_tcp!(mgr, host, port; name = name)
 end
 
 """
@@ -1188,10 +1304,64 @@ function _prepare_gate_code(code::String, quiet::Bool)
 end
 
 """
-    _format_gate_response(response, show_return_value, quiet, was_stripped, max_output) -> String
+    _reconcile_stale_jobs!(conn_mgr)
 
-Format a gate eval response into the final result string.
+Check the database for background jobs stuck in 'running' status and try to
+retrieve their results from the gate session's result cache. Called once on
+TUI startup after sessions have had time to connect.
 """
+function _reconcile_stale_jobs!(conn_mgr)
+    conn_mgr === nothing && return
+    running_jobs = Database.list_jobs(; status="running", limit=50)
+    isempty(running_jobs) && return
+    _push_log!(:info, "Reconciling $(length(running_jobs)) stale background job(s)")
+
+    for job in running_jobs
+        eval_id = get(job, "eval_id", "")
+        session_key = get(job, "session_key", "")
+        isempty(eval_id) || isempty(session_key) && continue
+
+        conn = get_connection_by_key(conn_mgr, session_key)
+        if conn === nothing
+            # Session not connected — mark as lost if old enough
+            started = get(job, "started_at", 0.0)
+            if started > 0 && time() - started > 3600  # 1 hour
+                Database.update_job!(eval_id; status="lost", finished_at=time())
+                _push_log!(:warn, "Job $eval_id marked as lost (session gone)")
+            end
+            continue
+        end
+
+        # Try to retrieve cached result from the gate
+        try
+            result = _req_send_recv(conn,
+                (type = :get_job_result, eval_id = eval_id);
+                caller_timeout = 5.0)
+            if result.ok && get(result.response, :type, :error) == :job_result
+                data = get(result.response, :data, "")
+                if !isempty(data)
+                    # Deserialize and format the result
+                    response = try
+                        deserialize(IOBuffer(Vector{UInt8}(data)))
+                    catch
+                        (stdout="", stderr="", value_repr=data, exception=nothing, backtrace=nothing)
+                    end
+                    formatted = _format_gate_response(response, true, false, Ref(false), 6000)
+                    preview = hasproperty(response, :value_repr) ? string(response.value_repr) : ""
+                    status = hasproperty(response, :exception) && response.exception !== nothing ? "failed" : "completed"
+                    Database.update_job!(eval_id;
+                        status=status, result=formatted,
+                        result_preview=first(preview, 500), finished_at=time())
+                    _push_log!(:info, "Job $eval_id reconciled: $status")
+                end
+            end
+        catch e
+            @debug "Failed to reconcile job $eval_id" exception=e
+        end
+    end
+end
+
+"""Format a gate eval response into the final result string."""
 function _format_gate_response(
     response,
     show_return_value::Bool,
@@ -1249,7 +1419,34 @@ function execute_via_gate_streaming(
     conn, err = _resolve_gate_conn(session)
     err !== nothing && return err
 
+    # Warn agent if session is paused at a breakpoint — eval will block or fail
+    if conn.debug_paused
+        dname = isempty(conn.display_name) ? conn.name : conn.display_name
+        return "⏸ Session '$dname' is paused at an @infiltrate breakpoint. " *
+               "The REPL cannot evaluate new code while paused.\n\n" *
+               "Use debug_ctrl(action=\"status\") to see where it's paused, " *
+               "debug_eval(expression=\"...\") to evaluate in the breakpoint scope, " *
+               "or debug_ctrl(action=\"continue\") to resume execution first."
+    end
+
     cleaned_code, show_return_value, was_stripped = _prepare_gate_code(code, quiet)
+
+    # Generate eval_id for tracking
+    eval_id = bytes2hex(rand(UInt8, 4))  # 8 hex chars
+    mgr = GATE_CONN_MGR[]
+
+    # Record eval start
+    if mgr !== nothing
+        _record_eval_start!(mgr, eval_id, short_key(conn), code)
+    end
+
+    # Stream eval_id as first progress message
+    if on_progress !== nothing
+        try
+            on_progress("[eval_id:$eval_id]")
+        catch
+        end
+    end
 
     # Use async eval with streaming — on_output forwards chunks to on_progress
     on_output = if on_progress !== nothing
@@ -1263,16 +1460,155 @@ function execute_via_gate_streaming(
         nothing
     end
 
-    response =
-        eval_remote_async(conn, cleaned_code; display_code = code, on_output = on_output)
+    # Run eval in a background task so we can promote to a job if it takes too long
+    promotion_threshold = 30.0  # seconds before promoting to background job
+    result_channel = Channel{Any}(1)
 
-    return _format_gate_response(
+    eval_task = Threads.@spawn begin
+        response = eval_remote_async(
+            conn,
+            cleaned_code;
+            display_code = code,
+            on_output = on_output,
+            request_id = eval_id,
+        )
+        try; put!(result_channel, response); catch; end
+    end
+
+    # Wait for the result, but promote to background job if too slow
+    response = nothing
+    deadline = time() + promotion_threshold
+    while time() < deadline
+        if isready(result_channel)
+            response = take!(result_channel)
+            break
+        end
+        sleep(0.1)
+    end
+
+    if response === nothing
+        # Eval still running — promote to background job
+        promoted_at = time()
+        if mgr !== nothing
+            lock(mgr.eval_history_lock) do
+                for r in mgr.eval_history
+                    if r.eval_id == eval_id
+                        r.status = :promoted
+                        r.promoted = true
+                        break
+                    end
+                end
+            end
+        end
+
+        # Persist to database so job survives TUI restarts
+        Database.persist_job!(eval_id, short_key(conn), code,
+            mgr !== nothing ? mgr.eval_history[end].started_at : time(), promoted_at)
+
+        # Push activity event and inflight entry so promotion is visible in the TUI
+        dname = isempty(conn.display_name) ? conn.name : conn.display_name
+        code_preview = length(code) > 60 ? first(code, 60) * "..." : code
+        job_inflight_id = _push_inflight_start!("⏳ job:$eval_id", code_preview, short_key(conn))
+        _push_inflight_progress!(job_inflight_id, "running in background")
+        _register_job_inflight!(eval_id, job_inflight_id)
+
+        # Background task to collect the result when it completes
+        Threads.@spawn begin
+            try
+                res = if isready(result_channel)
+                    take!(result_channel)
+                else
+                    wait(eval_task)
+                    isready(result_channel) ? take!(result_channel) : nothing
+                end
+                if res !== nothing
+                    status = if hasproperty(res, :exception) && res.exception !== nothing
+                        :failed
+                    else
+                        :completed
+                    end
+                    formatted = _format_gate_response(res, show_return_value, quiet, was_stripped, max_output)
+                    preview = if hasproperty(res, :value_repr)
+                        string(res.value_repr)
+                    elseif hasproperty(res, :exception) && res.exception !== nothing
+                        string(res.exception)
+                    else
+                        ""
+                    end
+                    mgr !== nothing && _record_eval_done!(mgr, eval_id, status, preview; full_result = formatted)
+                    Database.update_job!(eval_id;
+                        status = string(status),
+                        result = formatted,
+                        result_preview = preview,
+                        finished_at = time())
+                    elapsed = round(time() - promoted_at, digits=1)
+                    _push_job_progress!(eval_id,
+                        "$(status == :completed ? "✓" : "✗") $status after $(elapsed)s")
+                    _finish_job_inflight!(eval_id)
+                    _push_activity!(status == :completed ? :job_completed : :job_failed,
+                        "ex", dname,
+                        "$(status == :completed ? "✓" : "✗") Job $eval_id $status after $(elapsed)s";
+                        success = status == :completed)
+                end
+            catch e
+                err_msg = sprint(showerror, e)
+                mgr !== nothing && _record_eval_done!(mgr, eval_id, :failed, err_msg)
+                Database.update_job!(eval_id;
+                    status = "failed", result = err_msg,
+                    result_preview = first(err_msg, 500), finished_at = time())
+                _finish_job_inflight!(eval_id)
+                _push_activity!(:job_failed, "ex", dname,
+                    "✗ Job $eval_id failed: $(first(err_msg, 80))"; success = false)
+            end
+        end
+
+        started_at = lock(mgr.eval_history_lock) do
+            for r in mgr.eval_history
+                r.eval_id == eval_id && return r.started_at
+            end
+            return time()
+        end
+        elapsed = round(time() - started_at, digits=1)
+        return "⏳ Computation promoted to background job after $(elapsed)s.\n" *
+               "Job ID: $eval_id\n" *
+               "Session: $(isempty(conn.display_name) ? conn.name : conn.display_name)\n" *
+               "Code: $(first(code, 80))$(length(code) > 80 ? "..." : "")\n\n" *
+               "Use `check_eval(eval_id=\"$eval_id\")` to check status and retrieve the result.\n" *
+               "Wait at least 30s before checking. Do NOT poll rapidly.\n" *
+               "Use `cancel_eval(eval_id=\"$eval_id\")` to cancel if needed."
+    end
+
+    # Eval completed within threshold — normal path
+    # Record eval completion
+    if mgr !== nothing
+        status = if hasproperty(response, :exception) && response.exception !== nothing
+            if contains(string(response.exception), "timed out")
+                :timeout
+            else
+                :failed
+            end
+        else
+            :completed
+        end
+        preview = if hasproperty(response, :value_repr)
+            string(response.value_repr)
+        elseif hasproperty(response, :exception) && response.exception !== nothing
+            string(response.exception)
+        else
+            ""
+        end
+        _record_eval_done!(mgr, eval_id, status, preview)
+    end
+
+    result = _format_gate_response(
         response,
         show_return_value,
         quiet,
         was_stripped,
         max_output,
     )
+
+    return result
 end
 
 """
@@ -1394,11 +1730,14 @@ function collect_tools()::Vector{MCPTool}
     return MCPTool[
         ping_tool,
         server_log_tool,
+        tui_screenshot_tool,
         usage_instructions_tool,
         usage_quiz_tool,
         tool_help_tool,
         repl_tool,
         manage_repl_tool,
+        connect_tcp_tool,
+        start_session_tool,
         set_tty_tool,
         vscode_command_tool,
         list_vscode_commands_tool,
@@ -1422,6 +1761,10 @@ function collect_tools()::Vector{MCPTool}
         pkg_rm_tool,
         run_tests_tool,
         stress_test_tool,
+        extension_info_tool,
+        check_eval_tool,
+        cancel_eval_tool,
+        list_jobs_tool,
         reflection_tools...,
         qdrant_tools...,
     ]
@@ -1441,12 +1784,12 @@ Start the Kaimon MCP server.
 - `workspace_dir::String=pwd()`: Project root directory
 
 # Dynamic Port Assignment
-Set `port=0` (or use `"port": 0` in security.json) to automatically find and use an available port.
+Set `port=0` (or use `"port": 0` in config.json) to automatically find and use an available port.
 The server will search ports 40000-49999 for the first free port. This higher range avoids conflicts with common services.
 
 # Examples
 ```julia
-# Use configured port from security.json
+# Use configured port from config.json
 Kaimon.start!()
 
 # Use specific port
@@ -1466,6 +1809,7 @@ function start!(;
     julia_session_name::String = "",
     workspace_dir::String = pwd(),
     session_uuid::Union{String,Nothing} = nothing,
+    gate::Bool = true,
 )
     SERVER[] !== nothing && stop!() # Stop existing server if running
 
@@ -1492,14 +1836,8 @@ function start!(;
     end
 
     # Load or prompt for security configuration
-    # Use workspace_dir (project root) not pwd() (which may be agent dir)
-    @debug "Loading security config" workspace_dir = workspace_dir
-    security_config = load_security_config(workspace_dir)
-
-    # Fall back to global config
-    if security_config === nothing
-        security_config = load_global_security_config()
-    end
+    @debug "Loading config"
+    security_config = load_global_config()
 
     if security_config === nothing
         # Stop spinner before launching wizard
@@ -1517,7 +1855,7 @@ function start!(;
             security_config.mode
     end
 
-    # Determine port: function arg overrides config, otherwise use what load_security_config() found
+    # Determine port: function arg overrides config
     actual_port = if port !== nothing
         if port == 0
             # Port 0 means find a free port dynamically
@@ -1528,7 +1866,7 @@ function start!(;
             port
         end
     else
-        # load_security_config already loaded the right port
+        # Use port from global config
         config_port = security_config.port
         if config_port == 0
             # Port 0 in config means find a free port dynamically
@@ -1557,9 +1895,9 @@ function start!(;
             security_config.api_keys,
             security_config.allowed_ips,
             security_config.port,
-            security_config.index_dirs,
-            security_config.index_extensions,
             security_config.created_at,
+            security_config.editor,
+            security_config.qdrant_prefix,
         )
     end
 
@@ -1601,6 +1939,12 @@ function start!(;
         session_uuid = session_uuid,
     )
 
+    # Start gate services (connection manager, extensions, service endpoint)
+    if gate
+        status_msg[] = "Starting gate services..."
+        _start_gate_services!()
+    end
+
     # Stop the spinner and show completion
     spinner_active[] = false
     wait(spinner_task)  # Wait for spinner task to finish
@@ -1609,8 +1953,9 @@ function start!(;
     global_logger(old_logger)
 
     # Green checkmark, dark blue text, yellow dragon, muted cyan port number
+    gate_info = gate ? ", gate" : ""
     print(
-        "\r\033[K\033[1;32m✓\033[0m \033[38;5;24mKaimon server started\033[0m \033[33m🐉\033[0m \033[90m(port $actual_port)\033[0m\n",
+        "\r\033[K\033[1;32m✓\033[0m \033[38;5;24mKaimon server started\033[0m \033[33m🐉\033[0m \033[90m(port $actual_port$gate_info)\033[0m\n",
     )
     flush(stdout)
 
@@ -1629,6 +1974,56 @@ function start!(;
     end
 
 
+    nothing
+end
+
+"""Start gate services without the TUI: connection manager, service endpoint, extensions."""
+function _start_gate_services!()
+    # Guard against double-start (e.g. start!() called twice, or before tui())
+    if GATE_MODE[]
+        @debug "Gate services already running, skipping"
+        return
+    end
+
+    mgr = ConnectionManager()
+    start!(mgr)
+    register_sessions_changed_callback!(mgr)
+
+    GATE_MODE[] = true
+    GATE_CONN_MGR[] = mgr
+
+    try
+        start_service_endpoint!()
+    catch e
+        @warn "Failed to start service endpoint" exception = e
+    end
+
+    start_extensions!()
+    nothing
+end
+
+"""Stop gate services started by `_start_gate_services!`."""
+function _stop_gate_services!()
+    GATE_MODE[] || return
+
+    try
+        stop_service_endpoint!()
+    catch
+    end
+
+    stop_all_sessions!()
+    stop_all_extensions!()
+
+    mgr = GATE_CONN_MGR[]
+    GATE_MODE[] = false
+    GATE_CONN_MGR[] = nothing
+
+    if mgr !== nothing
+        try
+            stop!(mgr)
+        catch
+        end
+    end
     nothing
 end
 
@@ -1679,6 +2074,9 @@ function stop!()
         catch e
             @debug "Failed to stop index sync scheduler" exception = e
         end
+
+        # Stop gate services if running headless
+        _stop_gate_services!()
 
         stop_mcp_server(SERVER[])
         SERVER[] = nothing
@@ -1733,9 +2131,9 @@ function test_server(
             # Prefer explicit env var when present
             env_key = get(ENV, "JULIA_MCP_API_KEY", "")
 
-            # Load workspace security config (if available)
+            # Load global config (if available)
             security_config = try
-                load_security_config()
+                load_global_config()
             catch
                 nothing
             end
@@ -1789,7 +2187,7 @@ end
 Display current security configuration.
 """
 function security_status()
-    config = load_security_config()
+    config = load_global_config()
     if config === nothing
         printstyled("\n⚠️  No security configuration found\n", color = :yellow, bold = true)
         println("Run Kaimon.setup_security() to configure")
@@ -1806,10 +2204,7 @@ Launch the security setup wizard.
 """
 function setup_security(; force::Bool = false, mode::Symbol = :auto)
     if !force
-        existing = load_global_security_config()
-        if existing === nothing
-            existing = load_security_config()
-        end
+        existing = load_global_config()
         if existing !== nothing
             println()
             printstyled(
@@ -1829,46 +2224,102 @@ end
 """
     generate_key()
 
-Generate and add a new API key to the current configuration.
+Generate and add a new API key to the global configuration.
 """
 function generate_key()
-    return add_api_key!(pwd())
+    config = load_global_config()
+    config === nothing && error("No configuration found. Run Kaimon.setup_security() first.")
+    new_key = generate_api_key()
+    if update_global_config!(api_keys = vcat(config.api_keys, [new_key]))
+        println("✅ Added new API key: $new_key")
+        println("⚠️  Save this key securely - it won't be shown again!")
+        return new_key
+    else
+        error("Failed to save configuration")
+    end
 end
 
 """
     revoke_key(key::String)
 
-Revoke (remove) an API key from the configuration.
+Revoke (remove) an API key from the global configuration.
 """
 function revoke_key(key::String)
-    return remove_api_key!(key, pwd())
+    config = load_global_config()
+    if config === nothing
+        error("No configuration found. Run Kaimon.setup_security() first.")
+    end
+    if !(key in config.api_keys)
+        @warn "API key not found in configuration"
+        return false
+    end
+    if update_global_config!(api_keys = filter(k -> k != key, config.api_keys))
+        println("✅ Removed API key")
+        return true
+    else
+        error("Failed to save configuration")
+    end
 end
 
 """
     allow_ip(ip::String)
 
-Add an IP address to the allowlist.
+Add an IP address to the global allowlist.
 """
 function allow_ip(ip::String)
-    return add_allowed_ip!(ip, pwd())
+    config = load_global_config()
+    if config === nothing
+        error("No configuration found. Run Kaimon.setup_security() first.")
+    end
+    if ip in config.allowed_ips
+        @warn "IP address already in allowlist"
+        return false
+    end
+    if update_global_config!(allowed_ips = vcat(config.allowed_ips, [ip]))
+        println("✅ Added IP address to allowlist: $ip")
+        return true
+    else
+        error("Failed to save configuration")
+    end
 end
 
 """
     deny_ip(ip::String)
 
-Remove an IP address from the allowlist.
+Remove an IP address from the global allowlist.
 """
 function deny_ip(ip::String)
-    return remove_allowed_ip!(ip, pwd())
+    config = load_global_config()
+    if config === nothing
+        error("No configuration found. Run Kaimon.setup_security() first.")
+    end
+    if !(ip in config.allowed_ips)
+        @warn "IP address not found in allowlist"
+        return false
+    end
+    if update_global_config!(allowed_ips = filter(i -> i != ip, config.allowed_ips))
+        println("✅ Removed IP address from allowlist: $ip")
+        return true
+    else
+        error("Failed to save configuration")
+    end
 end
 
 """
     set_security_mode(mode::Symbol)
 
-Change the security mode (:strict, :relaxed, or :lax).
+Change the security mode (:strict, :relaxed, or :lax) in the global configuration.
 """
 function set_security_mode(mode::Symbol)
-    return change_security_mode!(mode, pwd())
+    if !(mode in [:strict, :relaxed, :lax])
+        error("Invalid security mode. Must be :strict, :relaxed, or :lax")
+    end
+    if update_global_config!(mode = mode)
+        println("✅ Changed security mode to: $mode")
+        return true
+    else
+        error("Failed to save configuration. Run Kaimon.setup_security() first.")
+    end
 end
 
 """
@@ -2007,6 +2458,167 @@ function restart(; session::String = "")
 end
 function shutdown(; session::String = "")
     call_tool(:manage_repl, Dict("command" => "shutdown", "session" => session))
+end
+
+function (@main)(ARGS)
+    # Fire-and-forget: resolve the user's global environment in the background.
+    # When Kaimon gains new deps, the global env manifest (where Kaimon is dev'd)
+    # becomes stale — this ensures `using Kaimon` in startup.jl works next time.
+    kaimon_dir = dirname(@__DIR__)
+    julia = joinpath(Sys.BINDIR, "julia")
+    cmd = `$julia --startup-file=no --project=$kaimon_dir -e "using Pkg; Pkg.resolve(io=devnull); Pkg.instantiate(io=devnull)"`
+    run(pipeline(cmd; stdout=devnull, stderr=devnull); wait=false)
+
+    port = 2828
+    theme = nothing
+    headless = false
+    use_revise = false
+
+    i = 1
+    while i <= length(ARGS)
+        arg = ARGS[i]
+        if arg in ("--port", "-p") && i < length(ARGS)
+            i += 1
+            port = parse(Int, ARGS[i])
+        elseif arg in ("--theme", "-t") && i < length(ARGS)
+            i += 1
+            theme = Symbol(ARGS[i])
+        elseif arg in ("--revise", "-r")
+            use_revise = true
+        elseif arg == "--headless"
+            headless = true
+        elseif arg in ("--help", "-h")
+            println("""
+            Kaimon — persistent MCP server with terminal dashboard
+
+            Usage: kaimon [options]
+
+            Options:
+              -p, --port PORT    MCP HTTP server port (default: 2828)
+              -t, --theme NAME   Theme: kokaku, esper, motoko, neuromancer (default: kokaku)
+              -r, --revise       Load Revise for live code reloading
+              --headless         Run without TUI (headless MCP server)
+              -h, --help         Show this help""")
+            return
+        else
+            println("Unknown argument: $arg")
+            return
+        end
+        i += 1
+    end
+
+    # Load Revise if requested — as a weak dep it may not be in the app's
+    # isolated environment, so temporarily add the user's shared env to LOAD_PATH.
+    _Revise = nothing
+    if use_revise
+        shared_env = joinpath(homedir(), ".julia", "environments",
+                              "v$(VERSION.major).$(VERSION.minor)")
+        added_shared = false
+        if isdir(shared_env) && shared_env ∉ Base.load_path()
+            pushfirst!(LOAD_PATH, shared_env)
+            added_shared = true
+        end
+        try
+            _Revise = Base.require(Base.PkgId(Base.UUID("295af30f-e4ad-537b-8983-00126c2a3abe"), "Revise"))
+            pkgid = Base.PkgId(@__MODULE__)
+            pkgdata = Base.invokelatest(_Revise.watch_package, pkgid)
+            if pkgdata !== nothing
+                nfiles = Base.invokelatest(() -> length(_Revise.srcfiles(pkgdata)))
+                @info "Revise tracking $nfiles source files for Kaimon"
+            else
+                @warn "Revise: watch_package returned nothing"
+            end
+        catch e
+            _Revise = nothing
+            @warn "Could not load Revise, continuing without it" exception = e
+        end
+        added_shared && popfirst!(LOAD_PATH)
+    end
+
+    # Load optional extensions
+    try Main.eval(:(using PDFIO)) catch end
+
+    if headless
+        start!(; port = port)
+        Base.JLOptions().isinteractive == 0 && wait(Condition())
+    else
+        # Check that Kaimon is in the global Julia environment
+        if isa(stdin, Base.TTY)
+            global_env = joinpath(homedir(), ".julia", "environments",
+                                  "v$(VERSION.major).$(VERSION.minor)")
+            global_proj = joinpath(global_env, "Project.toml")
+            in_global = isfile(global_proj) &&
+                haskey(get(Pkg.TOML.parsefile(global_proj), "deps", Dict()), "Kaimon")
+
+            if !in_global
+                println("""
+
+                Kaimon is not installed in your global Julia environment.
+
+                Gate.serve() must be called from your project REPLs to connect them
+                to the Kaimon dashboard. For this to work, Kaimon needs to be
+                available in every Julia session — the global environment is the
+                recommended place to install it.
+                """)
+                print("Add Kaimon to your global Julia environment now? [Y/n]: ")
+                response = strip(readline())
+                if isempty(response) || lowercase(response) in ("y", "yes")
+                    @info "Installing Kaimon in global environment..."
+                    try
+                        kaimon_dir = dirname(@__DIR__)
+                        env = copy(ENV)
+                        delete!(env, "JULIA_PROJECT")
+                        delete!(env, "JULIA_LOAD_PATH")
+                        run(setenv(```$(Base.julia_cmd()) --startup-file=no -e """
+                            using Pkg
+                            Pkg.develop(path=$(repr(kaimon_dir)))
+                            """```, env))
+                        println("\nDone. You can now call `using Kaimon` from any Julia session.\n")
+                    catch e
+                        @warn "Global install failed" exception = e
+                    end
+                else
+                    println()
+                end
+            end
+        end
+
+        # First-time setup: launch security wizard if no config exists
+        has_config = load_global_config() !== nothing
+        if !has_config
+            result = setup_wizard_tui()
+            result === nothing && return
+        end
+
+        _revise_active = use_revise && _Revise !== nothing
+        if _revise_active
+            @info "Revise loaded — watching for file changes"
+            Base.invokelatest(_start_revise_watcher!, _Revise)
+        end
+
+        tui(; port = port, theme_name = theme, revise_polling = _revise_active, revise_mod = _Revise)
+    end
+end
+
+include("precompile.jl")
+
+function __init__()
+    # Set Qdrant collection prefix from env var or config
+    env_prefix = get(ENV, "KAIMON_QDRANT_PREFIX", "")
+    if !isempty(env_prefix)
+        set_collection_prefix!(env_prefix)
+    else
+        try
+            config = load_global_config()
+            if config !== nothing && !isempty(config.qdrant_prefix)
+                set_collection_prefix!(config.qdrant_prefix)
+            end
+        catch
+        end
+    end
+
+    # Auto-start TCP gate if configured via env vars or kaimon.toml [gate]
+    Gate._auto_serve!()
 end
 
 end #module

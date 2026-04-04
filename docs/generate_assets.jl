@@ -876,6 +876,77 @@ const EVENTS_COLLECTION_MANAGER = EventScript(
     pause(0.8),
 )
 
+# ═══════════════════════════════════════════════════════════════════════
+# Demo: kaimon_debug — Debug tab with paused breakpoint, locals, console eval
+# ═══════════════════════════════════════════════════════════════════════
+
+function _build_debug_model()
+    conn = _mock_conn(;
+        session_id = "abcd1234efgh5678",
+        display_name = "Kaimon",
+        project_path = "/home/user/dev/Kaimon.jl",
+        pid = 41000,
+        tool_call_count = 23,
+    )
+    mgr = ConnectionManager()
+    push!(mgr.connections, conn)
+
+    locals = [
+        (name = "A",        type = "Matrix{Float64}",  value = "4×4 Matrix{Float64}:\n 5.2  0.1  0.3  0.7\n 0.1  4.8  0.2  0.5\n 0.3  0.2  6.1  0.4\n 0.7  0.5  0.4  5.9"),
+        (name = "b",        type = "Vector{Float64}",  value = "[0.234, -1.107, 0.891, -0.562]"),
+        (name = "cond_A",   type = "Float64",          value = "1.7832"),
+        (name = "det_A",    type = "Float64",          value = "812.447"),
+        (name = "n",        type = "Int64",            value = "4"),
+        (name = "residual", type = "Float64",          value = "2.22e-16"),
+        (name = "x",        type = "Vector{Float64}",  value = "[0.0413, -0.2451, 0.1502, -0.1118]"),
+    ]
+
+    history = [
+        (source = :agent, code = "typeof(A)",          result = "Matrix{Float64}"),
+        (source = :agent, code = "cond_A < 10",        result = "true"),
+        (source = :user,  code = "norm(A * x - b)",    result = "2.220446049250313e-16"),
+        (source = :user,  code = "eigvals(A)",         result = "[4.123, 4.891, 5.734, 7.252]"),
+    ]
+
+    KaimonModel(
+        _render_mode = true,
+        active_tab = 7,
+        conn_mgr = mgr,
+        server_running = true,
+        server_started = true,
+        debug_state = :paused,
+        debug_session_key = "abcd1234",
+        debug_file = "src/solver.jl",
+        debug_line = 42,
+        debug_locals = locals,
+        debug_history = history,
+    )
+end
+
+const EVENTS_DEBUG = EventScript(
+    pause(2.0),                              # linger on paused state with locals
+    (0.0, key(:tab)),                        # focus console pane
+    pause(0.5),
+    (0.0, key(:enter)),                      # enter edit mode
+    pause(0.3),
+    chars("det_A / cond_A"; pace = 0.06),    # type an expression
+    pause(0.8),
+    (0.0, key(:enter)),                      # submit
+    pause(1.2),                              # see result
+    chars("x .^ 2"; pace = 0.06),            # another expression
+    pause(0.6),
+    (0.0, key(:enter)),                      # submit
+    pause(1.2),
+    (0.0, key(:escape)),                     # exit edit mode
+    pause(0.5),
+    (0.0, key(:tab)),                        # focus locals pane
+    pause(0.5),
+    rep(key(:down), 4; gap = 0.2),           # scroll locals
+    pause(1.0),
+    rep(key(:up), 4; gap = 0.15),            # scroll back
+    pause(1.5),
+)
+
 const DEMOS = [
     DemoSpec("kaimon_wizard",              _build_wizard_model,             EVENTS_WIZARD,              130, 34, 230, 15),
     DemoSpec("kaimon_overview",            _build_overview_model,           EVENTS_OVERVIEW,            130, 34, 180, 15),
@@ -888,6 +959,7 @@ const DEMOS = [
     DemoSpec("kaimon_search",              _build_search_model,             EVENTS_SEARCH,              130, 34, 160, 15),
     DemoSpec("kaimon_search_config",       _build_search_config_model,      EVENTS_SEARCH_CONFIG,       130, 34,  75, 15),
     DemoSpec("kaimon_collection_manager",  _build_collection_manager_model, EVENTS_COLLECTION_MANAGER,  130, 34,  90, 15),
+    DemoSpec("kaimon_debug",               _build_debug_model,              EVENTS_DEBUG,               130, 34, 180, 15),
 ]
 
 function render_demo(spec::DemoSpec, cache::Dict{String,String}; force::Bool = false)

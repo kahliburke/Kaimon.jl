@@ -1,3 +1,16 @@
+"""Save embedding model choice to search.json."""
+function _save_embedding_model(model::String)
+    config = load_search_config()
+    config["embedding_model"] = model
+    save_search_config(config)
+end
+
+"""Load embedding model from search.json, or return the default."""
+function _load_embedding_model()
+    config = load_search_config()
+    get(config, "embedding_model", DEFAULT_EMBEDDING_MODEL)
+end
+
 """Handle per-tab char keys on the Search tab."""
 function _handle_search_key!(m::KaimonModel, evt::KeyEvent)
     @match evt.char begin
@@ -20,6 +33,12 @@ function _handle_search_key!(m::KaimonModel, evt::KeyEvent)
             end
         end
         'p' => _pull_embedding_model_async!(m)
+        'c' => begin
+            if !isempty(m.search_collections)
+                m.search_collection_delete_confirm = false
+                m.search_collection_picker_open = true
+            end
+        end
         'o' => _open_search_config!(m)
         'm' => _open_search_manage!(m)
         _ => nothing
@@ -279,17 +298,20 @@ function _open_search_config!(m::KaimonModel)
     # Position cursor on the currently active model
     model_names = sort!(collect(keys(EMBEDDING_CONFIGS)))
     idx = findfirst(==(m.search_embedding_model), model_names)
-    m.search_config_selected = idx !== nothing ? idx : 1
+    # If active model is custom (not in EMBEDDING_CONFIGS), select last entry (Custom)
+    is_custom = idx === nothing && !isempty(m.search_embedding_model)
+    m.search_config_selected = idx !== nothing ? idx : length(model_names) + 1
 
     # Seed model list immediately (installed status filled async)
+    # Add "Custom..." entry at the end
     m.search_config_models = [
-        (
-            name = n,
-            dims = EMBEDDING_CONFIGS[n].dims,
-            ctx = EMBEDDING_CONFIGS[n].context_tokens,
-            installed = false,
-        ) for n in model_names
+        [(name = n, dims = EMBEDDING_CONFIGS[n].dims, ctx = EMBEDDING_CONFIGS[n].context_tokens, installed = false) for n in model_names];
+        [(name = "Custom...", dims = 0, ctx = 0, installed = false)]
     ]
+    m.search_config_custom_input = TextInput(
+        text = is_custom ? m.search_embedding_model : "",
+        label = "Model: ", tick = m.tick)
+    m.search_config_custom_editing = false
 
     # Fire async task to check Ollama availability + collection info
     col_name = if !isempty(m.search_collections)
@@ -342,6 +364,29 @@ function _handle_search_config_key!(m::KaimonModel, evt::KeyEvent)
 
     n_models = length(m.search_config_models)
 
+    # Custom model editing mode
+    if m.search_config_custom_editing
+        if evt.key == :enter
+            custom_name = strip(Tachikoma.text(m.search_config_custom_input))
+            if !isempty(custom_name)
+                m.search_embedding_model = custom_name
+                _save_embedding_model(custom_name)
+                m.search_config_reindex_paths = _collect_session_collections(m)
+                if !isempty(m.search_config_reindex_paths)
+                    m.search_config_confirm = true
+                else
+                    m.search_config_open = false
+                end
+            end
+            m.search_config_custom_editing = false
+        elseif evt.key == :escape
+            m.search_config_custom_editing = false
+        else
+            m.search_config_custom_input !== nothing && handle_key!(m.search_config_custom_input, evt)
+        end
+        return
+    end
+
     @match evt.key begin
         :escape => begin
             m.search_config_open = false
@@ -362,8 +407,13 @@ function _handle_search_config_key!(m::KaimonModel, evt::KeyEvent)
             if n_models > 0
                 sel = clamp(m.search_config_selected, 1, n_models)
                 new_model = m.search_config_models[sel].name
+                if new_model == "Custom..."
+                    m.search_config_custom_editing = true
+                    return
+                end
                 if new_model != m.search_embedding_model
                     m.search_embedding_model = new_model
+                    _save_embedding_model(new_model)
                     m.search_model_available = m.search_config_models[sel].installed
                     # Collect session collections that exist in Qdrant
                     m.search_config_reindex_paths = _collect_session_collections(m)
@@ -378,23 +428,10 @@ function _handle_search_config_key!(m::KaimonModel, evt::KeyEvent)
             end
         end
         :char => begin
-            @match evt.char begin
-                'p' => begin
-                    if n_models > 0
-                        sel = clamp(m.search_config_selected, 1, n_models)
-                        _pull_embedding_model_async!(
-                            m;
-                            model = m.search_config_models[sel].name,
-                        )
-                    end
-                end
-                '+' || '=' => begin
-                    m.search_result_count = min(50, m.search_result_count + 1)
-                end
-                '-' => begin
-                    m.search_result_count = max(1, m.search_result_count - 1)
-                end
-                _ => nothing
+            if evt.char == '+' || evt.char == '='
+                m.search_result_count = min(50, m.search_result_count + 1)
+            elseif evt.char == '-'
+                m.search_result_count = max(1, m.search_result_count - 1)
             end
         end
         _ => nothing

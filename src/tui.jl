@@ -25,7 +25,14 @@ import Tachikoma:
     TreeView,
     TreeNode,
     PixelImage,
-    load_pixels!
+    load_pixels!,
+    TerminalWidget,
+    PTY,
+    pty_spawn,
+    pty_close!,
+    pty_alive,
+    pty_resize!,
+    drain!
 # Tachikoma.split (for layouts) is not Base.split, so we alias it.
 const tsplit = Tachikoma.split
 
@@ -50,3 +57,5 @@ include("tui/search_config_view.jl")
 include("tui/search_manage.jl")
 include("tui/search_manage_view.jl")
 include("tui/debug.jl")
+include("tui/ext_panel.jl")
+include("tui/extensions.jl")

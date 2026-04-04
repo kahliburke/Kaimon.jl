@@ -1,47 +1,148 @@
 # ── Activity Tab ──────────────────────────────────────────────────────────────
 
-"""Cycle activity filter: All → session1 → session2 → … → All."""
-function _cycle_activity_filter!(m::KaimonModel)
-    # Collect unique session keys from both in-flight and completed results
+"""Collect unique session keys from active connections for the filter popup.
+Returns (keys, is_extension) vectors."""
+function _activity_session_list(m::KaimonModel)
     seen_keys = String[]
-    for ifc in m.inflight_calls
-        if !isempty(ifc.session_key) && ifc.session_key ∉ seen_keys
-            push!(seen_keys, ifc.session_key)
+    is_ext = Bool[]
+    mgr = m.conn_mgr
+    mgr === nothing && return seen_keys, is_ext
+    for conn in mgr.connections
+        sk = short_key(conn)
+        if !isempty(sk) && sk ∉ seen_keys
+            push!(seen_keys, sk)
+            push!(is_ext, conn.spawned_by == "extension")
         end
     end
+    return seen_keys, is_ext
+end
+
+"""Open the activity filter popup."""
+function _open_activity_filter!(m::KaimonModel)
+    sessions, _ = _activity_session_list(m)
+    isempty(sessions) && return
+    # Position selection on current filter
+    if isempty(m.activity_filter)
+        m.activity_filter_selected = 0
+    else
+        idx = findfirst(==(m.activity_filter), sessions)
+        m.activity_filter_selected = idx === nothing ? 0 : idx
+    end
+    m.activity_filter_open = true
+end
+
+"""Render the activity filter popup."""
+function _view_activity_filter(m::KaimonModel, area::Rect, buf::Buffer)
+    sessions, is_ext = _activity_session_list(m)
+    n = length(sessions)
+    n == 0 && (m.activity_filter_open = false; return)
+
+    # Determine which sessions have tool call activity
+    active_keys = Set{String}()
+    for ifc in m.inflight_calls
+        !isempty(ifc.session_key) && push!(active_keys, ifc.session_key)
+    end
     for r in m.tool_results
-        if !isempty(r.session_key) && r.session_key ∉ seen_keys
-            push!(seen_keys, r.session_key)
+        !isempty(r.session_key) && push!(active_keys, r.session_key)
+    end
+
+    # Build display names
+    display_names = String["All sessions"]
+    has_activity = Bool[!isempty(active_keys)]  # "All" has activity if any calls exist
+    for (i, sk) in enumerate(sessions)
+        name = _session_display_name(sk)
+        label = isempty(name) ? sk : "$name ($sk)"
+        is_ext[i] && (label = "$label [ext]")
+        push!(display_names, label)
+        push!(has_activity, sk in active_keys)
+    end
+    n_items = length(display_names)  # includes "All"
+    sel = clamp(m.activity_filter_selected + 1, 1, n_items)  # +1 because 0="All" is index 1
+
+    modal_w = min(area.width - 6, max(40, maximum(length, display_names) + 6))
+    modal_h = min(area.height - 4, n_items + 3)
+    pos = center(area, modal_w, modal_h)
+
+    bg = Style(fg=tstyle(:text).fg, bg=Tachikoma.theme().bg)
+    for ry in pos.y:pos.y+pos.height-1
+        for rx in pos.x:pos.x+pos.width-1
+            set_char!(buf, rx, ry, ' ', bg)
         end
     end
 
-    # Also pull session keys from active connections (even if no calls yet)
-    mgr = m.conn_mgr
-    if mgr !== nothing
-        for conn in mgr.connections
-            sk = short_key(conn)
-            if !isempty(sk) && sk ∉ seen_keys
-                push!(seen_keys, sk)
+    blk = Block(
+        title = "Filter by Session",
+        border_style = tstyle(:accent),
+        title_style = tstyle(:accent, bold=true),
+    )
+    inner = render(blk, pos, buf)
+    inner.height < 1 && return
+
+    list_h = inner.height - 1
+    list_h < 1 && return
+
+    offset = max(0, sel - list_h)
+    for vi in 1:list_h
+        idx = offset + vi
+        idx > n_items && break
+        ry = inner.y + vi - 1
+        is_sel = idx == sel
+        active = has_activity[idx]
+        style = if is_sel
+            tstyle(:accent, bold=true)
+        elseif active
+            tstyle(:secondary)
+        else
+            tstyle(:text_dim)
+        end
+        marker = is_sel ? '▸' : ' '
+        set_char!(buf, inner.x, ry, marker, style)
+        set_string!(buf, inner.x + 2, ry, display_names[idx], style; max_x=right(inner))
+    end
+
+    hint_y = inner.y + inner.height - 1
+    dim = tstyle(:text_dim)
+    _write_spans!(buf, inner.x, hint_y, [
+        ("[Enter]", tstyle(:accent)), (" select  ", dim),
+        ("[Esc]", tstyle(:accent)), (" close", dim),
+    ])
+end
+
+"""Handle key events for the activity filter popup."""
+function _handle_activity_filter_key!(m::KaimonModel, evt::KeyEvent)
+    sessions, _ = _activity_session_list(m)
+    n = length(sessions)
+    n == 0 && (m.activity_filter_open = false; return)
+    n_items = n + 1  # "All" + sessions
+
+    sel = clamp(m.activity_filter_selected + 1, 1, n_items)
+
+    @match evt.key begin
+        :up => (sel = sel > 1 ? sel - 1 : n_items)
+        :down => (sel = sel < n_items ? sel + 1 : 1)
+        :enter => begin
+            if sel == 1
+                m.activity_filter = ""
+            else
+                m.activity_filter = sessions[sel - 1]
+            end
+            m.activity_filter_open = false
+            m.selected_result = 0
+            m.selected_inflight = 0
+            m._detail_for_result = -1
+            return
+        end
+        :escape => (m.activity_filter_open = false; return)
+        _ => begin
+            if evt.char == 'j'
+                sel = sel < n_items ? sel + 1 : 1
+            elseif evt.char == 'k'
+                sel = sel > 1 ? sel - 1 : n_items
             end
         end
     end
-    isempty(seen_keys) && return
 
-    # Build cycle: "" (all) → key1 → key2 → … → "" (all)
-    if isempty(m.activity_filter)
-        m.activity_filter = seen_keys[1]
-    else
-        idx = findfirst(==(m.activity_filter), seen_keys)
-        if idx === nothing || idx == length(seen_keys)
-            m.activity_filter = ""  # back to all
-        else
-            m.activity_filter = seen_keys[idx+1]
-        end
-    end
-    # Reset selection when filter changes
-    m.selected_result = 0
-    m.selected_inflight = 0
-    m._detail_for_result = -1
+    m.activity_filter_selected = sel - 1  # back to 0-indexed
 end
 
 """Resolve a session_key to a short display name (e.g. "rEVAlation")."""
@@ -52,6 +153,34 @@ function _session_display_name(session_key::String)::String
     conn = get_connection_by_key(mgr, session_key)
     conn === nothing && return session_key
     return isempty(conn.display_name) ? conn.name : conn.display_name
+end
+
+_truncate(s::AbstractString, n::Int) = length(s) > n ? s[1:prevind(s, n)] * "…" : String(s)
+
+function _ex_preview(r::ToolCallResult)
+    try
+        args = JSON.parse(r.args_json)
+        code = get(args, "e", nothing)
+        code === nothing && return _truncate(r.result_text, 50)
+        code_str = replace(strip(string(code)), r"\s+" => " ")
+        return _truncate(code_str, 50)
+    catch
+        return _truncate(r.result_text, 50)
+    end
+end
+
+function _tool_preview(r::ToolCallResult)
+    try
+        args = JSON.parse(r.args_json)
+        parts = String[]
+        for (k, v) in args
+            vs = v isa AbstractString ? v : string(v)
+            push!(parts, "$k=$(first(vs, 20))")
+        end
+        return _truncate(join(parts, " "), 50)
+    catch
+        return _truncate(r.result_text, 40)
+    end
 end
 
 """Refresh analytics data from the database (cached for 30s unless forced)."""
@@ -306,8 +435,13 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
         m.detail_paragraph = nothing
     end
 
-    # ── Top pane: tool call list (in-flight at top, then completed newest-first) ──
-    items = ListItem[]
+    # ── Top pane: tool call DataTable ──
+    col_times = Any[]
+    col_tools = Any[]
+    col_sessions = Any[]
+    col_durations = Any[]
+    col_preview = Any[]
+    row_styles = Style[]
     display_sel = 0
     item_idx = 0
 
@@ -318,12 +452,20 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
         elapsed = time() - ifc.timestamp
         elapsed_str =
             elapsed < 1.0 ? @sprintf("%.0fms", elapsed * 1000) : @sprintf("%.1fs", elapsed)
-        ts = Dates.format(ifc.timestamp_dt, "HH:MM:SS")
-        sess_name = _session_display_name(ifc.session_key)
-        sess_tag = isempty(filter_key) && !isempty(sess_name) ? " [$sess_name]" : ""
+        push!(col_times, Dates.format(ifc.timestamp_dt, "HH:MM:SS"))
         si = mod1(m.tick ÷ 2, length(SPINNER_BRAILLE))
-        label = "$ts $(SPINNER_BRAILLE[si]) $(ifc.tool_name)$sess_tag ($elapsed_str)"
-        push!(items, ListItem(label, tstyle(:warning)))
+        push!(col_tools, Span("$(SPINNER_BRAILLE[si]) $(ifc.tool_name)", tstyle(:warning)))
+        sess_name = _session_display_name(ifc.session_key)
+        push!(col_sessions, isempty(sess_name) ? Span("開門", tstyle(:accent)) : sess_name)
+        push!(col_durations, Span(elapsed_str, tstyle(:warning)))
+        preview = if ifc.tool_name == "ex"
+            eid = _extract_eval_id(ifc.progress_lines)
+            isempty(eid) ? "running…" : eid
+        else
+            isempty(ifc.last_progress) ? "running…" : _truncate(ifc.last_progress, 40)
+        end
+        push!(col_preview, preview)
+        push!(row_styles, tstyle(:warning))
         if m.selected_inflight == ii
             display_sel = item_idx
         end
@@ -333,21 +475,23 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
     for ri in Iterators.reverse(filtered)
         item_idx += 1
         r = m.tool_results[ri]
-        ts = Dates.format(r.timestamp, "HH:MM:SS")
+        push!(col_times, Dates.format(r.timestamp, "HH:MM:SS"))
         marker = r.success ? "✓" : "✗"
-        style = r.success ? tstyle(:success) : tstyle(:error)
+        tool_style = r.success ? tstyle(:success) : tstyle(:error)
+        push!(col_tools, Span("$marker $(r.tool_name)", tool_style))
         sess_name = _session_display_name(r.session_key)
-        sess_tag = isempty(filter_key) && !isempty(sess_name) ? " [$sess_name]" : ""
-        label = "$ts $marker $(r.tool_name)$sess_tag ($(r.duration_str))"
-        push!(items, ListItem(label, style))
+        push!(col_sessions, isempty(sess_name) ? Span("開門", tstyle(:accent)) : sess_name)
+        push!(col_durations, r.duration_str)
+        preview = if r.tool_name == "ex"
+            _ex_preview(r)
+        else
+            _tool_preview(r)
+        end
+        push!(col_preview, Span(preview, tstyle(:text_dim)))
+        push!(row_styles, r.success ? tstyle(:success) : tstyle(:error))
         if m.selected_inflight == 0 && ri == m.selected_result
             display_sel = item_idx
         end
-    end
-
-    if isempty(items)
-        msg = isempty(filter_key) ? "No tool calls yet" : "No calls for this session"
-        push!(items, ListItem("  $msg", tstyle(:text_dim)))
     end
 
     # Build title with filter indicator
@@ -363,23 +507,62 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
         isempty(filter_key) ? "Tool Calls ($count_str) [f]ilter $follow_str [d]ata" :
         "Tool Calls ($count_str) [f] $filter_label $follow_str [d]ata"
 
-    list_widget = SelectableList(
-        items;
-        selected = display_sel,
-        offset = m._activity_list_offset,
-        block = Block(
-            title = list_title,
-            border_style = _pane_border(m, 3, 1),
-            title_style = _pane_title(m, 3, 1),
-        ),
-        highlight_style = tstyle(:accent, bold = true),
-        tick = m.tick,
-    )
-    render(list_widget, panes[1], buf)
+    n_items = length(col_times)
+    if n_items == 0
+        push!(col_times, "")
+        push!(col_tools, isempty(filter_key) ? "No tool calls yet" : "No calls for this session")
+        push!(col_sessions, "")
+        push!(col_durations, "")
+        push!(col_preview, "")
+        push!(row_styles, tstyle(:text_dim))
+        display_sel = 0
+    end
 
-    # Cache widget for native mouse handling (click + scroll)
-    m._activity_list_widget = list_widget
-    m._activity_list_offset = list_widget.offset
+    # Build or update DataTable — use a hash to detect when rebuild is needed
+    dt_hash = hash((n_items, n_inflight, display_sel, m.tick ÷ 4))
+    old_dt = m.activity_table
+    if old_dt === nothing || m._activity_table_hash != dt_hash
+        dt = DataTable(
+            [
+                DataColumn("Time", col_times; width=9),
+                DataColumn("Tool", col_tools; width=18),
+                DataColumn("Session", col_sessions; width=12),
+                DataColumn("Duration", col_durations; width=9),
+                DataColumn("Preview", col_preview),
+            ];
+            selected = display_sel,
+            block = Block(
+                title = list_title,
+                border_style = _pane_border(m, TAB_ACTIVITY, 1),
+                title_style = _pane_title(m, TAB_ACTIVITY, 1),
+            ),
+            tick = m.tick,
+            row_styles = row_styles,
+        )
+        m._activity_table_hash = dt_hash
+        # Preserve state from old DataTable across rebuilds
+        if old_dt !== nothing
+            dt.last_content_area = old_dt.last_content_area
+            dt.last_col_positions = old_dt.last_col_positions
+            dt.last_widths = old_dt.last_widths
+            dt.offset = old_dt.offset
+            dt.col_widths = old_dt.col_widths
+            dt.col_drag = old_dt.col_drag
+            dt.col_drag_start_x = old_dt.col_drag_start_x
+            dt.col_drag_start_w = old_dt.col_drag_start_w
+        end
+        m.activity_table = dt
+    else
+        dt = old_dt
+        dt.tick = m.tick
+        dt.block = Block(
+            title = list_title,
+            border_style = _pane_border(m, TAB_ACTIVITY, 1),
+            title_style = _pane_title(m, TAB_ACTIVITY, 1),
+        )
+    end
+
+    render(dt, panes[1], buf)
 
     # ── Bottom pane: detail panel ──
     # Determine what's selected: in-flight or completed
@@ -393,8 +576,8 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
     if !show_inflight && !show_completed
         empty_block = Block(
             title = "Details",
-            border_style = _pane_border(m, 3, 2),
-            title_style = _pane_title(m, 3, 2),
+            border_style = _pane_border(m, TAB_ACTIVITY, 2),
+            title_style = _pane_title(m, TAB_ACTIVITY, 2),
         )
         ei = render(empty_block, panes[2], buf)
         if ei.width >= 4
@@ -435,6 +618,10 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
                 "Session:  ",
             )
         end
+        if ifc.tool_name == "ex"
+            eid = _extract_eval_id(ifc.progress_lines)
+            !isempty(eid) && _detail_span!(spans, eid, :secondary, "Eval ID:  ")
+        end
         _build_detail_spans!(spans, ifc.tool_name, ifc.args_json, nothing)
         if !isempty(ifc.progress_lines)
             push!(spans, Span("\n", tstyle(:text)))
@@ -450,8 +637,8 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
         detail_title = "$(ifc.tool_name) (running)"
         p.block = Block(
             title = detail_title,
-            border_style = _pane_border(m, 3, 2),
-            title_style = _pane_title(m, 3, 2),
+            border_style = _pane_border(m, TAB_ACTIVITY, 2),
+            title_style = _pane_title(m, TAB_ACTIVITY, 2),
         )
         # Preserve scroll offset from previous frame's paragraph
         if m.detail_paragraph !== nothing && m._detail_for_result == -2
@@ -483,6 +670,9 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
                     :secondary,
                     "Session:  ",
                 )
+            end
+            if !isempty(r.eval_id)
+                _detail_span!(spans, r.eval_id, :secondary, "Eval ID:  ")
             end
             _build_detail_spans!(spans, r.tool_name, r.args_json, r.result_text)
             wrap_mode = m.result_word_wrap ? word_wrap : no_wrap
@@ -519,8 +709,8 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
 
         m.detail_paragraph.block = Block(
             title = detail_title,
-            border_style = _pane_border(m, 3, 2),
-            title_style = _pane_title(m, 3, 2),
+            border_style = _pane_border(m, TAB_ACTIVITY, 2),
+            title_style = _pane_title(m, TAB_ACTIVITY, 2),
         )
 
         render(m.detail_paragraph, panes[2], buf)
@@ -665,6 +855,15 @@ function _highlight_repl_output(text::String)
         end
     end
     return spans
+end
+
+"""Extract eval_id from an ex tool call's progress lines or result text."""
+function _extract_eval_id(progress_lines::Vector{String})
+    for line in progress_lines
+        m = match(r"\[eval_id:([0-9a-f]+)\]", line)
+        m !== nothing && return String(m.captures[1])
+    end
+    return ""
 end
 
 # Default values for ex tool args (omitted from compact display)

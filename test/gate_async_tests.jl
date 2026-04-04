@@ -204,3 +204,237 @@ end
         end
     end
 end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TCP auth unit tests — validate handle_message token checking
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "Gate TCP auth" begin
+    orig_mode = Kaimon.Gate._MODE[]
+    orig_token = Kaimon.Gate._AUTH_TOKEN[]
+
+    @testset "IPC mode skips auth" begin
+        Kaimon.Gate._MODE[] = :ipc
+        Kaimon.Gate._AUTH_TOKEN[] = "secret123"
+        resp = Kaimon.Gate.handle_message((type = :ping,))
+        @test resp.type == :pong
+    end
+
+    @testset "TCP mode with empty token skips auth" begin
+        Kaimon.Gate._MODE[] = :tcp
+        Kaimon.Gate._AUTH_TOKEN[] = ""
+        resp = Kaimon.Gate.handle_message((type = :ping,))
+        @test resp.type == :pong
+    end
+
+    @testset "TCP mode rejects missing token" begin
+        Kaimon.Gate._MODE[] = :tcp
+        Kaimon.Gate._AUTH_TOKEN[] = "secret123"
+        resp = Kaimon.Gate.handle_message((type = :ping,))
+        @test resp.type == :error
+        @test occursin("Authentication", resp.message)
+    end
+
+    @testset "TCP mode rejects wrong token" begin
+        Kaimon.Gate._MODE[] = :tcp
+        Kaimon.Gate._AUTH_TOKEN[] = "secret123"
+        resp = Kaimon.Gate.handle_message((type = :ping, token = "wrong"))
+        @test resp.type == :error
+        @test occursin("Authentication", resp.message)
+    end
+
+    @testset "TCP mode accepts correct token" begin
+        Kaimon.Gate._MODE[] = :tcp
+        Kaimon.Gate._AUTH_TOKEN[] = "secret123"
+        resp = Kaimon.Gate.handle_message((type = :ping, token = "secret123"))
+        @test resp.type == :pong
+    end
+
+    @testset "pong includes stream_endpoint" begin
+        Kaimon.Gate._MODE[] = :ipc
+        Kaimon.Gate._AUTH_TOKEN[] = ""
+        Kaimon.Gate._STREAM_ENDPOINT[] = "ipc:///tmp/test-stream.sock"
+        resp = Kaimon.Gate.handle_message((type = :ping,))
+        @test resp.type == :pong
+        @test resp.stream_endpoint == "ipc:///tmp/test-stream.sock"
+        Kaimon.Gate._STREAM_ENDPOINT[] = ""
+    end
+
+    Kaimon.Gate._MODE[] = orig_mode
+    Kaimon.Gate._AUTH_TOKEN[] = orig_token
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TCP gate integration test — ephemeral port + auth round-trip
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "Gate TCP ephemeral port + auth" begin
+    if Kaimon.Gate._RUNNING[]
+        @info "Skipping TCP test — gate already running"
+        @test_skip false
+        return
+    end
+
+    token = "test_token_$(bytes2hex(rand(UInt8, 8)))"
+    session_id = "test-tcp-$(bytes2hex(rand(UInt8, 4)))"
+
+    Kaimon.Gate._AUTH_TOKEN[] = token
+    Kaimon.Gate._serve(
+        name = "test-tcp",
+        session_id = session_id,
+        force = true,
+        mode = :tcp,
+        host = "127.0.0.1",
+        port = 0,
+    )
+    sleep(0.2)
+
+    @test Kaimon.Gate._RUNNING[]
+    @test Kaimon.Gate._MODE[] == :tcp
+
+    sock = Kaimon.Gate._GATE_SOCKET[]
+    @test sock !== nothing
+    rep_endpoint = rstrip(ZMQ._get_last_endpoint(sock), '\0')
+    @test startswith(rep_endpoint, "tcp://")
+
+    @test !isempty(Kaimon.Gate._STREAM_ENDPOINT[])
+    @test startswith(Kaimon.Gate._STREAM_ENDPOINT[], "tcp://")
+
+    ctx = Context()
+    req = Socket(ctx, REQ)
+    req.rcvtimeo = 3000
+    req.linger = 0
+    ZMQ.connect(req, rep_endpoint)
+
+    try
+        # Ping without token → rejected
+        io = IOBuffer()
+        serialize(io, (type = :ping,))
+        send(req, Message(take!(io)))
+        resp = deserialize(IOBuffer(recv(req)))
+        @test resp.type == :error
+
+        # Fresh REQ socket (REQ/REP state machine requires it)
+        close(req)
+        req = Socket(ctx, REQ)
+        req.rcvtimeo = 3000
+        req.linger = 0
+        ZMQ.connect(req, rep_endpoint)
+
+        # Ping with correct token → pong with stream_endpoint
+        io = IOBuffer()
+        serialize(io, (type = :ping, token = token))
+        send(req, Message(take!(io)))
+        resp = deserialize(IOBuffer(recv(req)))
+        @test resp.type == :pong
+        @test haskey(resp, :stream_endpoint)
+        @test startswith(resp.stream_endpoint, "tcp://")
+
+        # stream_endpoint from pong is connectable
+        sub = Socket(ctx, SUB)
+        sub.linger = 0
+        sub.rcvtimeo = 100
+        ZMQ.subscribe(sub, "")
+        ZMQ.connect(sub, resp.stream_endpoint)
+        close(sub)
+    finally
+        close(req)
+        close(ctx)
+        Kaimon.Gate.stop()
+        sleep(0.1)
+    end
+
+    @test !Kaimon.Gate._RUNNING[]
+    @test isempty(Kaimon.Gate._AUTH_TOKEN[])
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# connect_tcp! rejects unreachable gates
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "connect_tcp! fails on unreachable gate" begin
+    mgr = Kaimon.ConnectionManager()
+    mgr.running = true
+
+    # Port 1 is almost certainly not running a gate
+    @test_throws ErrorException Kaimon.connect_tcp!(mgr, "127.0.0.1", 1; name = "ghost")
+
+    # Verify no ghost session was added
+    @test isempty(mgr.connections)
+
+    Kaimon.stop!(mgr)
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TCP poll backoff
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "TCP poll backoff" begin
+    # Clear any leftover state
+    empty!(Kaimon._TCP_POLL_BACKOFF)
+
+    key = "192.168.99.99:9999"
+
+    # Simulate sequential failures
+    for i in 1:5
+        failures = i
+        idx = min(failures, length(Kaimon._TCP_POLL_BACKOFF_SCHEDULE))
+        delay = Kaimon._TCP_POLL_BACKOFF_SCHEDULE[idx]
+        Kaimon._TCP_POLL_BACKOFF[key] = (failures = failures, next_try = time() + delay)
+
+        state = Kaimon._TCP_POLL_BACKOFF[key]
+        @test state.failures == i
+        @test state.next_try > time()
+    end
+
+    # After 5 failures, delay should be capped at last schedule entry
+    state = Kaimon._TCP_POLL_BACKOFF[key]
+    @test state.failures == 5
+    expected_delay = Kaimon._TCP_POLL_BACKOFF_SCHEDULE[end]
+    # next_try should be roughly now + max delay (within 1s tolerance)
+    @test state.next_try > time() + expected_delay - 1.0
+
+    # Simulating successful connection clears backoff
+    delete!(Kaimon._TCP_POLL_BACKOFF, key)
+    @test !haskey(Kaimon._TCP_POLL_BACKOFF, key)
+
+    # Backoff check: if next_try is in the future, skip
+    Kaimon._TCP_POLL_BACKOFF[key] = (failures = 1, next_try = time() + 100.0)
+    state = Kaimon._TCP_POLL_BACKOFF[key]
+    @test time() < state.next_try  # should be skipped by poll
+
+    # Backoff check: if next_try is in the past, allow retry
+    Kaimon._TCP_POLL_BACKOFF[key] = (failures = 1, next_try = time() - 1.0)
+    state = Kaimon._TCP_POLL_BACKOFF[key]
+    @test time() >= state.next_try  # should be allowed by poll
+
+    empty!(Kaimon._TCP_POLL_BACKOFF)
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Gate.restart() guard tests — unit tests, no ZMQ needed
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "Gate.restart guards" begin
+    orig_running = Kaimon.Gate._RUNNING[]
+    orig_restart = Kaimon.Gate._ALLOW_RESTART[]
+
+    @testset "errors when gate is not running" begin
+        Kaimon.Gate._RUNNING[] = false
+        @test_throws ErrorException("Gate is not running") Kaimon.Gate.restart()
+    end
+
+    @testset "errors when restart is disabled" begin
+        Kaimon.Gate._RUNNING[] = true
+        Kaimon.Gate._ALLOW_RESTART[] = false
+        @test_throws ErrorException("Restart is disabled for this session (allow_restart=false)") Kaimon.Gate.restart()
+    end
+
+    Kaimon.Gate._RUNNING[] = orig_running
+    Kaimon.Gate._ALLOW_RESTART[] = orig_restart
+end
+
+# NOTE: handle_message(:restart) is not unit-tested here because the handler
+# spawns an @async task that calls _exec_restart → execvp / exit(1) after a
+# 0.3 s delay, which would kill the test process. The :restart message path
+# is covered by the MCP manage_repl integration tests instead.

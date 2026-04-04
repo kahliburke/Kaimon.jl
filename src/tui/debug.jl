@@ -1,6 +1,6 @@
 # ── Debug Tab ─────────────────────────────────────────────────────────────────
 #
-# Tab 8: Infiltrator/breakpoint integration. Two panes:
+# Tab 7: Infiltrator/breakpoint integration. Two panes:
 #   Pane 1 (top): Status + locals display
 #   Pane 2 (bottom): Debug console with history + infil> input
 
@@ -39,8 +39,8 @@ function _view_debug_locals(m::KaimonModel, area::Rect, buf::Buffer)
         render(
             Block(
                 title = "Debug",
-                border_style = _pane_border(m, 8, 1),
-                title_style = _pane_title(m, 8, 1),
+                border_style = _pane_border(m, TAB_DEBUG, 1),
+                title_style = _pane_title(m, TAB_DEBUG, 1),
             ),
             area,
             buf,
@@ -69,7 +69,7 @@ function _view_debug_locals(m::KaimonModel, area::Rect, buf::Buffer)
         title = "◉ Paused$loc$sess"
         pane.block = Block(
             title = title,
-            border_style = _pane_border(m, 8, 1),
+            border_style = _pane_border(m, TAB_DEBUG, 1),
             title_style = tstyle(:error, bold = true),
         )
         render(pane, area, buf)
@@ -85,8 +85,8 @@ function _view_debug_console(m::KaimonModel, area::Rect, buf::Buffer)
         render(
             Block(
                 title = "Console",
-                border_style = _pane_border(m, 8, 2),
-                title_style = _pane_title(m, 8, 2),
+                border_style = _pane_border(m, TAB_DEBUG, 2),
+                title_style = _pane_title(m, TAB_DEBUG, 2),
             ),
             area,
             buf,
@@ -107,8 +107,8 @@ function _view_debug_console(m::KaimonModel, area::Rect, buf::Buffer)
     end
     pane.block = Block(
         title = title_str,
-        border_style = _pane_border(m, 8, 2),
-        title_style = _pane_title(m, 8, 2),
+        border_style = _pane_border(m, TAB_DEBUG, 2),
+        title_style = _pane_title(m, TAB_DEBUG, 2),
     )
 
     # Add infil> prompt as last line in pane content when paused
@@ -277,7 +277,7 @@ function _handle_debug_key!(m::KaimonModel, evt::KeyEvent)
 
     # When paused and on console pane, any printable char enters edit mode
     # with that character pre-typed — no shortcuts steal keystrokes here.
-    if m.debug_state == :paused && get(m.focused_pane, 8, 1) == 2
+    if m.debug_state == :paused && get(m.focused_pane, 7, 1) == 2
         m.debug_input_editing = true
         if m.debug_input === nothing
             m.debug_input = TextInput(text = "", label = "infil> ", tick = m.tick)
@@ -536,7 +536,7 @@ function _poll_debug_consent!(m::KaimonModel)
         return
     end
     m.debug_agent_continue_pending = true
-    _switch_tab!(m, 8)
+    _switch_tab!(m, 7)
 end
 
 """Handle key/mouse events for the consent modal."""
@@ -661,7 +661,7 @@ function _handle_breakpoint_hit!(m::KaimonModel, msg)
     )
 
     # Auto-switch to Debug tab
-    _switch_tab!(m, 8)
+    _switch_tab!(m, 7)
 end
 
 """Handle a breakpoint_resumed PUB message."""

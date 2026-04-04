@@ -93,7 +93,7 @@ end
 
 ping_tool = @mcp_tool(
     :ping,
-    "Check if the MCP server is responsive and return Revise.jl status.",
+    "Check if the MCP server is responsive and list connected Julia sessions.",
     Dict(
         "type" => "object",
         "properties" => Dict(
@@ -110,27 +110,20 @@ ping_tool = @mcp_tool(
         end
         status = "✓ MCP Server is healthy and responsive\n"
 
-        # Check Revise status
-        if isdefined(Main, :Revise)
-            revise_errors = Main.Revise.errors()
-            if revise_errors === nothing
-                status *= "Revise: active (no errors)"
-            else
-                status *= "Revise: active (has errors - call Revise.errors() for details)"
-            end
-        else
-            status *= "Revise: not loaded"
-        end
-
         # Connected Julia sessions
         mgr = GATE_CONN_MGR[]
         if mgr !== nothing
-            conns = connected_sessions(mgr)
             all_conns = lock(mgr.lock) do
                 copy(mgr.connections)
             end
-            status *= "\n\nSessions: $(length(conns)) connected / $(length(all_conns)) total"
-            for conn in all_conns
+            # Separate extension sessions from regular sessions
+            ext_conns = filter(c -> c.spawned_by == "extension", all_conns)
+            user_conns = filter(c -> c.spawned_by != "extension", all_conns)
+            connected_count = count(c -> c.status == :connected, user_conns)
+            # Sort by connected_at descending (newest first)
+            sort!(user_conns; by=c -> c.connected_at, rev=true)
+            status *= "\n\nSessions: $(connected_count) connected / $(length(user_conns)) total"
+            for conn in user_conns
                 key = short_key(conn)
                 dname = isempty(conn.display_name) ? conn.name : conn.display_name
                 icon =
@@ -140,14 +133,37 @@ ping_tool = @mcp_tool(
                     conn.status == :connecting ? "◐" : "○"
                 ntools = length(conn.session_tools)
                 tools_info = ntools > 0 ? ", $(ntools) tools" : ""
-                stalled_info = if conn.status == :stalled
-                    ago = round(Int, Dates.value(now() - conn.last_seen) / 1000)
-                    ", last seen $(ago)s ago"
+                # Uptime from connected_at
+                uptime_secs = round(Int, Dates.value(now() - conn.connected_at) / 1000)
+                uptime_str = if uptime_secs < 60
+                    "$(uptime_secs)s"
+                elseif uptime_secs < 3600
+                    "$(uptime_secs ÷ 60)m"
                 else
-                    ""
+                    "$(uptime_secs ÷ 3600)h $(uptime_secs % 3600 ÷ 60)m"
                 end
-                status *= "\n  $icon $key $dname ($(conn.status), Julia $(conn.julia_version), PID $(conn.pid)$tools_info$stalled_info)"
-                status *= "\n    project: $(conn.project_path)"
+                extra = if conn.status == :stalled
+                    ago = round(Int, Dates.value(now() - conn.last_seen) / 1000)
+                    diag = conn.diagnostics
+                    if diag !== nothing
+                        ", last seen $(ago)s ago, $(round(diag.rss_mb; digits=0))MB/$(round(diag.cpu_pct; digits=0))% CPU"
+                    else
+                        ", last seen $(ago)s ago"
+                    end
+                elseif conn.status == :evaluating || conn.eval_state[] != EVAL_IDLE
+                    ", busy"
+                elseif conn.spawned_by == "agent"
+                    ", agent-spawned"
+                else
+                    ", free"
+                end
+                status *= "\n  $icon $key $dname ($(conn.status), up $(uptime_str), PID $(conn.pid)$tools_info$extra)"
+            end
+            # Extension session summary (internal only, not addressable via tools)
+            if !isempty(ext_conns)
+                active_ext = filter(c -> c.status == :connected || c.status == :evaluating, ext_conns)
+                names = [isempty(c.namespace) ? c.display_name : c.namespace for c in active_ext]
+                status *= "\nExtensions (internal, not for agent use): $(length(active_ext)) active ($(join(names, ", ")))"
             end
         end
 
@@ -267,51 +283,53 @@ server_log_tool = @mcp_tool(
         _format_entry(e::ServerLogEntry) =
             "$(Dates.format(e.timestamp, "yyyy-mm-dd HH:MM:SS")) [$(rpad(uppercase(string(e.level)),5))] $(e.message)"
 
-        if GATE_MODE[]
-            # TUI mode: in-memory ring buffer
-            entries = lock(_TUI_LOG_LOCK) do
-                copy(_TUI_LOG_BUFFER)
-            end
-            entries = _apply_level_filter(entries, level_filter)
-            since_dt !== nothing && filter!(e -> e.timestamp >= since_dt, entries)
-            length(entries) > limit && (entries = entries[end-limit+1:end])
-            isempty(entries) && return "No log entries found matching the specified criteria."
-            return join(_format_entry.(entries), "\n")
-        else
-            # Standalone mode: read from log file
-            log_path = _TUI_LOG_PATH
-            isfile(log_path) || return "Log file not available (server not in TUI mode).\nExpected location: $log_path"
+        log_path = _TUI_LOG_PATH
+        isfile(log_path) || return "No log file found at $log_path"
 
-            all_lines = try
-                readlines(log_path)
-            catch e
-                return "Failed to read log file: $e"
-            end
+        all_lines = try
+            readlines(log_path)
+        catch e
+            return "Failed to read log file: $e"
+        end
 
-            # Filter by since (log line format: "YYYY-MM-DD HH:MM:SS [LEVEL] msg")
-            if since_dt !== nothing
-                filter!(all_lines) do line
-                    length(line) < 19 && return true
-                    try
-                        DateTime(line[1:19], "yyyy-mm-dd HH:MM:SS") >= since_dt
-                    catch
-                        true
-                    end
+        # Filter by since (log line format: "YYYY-MM-DD HH:MM:SS [LEVEL] msg")
+        if since_dt !== nothing
+            filter!(all_lines) do line
+                length(line) < 19 && return true
+                try
+                    DateTime(line[1:19], "yyyy-mm-dd HH:MM:SS") >= since_dt
+                catch
+                    true
                 end
             end
-
-            # Filter by level
-            if level_filter in ("warn", "warning")
-                filter!(l -> contains(l, "[WARN ") || contains(l, "[ERROR"), all_lines)
-            elseif level_filter == "error"
-                filter!(l -> contains(l, "[ERROR"), all_lines)
-            end
-
-            length(all_lines) > limit && (all_lines = all_lines[end-limit+1:end])
-            isempty(all_lines) && return "No log entries found matching the specified criteria."
-            return join(all_lines, "\n")
         end
+
+        # Filter by level
+        if level_filter in ("warn", "warning")
+            filter!(l -> contains(l, "[WARN ") || contains(l, "[ERROR"), all_lines)
+        elseif level_filter == "error"
+            filter!(l -> contains(l, "[ERROR"), all_lines)
+        end
+
+        length(all_lines) > limit && (all_lines = all_lines[end-limit+1:end])
+        isempty(all_lines) && return "No log entries found matching the specified criteria."
+        return join(all_lines, "\n")
     end
+)
+
+tui_screenshot_tool = @mcp_tool(
+    :tui_screenshot,
+    "Capture a text screenshot of the Kaimon TUI. Returns the current rendered view as plain text, including borders, status indicators, and layout. Updated every ~1 second. Useful for analyzing whitespace usage, widget layout, and visual appearance.",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(),
+        "required" => [],
+    ),
+    args -> begin
+        text = TUI_LAST_FRAME[]
+        isempty(text) && return "No TUI frame captured yet (TUI may not be running)"
+        return text
+    end,
 )
 
 usage_instructions_tool =
@@ -546,12 +564,177 @@ Commands:
             mgr.on_sessions_changed = old_cb
             return "Restart sent to $key but timed out waiting for reconnection (60s). The session may still be starting — try again shortly."
         elseif command == "shutdown"
-            ok = send_restart!(conn)  # reuse restart to stop the gate loop
+            ok = send_shutdown!(conn)
             disconnect!(conn)
             return ok ? "Session $key shut down." : "Error: Failed to reach session $key."
         else
             return "Error: Invalid command '$command'"
         end
+    end
+)
+
+connect_tcp_tool = @mcp_tool(
+    :connect_tcp,
+    """Connect to a remote Julia gate session over TCP.
+
+Use this to connect to a gate started with `Gate.serve(mode=:tcp, port=9876)` on
+a remote (or local) machine. The PUB stream endpoint is resolved from the gate's handshake.""",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "host" => Dict(
+                "type" => "string",
+                "description" => "Hostname or IP address of the remote gate",
+            ),
+            "port" => Dict(
+                "type" => "integer",
+                "description" => "Port number (default 9876)",
+                "default" => 9876,
+            ),
+            "name" => Dict(
+                "type" => "string",
+                "description" => "Optional display name for the session",
+            ),
+            "token" => Dict(
+                "type" => "string",
+                "description" => "Auth token for the remote gate (falls back to KAIMON_GATE_TOKEN env var or security config)",
+            ),
+            "stream_port" => Dict(
+                "type" => "integer",
+                "description" => "Local port for the PUB stream socket (for SSH tunnels where the PUB port differs locally). 0 = auto-discover from pong.",
+            ),
+        ),
+        "required" => ["host"],
+    ),
+    (args) -> begin
+        host = get(args, "host", "")
+        isempty(host) && return "Error: host is required"
+        port = get(args, "port", 9876)
+        port = port isa Number ? Int(port) : tryparse(Int, string(port))
+        port === nothing && return "Error: invalid port"
+        name = get(args, "name", "")
+        token = get(args, "token", "")
+        stream_port = Int(get(args, "stream_port", 0))
+
+        mgr = GATE_CONN_MGR[]
+        mgr === nothing && return "Error: No ConnectionManager available"
+
+        conn = try
+            connect_tcp!(mgr, host, port; name, token, stream_port)
+        catch e
+            return "Error: $(sprint(showerror, e))"
+        end
+
+        key = short_key(conn)
+        "Connected to TCP gate at $host:$port (session key: $key)"
+    end
+)
+
+start_session_tool = @mcp_tool(
+    :start_session,
+    """Spawn a new Julia session for a project.
+
+Starts a background Julia process that activates the given project, runs
+Pkg.instantiate, and connects back as a gate session. The project must be
+in the allowed-projects list (configured in the TUI Config tab or
+~/.config/kaimon/projects.json).
+
+Returns the 8-character session key on success, which can be used with
+other tools (ex, run_tests, etc.) via the `session` parameter.
+
+Call with no `project_path` to list allowed projects and their status.""",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "project_path" => Dict(
+                "type" => "string",
+                "description" => "Absolute path to the Julia project directory (must contain Project.toml). Omit to list allowed projects.",
+            ),
+            "name" => Dict(
+                "type" => "string",
+                "description" => "Optional display name for the session (defaults to project directory name)",
+            ),
+        ),
+        "required" => [],
+    ),
+    (args) -> begin
+        raw_path = get(args, "project_path", "")
+        name = get(args, "name", "")
+
+        # No path → list allowed projects
+        if isempty(raw_path)
+            entries = load_projects_config()
+            isempty(entries) && return "No allowed projects configured. Add projects via the TUI Config tab [p] or manually to ~/.config/kaimon/projects.json"
+            managed = get_managed_sessions()
+            lines = String["Allowed projects:"]
+            for entry in entries
+                status = if !entry.enabled
+                    "disabled"
+                else
+                    ms = find_managed_session(entry.project_path)
+                    if ms !== nothing && ms.status == :running && !isempty(ms.session_key)
+                        "running (session: $(ms.session_key))"
+                    else
+                        "ready"
+                    end
+                end
+                push!(lines, "  $(entry.project_path)  [$status]")
+            end
+            return join(lines, "\n")
+        end
+
+        # Normalize path
+        path = normalize_path(raw_path)
+
+        # Validate directory and Project.toml
+        isdir(path) || return "Error: Directory does not exist: $path"
+        isfile(joinpath(path, "Project.toml")) ||
+            return "Error: No Project.toml found in $path"
+
+        # Check allowed list
+        if !is_project_allowed(path)
+            return "Error: Project not in allowed list. Add it via the TUI Config tab [p] or manually to ~/.config/kaimon/projects.json"
+        end
+
+        # Check for existing running session for the same project
+        existing = find_managed_session(path)
+        if existing !== nothing && existing.status == :running && !isempty(existing.session_key)
+            return "Session already running for this project. Session key: $(existing.session_key)"
+        end
+
+        # If there's a crashed/stopped session for this path, remove it
+        if existing !== nothing
+            lock(MANAGED_SESSIONS_LOCK) do
+                filter!(ms -> ms !== existing, MANAGED_SESSIONS)
+            end
+        end
+
+        # Create and spawn
+        ms = ManagedSession(path; name = isempty(name) ? "" : name)
+        lock(MANAGED_SESSIONS_LOCK) do
+            push!(MANAGED_SESSIONS, ms)
+        end
+        spawn_session!(ms)
+
+        # Poll for connection (Pkg.instantiate can be slow)
+        mgr = GATE_CONN_MGR[]
+        timeout = 120.0
+        start = time()
+        while time() - start < timeout
+            sleep(2.0)
+            if mgr !== nothing
+                _monitor_managed_sessions!(mgr)
+            end
+            if ms.status == :running && !isempty(ms.session_key)
+                return "Session started. Session key: $(ms.session_key)"
+            end
+            if ms.status == :crashed
+                err_msg = isempty(ms.error_log) ? "unknown error" : last(ms.error_log)
+                return "Error: Session failed to start — $err_msg\nCheck log: $(ms.log_file)"
+            end
+        end
+
+        return "Error: Timed out waiting for session to connect ($(Int(timeout))s). The process may still be starting — check log: $(ms.log_file)"
     end
 )
 
@@ -1400,10 +1583,9 @@ or when LSP goto_definition doesn't work.
                 return "Error: File does not exist: $abs_path"
             end
 
-            # Use VS Code URI with line and column position
-            # Format: vscode://file/path/to/file:line:column
-            vscode_uri = "vscode://file$(abs_path):$(line):$(column)"
-            trigger_vscode_uri(vscode_uri)
+            # Use configured editor URI with line and column position
+            uri = editor_file_url(abs_path; line=line, col=column)
+            trigger_vscode_uri(uri)
 
             return "Navigated to $abs_path:$line:$column"
         catch e
@@ -1727,7 +1909,11 @@ run_tests_tool = @mcp_tool(
     """Run tests and optionally generate coverage reports.
 
 Spawns a subprocess with correct test environment. Streams results in real-time.
-Pattern uses ReTest regex syntax to filter tests.""",
+Pattern uses ReTest regex syntax to filter tests.
+
+Provide either `project_path` (absolute path to the project) or `session`
+(gate session key) to identify the project. If neither is given and only
+one session is connected, that session's project is used.""",
     Dict(
         "type" => "object",
         "properties" => Dict(
@@ -1745,9 +1931,13 @@ Pattern uses ReTest regex syntax to filter tests.""",
                 "description" => "Enable verbose test output (default: false)",
                 "default" => 1,
             ),
+            "project_path" => Dict(
+                "type" => "string",
+                "description" => "Absolute path to the project directory (must contain Project.toml and test/runtests.jl). Use this instead of session if no gate session is running for the project.",
+            ),
             "session" => Dict(
                 "type" => "string",
-                "description" => "Session key (8-char ID). Required when multiple sessions are connected.",
+                "description" => "Session key (8-char ID). Used to resolve project path from a connected gate session.",
             ),
         ),
         "required" => [],
@@ -1758,6 +1948,7 @@ Pattern uses ReTest regex syntax to filter tests.""",
         verbose_arg = get(args, "verbose", 1)
         verbose = verbose_arg isa Int ? verbose_arg : parse(Int, verbose_arg)
         session = get(args, "session", "")
+        explicit_path = get(args, "project_path", "")
         on_progress = get(args, "_on_progress", nothing)
 
         # Normalize pattern
@@ -1765,16 +1956,18 @@ Pattern uses ReTest regex syntax to filter tests.""",
             pattern = ""
         end
 
-        if !GATE_MODE[]
-            return "Error: run_tests requires gate mode. Start a gate REPL with Gate.serve()."
+        # Resolve project path: explicit path > session > single connected session
+        project_path = if !isempty(explicit_path)
+            isdir(explicit_path) || return "Error: project_path not found: $explicit_path"
+            explicit_path
+        else
+            if !GATE_MODE[]
+                return "Error: Provide project_path or start a gate session."
+            end
+            conn, err = _resolve_gate_conn(session)
+            err !== nothing && return err
+            conn.project_path
         end
-
-        conn, err = _resolve_gate_conn(session)
-        err !== nothing && return err
-
-        # Derive project root — conn.project_path may point to a subdirectory
-        # (e.g. test/) if the user activated a different env on the session.
-        project_path = conn.project_path
         runtests_path = joinpath(project_path, "test", "runtests.jl")
         if !isfile(runtests_path)
             # Try parent directory (common when project_path is test/ subdir)
@@ -1802,8 +1995,13 @@ Pattern uses ReTest regex syntax to filter tests.""",
         while run.status == RUN_RUNNING
             sleep(0.5)
             if on_progress !== nothing
+                # total_pass/total_fail are only set when the top-level testset
+                # finishes; during the run, accumulate from individual results.
+                p = run.total_pass > 0 ? run.total_pass : sum((r.pass_count for r in run.results), init=0)
+                f = run.total_fail > 0 ? run.total_fail : sum((r.fail_count for r in run.results), init=0)
+                n_sets = length(run.results)
                 on_progress(
-                    "$(run.total_pass) passed, $(run.total_fail) failed",
+                    "$p passed, $f failed ($n_sets testsets done)",
                 )
             end
             if time() > deadline
@@ -1831,6 +2029,147 @@ Pattern uses ReTest regex syntax to filter tests.""",
 
         # Return focused summary (not raw output dump)
         return format_test_summary(run)
+    end
+)
+
+extension_info_tool = @mcp_tool(
+    :extension_info,
+    """Get information about loaded Kaimon extensions and their tools.
+
+No arguments: list all extensions with status and tool names.
+With name: detailed view of one extension including per-tool documentation and parameter schemas.""",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "name" => Dict(
+                "type" => "string",
+                "description" => "Extension namespace to get details for. Omit to list all extensions.",
+            ),
+        ),
+        "required" => [],
+    ),
+    args -> begin
+        extensions = get_managed_extensions()
+        conn_mgr = GATE_CONN_MGR[]
+        name = get(args, "name", nothing)
+
+        if name === nothing
+            # List all extensions
+            if isempty(extensions)
+                return "No extensions configured."
+            end
+
+            lines = String[]
+            for ext in extensions
+                ns = ext.config.manifest.namespace
+                desc = ext.config.manifest.description
+                status_icon = ext.status == :running ? "●" :
+                              ext.status == :crashed ? "●" :
+                              "○"
+
+                # Get tool names if connected
+                tool_names = String[]
+                if conn_mgr !== nothing
+                    conn = _find_ext_connection(ext, conn_mgr)
+                    if conn !== nothing && !isempty(conn.session_tools)
+                        for tool in conn.session_tools
+                            push!(tool_names, get(tool, "name", "?"))
+                        end
+                    end
+                end
+
+                line = "$status_icon $ns ($(ext.status))"
+                !isempty(desc) && (line *= " — $desc")
+                push!(lines, line)
+                if !isempty(tool_names)
+                    push!(lines, "  Tools: $(join(tool_names, ", "))")
+                end
+            end
+            return join(lines, "\n")
+        else
+            # Detail view for a specific extension
+            idx = findfirst(e -> e.config.manifest.namespace == name, extensions)
+            if idx === nothing
+                available = join([e.config.manifest.namespace for e in extensions], ", ")
+                return "Error: No extension '$(name)' found. Available: $available"
+            end
+
+            ext = extensions[idx]
+            manifest = ext.config.manifest
+            entry = ext.config.entry
+
+            # Status info
+            status_icon = ext.status == :running ? "●" :
+                          ext.status == :crashed ? "●" :
+                          "○"
+            pid_str = if ext.process !== nothing && Base.process_running(ext.process)
+                string(getpid(ext.process))
+            else
+                "—"
+            end
+            uptime_str = ext.status == :running ? format_uptime(time() - ext.started_at) : "—"
+
+            lines = String[]
+            push!(lines, "$(manifest.namespace) — $(manifest.module_name)")
+            push!(lines, "Status: $status_icon $(ext.status) (PID $pid_str, uptime $uptime_str)")
+            !isempty(manifest.description) && push!(lines, "Description: $(manifest.description)")
+            push!(lines, "Project: $(entry.project_path)")
+
+            # Tool documentation
+            conn = conn_mgr !== nothing ? _find_ext_connection(ext, conn_mgr) : nothing
+            if conn !== nothing && !isempty(conn.session_tools)
+                tools = conn.session_tools
+                push!(lines, "")
+                push!(lines, "Tools ($(length(tools))):")
+
+                for tool in tools
+                    tname = get(tool, "name", "unknown")
+                    tdesc = get(tool, "description", "")
+                    targs = get(tool, "arguments", Dict{String,Any}[])
+
+                    # Build signature
+                    param_names = String[]
+                    for arg in targs
+                        push!(param_names, get(arg, "name", "?"))
+                    end
+                    sig = isempty(param_names) ? "" : "($(join(param_names, ", ")))"
+
+                    push!(lines, "")
+                    push!(lines, "  $(manifest.namespace).$tname$sig")
+
+                    # Description (first paragraph only for readability)
+                    if !isempty(tdesc)
+                        first_para = first(split(tdesc, "\n\n"))
+                        push!(lines, "    $first_para")
+                    end
+
+                    # Parameters
+                    if !isempty(targs)
+                        push!(lines, "    Parameters:")
+                        for arg in targs
+                            arg_name = get(arg, "name", "?")
+                            type_meta = get(arg, "type_meta", nothing)
+                            arg_type = if type_meta isa Dict
+                                get(type_meta, "julia_type", "Any")
+                            elseif type_meta isa String
+                                type_meta
+                            else
+                                "Any"
+                            end
+                            required = get(arg, "required", false)
+                            req = required ? " (required)" : ""
+                            push!(lines, "      $arg_name: $arg_type$req")
+                        end
+                    end
+                end
+            elseif conn !== nothing
+                push!(lines, "\nTools: (none registered)")
+            else
+                push!(lines, "\nTools: waiting for gate connection...")
+            end
+
+            return join(lines, "\n")
+        end
     end
 )
 
@@ -2030,5 +2369,235 @@ and `tool_args` directly for a custom gate tool call.
             tool_name = tool_name,
             tool_args_json = tool_args_json,
         )
+    end
+)
+
+# ── Eval Tracking ────────────────────────────────────────────────────────────
+
+function _fmt_elapsed(secs::Float64)
+    secs < 1.0 ? "$(round(Int, secs * 1000))ms" :
+    secs < 60.0 ? "$(round(secs; digits=1))s" :
+    "$(round(Int, secs ÷ 60))m $(round(Int, secs % 60))s"
+end
+
+check_eval_tool = @mcp_tool(
+    :check_eval,
+    """Check the status of a background job by eval ID.
+
+IMPORTANT: Do NOT poll this rapidly. Wait at least 30 seconds between calls,
+or longer for computations you expect to take minutes. The job will not
+complete faster if you check more often — you are just wasting tokens.
+A good pattern: check once after 30s, then every 60s after that.
+
+Returns status (running/completed/failed), elapsed time, stashed values,
+and the result if completed.""",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "eval_id" => Dict(
+                "type" => "string",
+                "description" => "The 8-character eval ID from a previous ex() call",
+            ),
+        ),
+        "required" => ["eval_id"],
+    ),
+    args -> begin
+        eval_id = get(args, "eval_id", "")
+        isempty(eval_id) && return "Error: eval_id is required."
+
+        mgr = GATE_CONN_MGR[]
+        mgr === nothing && return "No connection manager."
+
+        record = lock(mgr.eval_history_lock) do
+            for r in reverse(mgr.eval_history)
+                startswith(r.eval_id, eval_id) && return r
+            end
+            nothing
+        end
+
+        # Fall back to database for jobs from previous sessions
+        if record === nothing
+            db_job = Database.get_job(eval_id)
+            if db_job !== nothing
+                status = get(db_job, "status", "unknown")
+                code = get(db_job, "code", "")
+                result = get(db_job, "result", "")
+                result_preview = get(db_job, "result_preview", "")
+                started = get(db_job, "started_at", 0.0)
+                finished = get(db_job, "finished_at", 0.0)
+                elapsed_str = _fmt_elapsed(finished > 0 ? finished - started : time() - started)
+                out = "$eval_id $status $(elapsed_str)\n$(first(code, 80))"
+                !isempty(result) && (out *= "\n\n$result")
+                !isempty(result) || !isempty(result_preview) && (out *= "\n\n$result_preview")
+                return out
+            end
+        end
+
+        record === nothing && return "No eval matching '$eval_id'."
+
+        elapsed = record.finished_at > 0 ? record.finished_at - record.started_at : time() - record.started_at
+        display_status = record.status == :promoted ? :running : record.status
+        code_preview = first(record.code, 80) * (length(record.code) > 80 ? "..." : "")
+
+        status_line = "$(display_status), $(_fmt_elapsed(elapsed))"
+        # Show last activity age for running jobs
+        if display_status == :running && record.last_update > record.started_at
+            ago = round(Int, time() - record.last_update)
+            status_line *= ", last activity $(ago)s ago"
+        end
+        parts = ["$(record.eval_id) on $(record.session_key)", status_line]
+
+        # Stash summary (compact: key=value pairs on one line)
+        if !isempty(record.stash)
+            stash_parts = ["$(k)=$(v)" for (k, v) in sort(collect(record.stash); by=first)]
+            push!(parts, join(stash_parts, ", "))
+        end
+
+        # Result — only for completed/failed jobs
+        if record.promoted && record.status in (:completed, :failed) && !isempty(record.full_result)
+            push!(parts, record.full_result)
+        elseif !isempty(record.result_preview)
+            push!(parts, record.result_preview)
+        end
+
+        join(parts, "\n")
+    end
+)
+
+cancel_eval_tool = @mcp_tool(
+    :cancel_eval,
+    """Cancel a running background job by eval ID.
+
+Sends a cancellation signal to the gate session and marks the job in the database.
+Running code that calls `Gate.is_cancelled()` in its loop will stop cooperatively.
+Julia doesn't support forced thread interruption, so cancellation is cooperative —
+the running code must check `Gate.is_cancelled()` periodically.""",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "eval_id" => Dict(
+                "type" => "string",
+                "description" => "The eval ID of the background job to cancel",
+            ),
+        ),
+        "required" => ["eval_id"],
+    ),
+    args -> begin
+        eval_id = get(args, "eval_id", "")
+        isempty(eval_id) && return "Error: eval_id is required."
+
+        # Find the session key and notify the gate process
+        session_key = ""
+        mgr = GATE_CONN_MGR[]
+        if mgr !== nothing
+            lock(mgr.eval_history_lock) do
+                for r in mgr.eval_history
+                    if startswith(r.eval_id, eval_id) && r.status in (:running, :promoted)
+                        r.status = :cancelled
+                        r.finished_at = time()
+                        session_key = r.session_key
+                    end
+                end
+            end
+
+            # Send cancel to the gate session so Gate.is_cancelled() returns true
+            if !isempty(session_key)
+                conn = get_connection_by_key(mgr, session_key)
+                if conn !== nothing
+                    try
+                        _req_send_recv(conn,
+                            (type = :cancel_job, eval_id = eval_id);
+                            caller_timeout = 5.0)
+                    catch
+                    end
+                end
+            end
+        end
+
+        # Update database
+        Database.update_job!(eval_id; status="cancelled", cancelled=true, finished_at=time())
+
+        "Job $eval_id marked as cancelled. Running code can check Gate.is_cancelled() to stop cooperatively."
+    end
+)
+
+list_jobs_tool = @mcp_tool(
+    :list_jobs,
+    """List background jobs with optional status filter.
+
+Shows promoted computations that exceeded the time threshold. Use status filter
+to see only running, completed, failed, or cancelled jobs.""",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "status" => Dict(
+                "type" => "string",
+                "description" => "Filter by status: 'running', 'completed', 'failed', 'cancelled', or empty for all",
+            ),
+            "limit" => Dict(
+                "type" => "integer",
+                "description" => "Max number of jobs to return (default: 20)",
+            ),
+            "stats" => Dict(
+                "type" => "boolean",
+                "description" => "Include aggregate statistics (default: false)",
+            ),
+        ),
+        "required" => [],
+    ),
+    args -> begin
+        status = get(args, "status", "")
+        limit = Int(get(args, "limit", 20))
+        show_stats = let v = get(args, "stats", false)
+            v isa Bool ? v : v == "true" || v == true
+        end
+
+        jobs = Database.list_jobs(; status, limit)
+
+        if isempty(jobs)
+            return isempty(status) ? "No background jobs found." : "No $status jobs found."
+        end
+
+        lines = String[]
+        push!(lines, "Background Jobs ($(length(jobs))$(isempty(status) ? "" : ", status=$status")):\n")
+
+        for job in jobs
+            jid = get(job, "eval_id", "?")
+            jstatus = get(job, "status", "?")
+            code = get(job, "code", "")
+            started = get(job, "started_at", 0.0)
+            finished = get(job, "finished_at", 0.0)
+            session = get(job, "session_key", "")
+
+            elapsed = if finished > 0.0
+                finished - started
+            else
+                time() - started
+            end
+            elapsed_str = elapsed < 60.0 ? "$(round(elapsed; digits=1))s" : "$(round(Int, elapsed ÷ 60))m $(round(Int, elapsed % 60))s"
+
+            icon = jstatus == "completed" ? "✓" : jstatus == "running" ? "⏳" : jstatus == "failed" ? "✗" : "⊘"
+            code_preview = length(code) > 60 ? first(code, 60) * "..." : code
+
+            push!(lines, "$icon $jid [$jstatus] $(elapsed_str) — $code_preview")
+        end
+
+        if show_stats
+            stats = Database.get_job_stats()
+            if !isempty(stats)
+                push!(lines, "\nStatistics:")
+                push!(lines, "  Total: $(get(stats, "total", 0))")
+                push!(lines, "  Running: $(get(stats, "running", 0))")
+                push!(lines, "  Completed: $(get(stats, "completed", 0))")
+                push!(lines, "  Failed: $(get(stats, "failed", 0))")
+                push!(lines, "  Cancelled: $(get(stats, "cancelled", 0))")
+                avg = get(stats, "avg_duration", nothing)
+                avg !== nothing && avg !== missing && push!(lines, "  Avg duration: $(round(avg; digits=1))s")
+                maxd = get(stats, "max_duration", nothing)
+                maxd !== nothing && maxd !== missing && push!(lines, "  Max duration: $(round(maxd; digits=1))s")
+            end
+        end
+
+        join(lines, "\n")
     end
 )

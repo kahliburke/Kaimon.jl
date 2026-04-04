@@ -13,6 +13,7 @@ Kaimon's terminal UI has seven tabs, each accessible by pressing its number key.
 | `5` | Tests | Run and browse test results |
 | `6` | Config | MCP client setup and onboarding |
 | `7` | Advanced | Stress testing and diagnostics |
+| `9` | Extensions | Extension management |
 
 Press `q` to quit, `?` to show a key reference overlay.
 
@@ -38,6 +39,17 @@ Each entry shows:
 - Julia version and active project
 
 When multiple sessions are connected, tools that execute code require a `ses` or `session` parameter to specify the target. See [Sessions](sessions.md) for routing details.
+
+For agent-spawned sessions (started via the `start_session` tool), select the session and press `Enter` to open an embedded terminal with direct REPL access.
+
+### Key Reference
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Navigate session list |
+| `Enter` | Open terminal for agent-spawned session |
+| `f` | Filter sessions |
+| `Esc` | Close terminal or filter |
 
 ---
 
@@ -129,6 +141,8 @@ The onboarding flow (`o`) creates a `.julia-startup.jl` file for per-project aut
 
 ![Global gate](./assets/kaimon_startup_global.gif)
 
+The Config tab also manages the **allowed projects list** for managed sessions. Add projects here to enable AI agents to spawn sessions via the `start_session` tool. See [Projects Configuration](configuration.md#projects-configuration) for the file format.
+
 See [Getting Started](getting-started.md) for the full onboarding walkthrough.
 
 ---
@@ -138,3 +152,11 @@ See [Getting Started](getting-started.md) for the full onboarding walkthrough.
 The Advanced tab provides stress testing and load diagnostics. It lets you fire configurable bursts of concurrent tool calls against the running server to measure throughput and latency under load.
 
 Use this tab to verify that the server handles parallel requests correctly when multiple agents or sessions are active simultaneously.
+
+---
+
+## 9 — Extensions
+
+The Extensions tab manages Kaimon extensions — Julia packages that add domain-specific MCP tools. The tab has a two-pane layout showing all registered extensions with their status, and a detail view with tool documentation and error logs.
+
+See [Extensions](extensions.md) for full documentation on the extension system, including how to write and register extensions.

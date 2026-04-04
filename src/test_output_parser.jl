@@ -34,6 +34,7 @@ mutable struct TestRun
     project_path::String
     started_at::DateTime
     finished_at::Union{DateTime,Nothing}
+    reader_done::Bool
     status::TestRunStatus
     pattern::String
     results::Vector{TestResult}
@@ -53,6 +54,7 @@ function TestRun(; id::Int = 0, project_path::String = "", pattern::String = "")
         project_path,
         now(),
         nothing,
+        false,
         RUN_RUNNING,
         pattern,
         TestResult[],
@@ -555,8 +557,8 @@ function format_test_summary(run::TestRun)::String
 
         n = length(run.failures)
         tier1 = first(run.failures, 3)
-        tier2 = n >= 4 ? run.failures[4:min(13, n)] : TestFailure[]
-        tier3 = n > 13 ? run.failures[14:end] : TestFailure[]
+        tier2 = n >= 4 ? run.failures[4:min(8, n)] : TestFailure[]
+        tier3 = n > 8 ? run.failures[9:end] : TestFailure[]
 
         for (i, f) in enumerate(tier1)
             println(buf, "  $i) $(f.file):$(f.line)")

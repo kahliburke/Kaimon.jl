@@ -340,7 +340,7 @@ qdrant_collection_info_tool = @mcp_tool(
 
 qdrant_search_code_tool = @mcp_tool(
     :qdrant_search_code,
-    "Semantic search over indexed codebase using natural language queries. Finds relevant code snippets based on meaning, not just keywords.",
+    "Semantic search over indexed codebase using natural language queries. Finds relevant code snippets based on meaning, not just keywords. Defaults to the last-used session's project collection.",
     Dict(
         "type" => "object",
         "properties" => Dict(
@@ -350,7 +350,11 @@ qdrant_search_code_tool = @mcp_tool(
             ),
             "collection" => Dict(
                 "type" => "string",
-                "description" => "Collection name to search (optional, defaults to current project's collection)",
+                "description" => "Collection name to search (optional, defaults to last-used session's project)",
+            ),
+            "cross_project" => Dict(
+                "type" => "boolean",
+                "description" => "Search across ALL indexed projects at once (default: false). Ignores 'collection' when true.",
             ),
             "limit" => Dict(
                 "type" => "integer",
@@ -381,15 +385,38 @@ qdrant_search_code_tool = @mcp_tool(
             return "Error: query is required"
         end
 
-        # Resolve collection name (normalize + fuzzy match)
-        raw_collection = get(args, "collection", nothing)
-        if raw_collection isa String && isempty(raw_collection)
-            raw_collection = nothing
+        # Resolve collection — cross_project uses the global collection
+        cross_project = let v = get(args, "cross_project", false)
+            v isa Bool ? v : v == "true" || v == true
         end
+
         collections = QdrantClient.list_collections()
-        collection, col_err = _resolve_collection(raw_collection, collections)
-        if col_err !== nothing
-            return "Error: $col_err"
+
+        collection = if cross_project
+            gc = global_collection_name()
+            if gc ∉ collections
+                # Auto-create and populate from existing collections
+                try
+                    populate_global_collection!(; verbose=false)
+                catch
+                end
+                gc = global_collection_name()
+                collections = QdrantClient.list_collections()
+                if gc ∉ collections
+                    return "Error: No indexed projects found. Index at least one project first."
+                end
+            end
+            gc
+        else
+            raw_collection = get(args, "collection", nothing)
+            if raw_collection isa String && isempty(raw_collection)
+                raw_collection = nothing
+            end
+            col, col_err = _resolve_collection(raw_collection, collections)
+            if col_err !== nothing
+                return "Error: $col_err"
+            end
+            col
         end
 
         # Get embedding for query
@@ -449,8 +476,20 @@ qdrant_search_code_tool = @mcp_tool(
             is_mutable = get(payload, "is_mutable", false)
 
             # Use relative path if possible
-            if !isempty(file) && startswith(file, pwd())
-                file = relpath(file, pwd())
+            proj_path = get(payload, "project_path", "")
+            if !isempty(file)
+                if !isempty(proj_path) && startswith(file, proj_path)
+                    file = relpath(file, proj_path)
+                elseif startswith(file, pwd())
+                    file = relpath(file, pwd())
+                end
+            end
+
+            # For cross-project search, prefix with project name
+            proj_label = if cross_project && !isempty(proj_path)
+                basename(proj_path)
+            else
+                ""
             end
 
             # Compact format: [score] name @ file:L10-20 (type)
@@ -463,6 +502,7 @@ qdrant_search_code_tool = @mcp_tool(
                 output *= "$name @ "
             end
 
+            !isempty(proj_label) && (output *= "$proj_label/")
             output *= "$file:L$start_line"
             output *= start_line != end_line ? "-$end_line" : ""
 
@@ -737,6 +777,219 @@ qdrant_reindex_file_tool = @mcp_tool(
 )
 
 # ============================================================================
+# Low-Level Tools (for extensions calling via Gate.call_tool)
+# ============================================================================
+
+qdrant_collection_exists_tool = @mcp_tool(
+    :qdrant_collection_exists,
+    "Check whether a Qdrant collection exists. Returns true/false.",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "collection" =>
+                Dict("type" => "string", "description" => "Name of the collection to check"),
+        ),
+        "required" => ["collection"],
+    ),
+    function (args)
+        err = _require_services()
+        err !== nothing && return err
+
+        collection = get(args, "collection", "")
+        isempty(collection) && return "Error: collection name is required"
+
+        return QdrantClient.collection_exists(collection)
+    end
+)
+
+qdrant_create_collection_tool = @mcp_tool(
+    :qdrant_create_collection,
+    "Create a new Qdrant collection with specified vector configuration.",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "collection" =>
+                Dict("type" => "string", "description" => "Name of the collection to create"),
+            "vector_size" => Dict(
+                "type" => "integer",
+                "description" => "Dimension of vectors (default: 768)",
+            ),
+            "distance" => Dict(
+                "type" => "string",
+                "description" => "Distance metric: Cosine, Euclid, or Dot (default: Cosine)",
+            ),
+        ),
+        "required" => ["collection"],
+    ),
+    function (args)
+        err = _require_services()
+        err !== nothing && return err
+
+        collection = get(args, "collection", "")
+        isempty(collection) && return "Error: collection name is required"
+        vector_size = Int(get(args, "vector_size", 768))
+        distance = get(args, "distance", "Cosine")
+
+        ok = QdrantClient.create_collection(collection; vector_size = vector_size, distance = distance)
+        return ok ? "Created collection '$collection' (dim=$vector_size, distance=$distance)" :
+               "Error: failed to create collection '$collection'"
+    end
+)
+
+qdrant_delete_collection_tool = @mcp_tool(
+    :qdrant_delete_collection,
+    "Delete a Qdrant collection.",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "collection" =>
+                Dict("type" => "string", "description" => "Name of the collection to delete"),
+        ),
+        "required" => ["collection"],
+    ),
+    function (args)
+        err = _require_services()
+        err !== nothing && return err
+
+        collection = get(args, "collection", "")
+        isempty(collection) && return "Error: collection name is required"
+
+        ok = QdrantClient.delete_collection(collection)
+        return ok ? "Deleted collection '$collection'" : "Collection '$collection' not found or already deleted"
+    end
+)
+
+qdrant_upsert_points_tool = @mcp_tool(
+    :qdrant_upsert_points,
+    "Upsert points (vectors with payloads) into a Qdrant collection.",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "collection" =>
+                Dict("type" => "string", "description" => "Name of the collection"),
+            "points" => Dict(
+                "type" => "array",
+                "description" => "Array of point dicts with 'id', 'vector', and 'payload' keys",
+                "items" => Dict("type" => "object"),
+            ),
+        ),
+        "required" => ["collection", "points"],
+    ),
+    function (args)
+        err = _require_services()
+        err !== nothing && return err
+
+        collection = get(args, "collection", "")
+        isempty(collection) && return "Error: collection name is required"
+        points = get(args, "points", Dict[])
+        isempty(points) && return "Error: points array is empty"
+
+        points_vec = Vector{Dict}(points)
+        ok = QdrantClient.upsert_points(collection, points_vec)
+        return ok ? "Upserted $(length(points_vec)) points into '$collection'" :
+               "Error: upsert failed for '$collection'"
+    end
+)
+
+qdrant_delete_points_tool = @mcp_tool(
+    :qdrant_delete_points,
+    "Delete specific points by ID from a Qdrant collection.",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "collection" =>
+                Dict("type" => "string", "description" => "Name of the collection"),
+            "point_ids" => Dict(
+                "type" => "array",
+                "description" => "Array of point ID strings to delete",
+                "items" => Dict("type" => "string"),
+            ),
+        ),
+        "required" => ["collection", "point_ids"],
+    ),
+    function (args)
+        err = _require_services()
+        err !== nothing && return err
+
+        collection = get(args, "collection", "")
+        isempty(collection) && return "Error: collection name is required"
+        point_ids = Vector{String}(get(args, "point_ids", String[]))
+        isempty(point_ids) && return "No point IDs to delete"
+
+        ok = QdrantClient.delete_points(collection, point_ids)
+        return ok ? "Deleted $(length(point_ids)) points from '$collection'" :
+               "Error: delete failed for '$collection'"
+    end
+)
+
+qdrant_search_tool = @mcp_tool(
+    :qdrant_search,
+    "Search a Qdrant collection with a pre-computed vector. Returns raw results with scores and payloads. Optional filter narrows results by payload fields (Qdrant filter syntax).",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "collection" =>
+                Dict("type" => "string", "description" => "Name of the collection"),
+            "vector" => Dict(
+                "type" => "array",
+                "description" => "Query vector (Float64 array)",
+                "items" => Dict("type" => "number"),
+            ),
+            "limit" => Dict(
+                "type" => "integer",
+                "description" => "Maximum number of results (default: 10)",
+            ),
+            "filter" => Dict(
+                "type" => "object",
+                "description" => "Qdrant payload filter (e.g., {\"must\": [{\"key\": \"tier\", \"match\": {\"value\": \"derived\"}}]})",
+            ),
+        ),
+        "required" => ["collection", "vector"],
+    ),
+    function (args)
+        err = _require_services()
+        err !== nothing && return err
+
+        collection = get(args, "collection", "")
+        isempty(collection) && return "Error: collection name is required"
+        raw_vector = get(args, "vector", Float64[])
+        isempty(raw_vector) && return "Error: vector is required"
+        vector = Vector{Float64}(raw_vector)
+        limit = Int(get(args, "limit", 10))
+        filter = get(args, "filter", nothing)
+
+        return QdrantClient.search(collection, vector; limit = limit, filter = filter)
+    end
+)
+
+ollama_embed_tool = @mcp_tool(
+    :ollama_embed,
+    "Get an embedding vector for text using Ollama. Returns Vector{Float64}.",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "text" =>
+                Dict("type" => "string", "description" => "Text to embed"),
+            "model" => Dict(
+                "type" => "string",
+                "description" => "Ollama embedding model (default: $DEFAULT_EMBEDDING_MODEL)",
+            ),
+        ),
+        "required" => ["text"],
+    ),
+    function (args)
+        model = get(args, "model", DEFAULT_EMBEDDING_MODEL)
+        err = _require_services(need_ollama = true, model = model)
+        err !== nothing && return err
+
+        text = get(args, "text", "")
+        isempty(text) && return "Error: text is required"
+
+        return get_ollama_embedding(text; model = model)
+    end
+)
+
+# ============================================================================
 # Tool Registration
 # ============================================================================
 
@@ -749,5 +1002,12 @@ function create_qdrant_tools()
         qdrant_index_project_tool,
         qdrant_sync_index_tool,
         qdrant_reindex_file_tool,
+        qdrant_collection_exists_tool,
+        qdrant_create_collection_tool,
+        qdrant_delete_collection_tool,
+        qdrant_upsert_points_tool,
+        qdrant_delete_points_tool,
+        qdrant_search_tool,
+        ollama_embed_tool,
     ]
 end

@@ -72,6 +72,6 @@ function _render_logo!(area::Rect, f::Frame; tick::Int = 0)
     pixels = _get_logo_pixels()
     pixels === nothing && return
     img = PixelImage(area.width, area.height)
-    load_pixels!(img, pixels)
+    load_pixels!(img, ColorRGBA.(pixels))
     render(img, area, f; tick = tick)
 end

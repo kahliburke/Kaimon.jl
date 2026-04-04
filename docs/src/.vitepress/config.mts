@@ -9,11 +9,10 @@ const BASE = '/Kaimon.jl/'
 // Locally, falls back to VitePress public/assets/ served under the site base.
 const ASSET_BASE = process.env.KAIMON_ASSET_BASE ?? (BASE + 'assets/')
 
-// Rewrite ./assets/kaimon_*.gif src attributes to use ASSET_BASE so that
-// local dev builds serve from public/assets/ and CI builds serve from
-// the docs-assets GitHub release.
+// Rewrite ./assets/kaimon_*.gif to use ASSET_BASE via Vue's :src binding.
+// Using :src makes it a runtime expression so VitePress doesn't try to
+// resolve the path as an ESM import during SSR.
 function kaimonAssetsPlugin(md: MarkdownIt, assetBase: string) {
-  const defaultRender = md.renderer.rules.image
   md.renderer.rules.image = function (
     tokens: Token[],
     idx: number,
@@ -27,12 +26,11 @@ function kaimonAssetsPlugin(md: MarkdownIt, assetBase: string) {
       const src = token.attrs![srcIdx][1]
       const m = src.match(/(?:\.\.?\/)?assets\/(kaimon_[^"')]+\.gif)$/)
       if (m) {
-        token.attrs![srcIdx][1] = assetBase + m[1]
+        const alt = token.attrGet('alt') || ''
+        return `<img :src="'${assetBase}${m[1]}'" alt="${alt}" />\n`
       }
     }
-    return defaultRender
-      ? defaultRender(tokens, idx, options, env, self)
-      : self.renderToken(tokens, idx, options)
+    return self.renderToken(tokens, idx, options)
   }
 }
 
@@ -42,12 +40,24 @@ export default withMermaid(defineConfig({
   description: 'Opening the gate between AI and Julia',
   lastUpdated: true,
   cleanUrls: true,
-  head: [['link', { rel: 'icon', href: ASSET_BASE + 'kaimon_logo1.png' }]],
+  head: [['link', { rel: 'icon', href: 'assets/kaimon_logo1.png' }]],
 
   vite: {
     define: {
       // Injected into Vue components (e.g. LogoBanner.vue)
       __ASSET_BASE__: JSON.stringify(ASSET_BASE),
+    },
+    vue: {
+      template: {
+        transformAssetUrls: {
+          includeAbsolute: false,
+        },
+      },
+    },
+    build: {
+      rollupOptions: {
+        external: [/^\/assets\//, /^\/Kaimon\.jl\/assets\//],
+      },
     },
   },
 
@@ -61,7 +71,7 @@ export default withMermaid(defineConfig({
   mermaid: {},
 
   themeConfig: {
-    logo: ASSET_BASE + 'kaimon_logo1.png',
+    logo: 'assets/kaimon_logo1.png',
     nav: [
       { text: 'Guide', link: '/getting-started' },
       { text: 'Tools', link: '/tools' },
@@ -84,6 +94,8 @@ export default withMermaid(defineConfig({
           { text: 'Tool Catalog', link: '/tools' },
           { text: 'The Gate', link: '/gate' },
           { text: 'Sessions', link: '/sessions' },
+          { text: 'Extensions', link: '/extensions' },
+          { text: 'Debugging', link: '/debugging' },
           { text: 'Semantic Search', link: '/search' },
           { text: 'Security', link: '/security' },
           { text: 'VS Code', link: '/vscode' },

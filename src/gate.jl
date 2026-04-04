@@ -12,6 +12,21 @@ using ZMQ
 using REPL
 using Serialization
 using Dates
+using TOML
+
+# ── Thread-safe ZMQ recv ──────────────────────────────────────────────────────
+# ZMQ Message objects have finalizers that call zmq_msg_close, which is NOT
+# thread-safe. If a Message escapes to GC and gets finalized on a worker
+# thread during parallel computation (e.g. @threads kNN), it segfaults.
+#
+# Fix: use recv(sock, Vector{UInt8}) which internally uses ZMQ._Message
+# (a stack-allocated struct with NO finalizer), copies bytes out, and closes
+# immediately. No Message object is ever created, so nothing escapes to GC.
+
+"""Receive from a ZMQ socket, returning raw bytes (no finalizer-bearing objects)."""
+function _zmq_recv(sock::ZMQ.Socket)::Vector{UInt8}
+    return recv(sock, Vector{UInt8})
+end
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -27,6 +42,40 @@ const _GATE_CACHE_DIR = let
     d
 end
 const SOCK_DIR = joinpath(_GATE_CACHE_DIR, "sock")
+
+"""
+    _install_peek_report_override(session_id::String)
+
+Override `Profile.peek_report[]` so that SIGINFO/SIGUSR1 writes the profile
+report to `SOCK_DIR/<session_id>-backtrace.txt` instead of stderr. This avoids
+deadlocking PTY-backed sessions where the kernel buffer is small.
+"""
+function _install_peek_report_override(session_id::String)
+    try
+        Profile = Base.require(Base.PkgId(Base.UUID("9abbd945-dff8-562f-b5e8-e1ebf5ef1b79"), "Profile"))
+        bt_path = joinpath(SOCK_DIR, "$(session_id)-backtrace.txt")
+        Profile.peek_report[] = function ()
+            try
+                open(bt_path, "w") do io
+                    Base.invokelatest(Profile.print, io; groupby = [:thread, :task])
+                    if position(io) == 0
+                        # Profile.print produced no output — write a diagnostic
+                        println(io, "(no profiling samples collected)")
+                    end
+                end
+            catch e
+                try
+                    open(bt_path, "w") do io
+                        println(io, "peek_report error: $(sprint(showerror, e))")
+                    end
+                catch
+                end
+            end
+        end
+    catch
+        # Profile not available — skip
+    end
+end
 const GATE_LOCK = ReentrantLock()
 const _PUB_LOCK = ReentrantLock()
 
@@ -35,6 +84,7 @@ const _GATE_TASK = Ref{Union{Task,Nothing}}(nothing)
 const _GATE_CONTEXT = Ref{Union{ZMQ.Context,Nothing}}(nothing)
 const _GATE_SOCKET = Ref{Union{ZMQ.Socket,Nothing}}(nothing)
 const _STREAM_SOCKET = Ref{Union{ZMQ.Socket,Nothing}}(nothing)  # PUB for streaming output
+const _STREAM_ENDPOINT = Ref{String}("")                       # resolved PUB endpoint
 const _SESSION_ID = Ref{String}("")
 const _RUNNING = Ref{Bool}(false)
 const _START_TIME = Ref{Float64}(0.0)
@@ -44,6 +94,14 @@ const _REVISE_WATCHER_TASK = Ref{Union{Task,Nothing}}(nothing)
 const _SESSION_NAMESPACE = Ref{String}("")
 const _ALLOW_RESTART = Ref{Bool}(true)
 const _ORIGINAL_ARGV = Ref{Vector{String}}(String[])
+const _MODE = Ref{Symbol}(:ipc)
+const _TCP_HOST = Ref{String}("127.0.0.1")
+const _TCP_PORT = Ref{Int}(0)          # actual bound port (resolved from ephemeral)
+const _TCP_STREAM_PORT = Ref{Int}(0)   # actual bound PUB port
+const _AUTH_TOKEN = Ref{String}("")  # non-empty = require token on TCP requests
+const _PING_COUNT = Ref{Int}(0)
+const _MSG_COUNT = Ref{Int}(0)       # total messages handled (pings + evals + tool calls + ...)
+const _LAST_PING_TIME = Ref{Float64}(0.0)
 const _GATE_TTY_PATH = Ref{Union{String,Nothing}}(nothing)
 const _GATE_TTY_SIZE =
     Ref{Union{Nothing,NamedTuple{(:rows, :cols),Tuple{Int,Int}}}}(nothing)
@@ -53,6 +111,10 @@ const _GATE_TTY_PARKED_PGRP = Ref{Union{Int32,Nothing}}(nothing)
 # Prevents the message-loop task's `finally` from closing sockets prematurely
 # and defeating the 0.3 s grace period for the ZMQ reply to flush.
 const _RESTARTING = Ref{Bool}(false)
+# Set by :shutdown handler so the message loop's `finally` block knows
+# to call _cleanup() after the reply has been sent and the loop exits.
+const _SHUTTING_DOWN = Ref{Bool}(false)
+const _ON_SHUTDOWN = Ref{Any}(nothing)
 
 # ── Debug Breakpoint State ───────────────────────────────────────────────────
 # Programmatic breakpoint system for agent-assisted debugging.
@@ -64,6 +126,8 @@ const _DEBUG_PAUSED = Ref{Any}(nothing)        # NamedTuple with pause info, or 
 const _DEBUG_RESUME_CH = Ref{Any}(nothing)      # Channel{Symbol} — :continue
 const _DEBUG_EVAL_CH = Ref{Any}(nothing)        # Channel{Pair{String, Channel{Any}}}
 const _INFILTRATOR_HOOKED = Ref(false)          # true once _install_infiltrator_hook! succeeds
+const _INFILTRATOR_DISABLED = Ref(false)        # true after explicit uninstall — suppresses callback
+const _INFILTRATOR_ORIG_PROMPT = Ref{Any}(nothing)  # original start_prompt method for restore
 
 """
     _breakpoint_hook(locals::Dict{Symbol,Any}; file="unknown", line=0)
@@ -157,6 +221,10 @@ function _install_infiltrator_hook!()
     if isdefined(Infiltrator, :clear_disabled!)
         Infiltrator.clear_disabled!()
     end
+    # Save original start_prompt before overriding (for uninstall)
+    if _INFILTRATOR_ORIG_PROMPT[] === nothing
+        _INFILTRATOR_ORIG_PROMPT[] = Infiltrator.start_prompt
+    end
     # Override start_prompt to route through our breakpoint system
     @eval function ($Infiltrator).start_prompt(
         mod, locals::Dict{Symbol,Any}, file, fileline, ex = nothing, bt = nothing;
@@ -166,6 +234,31 @@ function _install_infiltrator_hook!()
     end
     _INFILTRATOR_HOOKED[] = true
     @info "Infiltrator.jl integration active — @infiltrate routes through gate debug protocol"
+end
+
+"""
+    uninstall_infiltrator_hook!()
+
+Restore Infiltrator's original `start_prompt` so `@infiltrate` opens the normal
+interactive REPL prompt instead of routing through the gate debug protocol.
+"""
+function uninstall_infiltrator_hook!()
+    _INFILTRATOR_DISABLED[] = true
+    _INFILTRATOR_HOOKED[] || return
+    Infiltrator = _find_infiltrator()
+    Infiltrator === nothing && return
+    orig = _INFILTRATOR_ORIG_PROMPT[]
+    if orig !== nothing
+        @eval function ($Infiltrator).start_prompt(
+            mod, locals::Dict{Symbol,Any}, file, fileline, ex = nothing, bt = nothing;
+            terminal = nothing, repl = nothing, nostack = false,
+        )
+            ($orig)(mod, locals, file, fileline, ex, bt;
+                    terminal = terminal, repl = repl, nostack = nostack)
+        end
+    end
+    _INFILTRATOR_HOOKED[] = false
+    @info "Infiltrator.jl hook removed — @infiltrate uses default REPL prompt"
 end
 
 
@@ -384,15 +477,75 @@ end
 """
     _extract_kwarg_types(f) -> Dict{Symbol,Type}
 
-For closure-based handlers (e.g. inner `function foo(; kw::T...)` returned by a
-factory), Julia stores the typed implementation as a field of the outer callable
-struct. The inner method's positional signature is `(InnerType, kwarg_types...,
-OuterClosureType)`, which lets us recover the annotated kwarg types that are
-invisible via the standard `methods`/`kwarg_decl` path.
+Recover annotated kwarg types from a function handler. Tries two strategies:
+
+1. **Module-level functions:** Use `code_lowered` to find the kwbody function
+   (the `#funcname#N` inner function Julia generates for kwargs), then read
+   its typed signature directly.
+
+2. **Closure-based handlers** (e.g. inner `function foo(; kw::T...)` returned
+   by a factory): Julia stores the typed implementation as a field of the outer
+   callable struct. The inner method's positional signature is
+   `(InnerType, kwarg_types..., OuterClosureType)`.
 
 Falls back to an empty dict (callers treat missing entries as `Any`).
 """
 function _extract_kwarg_types(f::Function)::Dict{Symbol,Type}
+    kw_names = try
+        Base.kwarg_decl(first(methods(f)))
+    catch
+        return Dict{Symbol,Type}()
+    end
+    isempty(kw_names) && return Dict{Symbol,Type}()
+
+    # Strategy 1: code_lowered → find kwbody function → read typed signature
+    result = _extract_kwarg_types_from_lowered(f, kw_names)
+    !isempty(result) && return result
+
+    # Strategy 2: closure struct field inspection (legacy pattern)
+    return _extract_kwarg_types_from_closure(f, kw_names)
+end
+
+"""Extract kwarg types by finding the kwbody function via code_lowered."""
+function _extract_kwarg_types_from_lowered(f::Function, kw_names::Vector{Symbol})::Dict{Symbol,Type}
+    try
+        cl = Base.code_lowered(f)
+        isempty(cl) && return Dict{Symbol,Type}()
+        ci = cl[1]
+
+        # Find the kwbody function — it's a GlobalRef matching #funcname#N
+        inner_f = nothing
+        fname = string(nameof(f))
+        for stmt in ci.code
+            if stmt isa GlobalRef
+                name_str = string(stmt.name)
+                if startswith(name_str, "#") && contains(name_str, "#$(fname)#")
+                    inner_f = getfield(stmt.mod, stmt.name)
+                    break
+                end
+            end
+        end
+        inner_f === nothing && return Dict{Symbol,Type}()
+
+        inner_ms = methods(inner_f)
+        isempty(inner_ms) && return Dict{Symbol,Type}()
+        sig = first(inner_ms).sig
+        while sig isa UnionAll
+            sig = sig.body
+        end
+        params = sig.parameters
+        # params = (InnerFuncType, kwarg_types..., OuterFuncType, positional_types...)
+        nkw = length(kw_names)
+        length(params) < nkw + 2 && return Dict{Symbol,Type}()
+        kw_types = params[2:1+nkw]
+        Dict{Symbol,Type}(kw_names[i] => kw_types[i] for i in eachindex(kw_names))
+    catch
+        Dict{Symbol,Type}()
+    end
+end
+
+"""Extract kwarg types from closure struct internals (legacy factory pattern)."""
+function _extract_kwarg_types_from_closure(f::Function, kw_names::Vector{Symbol})::Dict{Symbol,Type}
     fnames = fieldnames(typeof(f))
     isempty(fnames) && return Dict{Symbol,Type}()
     try
@@ -402,12 +555,40 @@ function _extract_kwarg_types(f::Function)::Dict{Symbol,Type}
         params = only(ms).sig.parameters   # (InnerT, kw_types..., OuterT)
         length(params) < 3 && return Dict{Symbol,Type}()
         kw_types = params[2:end-1]
-        kw_names = Base.kwarg_decl(methods(f)[1])
         length(kw_types) == length(kw_names) || return Dict{Symbol,Type}()
         Dict{Symbol,Type}(kw_names[i] => kw_types[i] for i in eachindex(kw_names))
     catch
         Dict{Symbol,Type}()
     end
+end
+
+"""
+    _extract_required_kwargs(f) -> Set{Symbol}
+
+Detect which kwargs are required (have no default value) by inspecting lowered IR.
+Julia emits `Core.UndefKeywordError(:name)` for required kwargs.
+"""
+function _extract_required_kwargs(f::Function)::Set{Symbol}
+    required = Set{Symbol}()
+    cl = try
+        Base.code_lowered(f)
+    catch
+        return required
+    end
+    isempty(cl) && return required
+    ci = cl[1]
+    for stmt in ci.code
+        if stmt isa Expr && stmt.head == :call && length(stmt.args) >= 2
+            callee = stmt.args[1]
+            if callee isa GlobalRef && callee.mod === Core && callee.name == :UndefKeywordError
+                arg = stmt.args[2]
+                if arg isa QuoteNode && arg.value isa Symbol
+                    push!(required, arg.value)
+                end
+            end
+        end
+    end
+    required
 end
 
 """
@@ -462,13 +643,14 @@ function _reflect_tool(tool::GateTool)
         end
     end
 
-    # Keyword arguments — try to recover types from the inner closure signature
+    # Keyword arguments — recover types and required status
     kw_names = try
         Base.kwarg_decl(m)
     catch
         Symbol[]
     end
     kw_types = _extract_kwarg_types(f)
+    required_kws = _extract_required_kwargs(f)
     for kw in kw_names
         T = get(kw_types, kw, Any)
         push!(
@@ -476,7 +658,7 @@ function _reflect_tool(tool::GateTool)
             Dict{String,Any}(
                 "name" => string(kw),
                 "type_meta" => _type_to_meta(T),
-                "required" => !_is_optional_type(T),
+                "required" => kw in required_kws,
                 "is_kwarg" => true,
             ),
         )
@@ -717,7 +899,12 @@ function gate_eval(code::String; _mod::Module = Main, display_code::String = cod
 
         expr = Base.parse_input_line(code)
 
-        if has_repl
+        # Use call_on_backend only from the message loop (synchronous :eval
+        # on the interactive thread). Async evals run on default-pool threads
+        # via Threads.@spawn — call_on_backend would deadlock because the
+        # REPL backend is occupied by the user's interactive session.
+        on_interactive = Threads.threadpool(Threads.threadid()) === :interactive
+        if has_repl && on_interactive
             result = REPL.call_on_backend(() -> _eval_with_capture(expr), backend)
             # call_on_backend returns (value, iserr) Pair or NamedTuple
             val = if result isa Pair
@@ -932,9 +1119,12 @@ function _publish_stream(channel::String, data; request_id::String = "")
                 isempty(request_id) ? (channel = channel, data = data) :
                 (channel = channel, data = data, request_id = request_id)
             serialize(io, msg)
-            send(pub, Message(take!(io)))
-        catch
-            # Non-critical — subscriber may not be connected
+            send(pub, take!(io))
+        catch e
+            # Log failures for eval lifecycle messages — the caller hangs if these are lost
+            if channel in ("eval_complete", "eval_error", "tool_complete", "tool_error")
+                @error "Failed to publish $channel (request_id=$request_id)" exception = e
+            end
         end
     end
 end
@@ -973,9 +1163,6 @@ function _eval_with_capture(expr)
             while !eof(stdout_read)
                 line = readline(stdout_read; keep = true)
                 push!(stdout_content, line)
-                # Echo to original stdout for REPL visibility.
-                # Guard against broken pipes (e.g. when a Tachikoma pixel renderer
-                # has taken over the terminal and its internal pipe has closed).
                 if _MIRROR_REPL[]
                     try
                         write(orig_stdout, line)
@@ -984,7 +1171,6 @@ function _eval_with_capture(expr)
                         e isa Base.IOError && (_MIRROR_REPL[] = false)
                     end
                 end
-                # Publish to TUI stream
                 _publish_stream("stdout", line)
             end
         catch e
@@ -1040,12 +1226,20 @@ function _eval_with_capture(expr)
         catch
             redirect_stderr(devnull)
         end
-        close(stdout_write)
-        close(stderr_write)
-        wait(stdout_task)
-        wait(stderr_task)
-        close(stdout_read)
-        close(stderr_read)
+        # Close pipes and wait for drain tasks asynchronously.
+        # Blocking here would delay the eval response, and with @async
+        # drain tasks on the same thread the close→EOF→drain exit path
+        # needs the event loop to run (which it can't if we're blocking).
+        @async begin
+            try; close(stdout_write); catch; end
+            try; close(stderr_write); catch; end
+            try; wait(stdout_task); catch; end
+            try; wait(stderr_task); catch; end
+            try; close(stdout_read); catch; end
+            try; close(stderr_read); catch; end
+        end
+        # Yield to let drain tasks collect any final buffered output
+        yield()
     end
 
     # Format value representation.
@@ -1097,7 +1291,9 @@ function write_metadata(
     session_id::String,
     name::String,
     endpoint::String,
-    stream_endpoint::String = "",
+    stream_endpoint::String = "";
+    spawned_by::String = "user",
+    mode::Symbol = :ipc,
 )
     meta_path = joinpath(SOCK_DIR, "$(session_id).json")
     meta = Dict{String,Any}(
@@ -1109,6 +1305,8 @@ function write_metadata(
         "endpoint" => endpoint,
         "stream_endpoint" => stream_endpoint,
         "started_at" => string(now()),
+        "spawned_by" => spawned_by,
+        "mode" => string(mode),
     )
     open(meta_path, "w") do io
         # Simple JSON without dependency — just key-value pairs
@@ -1126,6 +1324,7 @@ function write_metadata(
 end
 
 function cleanup_files(session_id::String)
+    # Always clean up the metadata JSON. Socket files only exist in IPC mode.
     for ext in [".sock", "-stream.sock", ".json"]
         path = joinpath(SOCK_DIR, "$(session_id)$(ext)")
         isfile(path) && rm(path; force = true)
@@ -1212,6 +1411,14 @@ function _base_julia_args()::Vector{String}
     orig = _ORIGINAL_ARGV[]
     isempty(orig) && return Base.julia_cmd().exec
 
+    # Flags that take a separate value and should be combined into one token
+    # (e.g. `-t 4,2` → `-t4,2`) to avoid the value being misinterpreted as a
+    # positional script argument on restart.
+    _VALUE_FLAGS = Set(["-t", "--threads", "-C", "--cpu-target",
+                        "-J", "--sysimage", "-O", "--optimize",
+                        "-L", "--load",
+                        "--gcthreads", "--heap-size-hint"])
+
     result = [orig[1]]   # preserve exact Julia binary path
     i = 2
     while i <= length(orig)
@@ -1228,6 +1435,17 @@ function _base_julia_args()::Vector{String}
         # Strip bare -i (we add our own); leave e.g. --inline alone
         if arg == "-i"
             i += 1
+            continue
+        end
+        # Combine short flags with their separate value into one token
+        # so the value isn't mistaken for a positional arg on restart
+        if arg in _VALUE_FLAGS && i < length(orig) && !startswith(orig[i+1], "-")
+            if startswith(arg, "--")
+                push!(result, "$(arg)=$(orig[i+1])")
+            else
+                push!(result, "$(arg)$(orig[i+1])")
+            end
+            i += 2
             continue
         end
         push!(result, arg)
@@ -1262,9 +1480,19 @@ function _exec_restart(name::String, session_id::String, project_path::String)
         ns      = _SESSION_NAMESPACE[]
         mirror  = _ALLOW_MIRROR[]
         restart = _ALLOW_RESTART[]
+        mode    = _MODE[]
         ns_kwarg      = isempty(ns) ? "" : ", namespace=$(repr(ns))"
         mirror_kwarg  = mirror  ? "" : ", allow_mirror=false"
         restart_kwarg = restart ? "" : ", allow_restart=false"
+        # TCP mode: replay host, port, stream_port so the gate rebinds on the same address
+        tcp_kwargs = if mode == :tcp
+            host = _TCP_HOST[]
+            port = _TCP_PORT[]
+            sp   = _TCP_STREAM_PORT[]
+            ", mode=:tcp, host=$(repr(host)), port=$port, stream_port=$sp"
+        else
+            ""
+        end
         # The injected -e code runs after startup.jl.  If startup.jl already
         # called Gate.serve() and picked up KAIMON_RESTART_SESSION, the gate
         # will already be running with the correct session_id; our serve() call
@@ -1274,7 +1502,7 @@ function _exec_restart(name::String, session_id::String, project_path::String)
         try; using Revise; catch; end
         using Kaimon
         delete!(ENV, "KAIMON_RESTART_SESSION")
-        Gate.serve(session_id=$(repr(session_id))$ns_kwarg$mirror_kwarg$restart_kwarg)
+        Gate.serve(session_id=$(repr(session_id))$ns_kwarg$mirror_kwarg$restart_kwarg$tcp_kwargs)
         """
         vcat(julia_args, ["--project=$project_path", "-i", "-e", serve_code])
     end
@@ -1295,6 +1523,11 @@ function _exec_restart(name::String, session_id::String, project_path::String)
     catch
     end
 
+    # Clear the terminal so the restarted session starts with a clean screen.
+    # prepare_for_exec!() has already restored the TTY to cooked mode.
+    print(stdout, "\e[H\e[2J")
+    flush(stdout)
+
     # execvp replaces the process image — same PID, same terminal
     argv = map(String, args)
     ptrs = Ptr{UInt8}[pointer(s) for s in argv]
@@ -1307,7 +1540,16 @@ function _exec_restart(name::String, session_id::String, project_path::String)
 end
 
 function handle_message(request::NamedTuple)
+    # TCP auth: reject unauthenticated requests when a token is set
+    if _MODE[] == :tcp && !isempty(_AUTH_TOKEN[])
+        token = get(request, :token, "")
+        if token != _AUTH_TOKEN[]
+            return (type = :error, message = "Authentication required")
+        end
+    end
+
     msg_type = get(request, :type, :unknown)
+    _MSG_COUNT[] += 1
 
     if msg_type == :eval
         code = get(request, :code, "")
@@ -1322,8 +1564,32 @@ function handle_message(request::NamedTuple)
         # stays responsive to pings during CPU-intensive evals.
         Threads.@spawn begin
             try
+                task_local_storage(:gate_request_id, request_id)
                 result = gate_eval(code; display_code = display_code)
-                _publish_stream("eval_complete", _serialize_result(result); request_id)
+                try
+                    serialized = _serialize_result(result)
+                    # Cache result so TUI can retrieve it after a restart
+                    lock(_COMPLETED_RESULTS_LOCK) do
+                        _COMPLETED_RESULTS[request_id] = Vector{UInt8}(serialized)
+                        # Trim to max size
+                        while length(_COMPLETED_RESULTS) > _COMPLETED_RESULTS_MAX
+                            delete!(_COMPLETED_RESULTS, first(keys(_COMPLETED_RESULTS)))
+                        end
+                    end
+                    _stderr_finish!()  # finalize any \r-overwritten progress/stash lines
+                    _publish_stream("eval_complete", serialized; request_id)
+                catch pub_err
+                    # Serialization of result failed — send a plain-text fallback
+                    @error "Failed to serialize eval result" exception = pub_err
+                    fallback = (
+                        stdout = "",
+                        stderr = "",
+                        value_repr = "(result could not be serialized: $(sprint(showerror, pub_err)))",
+                        exception = nothing,
+                        backtrace = nothing,
+                    )
+                    _publish_stream("eval_complete", _serialize_result(fallback); request_id)
+                end
             catch e
                 error_result = (
                     stdout = "",
@@ -1347,6 +1613,8 @@ function handle_message(request::NamedTuple)
         isempty(path) && return (type = :error, message = "path required")
         return set_tty!(path)
     elseif msg_type == :ping
+        _PING_COUNT[] += 1
+        _LAST_PING_TIME[] = time()
         return (
             type = :pong,
             pid = getpid(),
@@ -1358,6 +1626,7 @@ function handle_message(request::NamedTuple)
             allow_restart = _ALLOW_RESTART[],
             allow_mirror = _ALLOW_MIRROR[],
             mirror_repl = _MIRROR_REPL[],
+            stream_endpoint = _STREAM_ENDPOINT[],
         )
     elseif msg_type == :tool_call
         tool_name = string(get(request, :name, ""))
@@ -1404,6 +1673,7 @@ function handle_message(request::NamedTuple)
                 task_local_storage(:gate_progress, true)
 
                 result = _dispatch_tool_call(tool.handler, tool_args)
+                _stderr_finish!()
                 _publish_stream("tool_complete", string(result); request_id)
             catch e
                 _publish_stream(
@@ -1419,6 +1689,7 @@ function handle_message(request::NamedTuple)
         tool_meta = [_reflect_tool(t) for t in _SESSION_TOOLS[]]
         return (type = :tools, tools = tool_meta)
     elseif msg_type == :shutdown
+        _SHUTTING_DOWN[] = true
         _RUNNING[] = false
         return (type = :ok, message = "shutting down")
     elseif msg_type == :restart
@@ -1476,6 +1747,25 @@ function handle_message(request::NamedTuple)
         put!(resume_ch, :continue)
         return (type = :ok, message = "Execution resumed")
 
+    elseif msg_type == :get_job_result
+        eid = string(get(request, :eval_id, ""))
+        cached = lock(_COMPLETED_RESULTS_LOCK) do
+            get(_COMPLETED_RESULTS, eid, nothing)
+        end
+        if cached !== nothing
+            return (type = :job_result, eval_id = eid, data = String(cached))
+        else
+            return (type = :not_found, eval_id = eid)
+        end
+
+    elseif msg_type == :cancel_job
+        eid = string(get(request, :eval_id, ""))
+        if !isempty(eid)
+            cancel_job!(eid)
+            return (type = :ok, message = "Job $eid marked for cancellation")
+        end
+        return (type = :error, message = "Missing eval_id")
+
     else
         return (type = :error, message = "unknown request type: $msg_type")
     end
@@ -1485,7 +1775,7 @@ function message_loop(socket::ZMQ.Socket)
     while _RUNNING[]
         try
             # recv with timeout — throws TimeoutError on timeout
-            raw = recv(socket)
+            raw = _zmq_recv(socket)
             request = deserialize(IOBuffer(raw))
 
             # invokelatest so handle_message (and everything it calls) runs
@@ -1496,7 +1786,7 @@ function message_loop(socket::ZMQ.Socket)
             # Serialize and send response
             io = IOBuffer()
             serialize(io, response)
-            send(socket, Message(take!(io)))
+            send(socket, take!(io))
         catch e
             if !_RUNNING[]
                 break  # Clean shutdown
@@ -1513,7 +1803,7 @@ function message_loop(socket::ZMQ.Socket)
             try
                 io = IOBuffer()
                 serialize(io, (type = :error, message = sprint(showerror, e)))
-                send(socket, Message(take!(io)))
+                send(socket, take!(io))
             catch
                 # If we can't even send the error, just continue
             end
@@ -1545,6 +1835,12 @@ to override the TTY check.
   serve(tools=tools, namespace="todo_dev")    # branch A
   serve(tools=tools, namespace="todo_main")   # branch B
   ```
+- `mode::Symbol`: Transport mode — `:ipc` (default, local Unix socket) or
+  `:tcp` (network-accessible, for remote debugging).
+- `host::String`: Bind address for TCP mode (default `"127.0.0.1"`, localhost only).
+  Use `"0.0.0.0"` to accept connections from remote machines (no auth — use with care).
+- `port::Int`: Port for TCP mode (default `0` = ephemeral, ZMQ picks a free port).
+  Both REP and PUB sockets support this. Use a fixed port for predictable endpoints.
 
 # Example
 ```julia
@@ -1553,16 +1849,72 @@ Gate.serve()
 
 # With custom tools
 Gate.serve(tools=[GateTool("send_key", my_key_handler)])
+
+# TCP mode for remote debugging (e.g. from a model server)
+Gate.serve(mode=:tcp, port=9876, force=true)
 ```
+
+# Environment variables
+These override the keyword defaults when set:
+- `KAIMON_GATE_MODE`: `"ipc"` or `"tcp"` (default: `"ipc"`)
+- `KAIMON_GATE_HOST`: Bind address for TCP (default: `"127.0.0.1"`)
+- `KAIMON_GATE_PORT`: Port for TCP (default: `"0"` = ephemeral)
+- `KAIMON_GATE_STREAM_PORT`: PUB stream port for TCP (default: `"0"` = ephemeral).
+  Use a fixed port when tunneling so the client can connect to a known port.
 """
 function serve(;
     session_id::Union{String,Nothing} = nothing,
-    force::Bool = false,
+    force::Union{Bool,Nothing} = nothing,
     tools::Vector{GateTool} = GateTool[],
     namespace::String = "",
     allow_mirror::Bool = true,
     allow_restart::Bool = true,
+    spawned_by::String = "user",
+    on_shutdown::Any = nothing,
+    infiltrator::Bool = true,
+    mode::Union{Symbol,Nothing} = nothing,
+    host::Union{String,Nothing} = nothing,
+    port::Union{Int,Nothing} = nothing,
+    stream_port::Union{Int,Nothing} = nothing,
 )
+    # Resolve defaults: explicit kwargs > env vars > kaimon.toml [gate] > defaults
+    toml = _load_gate_config()
+
+    if mode === nothing
+        env_mode = get(ENV, "KAIMON_GATE_MODE", "")
+        has_env_port = haskey(ENV, "KAIMON_GATE_PORT") || haskey(ENV, "KAIMON_GATE_STREAM_PORT")
+        toml_mode = get(toml, "mode", "")
+        has_toml_port = haskey(toml, "port") || haskey(toml, "stream_port")
+        mode = if !isempty(env_mode)
+            Symbol(env_mode)
+        elseif has_env_port
+            :tcp
+        elseif toml_mode == "tcp" || has_toml_port
+            :tcp
+        else
+            :ipc
+        end
+    end
+    if host === nothing
+        env_host = get(ENV, "KAIMON_GATE_HOST", "")
+        host = !isempty(env_host) ? env_host :
+            get(toml, "host", "127.0.0.1")
+    end
+    if port === nothing
+        env_port = get(ENV, "KAIMON_GATE_PORT", "")
+        port = !isempty(env_port) ? parse(Int, env_port) :
+            Int(get(toml, "port", 0))
+    end
+    if stream_port === nothing
+        env_sp = get(ENV, "KAIMON_GATE_STREAM_PORT", "")
+        stream_port = !isempty(env_sp) ? parse(Int, env_sp) :
+            Int(get(toml, "stream_port", 0))
+    end
+    if force === nothing
+        force = Bool(get(toml, "force", false))
+    end
+
+    mode in (:ipc, :tcp) || throw(ArgumentError("mode must be :ipc or :tcp, got :$mode"))
     _serve(;
         name = basename(dirname(something(Base.active_project(), "julia"))),
         session_id,
@@ -1571,6 +1923,13 @@ function serve(;
         namespace,
         allow_mirror,
         allow_restart,
+        spawned_by,
+        on_shutdown,
+        infiltrator,
+        mode,
+        host,
+        port,
+        stream_port,
     )
 end
 
@@ -1582,12 +1941,20 @@ function _serve(;
     namespace::String = "",
     allow_mirror::Bool = true,
     allow_restart::Bool = true,
+    spawned_by::String = "user",
+    on_shutdown::Any = nothing,
+    infiltrator::Bool = true,
+    mode::Symbol = :ipc,
+    host::String = "127.0.0.1",
+    port::Int = 9876,
+    stream_port::Int = 0,
 )
     # Capture original argv for restart replay (once, on first call)
     _capture_original_argv()
 
     # Interactive gate: skip scripts, -e commands, precompilation, workers, etc.
-    if !force && !isinteractive()
+    # TCP mode always forces — it's designed for non-interactive processes (model servers).
+    if !force && mode != :tcp && !isinteractive()
         @debug "Skipping gate: non-interactive session"
         return nothing
     end
@@ -1651,6 +2018,7 @@ function _serve(;
     _SESSION_NAMESPACE[] = namespace
     _ALLOW_MIRROR[] = allow_mirror
     _ALLOW_RESTART[] = allow_restart
+    _ON_SHUTDOWN[] = on_shutdown
 
     # Ensure socket directory exists
     mkpath(SOCK_DIR)
@@ -1674,16 +2042,46 @@ function _serve(;
     socket = Socket(ctx, REP)
     _GATE_CONTEXT[] = ctx
     _GATE_SOCKET[] = socket
+    _MODE[] = mode
+
+    # Set auth token for TCP mode.
+    # Priority: KAIMON_GATE_TOKEN env var > security config API key > none.
+    # Lax mode and missing config = no auth required.
+    if mode == :tcp
+        env_token = get(ENV, "KAIMON_GATE_TOKEN", "")
+        if !isempty(env_token)
+            _AUTH_TOKEN[] = env_token
+        else
+            try
+                config = load_global_config()
+                if config.mode != :lax && !isempty(config.api_keys)
+                    _AUTH_TOKEN[] = first(config.api_keys)
+                end
+            catch
+                # No config — no auth (same as lax)
+            end
+        end
+    end
 
     # 1s receive timeout so message loop can check _RUNNING periodically.
     # linger=0: close() returns immediately without blocking to drain.
     socket.rcvtimeo = 1000
     socket.linger = 0
 
-    # Bind IPC endpoint
-    sock_path = joinpath(SOCK_DIR, "$(sid).sock")
-    endpoint = "ipc://$(sock_path)"
-    bind(socket, endpoint)
+    # Bind endpoint — IPC (local socket file) or TCP (network port)
+    # TCP mode supports port=0 for ephemeral port assignment (ZMQ picks a free port).
+    if mode == :tcp
+        bind(socket, "tcp://$(host):$(port)")
+        endpoint = rstrip(ZMQ._get_last_endpoint(socket), '\0')
+        # Store resolved TCP settings for restart replay
+        _TCP_HOST[] = host
+        m = match(r":(\d+)$", endpoint)
+        _TCP_PORT[] = m !== nothing ? parse(Int, m.captures[1]) : port
+    else
+        sock_path = joinpath(SOCK_DIR, "$(sid).sock")
+        endpoint = "ipc://$(sock_path)"
+        bind(socket, endpoint)
+    end
 
     # Create PUB socket for streaming stdout/stderr to TUI.
     # sndhwm=0: unlimited send buffer — never drop messages under load.
@@ -1691,13 +2089,23 @@ function _serve(;
     pub_socket = Socket(ctx, PUB)
     pub_socket.sndhwm = 0
     pub_socket.linger = 0
-    stream_path = joinpath(SOCK_DIR, "$(sid)-stream.sock")
-    stream_endpoint = "ipc://$(stream_path)"
-    bind(pub_socket, stream_endpoint)
+    if mode == :tcp
+        bind(pub_socket, "tcp://$(host):$(stream_port)")
+        stream_endpoint = rstrip(ZMQ._get_last_endpoint(pub_socket), '\0')
+        m = match(r":(\d+)$", stream_endpoint)
+        _TCP_STREAM_PORT[] = m !== nothing ? parse(Int, m.captures[1]) : stream_port
+    else
+        stream_endpoint = "ipc://$(joinpath(SOCK_DIR, "$(sid)-stream.sock"))"
+        bind(pub_socket, stream_endpoint)
+    end
     _STREAM_SOCKET[] = pub_socket
+    _STREAM_ENDPOINT[] = stream_endpoint
 
-    # Write metadata file for session discovery
-    write_metadata(sid, name, endpoint, stream_endpoint)
+    # Write metadata file for session discovery (IPC only — TCP sessions
+    # are connected manually via connect_tcp! and don't use file-based discovery)
+    if mode != :tcp
+        write_metadata(sid, name, endpoint, stream_endpoint; spawned_by, mode)
+    end
 
     # Register cleanup
     atexit(() -> stop())
@@ -1715,10 +2123,40 @@ function _serve(;
         catch e
             @debug "Gate task exited" exception = e
         finally
-            # Don't call _cleanup() here — stop() owns cleanup via atexit.
-            # With Threads.@spawn :interactive, this finally block can race
-            # with stop() during Julia shutdown, causing double-cleanup of
-            # ZMQ resources and intermittent segfaults.
+            if _SHUTTING_DOWN[]
+                # Remote shutdown: run optional cleanup hook, then exit
+                _SHUTTING_DOWN[] = false
+                hook = _ON_SHUTDOWN[]
+                if hook !== nothing
+                    try
+                        ch = Channel{Nothing}(1)
+                        @async begin
+                            try
+                                Base.invokelatest(hook)
+                            catch e
+                                @debug "on_shutdown hook error" exception = e
+                            finally
+                                put!(ch, nothing)
+                            end
+                        end
+                        # Wait up to 5s for the hook to complete
+                        timer = Timer(5.0)
+                        @async begin
+                            wait(timer)
+                            isready(ch) || put!(ch, nothing)
+                        end
+                        take!(ch)
+                        close(timer)
+                    catch
+                    end
+                end
+                _cleanup()
+                exit(0)
+            end
+            # Otherwise don't call _cleanup() here — stop() owns cleanup
+            # via atexit. With Threads.@spawn :interactive, this finally
+            # block can race with stop() during Julia shutdown, causing
+            # double-cleanup of ZMQ resources and intermittent segfaults.
         end
     end
 
@@ -1726,31 +2164,53 @@ function _serve(;
 
     # Install Infiltrator hook if available — makes @infiltrate route through
     # the gate's breakpoint protocol instead of opening an interactive prompt.
-    try
-        _install_infiltrator_hook!()
-    catch
-        # Infiltrator not loaded yet — will be picked up by package callback below.
-    end
-    # Register a package-load callback so the hook installs as soon as Infiltrator
-    # gets loaded (e.g. via `using GateToolTest` from the REPL).
-    push!(Base.package_callbacks, function (pkgid)
-        _RUNNING[] || return
-        _INFILTRATOR_HOOKED[] && return
-        pkgid.name == "Infiltrator" || return
+    if infiltrator
         try
             _install_infiltrator_hook!()
         catch
+            # Infiltrator not loaded yet — will be picked up by package callback below.
         end
-    end)
+        # Register a package-load callback so the hook installs as soon as Infiltrator
+        # gets loaded (e.g. via `using GateToolTest` from the REPL).
+        push!(Base.package_callbacks, function (pkgid)
+            _RUNNING[] || return
+            _INFILTRATOR_HOOKED[] && return
+            _INFILTRATOR_DISABLED[] && return
+            pkgid.name == "Infiltrator" || return
+            try
+                _install_infiltrator_hook!()
+            catch
+            end
+        end)
+    end
+
+    # Override Profile peek report to write to a file instead of stderr.
+    # When SIGINFO/SIGUSR1 fires, the C runtime prints a small message to
+    # stderr, but the bulk profile output goes through this Julia function.
+    # Writing to a file avoids filling the PTY buffer and deadlocking.
+    _install_peek_report_override(sid)
 
     emoticon = try
         parentmodule(@__MODULE__).load_personality()
     catch
         "⚡"
     end
-    printstyled("  $emoticon Kaimon gate "; color = :green, bold = true)
+    print("  $emoticon ")
+    printstyled("Kaimon gate "; color = :green, bold = true)
     printstyled("connected"; color = :green)
     printstyled(" ($name)\n"; color = :light_black)
+    if mode == :tcp
+        printstyled("  TCP mode: "; color = :light_black)
+        printstyled("$endpoint"; color = :cyan)
+        printstyled(" (PUB: $stream_endpoint)\n"; color = :light_black)
+        if !isempty(_AUTH_TOKEN[])
+            printstyled("  Auth token: "; color = :light_black)
+            printstyled("$(_AUTH_TOKEN[])\n"; color = :yellow)
+        else
+            printstyled("  Auth: "; color = :light_black)
+            printstyled("none (lax mode)\n"; color = :yellow)
+        end
+    end
     if _MIRROR_REPL[]
         printstyled("  host REPL mirroring enabled\n"; color = :light_black)
     end
@@ -1784,6 +2244,43 @@ function stop()
     printstyled("disconnected\n"; color = :yellow)
 end
 
+"""
+    restart()
+
+Restart the Julia session, preserving the Kaimon session ID so the TUI
+reconnects automatically.  Equivalent to what the agent's `manage_repl` tool
+does, but callable directly from your REPL.
+
+Uses `execvp` to replace the current process image — same PID, fresh Julia
+state.  Your startup.jl runs again and `Gate.serve()` reconnects with the
+same session key.
+"""
+function restart()
+    _RUNNING[] || error("Gate is not running")
+    _ALLOW_RESTART[] || error("Restart is disabled for this session (allow_restart=false)")
+    sid  = _SESSION_ID[]
+    name = basename(dirname(something(Base.active_project(), "julia")))
+    proj = dirname(something(Base.active_project(), "."))
+
+    # Tell the message-loop's finally block to skip cleanup — we handle it here.
+    _RESTARTING[] = true
+    _RUNNING[] = false
+
+    # Wait for the message-loop task to exit before tearing down sockets,
+    # same as stop() does.
+    task = _GATE_TASK[]
+    if task !== nothing && !istaskdone(task)
+        try
+            wait(task)
+        catch
+        end
+    end
+
+    _RESTARTING[] = false
+    _cleanup()
+    _exec_restart(name, sid, proj)
+end
+
 function _cleanup()
     # Stop Revise watcher
     watcher = _REVISE_WATCHER_TASK[]
@@ -1798,12 +2295,32 @@ function _cleanup()
     end
     _REVISE_WATCHER_TASK[] = nothing
 
-    # Don't explicitly close ZMQ sockets/context here — Julia's GC finalizers
-    # handle it. Explicit close + finalize during atexit was causing intermittent
-    # segfaults in LLVM's JIT compiler on Julia 1.12.5.
-    # Just null the refs so our code doesn't use them after cleanup.
+    # IPC mode: don't explicitly close ZMQ sockets/context — GC finalizers handle
+    # it. Explicit close during atexit was causing intermittent segfaults in LLVM's
+    # JIT compiler on Julia 1.12.5.
+    # TCP mode: must close explicitly so the port is released immediately. Without
+    # this, restarting a TCP gate on the same port fails until GC runs. This is safe
+    # because TCP stop is user-initiated (not atexit).
+    if _MODE[] == :tcp
+        for sock in (_GATE_SOCKET, _STREAM_SOCKET, _SERVICE_SOCKET)
+            s = sock[]
+            if s !== nothing
+                try; close(s); catch; end
+            end
+        end
+        ctx = _GATE_CONTEXT[]
+        if ctx !== nothing
+            try; close(ctx); catch; end
+        end
+    end
     _GATE_SOCKET[] = nothing
     _STREAM_SOCKET[] = nothing
+    _STREAM_ENDPOINT[] = ""
+    _AUTH_TOKEN[] = ""
+    _PING_COUNT[] = 0
+    _MSG_COUNT[] = 0
+    _LAST_PING_TIME[] = 0.0
+    _SERVICE_SOCKET[] = nothing
     _GATE_CONTEXT[] = nothing
 
     # Remove files
@@ -1812,11 +2329,14 @@ function _cleanup()
     _GATE_TASK[] = nothing
     _RUNNING[] = false
     _RESTARTING[] = false
+    _SHUTTING_DOWN[] = false
     _MIRROR_REPL[] = false
     _ALLOW_MIRROR[] = true
     _ALLOW_RESTART[] = true
     _SESSION_TOOLS[] = GateTool[]
     _SESSION_NAMESPACE[] = ""
+    _MODE[] = :ipc
+    _ON_SHUTDOWN[] = nothing
 end
 
 """
@@ -1828,11 +2348,23 @@ function status()
     if _RUNNING[]
         uptime = time() - _START_TIME[]
         mins = round(Int, uptime / 60)
+        sock = _GATE_SOCKET[]
+        rep_ep = sock !== nothing ? rstrip(ZMQ._get_last_endpoint(sock), '\0') : "unknown"
         println("Gate: running")
-        println("  Session: $(_SESSION_ID[])")
-        println("  Uptime:  $(mins)m")
-        println("  PID:     $(getpid())")
-        println("  Mirror:  $(_MIRROR_REPL[])")
+        println("  Session:   $(_SESSION_ID[])")
+        println("  Namespace: $(_SESSION_NAMESPACE[])")
+        println("  Uptime:    $(mins)m")
+        println("  PID:       $(getpid())")
+        println("  REP:       $rep_ep")
+        println("  PUB:       $(_STREAM_ENDPOINT[])")
+        println("  Mirror:    $(_MIRROR_REPL[])")
+        println("  Tools:     $(length(_SESSION_TOOLS[]))")
+        println("  Pings:     $(_PING_COUNT[])$(  _LAST_PING_TIME[] > 0 ? " (last $(round(Int, time() - _LAST_PING_TIME[]))s ago)" : "")")
+        println("  Messages:  $(_MSG_COUNT[])")
+        if _MODE[] == :tcp
+            auth = isempty(_AUTH_TOKEN[]) ? "none (lax)" : "token"
+            println("  Auth:      $auth")
+        end
     else
         println("Gate: not running")
     end
@@ -1847,10 +2379,419 @@ streamed to the MCP client as an SSE progress notification.
 Only works when called from within a GateTool handler invoked via the async
 path. No-op otherwise.
 """
+# Track last stderr output length for \r overwrite
+const _STDERR_LAST_LEN = Ref{Int}(0)
+const _STDERR_LAST_KIND = Ref{Symbol}(:none)  # :progress, :stash, :none
+
+function _stderr_overwrite!(line::String, kind::Symbol)
+    # If same kind as last output, overwrite with \r; otherwise newline first
+    if _STDERR_LAST_KIND[] == kind && _STDERR_LAST_LEN[] > 0
+        print(stderr, "\r")
+        # Clear previous line if new one is shorter
+        if length(line) < _STDERR_LAST_LEN[]
+            print(stderr, " " ^ _STDERR_LAST_LEN[])
+            print(stderr, "\r")
+        end
+    elseif _STDERR_LAST_KIND[] != :none && _STDERR_LAST_LEN[] > 0
+        println(stderr)  # newline to preserve previous different-kind output
+    end
+    print(stderr, line)
+    flush(stderr)
+    _STDERR_LAST_LEN[] = length(line)
+    _STDERR_LAST_KIND[] = kind
+end
+
+"""Finish the current stderr overwrite line (newline + reset)."""
+function _stderr_finish!()
+    if _STDERR_LAST_LEN[] > 0
+        println(stderr)
+        _STDERR_LAST_LEN[] = 0
+        _STDERR_LAST_KIND[] = :none
+    end
+end
+
 function progress(message::String)
     rid = get(task_local_storage(), :gate_request_id, nothing)
     rid === nothing && return
     _publish_stream("tool_progress", message; request_id = string(rid))
+    try
+        ts = Dates.format(Dates.now(), "HH:MM:SS")
+        line = "[$ts] ⏳ $message"
+        _stderr_overwrite!(line, :progress)
+    catch
+    end
+end
+
+# ── Job Safehouse ─────────────────────────────────────────────────────────────
+# Allows long-running evals/tools to stash intermediate values that can be
+# inspected while the job is still running (like Infiltrator's @exfiltrate).
+
+const _JOB_SAFEHOUSE = Dict{String, Dict{String, Any}}()
+const _JOB_SAFEHOUSE_LOCK = ReentrantLock()
+
+# ── Cooperative Cancellation ─────────────────────────────────────────────────
+# Set by the TUI when cancel_eval is called. User code checks via is_cancelled().
+
+const _CANCELLED_JOBS = Set{String}()
+const _CANCELLED_JOBS_LOCK = ReentrantLock()
+
+# ── Completed Job Results Cache ──────────────────────────────────────────────
+# Stores serialized results of completed evals so the TUI can retrieve them
+# after a restart (when the original PUB/SUB delivery was missed).
+
+const _COMPLETED_RESULTS = Dict{String, Vector{UInt8}}()  # eval_id → serialized result
+const _COMPLETED_RESULTS_LOCK = ReentrantLock()
+const _COMPLETED_RESULTS_MAX = 50  # keep last N results
+
+"""
+    cancel_job!(eval_id::String)
+
+Mark a job as cancelled. Called from the TUI side (via PUB/SUB or direct).
+"""
+function cancel_job!(eval_id::String)
+    lock(_CANCELLED_JOBS_LOCK) do
+        push!(_CANCELLED_JOBS, eval_id)
+    end
+end
+
+"""
+    is_cancelled(; job_id::String="") -> Bool
+
+Check if the current job has been cancelled. Call this in long-running loops
+to support cooperative cancellation.
+
+If called from within a GateTool handler or async eval, the job ID is
+detected automatically. Otherwise, pass `job_id` explicitly.
+
+# Example
+```julia
+for epoch in 1:1000
+    Gate.is_cancelled() && break
+    loss = train_epoch!(model)
+    Gate.stash("epoch", epoch)
+    Gate.progress("Epoch \$epoch: loss=\$loss")
+end
+```
+"""
+function is_cancelled(; job_id::String="")
+    if isempty(job_id)
+        job_id = string(get(task_local_storage(), :gate_request_id, ""))
+    end
+    isempty(job_id) && return false
+    lock(_CANCELLED_JOBS_LOCK) do
+        job_id in _CANCELLED_JOBS
+    end
+end
+
+"""
+    stash(key::String, value; job_id::String="")
+
+Stash a value in the current job's safehouse. If called from within a GateTool
+handler or async eval, the job ID is detected automatically. Otherwise, pass
+`job_id` explicitly.
+
+Retrieve stashed values with `check_eval` or `inspect_job`.
+
+# Example
+```julia
+for epoch in 1:100
+    loss = train_epoch!(model)
+    Gate.stash("epoch", epoch)
+    Gate.stash("loss", loss)
+    Gate.stash("lr", get_lr(optimizer))
+    Gate.progress("Epoch \$epoch: loss=\$loss")
+end
+```
+"""
+function stash(key::String, value; job_id::String="")
+    if isempty(job_id)
+        job_id = string(get(task_local_storage(), :gate_request_id, ""))
+    end
+    isempty(job_id) && return
+    lock(_JOB_SAFEHOUSE_LOCK) do
+        if !haskey(_JOB_SAFEHOUSE, job_id)
+            _JOB_SAFEHOUSE[job_id] = Dict{String, Any}()
+        end
+        _JOB_SAFEHOUSE[job_id][key] = value
+    end
+    # Publish stash update so TUI can collect it
+    try
+        repr_v = sprint(show, value; context=:limit => true)
+        if length(repr_v) > 500
+            repr_v = first(repr_v, 500) * "..."
+        end
+        _publish_stream("job_stash", "$key=$repr_v"; request_id = job_id)
+    catch
+    end
+    # Echo to stderr — uses \r overwrite so rapid stash calls stay on one line
+    try
+        short_v = sprint(show, value; context=:limit => true)
+        if length(short_v) > 40
+            short_v = first(short_v, 40) * "…"
+        end
+        ts = Dates.format(Dates.now(), "HH:MM:SS")
+        line = "[$ts] 📌 $key=$short_v"
+        _stderr_overwrite!(line, :stash)
+    catch
+    end
+    nothing
+end
+
+"""
+    stash(pairs::Pair...; job_id::String="")
+
+Stash multiple values at once.
+
+# Example
+```julia
+Gate.stash("epoch" => epoch, "loss" => loss, "accuracy" => acc)
+```
+"""
+function stash(pairs::Pair{String}...; job_id::String="")
+    if isempty(pairs)
+        return
+    end
+    # Batch: stash each value individually (publishes + safehouse)
+    for (k, v) in pairs
+        if isempty(job_id)
+            stash(k, v)
+        else
+            stash(k, v; job_id)
+        end
+    end
+end
+
+"""
+    get_stash(job_id::String) -> Dict{String, Any}
+
+Retrieve all stashed values for a job. Returns empty Dict if none.
+"""
+function get_stash(job_id::String)
+    lock(_JOB_SAFEHOUSE_LOCK) do
+        for (k, v) in _JOB_SAFEHOUSE
+            if startswith(k, job_id)
+                return copy(v)
+            end
+        end
+        return Dict{String, Any}()
+    end
+end
+
+"""
+    clear_stash(job_id::String)
+
+Clear the safehouse for a job. Called automatically when check_eval retrieves
+a completed job's result.
+"""
+function clear_stash(job_id::String)
+    lock(_JOB_SAFEHOUSE_LOCK) do
+        for k in collect(keys(_JOB_SAFEHOUSE))
+            startswith(k, job_id) && delete!(_JOB_SAFEHOUSE, k)
+        end
+    end
+end
+
+# ── Service Client (reverse channel to Kaimon server) ─────────────────────────
+# Extensions call Gate.call_tool(name, args) to invoke any registered Kaimon
+# MCP tool. This is the reverse of the existing gate protocol: instead of
+# Kaimon calling into the gate, the gate calls back into Kaimon.
+
+const _SERVICE_SOCKET = Ref{Union{ZMQ.Socket,Nothing}}(nothing)
+const _SERVICE_LOCK = ReentrantLock()
+
+"""
+    _connect_service!() -> Bool
+
+Connect to the Kaimon service endpoint. Returns true on success.
+The service socket is a ZMQ REQ that connects to the Kaimon server's
+REP socket at `ipc://~/.cache/kaimon/sock/kaimon-service.sock`.
+"""
+function _connect_service!()
+    sock_path = joinpath(SOCK_DIR, "kaimon-service.sock")
+    ispath(sock_path) || return false
+    ctx = _GATE_CONTEXT[]
+    ctx === nothing && return false
+    sock = Socket(ctx, REQ)
+    sock.rcvtimeo = 30000  # 30s timeout (some tools are slow)
+    sock.sndtimeo = 5000   # 5s send timeout
+    sock.linger = 0
+    connect(sock, "ipc://$(sock_path)")
+    _SERVICE_SOCKET[] = sock
+    return true
+end
+
+"""
+    _service_request(request::NamedTuple) -> Any
+
+Send a request to the Kaimon service endpoint and return the response value.
+Handles connection, serialization, error handling, and socket reset on failure.
+"""
+function _service_request(request)
+    lock(_SERVICE_LOCK) do
+        sock = _SERVICE_SOCKET[]
+        if sock === nothing
+            _connect_service!() || error("Kaimon service endpoint not available. Is the Kaimon TUI running?")
+            sock = _SERVICE_SOCKET[]
+        end
+
+        io = IOBuffer()
+        serialize(io, request)
+        send(sock, take!(io))
+
+        raw = _zmq_recv(sock)
+        response = deserialize(IOBuffer(raw))
+
+        status = if hasproperty(response, :status)
+            response.status
+        elseif response isa Dict
+            get(response, :status, :error)
+        else
+            :error
+        end
+
+        if status == :error
+            msg = if hasproperty(response, :message)
+                response.message
+            elseif response isa Dict
+                get(response, :message, "unknown error")
+            else
+                "unknown error"
+            end
+            # Reset socket on error — ZMQ REQ/REP is strict about send/recv alternation
+            _SERVICE_SOCKET[] = nothing
+            error("Kaimon service error: $msg")
+        end
+
+        return response.value
+    end
+end
+
+"""
+    Gate.call_tool(tool_name::Symbol, args::Dict{String,Any}) -> Any
+
+Call a Kaimon MCP tool from within a gate session. The request is sent over
+a dedicated ZMQ REQ socket to the Kaimon server's service endpoint, which
+looks up the tool in its registry and calls the handler.
+
+This gives extensions access to all of Kaimon's registered tools — Qdrant
+search, Ollama embeddings, code indexing, etc. — without bundling their
+own clients.
+
+# Example
+```julia
+# From a gate tool handler:
+result = Gate.call_tool(:qdrant_search_code, Dict{String,Any}(
+    "query" => "function that handles HTTP routing",
+    "limit" => "5",
+))
+
+# List collections
+collections = Gate.call_tool(:qdrant_list_collections, Dict{String,Any}())
+```
+"""
+function call_tool(tool_name::Symbol, args::Dict{String,Any} = Dict{String,Any}())
+    _service_request((type = :tool_call, tool_name = tool_name, args = args))
+end
+
+"""
+    Gate.list_tools() -> Vector{NamedTuple}
+
+Discover all MCP tools registered on the Kaimon server.
+Returns a vector of `(name, description, parameters)` tuples.
+
+# Example
+```julia
+tools = Gate.list_tools()
+for t in tools
+    println(t.name, " — ", first(split(t.description, '\\n')))
+end
+```
+"""
+function list_tools()
+    _service_request((type = :list_tools,))
+end
+
+# ── kaimon.toml [gate] section support ─────────────────────────────────────────
+
+"""
+    _load_gate_config() -> Dict{String,Any}
+
+Read the `[gate]` section from `kaimon.toml` in the active project root.
+Returns an empty Dict if the file doesn't exist or has no `[gate]` section.
+"""
+function _load_gate_config()
+    project = Base.active_project()
+    project === nothing && return Dict{String,Any}()
+    toml_path = joinpath(dirname(project), "kaimon.toml")
+    if !isfile(toml_path)
+        @debug "kaimon.toml not found" toml_path
+        return Dict{String,Any}()
+    end
+    try
+        data = TOML.parsefile(toml_path)
+        gate = get(data, "gate", Dict{String,Any}())
+        !isempty(gate) && @debug "Loaded kaimon.toml [gate]" gate
+        return gate
+    catch e
+        @warn "Failed to parse kaimon.toml" toml_path exception=e
+        return Dict{String,Any}()
+    end
+end
+
+"""
+    _auto_serve!()
+
+Auto-start the gate if environment variables or kaimon.toml `[gate]` section
+indicate TCP mode. Called once during module loading.
+
+Configuration priority: env vars > kaimon.toml > defaults.
+"""
+function _auto_serve!()
+    _RUNNING[] && return  # already running
+
+    # Merge kaimon.toml [gate] config with env var overrides
+    toml = _load_gate_config()
+    toml_mode = get(toml, "mode", "")
+    toml_port = get(toml, "port", nothing)
+    toml_stream_port = get(toml, "stream_port", nothing)
+    toml_host = get(toml, "host", "")
+    toml_force = Bool(get(toml, "force", false))
+
+    env_mode = get(ENV, "KAIMON_GATE_MODE", "")
+    has_env_port = haskey(ENV, "KAIMON_GATE_PORT") || haskey(ENV, "KAIMON_GATE_STREAM_PORT")
+
+    # Determine effective mode
+    mode = if !isempty(env_mode)
+        Symbol(env_mode)
+    elseif has_env_port
+        :tcp
+    elseif toml_mode == "tcp"
+        :tcp
+    elseif toml_port !== nothing || toml_stream_port !== nothing
+        :tcp
+    else
+        return  # no auto-start configured
+    end
+
+    mode == :tcp || return  # only auto-start for TCP mode
+
+    # Resolve parameters (env > toml > defaults)
+    host = let h = get(ENV, "KAIMON_GATE_HOST", "")
+        !isempty(h) ? h : !isempty(toml_host) ? toml_host : "127.0.0.1"
+    end
+    port = let p = get(ENV, "KAIMON_GATE_PORT", "")
+        !isempty(p) ? parse(Int, p) : toml_port !== nothing ? Int(toml_port) : 0
+    end
+    stream_port = let sp = get(ENV, "KAIMON_GATE_STREAM_PORT", "")
+        !isempty(sp) ? parse(Int, sp) : toml_stream_port !== nothing ? Int(toml_stream_port) : 0
+    end
+    force = toml_force || has_env_port || !isempty(env_mode)
+
+    try
+        serve(; mode, host, port, stream_port, force)
+    catch e
+        @warn "Gate auto-start failed" exception=e
+    end
 end
 
 end # module Gate

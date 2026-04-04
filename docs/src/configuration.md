@@ -12,37 +12,48 @@ Kaimon uses [Preferences.jl](https://github.com/JuliaPackaging/Preferences.jl) f
 
 Layout preferences for TUI panels (sizes, positions, visibility) are also persisted through the Preferences system.
 
-## Config Directories
+## Directory Layout
 
-Kaimon organizes configuration across three locations:
+Kaimon organizes files across three locations: a global config directory, a cache directory for runtime data, and a per-project `.kaimon/` directory.
 
-### `~/.cache/kaimon/`
+### Global config — `~/.config/kaimon/`
 
-Cache directory for runtime data:
+Respects `XDG_CONFIG_HOME` on Linux/macOS; uses `APPDATA` on Windows.
 
-- Socket files for REPL-to-MCP communication
-- Log files
-- Temporary data
+| File | Purpose |
+|------|---------|
+| `config.json` | Global settings: security mode, API keys, editor, qdrant prefix |
+| `projects.json` | Allowed projects for managed sessions ([details](@ref projects-config)) |
+| `extensions.json` | Extension registry ([details](extensions.md)) |
+| `tcp_gates.json` | Registered TCP gate connections (host, port, name, token, stream_port) |
 
-The cache directory respects the `XDG_CACHE_HOME` environment variable. On Windows, it falls back to `LOCALAPPDATA`.
+### Cache — `~/.cache/kaimon/`
 
-### `~/.config/kaimon/`
+Respects `XDG_CACHE_HOME` on Linux/macOS; uses `LOCALAPPDATA` on Windows.
 
-Global configuration that applies across all projects:
+| File / pattern | Purpose |
+|----------------|---------|
+| `server.log` | Main server log (TUI and standalone modes) |
+| `sessions/<name>.log` | Per managed-session log |
+| `extensions/<namespace>.log` | Per extension subprocess log |
+| `indexer.log` | Qdrant indexer log |
+| `kaimon.db` | SQLite database (activity history, session metadata) |
+| `sessions.json` | Active MCP session registry |
+| `qdrant_projects.json` | Qdrant index tracking (which projects are indexed) |
+| `*.sock` | Unix sockets for REPL-to-MCP communication |
 
-- **`security.json`** -- Global security settings (see [Security Configuration](@ref security-config) below)
+### Per-project — `.kaimon/`
 
-### `.kaimon/` (per-project)
+Located in the project root directory.
 
-Project-level configuration, located in the project root:
-
-- **`security.json`** -- Project-specific security overrides
-- **`tools.json`** -- Enable or disable individual MCP tools for this project
-- **`sessions.json`** -- Tracks active MCP sessions connected to this project
+| File | Purpose |
+|------|---------|
+| `tools.json` | Enable or disable individual MCP tools for this project |
+| `sessions.json` | Tracks active MCP sessions connected to this project |
 
 ## [Security Configuration](@id security-config)
 
-The `security.json` file controls access to the MCP server. It can exist at both the global (`~/.config/kaimon/`) and per-project (`.kaimon/`) levels:
+The security config controls access to the MCP server via `config.json` at `~/.config/kaimon/`:
 
 ```json
 {
@@ -62,18 +73,68 @@ The `security.json` file controls access to the MCP server. It can exist at both
 
 | Field | Description |
 |-------|-------------|
-| `mode` | Security mode: `"strict"` (require API key + IP check), `"permissive"` (localhost only, no key required), or `"off"` |
-| `api_keys` | List of authorized API keys with metadata |
+| `mode` | Security mode: `"strict"` (require API key + IP check), `"relaxed"` (localhost only, no key required), or `"lax"` |
+| `api_keys` | List of authorized API keys |
 | `allowed_ips` | IP addresses permitted to connect |
+| `editor` | Editor for file:line links: `"vscode"`, `"cursor"`, `"zed"`, `"windsurf"` |
+| `qdrant_prefix` | Prefix for Qdrant collection names (for shared instances). Set via Config tab `[Q]` or `KAIMON_QDRANT_PREFIX` env var. |
 
 Use the security management tools to modify these settings programmatically:
 
-- `security_status` -- View current security configuration
-- `setup_security` -- Run the interactive security setup
-- `generate_key` -- Create a new API key
-- `revoke_key` -- Remove an API key
-- `allow_ip` / `deny_ip` -- Manage the IP allowlist
+- `Kaimon.security_status()` -- View current security configuration
+- `Kaimon.setup_security()` -- Run the interactive security setup
+- `Kaimon.generate_key()` -- Create a new API key
+- `Kaimon.revoke_key()` -- Remove an API key
+- `Kaimon.allow_ip()` / `Kaimon.deny_ip()` -- Manage the IP allowlist
 - `set_security_mode` -- Switch between security modes
+
+## [Projects Configuration](@id projects-config)
+
+The `projects.json` file at `~/.config/kaimon/projects.json` controls which Julia projects can be spawned as managed sessions via the `start_session` MCP tool. It also holds per-project session preferences.
+
+```json
+{
+  "projects": [
+    {
+      "project_path": "/path/to/MyProject",
+      "enabled": true
+    },
+    {
+      "project_path": "/path/to/AnotherProject",
+      "enabled": false
+    }
+  ],
+  "session_prefs": {
+    "MyProject": {
+      "mirror_repl": true,
+      "allow_restart": false
+    },
+    "*": {
+      "allow_restart": true
+    }
+  }
+}
+```
+
+### Projects
+
+| Field | Description |
+|-------|-------------|
+| `project_path` | Absolute path to a Julia project directory (must contain `Project.toml`) |
+| `enabled` | Whether agents can spawn sessions for this project |
+
+Manage the projects list through the TUI Config tab or by editing the file directly. The `start_session` tool called with no arguments lists all allowed projects and their current status.
+
+### Session Preferences
+
+Per-project preferences are matched by project name (case-insensitive directory basename), full path, or `*` wildcard:
+
+| Preference | Type | Description |
+|------------|------|-------------|
+| `mirror_repl` | `Bool` | Mirror agent eval output into the host REPL |
+| `allow_restart` | `Bool` | Whether `manage_repl(command="restart")` is permitted |
+
+See [Sessions](sessions.md#session-preferences) for details on how preferences are resolved.
 
 ## Tools Configuration
 
@@ -92,8 +153,10 @@ This is useful for restricting which operations MCP agents can perform in sensit
 
 | Variable | Platform | Description |
 |----------|----------|-------------|
+| `XDG_CONFIG_HOME` | Linux/macOS | Override the default config directory (`~/.config`). Kaimon stores config in `$XDG_CONFIG_HOME/kaimon/`. |
+| `APPDATA` | Windows | Windows config directory. Kaimon stores config in `$APPDATA/Kaimon/`. |
 | `XDG_CACHE_HOME` | Linux/macOS | Override the default cache directory (`~/.cache`). Kaimon stores data in `$XDG_CACHE_HOME/kaimon/`. |
-| `LOCALAPPDATA` | Windows | Windows equivalent of the cache directory. Kaimon stores data in `$LOCALAPPDATA/kaimon/`. |
+| `LOCALAPPDATA` | Windows | Windows equivalent of the cache directory. Kaimon stores data in `$LOCALAPPDATA/Kaimon/`. |
 
 ## TUI Configuration
 

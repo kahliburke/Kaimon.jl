@@ -7,13 +7,159 @@ Uses Ollama for embeddings (qwen3-embedding model).
 
 # Uses QdrantClient, get_ollama_embedding, and DEFAULT_EMBEDDING_MODEL from parent scope
 
+# ── Collection prefix for shared Qdrant instances ────────────────────────────
+# Set via KAIMON_QDRANT_PREFIX env var or config.json "qdrant_prefix" field.
+# When set, all collection names are prefixed: "myprefix_projectname"
+const _QDRANT_COLLECTION_PREFIX = Ref{String}("")
+
+"""
+    set_collection_prefix!(prefix::String)
+
+Set a prefix for all Qdrant collection names. Useful when multiple users
+share a single Qdrant instance. Set to "" to disable.
+"""
+function set_collection_prefix!(prefix::String)
+    _QDRANT_COLLECTION_PREFIX[] = prefix
+end
+
+"""
+    get_collection_prefix() -> String
+
+Return the current Qdrant collection prefix (empty string if none).
+"""
+get_collection_prefix() = _QDRANT_COLLECTION_PREFIX[]
+
+"""Name of the global cross-project collection."""
+function global_collection_name()
+    _prefixed("kaimon_all")
+end
+
+const _GLOBAL_COLLECTION_ENSURED = Ref{Bool}(false)
+
+"""Ensure the global cross-project collection exists, creating it if needed."""
+function _ensure_global_collection!()
+    _GLOBAL_COLLECTION_ENSURED[] && return
+    gc_name = global_collection_name()
+    try
+        existing = QdrantClient.list_collections()
+        if gc_name ∉ existing
+            # Use the same dimensions as the default embedding model
+            cfg = get_embedding_config(DEFAULT_EMBEDDING_MODEL)
+            QdrantClient.create_collection(gc_name; vector_size=cfg.dims)
+        end
+        _GLOBAL_COLLECTION_ENSURED[] = true
+    catch e
+        @debug "Failed to ensure global collection" exception=e
+        _GLOBAL_COLLECTION_ENSURED[] = false
+    end
+end
+
+"""Upsert points to the global cross-project collection (best-effort)."""
+function _upsert_to_global!(points::Vector{Dict})
+    isempty(points) && return
+    try
+        _ensure_global_collection!()
+        QdrantClient.upsert_points(global_collection_name(), points)
+    catch
+        # Don't fail the primary index if global write fails
+    end
+end
+
+"""
+    populate_global_collection!(; verbose=true)
+
+One-time migration: copy all vectors from per-project collections into the
+global cross-project collection. Safe to run multiple times — uses upsert
+so duplicates are overwritten.
+"""
+function populate_global_collection!(; verbose::Bool=true)
+    _ensure_global_collection!()
+    gc_name = global_collection_name()
+    collections = QdrantClient.list_collections()
+    total = 0
+    for col in collections
+        col == gc_name && continue
+
+        # Validate this is a Kaimon-indexed collection by sampling a point
+        # and checking for our schema fields. Skip foreign collections.
+        is_kaimon = try
+            # Sample a point and check for Kaimon payload fields
+            sample = QdrantClient.scroll_points(col; limit=1)
+            points = get(sample, "points", [])
+            if !isempty(points)
+                payload = get(first(points), "payload", Dict())
+                haskey(payload, "file") && haskey(payload, "type") && haskey(payload, "text")
+            else
+                false
+            end
+        catch
+            false
+        end
+        if !is_kaimon
+            verbose && println("  Skipping $col (not a Kaimon index)")
+            continue
+        end
+
+        verbose && print("  Copying $col... ")
+        try
+            # Scroll through all points in the collection with vectors
+            offset = nothing
+            col_count = 0
+            while true
+                result = QdrantClient.scroll_points(col; limit=100, offset=offset, with_vector=true)
+                points = get(result, "points", [])
+                isempty(points) && break
+                # Convert scroll result points to upsert format
+                upsert_batch = Dict[]
+                for pt in points
+                    id = get(pt, "id", nothing)
+                    vector = get(pt, "vector", nothing)
+                    payload = get(pt, "payload", Dict())
+                    (id === nothing || vector === nothing) && continue
+                    push!(upsert_batch, Dict(
+                        "id" => id,
+                        "vector" => vector,
+                        "payload" => payload,
+                    ))
+                end
+                !isempty(upsert_batch) && QdrantClient.upsert_points(gc_name, upsert_batch)
+                col_count += length(upsert_batch)
+                # Get next offset
+                next_offset = get(result, "next_page_offset", nothing)
+                next_offset === nothing && break
+                offset = next_offset
+            end
+            verbose && println("$col_count vectors")
+            total += col_count
+        catch e
+            verbose && println("failed: $(sprint(showerror, e))")
+        end
+    end
+    verbose && println("✅ Global collection populated: $total vectors from $(length(collections)-1) collections")
+    return total
+end
+
+"""Apply the collection prefix to a name, if configured."""
+function _prefixed(name::String)
+    prefix = _QDRANT_COLLECTION_PREFIX[]
+    isempty(prefix) ? name : "$(prefix)_$(name)"
+end
+
+"""Strip the collection prefix from a name for display."""
+function _unprefixed(name::String)
+    prefix = _QDRANT_COLLECTION_PREFIX[]
+    isempty(prefix) && return name
+    full_prefix = "$(prefix)_"
+    startswith(name, full_prefix) ? name[length(full_prefix)+1:end] : name
+end
+
 # Extensible PDF text extraction — implemented by KaimonPDFIOExt when PDFIO is loaded.
 function _extract_pdf_text end
 
 # Embedding model configuration
 const EMBEDDING_CONFIGS = Dict(
+    "embeddinggemma:latest" => (dims=768, context_tokens=2048, context_chars=4000),
     "qwen3-embedding:0.6b" => (dims=1024, context_tokens=8192, context_chars=16000),
-    "qwen3-embedding" => (dims=4096, context_tokens=8192, context_chars=16000),
     "qwen3-embedding:4b" => (dims=2560, context_tokens=8192, context_chars=16000),
     "qwen3-embedding:8b" => (dims=4096, context_tokens=8192, context_chars=16000),
     "snowflake-arctic-embed:latest" => (dims=1024, context_tokens=512, context_chars=1000),
@@ -30,6 +176,27 @@ const DEFAULT_INDEX_EXTENSIONS = [".jl", ".ts", ".tsx", ".jsx", ".md"]
 # Default source directories to index (relative to project root)
 # Additional directories can be specified via index_project(extra_dirs=...)
 const DEFAULT_SOURCE_DIRS = ["src", "test", "scripts"]
+
+# Known source file extensions for auto-detection (superset of per-language lists)
+const SOURCE_EXTENSIONS = Set([
+    ".jl", ".py", ".rs", ".go", ".ts", ".tsx", ".js", ".jsx",
+    ".c", ".cpp", ".cc", ".h", ".hpp", ".java", ".kt", ".kts",
+    ".rb", ".ex", ".exs", ".zig", ".nim", ".lua", ".swift", ".m",
+    ".cs", ".fs", ".scala", ".clj", ".cljs", ".erl", ".hrl",
+    ".hs", ".ml", ".mli", ".r", ".R", ".jl", ".sh", ".bash",
+    ".md", ".mdx", ".rst", ".toml", ".yaml", ".yml", ".json",
+    ".xml", ".html", ".css", ".scss", ".sass", ".less",
+    ".sql", ".graphql", ".gql", ".proto", ".tf", ".hcl",
+    ".vue", ".svelte",
+])
+
+# Directories to skip during walkdir and auto-detection, even if tracked by git
+const IGNORED_DIRS = Set([
+    "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache",
+    "vendor", "dist", "build", "_build", ".next", ".nuxt",
+    "coverage", ".tox", "target", ".gradle", ".cache",
+    ".eggs", ".egg-info", "venv", ".venv", "env",
+])
 
 # Get embedding config for a model
 function get_embedding_config(model::String)
@@ -99,21 +266,91 @@ function check_and_notify_index_errors()
     end
 end
 
-# ── Project Registry ──────────────────────────────────────────────────────────
-# Central JSON file at ~/.cache/kaimon/projects.json that persists indexing
-# config for all projects (gate-connected and manually added external ones).
-# External projects store their index state inside the registry entry to avoid
-# writing any files to the target project directory.
+# ── Search Config (user preferences) ─────────────────────────────────────────
+# User search configuration lives in ~/.config/kaimon/search.json so it
+# survives cache clears.  Only regenerable index state stays in the cache
+# at ~/.cache/kaimon/projects.json.
 
-"""Path to the project registry JSON file."""
+"""Path to the search config JSON file (user preferences)."""
+_search_config_path() = joinpath(kaimon_config_dir(), "search.json")
+
+"""Path to the index cache JSON file (regenerable state)."""
 _project_registry_path() = joinpath(kaimon_cache_dir(), "projects.json")
+
+const _CONFIG_FIELDS = ("collection", "dirs", "extensions", "auto_index", "source")
+
+"""
+    load_search_config() -> Dict
+
+Load search configuration from `~/.config/kaimon/search.json`.
+On first call, migrates config fields from the old cache-only
+`projects.json` if `search.json` doesn't exist yet.
+"""
+function load_search_config()
+    path = _search_config_path()
+    if isfile(path)
+        try
+            parsed = JSON.parse(read(path, String))
+            if !haskey(parsed, "version")
+                parsed["version"] = 1
+            end
+            if !haskey(parsed, "projects")
+                parsed["projects"] = Dict{String,Any}()
+            end
+            return parsed
+        catch e
+            @warn "Failed to load search config, starting fresh" exception = e
+            return Dict("version" => 1, "projects" => Dict{String,Any}())
+        end
+    end
+
+    # No search.json yet — start fresh (projects get added as you use them)
+    return Dict("version" => 1, "projects" => Dict{String,Any}())
+end
+
+"""
+    save_search_config(config::AbstractDict)
+
+Write search configuration to `~/.config/kaimon/search.json`.
+"""
+function save_search_config(config::AbstractDict)
+    path = _search_config_path()
+    try
+        write(path, JSON.json(config, 2))
+    catch e
+        @error "Failed to save search config" exception = e
+    end
+end
+
+# ── Index Cache (regenerable state) ──────────────────────────────────────────
+# ~/.cache/kaimon/projects.json holds only per-file index state (mtimes, chunk
+# counts). Cleared safely without losing user preferences.
 
 """
     load_project_registry() -> Dict
 
-Load the project registry from disk. Returns an empty registry if missing.
+Load search config (project listing). Returns the same shape as the old
+cache registry so callers don't change.
 """
 function load_project_registry()
+    return load_search_config()
+end
+
+"""
+    save_project_registry(registry::AbstractDict)
+
+Write search config. Kept for internal compatibility.
+"""
+function save_project_registry(registry::AbstractDict)
+    save_search_config(registry)
+end
+
+"""
+    _load_index_cache() -> Dict
+
+Load the index cache from `~/.cache/kaimon/projects.json`.
+"""
+function _load_index_cache()
     path = _project_registry_path()
     if !isfile(path)
         return Dict("version" => 1, "projects" => Dict{String,Any}())
@@ -128,22 +365,22 @@ function load_project_registry()
         end
         return parsed
     catch e
-        @warn "Failed to load project registry, starting fresh" exception = e
+        @warn "Failed to load index cache, starting fresh" exception = e
         return Dict("version" => 1, "projects" => Dict{String,Any}())
     end
 end
 
 """
-    save_project_registry(registry::Dict)
+    _save_index_cache(cache::AbstractDict)
 
-Write the project registry to disk.
+Write the index cache to `~/.cache/kaimon/projects.json`.
 """
-function save_project_registry(registry::AbstractDict)
+function _save_index_cache(cache::AbstractDict)
     path = _project_registry_path()
     try
-        write(path, JSON.json(registry, 2))
+        write(path, JSON.json(cache, 2))
     catch e
-        @error "Failed to save project registry" exception = e
+        @error "Failed to save index cache" exception = e
     end
 end
 
@@ -152,57 +389,64 @@ end
                        extensions::Vector{String}=DEFAULT_INDEX_EXTENSIONS,
                        auto_index::Bool=true, source::String="gate")
 
-Upsert a project entry in the registry. `source` is either `"gate"` (auto-indexed
-from a REPL connection) or `"manual"` (user-added via the search manage UI);
-it controls which UI section a project appears in.
+Upsert a project entry in the search config (`~/.config/kaimon/search.json`).
+`source` is either `"gate"` (auto-indexed from a REPL connection) or `"manual"`
+(user-added via the search manage UI); it controls which UI section a project
+appears in.
 """
 function register_project!(
     path::String;
     collection::String = "",
     dirs::Vector{String} = String[],
     extensions::Vector{String} = DEFAULT_INDEX_EXTENSIONS,
+    exclude_dirs::Vector{String} = String[],
     auto_index::Bool = true,
     source::String = "gate",
 )
     path = abspath(path)
-    registry = load_project_registry()
+    config = load_search_config()
     if isempty(collection)
         collection = get_project_collection_name(path)
     end
-    existing = get(registry["projects"], path, Dict{String,Any}())
+    existing = get(config["projects"], path, Dict{String,Any}())
     existing["collection"] = collection
     existing["dirs"] = dirs
     existing["extensions"] = extensions
+    existing["exclude_dirs"] = exclude_dirs
     existing["auto_index"] = auto_index
     existing["source"] = source
-    if !haskey(existing, "index_state")
-        existing["index_state"] = Dict{String,Any}()
-    end
-    registry["projects"][path] = existing
-    save_project_registry(registry)
+    config["projects"][path] = existing
+    save_search_config(config)
 end
 
 """
     unregister_project!(path::String)
 
-Remove a project entry from the registry.
+Remove a project from both search config and index cache.
 """
 function unregister_project!(path::String)
     path = abspath(path)
-    registry = load_project_registry()
-    delete!(registry["projects"], path)
-    save_project_registry(registry)
+    config = load_search_config()
+    delete!(config["projects"], path)
+    save_search_config(config)
+
+    # Also clean up cache entry
+    cache = _load_index_cache()
+    if haskey(cache["projects"], path)
+        delete!(cache["projects"], path)
+        _save_index_cache(cache)
+    end
 end
 
 """
     get_project_config(path::String) -> Union{Dict, Nothing}
 
-Look up a project's config by absolute path.
+Look up a project's config by absolute path from the search config.
 """
 function get_project_config(path::String)
     path = abspath(path)
-    registry = load_project_registry()
-    return get(registry["projects"], path, nothing)
+    config = load_search_config()
+    return get(config["projects"], path, nothing)
 end
 
 """
@@ -289,8 +533,8 @@ function _fallback_detect(project_path::String)
         # Limit depth to 2 levels
         depth = count(==('/'), relpath(root, project_path))
         depth > 2 && (empty!(dirs); continue)
-        # Skip hidden dirs and node_modules
-        filter!(d -> !startswith(d, ".") && d != "node_modules" && d != "__pycache__", dirs)
+        # Skip hidden dirs and well-known noise directories
+        filter!(d -> !startswith(d, ".") && d ∉ IGNORED_DIRS, dirs)
         for f in files
             ext = lowercase(splitext(f)[2])
             if ext in source_exts
@@ -309,16 +553,114 @@ function _fallback_detect(project_path::String)
     return (type = "unknown", dirs = found_dirs, extensions = top_exts)
 end
 
+"""
+    _git_tracked_files(project_path::String) -> Union{Vector{String}, Nothing}
+
+Get list of tracked + untracked-but-not-ignored files via `git ls-files`.
+Returns `nothing` if the path is not a git repository or git is unavailable.
+"""
+function _git_tracked_files(project_path::String)
+    try
+        output = read(
+            `git -C $project_path ls-files --cached --others --exclude-standard`,
+            String,
+        )
+        files = filter(!isempty, split(output, '\n'))
+        return String.(files)
+    catch
+        return nothing
+    end
+end
+
+"""
+    auto_detect_project_config(project_path::String) -> NamedTuple{(:type, :dirs, :extensions, :git_aware), Tuple{String, Vector{String}, Vector{String}, Bool}}
+
+Improved project detection that uses git to filter ignored/generated files.
+
+For git repos:
+- Discovers unique source extensions from tracked files (filtered by SOURCE_EXTENSIONS whitelist)
+- Collapses file paths to minimal covering top-level directories
+- Excludes well-known noise directories (IGNORED_DIRS) even if tracked
+- Falls back to marker-based `detect_project_type()` for non-git projects
+"""
+function auto_detect_project_config(project_path::String)
+    path = abspath(project_path)
+
+    # Try git-aware detection first
+    git_files = _git_tracked_files(path)
+    if git_files !== nothing && !isempty(git_files)
+        # Discover unique extensions, filtered to source whitelist
+        ext_counts = Dict{String,Int}()
+        for f in git_files
+            ext = lowercase(splitext(f)[2])
+            if ext in SOURCE_EXTENSIONS
+                ext_counts[ext] = get(ext_counts, ext, 0) + 1
+            end
+        end
+
+        # Top extensions by frequency
+        sorted_exts = sort(collect(ext_counts); by=last, rev=true)
+        detected_exts = [first(p) for p in sorted_exts[1:min(10, length(sorted_exts))]]
+        if isempty(detected_exts)
+            detected_exts = copy(DEFAULT_INDEX_EXTENSIONS)
+        end
+
+        # Collapse file paths to minimal covering top-level dirs
+        top_dirs = Set{String}()
+        has_root_files = false
+        for f in git_files
+            ext = lowercase(splitext(f)[2])
+            ext in SOURCE_EXTENSIONS || continue
+            parts = splitpath(f)
+            if length(parts) >= 2
+                top_dir = parts[1]
+                # Skip ignored dirs and hidden dirs
+                if !startswith(top_dir, ".") && top_dir ∉ IGNORED_DIRS
+                    push!(top_dirs, top_dir)
+                end
+            else
+                has_root_files = true
+            end
+        end
+        # Only include project root if no subdirectories were found —
+        # a few root-level files aren't worth recursing the entire tree.
+        if isempty(top_dirs) && has_root_files
+            push!(top_dirs, ".")
+        end
+
+        # Convert to absolute paths, filter to existing dirs
+        abs_dirs = String[]
+        for d in sort(collect(top_dirs))
+            full = d == "." ? path : joinpath(path, d)
+            isdir(full) && push!(abs_dirs, full)
+        end
+        if isempty(abs_dirs)
+            push!(abs_dirs, path)
+        end
+
+        # Determine project type from markers (for the type label)
+        marker_result = detect_project_type(path)
+        ptype = marker_result.type
+
+        return (type=ptype, dirs=abs_dirs, extensions=detected_exts, git_aware=true)
+    end
+
+    # Non-git fallback
+    result = detect_project_type(path)
+    return (type=result.type, dirs=result.dirs, extensions=result.extensions, git_aware=false)
+end
+
 # Lightweight file tracking for indexing state.
-# All state is stored centrally in ~/.cache/kaimon/projects.json — we never
-# write into the user's project directories.
+# Config (dirs, extensions) lives in ~/.config/kaimon/search.json.
+# Per-file index state lives in ~/.cache/kaimon/projects.json.
+# We never write into the user's project directories.
 
 """
     load_index_state(project_path::String) -> Dict
 
-Load the index state for a project from the central registry
-(~/.cache/kaimon/projects.json). Returns a default empty state if the
-project has not been indexed yet.
+Load the index state for a project. Config (dirs, extensions) comes from the
+search config (`~/.config/kaimon/search.json`); per-file tracking comes from
+the index cache (`~/.cache/kaimon/projects.json`).
 
 Structure:
 - "config": Dict with "dirs" (full list of indexed directories) and "extensions"
@@ -333,37 +675,58 @@ function load_index_state(project_path::String)
         "files" => Dict{String,Any}(),
     )
 
-    config = get_project_config(project_path)
-    config === nothing && return _default_state()
-    idx_state = get(config, "index_state", Dict())
-    parsed_config = Dict(
-        "dirs" => String.(get(idx_state, "dirs", get(config, "dirs", String[]))),
-        "extensions" => String.(get(idx_state, "extensions", get(config, "extensions", DEFAULT_INDEX_EXTENSIONS))),
-    )
+    # Read dirs/extensions from search config
+    search_cfg = get_project_config(project_path)
+
+    # Read per-file state from index cache
+    ap = abspath(project_path)
+    cache = _load_index_cache()
+    cache_entry = get(cache["projects"], ap, Dict{String,Any}())
+    idx_state = get(cache_entry, "index_state", Dict())
+
+    # Config priority: search config → cache (backward compat) → defaults
+    if search_cfg !== nothing
+        dirs = String.(get(search_cfg, "dirs", String[]))
+        exts = String.(get(search_cfg, "extensions", DEFAULT_INDEX_EXTENSIONS))
+    elseif !isempty(idx_state)
+        # Backward compat: old cache entries may still have dirs/extensions
+        dirs = String.(get(idx_state, "dirs", String[]))
+        exts = String.(get(idx_state, "extensions", DEFAULT_INDEX_EXTENSIONS))
+    else
+        return _default_state()
+    end
+
     files = Dict(get(idx_state, "files", Dict()))
-    return Dict{String,Any}("config" => parsed_config, "files" => files)
+    return Dict{String,Any}(
+        "config" => Dict{String,Any}("dirs" => dirs, "extensions" => exts),
+        "files" => files,
+    )
 end
 
 """
     save_index_state(project_path::String, state::Dict)
 
-Persist the index state for a project into the central registry
-(~/.cache/kaimon/projects.json). Creates the registry entry if it does not
-exist yet, so state is never silently dropped for unregistered projects.
+Persist the index state for a project. Only file-level tracking data goes to
+the index cache (`~/.cache/kaimon/projects.json`). Config fields (dirs,
+extensions) are managed via `register_project!` in the search config.
 """
 function save_index_state(project_path::String, state)
     try
-        registry = load_project_registry()
+        cache = _load_index_cache()
         ap = abspath(project_path)
-        entry = get!(registry["projects"], ap, Dict{String,Any}())
-        entry["index_state"] = Dict(
-            "dirs" => get(get(state, "config", Dict()), "dirs", String[]),
-            "extensions" => get(get(state, "config", Dict()), "extensions", DEFAULT_INDEX_EXTENSIONS),
+        entry = get!(cache["projects"], ap, Dict{String,Any}())
+        idx = Dict{String,Any}(
             "files" => get(state, "files", Dict()),
         )
-        save_project_registry(registry)
+        # Preserve last_indexed timestamp if present
+        last_indexed = get(state, "last_indexed", nothing)
+        if last_indexed !== nothing
+            idx["last_indexed"] = last_indexed
+        end
+        entry["index_state"] = idx
+        _save_index_cache(cache)
     catch e
-        @error "Failed to save index state to registry" exception = e
+        @error "Failed to save index state to cache" exception = e
     end
 end
 
@@ -400,17 +763,20 @@ end
 Get list of files that need re-indexing. Loads the index state once for the
 whole directory scan rather than once per file.
 """
-function get_stale_files(project_path::String, src_dir::String; extensions::Vector{String}=DEFAULT_INDEX_EXTENSIONS)
+function get_stale_files(project_path::String, src_dir::String;
+                         extensions::Vector{String}=DEFAULT_INDEX_EXTENSIONS,
+                         exclude_dirs::Vector{String}=String[])
     stale = String[]
     isdir(src_dir) || return stale
 
+    exclude_set = union(IGNORED_DIRS, Set(exclude_dirs))
     files_state = load_index_state(project_path)["files"]
 
     onerr = e -> begin
-        with_index_logger(() -> @warn "Skipping unreadable directory during stale scan" exception = e)
+        with_index_logger(() -> @warn "Skipping unreadable directory during stale scan" project = project_path src_dir = src_dir exception = e)
     end
     for (root, dirs, files) in walkdir(src_dir; onerror=onerr)
-        filter!(d -> !startswith(d, ".") && d != "node_modules", dirs)
+        filter!(d -> !startswith(d, ".") && d ∉ exclude_set, dirs)
 
         for file in files
             if any(ext -> endswith(file, ext), extensions)
@@ -468,7 +834,8 @@ Generate a collection name based on the project directory.
 Uses the directory name, sanitized via `normalize_collection_name`.
 """
 function get_project_collection_name(project_path::String=pwd())
-    return normalize_collection_name(basename(abspath(project_path)))
+    name = normalize_collection_name(basename(abspath(project_path)))
+    return _prefixed(name)
 end
 
 """
@@ -518,9 +885,14 @@ end
 Resolve a collection name (possibly user-provided) against available collections.
 Returns `(resolved_name, error_message)`. If error_message is nothing, the name is valid.
 """
-function _resolve_collection(name::Union{String,Nothing}, available::Vector{String}; project_path::String=pwd())
+function _resolve_collection(name::Union{String,Nothing}, available::Vector{String}; project_path::String="")
     # Default to project collection if not specified
     if name === nothing || isempty(name)
+        # Try last session's project path, fall back to pwd()
+        if isempty(project_path)
+            lsp = try; parentmodule(@__MODULE__)._last_session_project_path(); catch; ""; end
+            project_path = !isempty(lsp) ? lsp : pwd()
+        end
         name = get_project_collection_name(project_path)
     end
 
@@ -1114,6 +1486,7 @@ function index_file(
     project_path::String=pwd(),
     verbose::Bool=true,
     silent::Bool=false,
+    embedding_model::String=DEFAULT_EMBEDDING_MODEL,
 )
     if !isfile(file_path)
         msg = "File not found: $file_path"
@@ -1164,7 +1537,7 @@ function index_file(
         points = Dict[]
 
         # Get embedding config for size limits
-        embedding_config = get_embedding_config(DEFAULT_EMBEDDING_MODEL)
+        embedding_config = get_embedding_config(embedding_model)
         max_length = embedding_config.context_chars
 
         for (i, chunk) in enumerate(chunks)
@@ -1174,7 +1547,7 @@ function index_file(
             end
 
             # Use split-and-retry strategy for oversized chunks or embedding failures
-            embedded_chunks = split_chunk_recursive(chunk, max_length, DEFAULT_EMBEDDING_MODEL)
+            embedded_chunks = split_chunk_recursive(chunk, max_length, embedding_model)
 
             if isempty(embedded_chunks)
                 with_index_logger(() -> @warn "Failed to embed chunk after splitting" file = file_path chunk = i start_line = chunk["start_line"] end_line = chunk["end_line"])
@@ -1194,6 +1567,10 @@ function index_file(
                     "type" => embedded_chunk["type"],
                     "name" => embedded_chunk["name"],
                     "text" => first(embedded_chunk["text"], 2000),  # Truncate for storage (Unicode-safe)
+                    "project_path" => project_path,
+                    "collection" => collection,
+                    "indexed_at" => round(Int, time()),
+                    "kaimon_schema" => 1,  # schema version for future migrations
                 )
 
                 # Add optional metadata fields if they exist
@@ -1215,6 +1592,7 @@ function index_file(
                 # Batch upsert every 10 points
                 if length(points) >= 10
                     QdrantClient.upsert_points(collection, points)
+                    _upsert_to_global!(points)
                     points = Dict[]
                 end
             end
@@ -1223,6 +1601,7 @@ function index_file(
         # Upsert remaining points
         if !isempty(points)
             QdrantClient.upsert_points(collection, points)
+            _upsert_to_global!(points)
         end
 
         # Record in index state for change tracking
@@ -1259,16 +1638,19 @@ function reindex_file(
     project_path::String=pwd(),
     verbose::Bool=true,
     silent::Bool=false,
+    embedding_model::String=DEFAULT_EMBEDDING_MODEL,
 )
     collection = normalize_collection_name(collection)
     !silent && verbose && println("  Re-indexing: $(basename(file_path))")
     with_index_logger(() -> @info "Re-indexing file" file = basename(file_path))
 
-    # Delete old chunks for this file
+    # Delete old chunks for this file from both project and global collections
     QdrantClient.delete_by_file(collection, file_path)
+    gc = global_collection_name()
+    try; QdrantClient.collection_exists(gc) && QdrantClient.delete_by_file(gc, file_path); catch; end
 
-    # Index fresh
-    return index_file(file_path, collection; project_path=project_path, verbose=verbose, silent=silent)
+    # Index fresh (dual-writes to both collections)
+    return index_file(file_path, collection; project_path=project_path, verbose=verbose, silent=silent, embedding_model=embedding_model)
 end
 
 """
@@ -1283,20 +1665,25 @@ function index_directory(
     collection::String;
     project_path::String=pwd(),
     extensions::Vector{String}=DEFAULT_INDEX_EXTENSIONS,
+    exclude_dirs::Vector{String}=String[],
     verbose::Bool=true,
     silent::Bool=false,
+    embedding_model::String=DEFAULT_EMBEDDING_MODEL,
 )
     total_chunks = 0
     isdir(dir_path) || return total_chunks
 
+    # Build exclude set from user config + built-in ignores
+    exclude_set = union(IGNORED_DIRS, Set(exclude_dirs))
+
     # Find all matching files
     files = String[]
     onerr = e -> begin
-        with_index_logger(() -> @warn "Skipping unreadable directory during indexing" exception = e)
+        with_index_logger(() -> @warn "Skipping unreadable directory during indexing" dir = dir_path collection = collection exception = e)
     end
     for (root, dirs, filenames) in walkdir(dir_path; onerror=onerr)
-        # Skip hidden directories and node_modules
-        filter!(d -> !startswith(d, ".") && d != "node_modules", dirs)
+        # Skip hidden directories, well-known noise, and user-excluded dirs
+        filter!(d -> !startswith(d, ".") && d ∉ exclude_set, dirs)
 
         for filename in filenames
             # Check if file matches any of the supported extensions
@@ -1316,6 +1703,7 @@ function index_directory(
             project_path=project_path,
             verbose=verbose,
             silent=silent,
+            embedding_model=embedding_model,
         )
         total_chunks += chunks
     end
@@ -1341,11 +1729,9 @@ Index a Julia project into Qdrant. Uses project directory name as collection if 
 Total number of chunks indexed across all directories.
 
 # Configuration
-Default directories and extensions can be configured in .kaimon/security.json:
-- `index_dirs`: Array of directories relative to project root (e.g., ["src", "lib", "dashboard-ui/src"])
-- `index_extensions`: Array of file extensions to index (e.g., [".jl", ".ts", ".md"])
-
-Use `Kaimon.set_index_dirs!()` and `Kaimon.set_index_extensions!()` to update config.
+Directories and extensions are resolved from the search config
+(`~/.config/kaimon/search.json`), which stores per-project `dirs` and `extensions`
+arrays. Use the Search Config panel in the TUI to update these settings.
 """
 function index_project(
     project_path::String=pwd();
@@ -1355,32 +1741,36 @@ function index_project(
     extra_dirs::Vector{String}=String[],
     extensions::Union{Vector{String},Nothing}=nothing,
     source::String="manual",
+    embedding_model::String=DEFAULT_EMBEDDING_MODEL,
 )
     # Use project name as collection if not specified; always normalize
     col_name = collection === nothing ? get_project_collection_name(project_path) : normalize_collection_name(collection)
 
-    # Config resolution priority: explicit args → registry → security.json → defaults
+    # Config resolution priority: explicit args → registry → defaults
     registry_config = get_project_config(project_path)
 
-    config = load_security_config(project_path)
-    config_dirs = config !== nothing ? config.index_dirs : String[]
-    config_extensions = config !== nothing ? config.index_extensions : DEFAULT_INDEX_EXTENSIONS
+    config_dirs = String[]
+    config_extensions = DEFAULT_INDEX_EXTENSIONS
 
-    # Use registry dirs/extensions as intermediate fallback
-    if isempty(config_dirs) && registry_config !== nothing
+    config_exclude_dirs = String[]
+
+    # Use registry dirs/extensions/exclude if available
+    if registry_config !== nothing
         reg_dirs = get(registry_config, "dirs", String[])
         if !isempty(reg_dirs)
             config_dirs = String.(reg_dirs)
         end
-    end
-    if registry_config !== nothing && extensions === nothing
         reg_exts = get(registry_config, "extensions", nothing)
         if reg_exts !== nothing && !isempty(reg_exts)
             config_extensions = String.(reg_exts)
         end
+        reg_exclude = get(registry_config, "exclude_dirs", String[])
+        if !isempty(reg_exclude)
+            config_exclude_dirs = String.(reg_exclude)
+        end
     end
 
-    # Use provided extensions or fall back to config/defaults
+    # Use provided extensions or fall back to registry/defaults
     actual_extensions = extensions !== nothing ? extensions : config_extensions
 
     # Build list of directories to index
@@ -1397,13 +1787,10 @@ function index_project(
             end
         end
     else
-        # Fall back to existing behavior: add src/ if it exists
+        # Fall back to src/ if it exists; don't blindly recurse the project root
         src_dir = joinpath(project_path, "src")
         if isdir(src_dir)
             push!(dirs_to_index, src_dir)
-        elseif isempty(extra_dirs)
-            # If no src/ and no extra dirs, index entire project
-            push!(dirs_to_index, project_path)
         end
     end
 
@@ -1418,20 +1805,29 @@ function index_project(
     end
 
     # Get vector size for the embedding model
-    embedding_config = get_embedding_config(DEFAULT_EMBEDDING_MODEL)
+    embedding_config = get_embedding_config(embedding_model)
     vector_size = embedding_config.dims
 
     if recreate
-        !silent && println("Recreating collection '$col_name' (model: $DEFAULT_EMBEDDING_MODEL, dims: $vector_size)...")
-        with_index_logger(() -> @info "Recreating collection" collection = col_name model = DEFAULT_EMBEDDING_MODEL vector_size = vector_size)
+        !silent && println("Recreating collection '$col_name' (model: $embedding_model, dims: $vector_size)...")
+        with_index_logger(() -> @info "Recreating collection" collection = col_name model = embedding_model vector_size = vector_size)
         QdrantClient.delete_collection(col_name)
         QdrantClient.create_collection(col_name; vector_size=vector_size)
+        # Also purge this project's entries from the global collection
+        gc = global_collection_name()
+        try
+            if QdrantClient.collection_exists(gc)
+                QdrantClient.delete_by_filter(gc, Dict(
+                    "must" => [Dict("key" => "collection", "match" => Dict("value" => col_name))]
+                ))
+            end
+        catch; end
     else
         # Check if collection exists; create if it doesn't
         existing_collections = QdrantClient.list_collections()
         if !(col_name in existing_collections)
-            !silent && println("Creating collection '$col_name' (model: $DEFAULT_EMBEDDING_MODEL, dims: $vector_size)...")
-            with_index_logger(() -> @info "Creating collection" collection = col_name model = DEFAULT_EMBEDDING_MODEL vector_size = vector_size)
+            !silent && println("Creating collection '$col_name' (model: $embedding_model, dims: $vector_size)...")
+            with_index_logger(() -> @info "Creating collection" collection = col_name model = embedding_model vector_size = vector_size)
             QdrantClient.create_collection(col_name; vector_size=vector_size)
         end
     end
@@ -1448,20 +1844,20 @@ function index_project(
         collection = col_name,
         dirs = dirs_to_index,
         extensions = actual_extensions,
+        exclude_dirs = config_exclude_dirs,
         source = source,
     )
 
     # Index each directory and sum total chunks
     total_chunks = 0
     for dir in dirs_to_index
-        chunks = index_directory(dir, col_name; project_path=project_path, silent=silent, extensions=actual_extensions)
+        chunks = index_directory(dir, col_name; project_path=project_path, silent=silent,
+            extensions=actual_extensions, exclude_dirs=config_exclude_dirs, embedding_model=embedding_model)
         total_chunks += chunks
     end
 
-    # Save indexing configuration and completion timestamp
+    # Save completion timestamp to index cache
     state = load_index_state(project_path)
-    state["config"]["dirs"] = dirs_to_index
-    state["config"]["extensions"] = actual_extensions
     state["last_indexed"] = round(Int, time())
     save_index_state(project_path, state)
 
@@ -1494,6 +1890,8 @@ function sync_index(
     dirs_to_sync = state["config"]["dirs"]
     extensions = state["config"]["extensions"]
 
+    exclude_dirs = String[]
+
     # Fallback chain: index state → registry → src/ heuristic
     if isempty(dirs_to_sync)
         reg_config = get_project_config(project_path)
@@ -1506,15 +1904,22 @@ function sync_index(
             if reg_exts !== nothing && !isempty(reg_exts)
                 extensions = String.(reg_exts)
             end
+            reg_exclude = get(reg_config, "exclude_dirs", String[])
+            if !isempty(reg_exclude)
+                exclude_dirs = String.(reg_exclude)
+            end
         end
     end
     if isempty(dirs_to_sync)
         src_dir = joinpath(project_path, "src")
         if isdir(src_dir)
             push!(dirs_to_sync, src_dir)
-        else
-            push!(dirs_to_sync, project_path)
         end
+    end
+    if isempty(dirs_to_sync)
+        !silent && verbose && println("⚠️  No indexable directories found for '$col_name'")
+        with_index_logger(() -> @warn "No indexable directories found" collection = col_name project = project_path)
+        return (reindexed=0, deleted=0, chunks=0)
     end
 
     !silent && verbose && println("🔄 Syncing index for collection '$col_name' ($(length(dirs_to_sync)) director$(length(dirs_to_sync) == 1 ? "y" : "ies"))...")
@@ -1523,7 +1928,7 @@ function sync_index(
     # Get files that need re-indexing from all directories
     stale_files = String[]
     for dir in dirs_to_sync
-        append!(stale_files, get_stale_files(project_path, dir; extensions=extensions))
+        append!(stale_files, get_stale_files(project_path, dir; extensions=extensions, exclude_dirs=exclude_dirs))
     end
 
     deleted_files = get_deleted_files(project_path)
@@ -1532,11 +1937,14 @@ function sync_index(
     deleted = 0
     total_chunks = 0
 
-    # Handle deleted files
+    # Handle deleted files (remove from both project and global collections)
+    gc = global_collection_name()
+    gc_exists = try; QdrantClient.collection_exists(gc); catch; false; end
     for file_path in deleted_files
         !silent && verbose && println("  Removing deleted: $(basename(file_path))")
         with_index_logger(() -> @info "Removing deleted file" file = basename(file_path))
         QdrantClient.delete_by_file(col_name, file_path)
+        gc_exists && try; QdrantClient.delete_by_file(gc, file_path); catch; end
         remove_indexed_file(project_path, file_path)
         deleted += 1
     end

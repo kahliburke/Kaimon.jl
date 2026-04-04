@@ -90,6 +90,7 @@ end
     _auto_index_on_connect!(project_path::String)
 
 Async function that auto-indexes a gate project on first connect.
+Only triggers for actual Julia projects (must have `Project.toml`).
 If the collection exists, does incremental sync; if not, detects project type
 and runs a full index with detected defaults.
 Uses the `_REINDEX_IN_PROGRESS` guard to prevent concurrent operations.
@@ -99,6 +100,21 @@ function _auto_index_on_connect!(project_path::String, render_mode::Bool = false
     if isempty(project_path) || project_path == "/"
         return
     end
+    # Only auto-index actual Julia projects (must have Project.toml)
+    if !isfile(joinpath(project_path, "Project.toml"))
+        return
+    end
+    _auto_index_project!(project_path)
+end
+
+"""
+    _auto_index_project!(project_path::String)
+
+Core async auto-index: sync or full-index a project in the background.
+Called by gate auto-connect (with Project.toml guard) and by approved-project
+indexing at startup (no guard needed — user already approved it).
+"""
+function _auto_index_project!(project_path::String)
     # Concurrent guard — skip if already reindexing this project
     already_running = lock(_REINDEX_LOCK) do
         if project_path in _REINDEX_IN_PROGRESS
@@ -155,7 +171,7 @@ function _auto_index_on_connect!(project_path::String, render_mode::Bool = false
                 _push_log!(:info, "Auto-index complete ($col_name)")
             end
         catch e
-            _push_log!(:warn, "Auto-index on connect failed: $(sprint(showerror, e))")
+            _push_log!(:warn, "Auto-index failed: $(sprint(showerror, e))")
         finally
             lock(_REINDEX_LOCK) do
                 delete!(_REINDEX_IN_PROGRESS, project_path)
@@ -171,7 +187,13 @@ function Tachikoma.init!(m::KaimonModel, _t::Tachikoma.Terminal)
     # The mock model already has everything set up.
     m._render_mode && return
 
-    set_theme!(KOKAKU)
+    TUI_MODEL[] = m
+
+    try
+        Tachikoma.load_theme!()
+    catch
+        set_theme!(KOKAKU)
+    end
 
     # Open persistent log file
     _open_log_file!()
@@ -191,14 +213,55 @@ function Tachikoma.init!(m::KaimonModel, _t::Tachikoma.Terminal)
     _t.io = _TUI_REAL_STDOUT[]
 
     # Start connection manager (discovers REPL gates)
-    m.conn_mgr = ConnectionManager()
-    start!(m.conn_mgr)
-    register_sessions_changed_callback!(m.conn_mgr)
+    # Reuse existing gate services if start!(gate=true) was called before tui()
+    if GATE_MODE[] && GATE_CONN_MGR[] !== nothing
+        m.conn_mgr = GATE_CONN_MGR[]
+    else
+        m.conn_mgr = ConnectionManager(task_queue = m._task_queue)
+        start!(m.conn_mgr)
+        register_sessions_changed_callback!(m.conn_mgr)
+
+        GATE_MODE[] = true
+        GATE_CONN_MGR[] = m.conn_mgr
+
+        # Start service endpoint for gate → Kaimon reverse calls (Qdrant, Ollama)
+        try
+            start_service_endpoint!()
+        catch e
+            _push_log!(:warn, "Failed to start service endpoint: $(sprint(showerror, e))")
+        end
+
+        # Start managed extensions (spawns subprocesses for auto_start extensions)
+        start_extensions!()
+
+        # Reconcile stale background jobs after sessions connect
+        Threads.@spawn begin
+            sleep(10)  # give sessions time to connect
+            _reconcile_stale_jobs!(m.conn_mgr)
+        end
+    end
+
     m.gate_mirror_repl = get_gate_mirror_repl_preference()
 
-    # Enable gate mode — tool evals route to connected REPLs
-    GATE_MODE[] = true
-    GATE_CONN_MGR[] = m.conn_mgr
+    # Load editor preference from global config
+    _cfg = load_global_config()
+    m.editor = _cfg !== nothing ? _cfg.editor : "vscode"
+
+    # Load allowed projects config
+    m.project_entries = load_projects_config()
+    m.tcp_gate_entries = load_tcp_gates_config()
+
+    # Auto-index approved projects in the background.  Each enabled project
+    # gets an incremental sync (or a fresh index if its collection doesn't
+    # exist yet).  Uses the same concurrency guard as gate auto-index so
+    # nothing runs twice if a REPL for the project also connects.
+    if !m._render_mode
+        for entry in m.project_entries
+            entry.enabled || continue
+            isdir(entry.project_path) || continue
+            _auto_index_project!(entry.project_path)
+        end
+    end
 
     # MCP server is started on the first view() tick so the TUI is already
     # rendering and can report status in the Server tab.
@@ -212,6 +275,16 @@ function Tachikoma.cleanup!(m::KaimonModel)
 
     # Skip teardown on restart — we're coming right back
     m._restart_requested && return
+
+    # Stop service endpoint (gate → Kaimon reverse channel)
+    try
+        stop_service_endpoint!()
+    catch
+    end
+
+    # Stop managed sessions and extensions before disconnecting gates
+    stop_all_sessions!()
+    stop_all_extensions!()
 
     # Disable gate mode
     GATE_MODE[] = false
@@ -257,6 +330,7 @@ Tachikoma.task_queue(m::KaimonModel) = m._task_queue
 
 """Check if any source files have been modified since the last Revise reload."""
 function _check_code_stale!(m::KaimonModel)
+    m._revise_polling && return  # Revise handles staleness via pre_render!
     now = time()
     now - m._code_last_check < 3.0 && return  # check every 3 seconds
     m._code_last_check = now
@@ -277,6 +351,41 @@ function _check_code_stale!(m::KaimonModel)
         end
     end
     m._code_stale = false
+end
+
+const _REVISE_PENDING = Threads.Atomic{Bool}(false)
+
+"""Start a background task that waits on Revise's file-change event and sets an atomic flag."""
+function _start_revise_watcher!(_Revise)
+    Threads.@spawn begin
+        evt = _Revise.revision_event
+        while true
+            try
+                wait(evt)
+                reset(evt)
+                _REVISE_PENDING[] = true
+                _push_log!(:info, "Revise: file changes detected")
+            catch e
+                e isa InterruptException && break
+            end
+        end
+    end
+end
+
+function Tachikoma.pre_render!(m::KaimonModel)
+    m._revise_polling || return
+    _REVISE_PENDING[] || return
+    _Revise = m._revise_mod
+    _Revise === nothing && return
+    _REVISE_PENDING[] = false
+    try
+        _Revise.revise()
+        m._code_stale = false
+        m._code_last_revise = time()
+        _push_log!(:info, "Revise: applied source changes")
+    catch e
+        _push_log!(:warn, "Revise.revise() failed: $e")
+    end
 end
 
 """Request TUI restart — sets flag so app() exits, tui() loop calls Revise and re-enters."""
@@ -307,7 +416,7 @@ connections in `~/.cache/kaimon/sock/`.
 - `port::Int=2828`: Port for the MCP HTTP server
 - `theme::Symbol=:kokaku`: Tachikoma theme name
 """
-function tui(; port::Int = 2828, theme_name::Symbol = :kokaku)
+function tui(; port::Int = 2828, theme_name::Union{Symbol,Nothing} = nothing, revise_polling::Bool = false, revise_mod::Any = nothing)
     if Threads.nthreads() < 2
         @warn """Kaimon TUI running with only 1 thread — UI may be unresponsive.
                  Start Julia with: julia -t auto
@@ -319,8 +428,11 @@ function tui(; port::Int = 2828, theme_name::Symbol = :kokaku)
         enable_markdown()
     catch
     end
-    set_theme!(theme_name)
-    model = KaimonModel(server_port = port)
+    if theme_name !== nothing
+        set_theme!(theme_name)
+    end
+    model = KaimonModel(server_port = port, _revise_polling = revise_polling, _revise_mod = revise_mod)
+    model.search_embedding_model = _load_embedding_model()
 
     while true
         # invokelatest so that after Revise updates, the new method bodies
@@ -339,7 +451,7 @@ function tui(; port::Int = 2828, theme_name::Symbol = :kokaku)
                 revised ? "Ctrl-U: Revise reload complete — restarting TUI" :
                 "Ctrl-U: Revise not available — restarting TUI",
             )
-            Base.invokelatest(set_theme!, theme_name)
+            # Theme is loaded from preferences in init!
             continue
         end
 

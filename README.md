@@ -24,8 +24,8 @@ code search.
   macro expansions directly from the agent
 - **The Gate** — connect external Julia processes and register custom tools via ZMQ.
   Your app's domain logic becomes agent-callable with automatic schema generation
-- **VS Code Debugging** — set breakpoints, step through code, watch variables, all
-  driven by the AI agent
+- **Interactive Debugging** — Infiltrator.jl integration with breakpoints, variable
+  inspection, and expression evaluation at pause points
 - **Semantic Code Search** — index projects into Qdrant and search with natural language
   queries like "function that handles HTTP routing"
 - **Terminal Dashboard** — real-time TUI monitoring sessions, tool calls, test runs,
@@ -36,10 +36,14 @@ code search.
 
 ## Quick Start
 
+```julia
+]app add https://github.com/kahliburke/Kaimon.jl
+```
+
+This installs the `kaimon` command to `~/.julia/bin/` (make sure it's on your `PATH`). Then:
+
 ```bash
-git clone https://github.com/kahliburke/Kaimon.jl
-cd Kaimon.jl
-./bin/kaimon
+kaimon
 ```
 
 The first run opens a setup wizard (security mode, API key, port). After that, the terminal dashboard launches:
@@ -60,7 +64,7 @@ From the dashboard:
 | Code Analysis | `code_lowered`, `code_typed`, `format_code`, `lint_package` | IR inspection, formatting, linting |
 | Navigation | `goto_definition`, `navigate_to_file` | Jump to definitions and source locations |
 | VS Code | `execute_vscode_command`, `list_vscode_commands` | VS Code command execution |
-| Debugging | `start_debug_session`, `debug_step_*`, `debug_continue`, `debug_stop`, `add_watch_expression`, `copy_debug_value`, `open_file_and_set_breakpoint` | Full debugging workflow |
+| Debugging | `debug_ctrl`, `debug_eval`, `debug_exfiltrate`, `debug_inspect_safehouse`, `debug_clear_safehouse` | Infiltrator.jl breakpoint debugging |
 | Packages | `pkg_add`, `pkg_rm` | Add/remove packages |
 | Testing | `run_tests`, `profile_code`, `stress_test` | Test execution, profiling, load testing |
 | Search | `qdrant_search_code`, `qdrant_index_project`, `qdrant_sync_index`, `qdrant_list_collections`, `qdrant_collection_info`, `qdrant_browse_collection`, `qdrant_reindex_file` | Semantic code search |
@@ -95,7 +99,7 @@ Full documentation: [kahliburke.github.io/Kaimon.jl](https://kahliburke.github.i
 - Julia 1.12+
 - Any MCP-compatible client (Claude Code, Cursor, VS Code with MCP extension)
 - Optional: [Qdrant](https://qdrant.tech) for semantic code search
-- Optional: [VS Code Remote Control](https://marketplace.visualstudio.com/items?itemName=nicollasricas.vscode-remote-control) extension for debugging
+- Optional: [VS Code Remote Control](https://marketplace.visualstudio.com/items?itemName=nicollasricas.vscode-remote-control) extension for VS Code integration
 
 ## Contributing
 

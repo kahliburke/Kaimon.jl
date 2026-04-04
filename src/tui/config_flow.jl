@@ -1,12 +1,5 @@
 # ── Config Flow: Begin ───────────────────────────────────────────────────────
 
-function begin_onboarding!(m::KaimonModel)
-    m.config_flow = FLOW_ONBOARD_PATH
-    m.path_input = TextInput(text = string(pwd()), label = "Path: ", tick = m.tick)
-    m.flow_selected = 1
-    m.flow_modal_selected = :confirm
-end
-
 function begin_client_config!(m::KaimonModel)
     m.config_flow = FLOW_CLIENT_SELECT
     m.flow_selected = 1
@@ -19,12 +12,141 @@ function begin_global_gate!(m::KaimonModel)
     m.config_flow = FLOW_CLIENT_CONFIRM
 end
 
+function begin_project_add!(m::KaimonModel)
+    m.config_flow = FLOW_PROJECT_ADD_PATH
+    m.project_path_input = TextInput(text = string(pwd()), label = "Path: ", tick = m.tick)
+    m.flow_modal_selected = :confirm
+end
+
+function begin_project_remove!(m::KaimonModel)
+    isempty(m.project_entries) && return
+    m.selected_project < 1 && return
+    m.selected_project > length(m.project_entries) && return
+    m.flow_modal_selected = :confirm
+    m.config_flow = FLOW_PROJECT_REMOVE_CONFIRM
+end
+
+function begin_project_edit_launch!(m::KaimonModel)
+    isempty(m.project_entries) && return
+    m.selected_project < 1 && return
+    m.selected_project > length(m.project_entries) && return
+    lc = m.project_entries[m.selected_project].launch_config
+    m.launch_config_inputs = Dict{Symbol,Any}(
+        :threads => TextInput(text = lc.threads, label = "", tick = m.tick),
+        :gcthreads => TextInput(text = lc.gcthreads, label = "", tick = m.tick),
+        :heap_size_hint => TextInput(text = lc.heap_size_hint, label = "", tick = m.tick),
+        :extra_flags => TextInput(text = join(lc.extra_flags, " "), label = "", tick = m.tick),
+    )
+    m.launch_config_selected = 1
+    m.config_flow = FLOW_PROJECT_EDIT_LAUNCH
+end
+
+function begin_tcp_gate_add!(m::KaimonModel)
+    m.tcp_gate_input = TextInput(text = "127.0.0.1:9876", label = "Host:Port: ", tick = m.tick)
+    m.tcp_gate_name_input = TextInput(text = "", label = "Name: ", tick = m.tick)
+    m.tcp_gate_token_input = TextInput(text = "", label = "Token: ", tick = m.tick)
+    m.tcp_gate_stream_port_input = TextInput(text = "", label = "Stream: ", tick = m.tick)
+    m._tcp_gate_field = 1
+    m.config_flow = FLOW_TCP_GATE_ADD
+end
+
+function _execute_tcp_gate_add!(m::KaimonModel)
+    addr = strip(Tachikoma.text(m.tcp_gate_input))
+    name = strip(Tachikoma.text(m.tcp_gate_name_input))
+
+    # Parse host:port
+    parts = split(addr, ':')
+    host = length(parts) >= 1 ? String(strip(parts[1])) : ""
+    port = length(parts) >= 2 ? tryparse(Int, strip(parts[2])) : 9876
+    if isempty(host) || port === nothing
+        m.flow_message = "Invalid address: $addr"
+        m.flow_success = false
+        m.config_flow = FLOW_TCP_GATE_ADD_RESULT
+        return
+    end
+
+    # Check for duplicates
+    for e in m.tcp_gate_entries
+        if e.host == host && e.port == port
+            m.flow_message = "Already registered: $host:$port"
+            m.flow_success = false
+            m.config_flow = FLOW_TCP_GATE_ADD_RESULT
+            return
+        end
+    end
+
+    token = strip(Tachikoma.text(m.tcp_gate_token_input))
+    sp_str = strip(Tachikoma.text(m.tcp_gate_stream_port_input))
+    stream_port = isempty(sp_str) ? 0 : something(tryparse(Int, sp_str), 0)
+    entry = TCPGateEntry(host, port, isempty(name) ? "$host:$port" : name, true, token, stream_port)
+    push!(m.tcp_gate_entries, entry)
+    save_tcp_gates_config(m.tcp_gate_entries)
+    m.flow_message = "Added TCP gate: $(entry.name) ($host:$port)"
+    m.flow_success = true
+    m.config_flow = FLOW_TCP_GATE_ADD_RESULT
+end
+
+function _cycle_qdrant_prefix!(m::KaimonModel)
+    current = get_collection_prefix()
+    m.qdrant_prefix_input = TextInput(text = current, label = "Prefix: ", tick = m.tick)
+    m.config_flow = FLOW_QDRANT_PREFIX
+end
+
+function _execute_qdrant_prefix!(m::KaimonModel)
+    prefix = strip(Tachikoma.text(m.qdrant_prefix_input))
+    set_collection_prefix!(prefix)
+
+    # Persist to config
+    try
+        config = load_global_config()
+        if config !== nothing
+            new_config = KaimonConfig(
+                config.mode, config.api_keys, config.allowed_ips,
+                config.port, config.editor, prefix)
+            save_global_config(new_config)
+        end
+    catch
+    end
+
+    if isempty(prefix)
+        m.flow_message = "Qdrant prefix cleared (using default collection names)"
+    else
+        m.flow_message = "Qdrant prefix set to: $prefix"
+    end
+    m.flow_success = true
+    m.config_flow = FLOW_QDRANT_PREFIX_RESULT
+end
+
+function _remove_tcp_gate!(m::KaimonModel)
+    isempty(m.tcp_gate_entries) && return
+    idx = m.selected_tcp_gate
+    (idx < 1 || idx > length(m.tcp_gate_entries)) && return
+    entry = m.tcp_gate_entries[idx]
+
+    # Disconnect if connected
+    if m.conn_mgr !== nothing
+        sid = "tcp-$(entry.host)-$(entry.port)"
+        lock(m.conn_mgr.lock) do
+            ci = findfirst(c -> c.session_id == sid, m.conn_mgr.connections)
+            if ci !== nothing
+                disconnect!(m.conn_mgr.connections[ci])
+                deleteat!(m.conn_mgr.connections, ci)
+            end
+        end
+    end
+
+    deleteat!(m.tcp_gate_entries, idx)
+    save_tcp_gates_config(m.tcp_gate_entries)
+    m.selected_tcp_gate = clamp(m.selected_tcp_gate, 1, max(1, length(m.tcp_gate_entries)))
+end
+
 # ── Config Flow: Input Handler ───────────────────────────────────────────────
 
-const CLIENT_OPTIONS = [:claude, :gemini, :codex, :copilot, :vscode, :kilo, :cursor, :opencode]
+const CLIENT_OPTIONS = [:claude, :gemini, :antigravity, :codex, :copilot, :vscode, :kilo, :cursor, :opencode]
 const CLIENT_LABELS = [
     "Claude Code",
     "Gemini CLI",
+    "Antigravity",
     "OpenAI Codex",
     "GitHub Copilot",
     "VS Code / Copilot",
@@ -33,45 +155,22 @@ const CLIENT_LABELS = [
     "OpenCode",
 ]
 const CLIENT_LABEL = Dict(
-    :claude    => "Claude Code",
-    :gemini    => "Gemini CLI",
-    :codex     => "OpenAI Codex",
-    :copilot   => "GitHub Copilot",
-    :vscode    => "VS Code / Copilot",
-    :kilo      => "KiloCode",
-    :cursor    => "Cursor",
-    :opencode  => "OpenCode",
-    :startup_jl => "Julia startup.jl (global gate)",
+    :claude       => "Claude Code",
+    :gemini       => "Gemini CLI",
+    :antigravity  => "Antigravity",
+    :codex        => "OpenAI Codex",
+    :copilot      => "GitHub Copilot",
+    :vscode       => "VS Code / Copilot",
+    :kilo         => "KiloCode",
+    :cursor       => "Cursor",
+    :opencode     => "OpenCode",
+    :startup_jl   => "Julia startup.jl (global gate)",
 )
 
 function handle_flow_input!(m::KaimonModel, evt::KeyEvent)
     flow = m.config_flow
 
-    if flow == FLOW_ONBOARD_PATH
-        @match evt.key begin
-            :enter => begin
-                m.onboard_path = Tachikoma.text(m.path_input)
-                m.flow_modal_selected = :confirm
-                m.config_flow = FLOW_ONBOARD_CONFIRM
-            end
-            :tab => _complete_path!(m.path_input)
-            _ => handle_key!(m.path_input, evt)
-        end
-    elseif flow == FLOW_ONBOARD_CONFIRM
-        @match evt.key begin
-            :left || :right => begin
-                m.flow_modal_selected =
-                    m.flow_modal_selected == :cancel ? :confirm : :cancel
-            end
-            :enter => begin
-                m.flow_modal_selected == :confirm ? execute_onboarding!(m) :
-                (m.config_flow = FLOW_IDLE)
-            end
-            _ => nothing
-        end
-    elseif flow == FLOW_ONBOARD_RESULT
-        m.config_flow = FLOW_IDLE
-    elseif flow == FLOW_CLIENT_SELECT
+    if flow == FLOW_CLIENT_SELECT
         @match evt.key begin
             :up => (m.flow_selected = max(1, m.flow_selected - 1))
             :down => (m.flow_selected = min(length(CLIENT_OPTIONS), m.flow_selected + 1))
@@ -97,35 +196,94 @@ function handle_flow_input!(m::KaimonModel, evt::KeyEvent)
     elseif flow == FLOW_CLIENT_RESULT
         m.config_flow = FLOW_IDLE
         _refresh_client_status_async!(m)
+
+    elseif flow == FLOW_PROJECT_ADD_PATH
+        @match evt.key begin
+            :enter => begin
+                m.onboard_path = Tachikoma.text(m.project_path_input)
+                m.flow_modal_selected = :confirm
+                m.config_flow = FLOW_PROJECT_ADD_CONFIRM
+            end
+            :tab => _complete_path!(m.project_path_input)
+            _ => handle_key!(m.project_path_input, evt)
+        end
+    elseif flow == FLOW_PROJECT_ADD_CONFIRM
+        @match evt.key begin
+            :left || :right => begin
+                m.flow_modal_selected =
+                    m.flow_modal_selected == :cancel ? :confirm : :cancel
+            end
+            :enter => begin
+                m.flow_modal_selected == :confirm ? execute_project_add!(m) :
+                (m.config_flow = FLOW_IDLE)
+            end
+            _ => nothing
+        end
+    elseif flow == FLOW_PROJECT_ADD_RESULT
+        m.config_flow = FLOW_IDLE
+    elseif flow == FLOW_PROJECT_REMOVE_CONFIRM
+        @match evt.key begin
+            :left || :right => begin
+                m.flow_modal_selected =
+                    m.flow_modal_selected == :cancel ? :confirm : :cancel
+            end
+            :enter => begin
+                m.flow_modal_selected == :confirm ? execute_project_remove!(m) :
+                (m.config_flow = FLOW_IDLE)
+            end
+            _ => nothing
+        end
+    elseif flow == FLOW_PROJECT_REMOVE_RESULT
+        m.config_flow = FLOW_IDLE
+
+    elseif flow == FLOW_TCP_GATE_ADD
+        field = m._tcp_gate_field
+        n_fields = 4
+        if evt.key == :tab
+            m._tcp_gate_field = mod1(field + 1, n_fields)
+        elseif evt.key == :backtab
+            m._tcp_gate_field = mod1(field - 1, n_fields)
+        elseif evt.key == :enter && field == n_fields
+            _execute_tcp_gate_add!(m)
+        elseif evt.key == :enter
+            m._tcp_gate_field = mod1(field + 1, n_fields)
+        else
+            input = (m.tcp_gate_input, m.tcp_gate_name_input, m.tcp_gate_token_input, m.tcp_gate_stream_port_input)[field]
+            input !== nothing && handle_key!(input, evt)
+        end
+    elseif flow == FLOW_TCP_GATE_ADD_RESULT
+        m.config_flow = FLOW_IDLE
+
+    elseif flow == FLOW_QDRANT_PREFIX
+        if evt.key == :enter
+            _execute_qdrant_prefix!(m)
+        else
+            m.qdrant_prefix_input !== nothing && handle_key!(m.qdrant_prefix_input, evt)
+        end
+    elseif flow == FLOW_QDRANT_PREFIX_RESULT
+        m.config_flow = FLOW_IDLE
+
+    elseif flow == FLOW_PROJECT_EDIT_LAUNCH
+        field_keys = [:threads, :gcthreads, :heap_size_hint, :extra_flags]
+        active_key = field_keys[m.launch_config_selected]
+        active_input = m.launch_config_inputs[active_key]
+        @match evt.key begin
+            :up => (m.launch_config_selected = max(1, m.launch_config_selected - 1))
+            :down => (m.launch_config_selected = min(4, m.launch_config_selected + 1))
+            :enter => execute_project_edit_launch!(m)
+            _ => begin
+                active_input.tick = m.tick
+                handle_key!(active_input, evt)
+            end
+        end
     end
 end
 
 # ── Config Flow: Execution ───────────────────────────────────────────────────
 
-function execute_onboarding!(m::KaimonModel)
-    if m._render_mode
-        m.flow_message = "(render mode — no files written)"
-        m.flow_success = true
-        m.config_flow = FLOW_ONBOARD_RESULT
-        return
-    end
-    try
-        path = rstrip(expanduser(m.onboard_path), ['/', '\\'])
-        isdir(path) || mkpath(path)
-        startup_file = joinpath(path, ".julia-startup.jl")
-        write(startup_file, Generate.render_template("julia-startup.jl"))
-        m.flow_message = "Created $(_short_path(startup_file))\n\nAdd to your project's startup:\n  include(\".julia-startup.jl\")"
-        m.flow_success = true
-    catch e
-        m.flow_message = "Error: $(sprint(showerror, e))"
-        m.flow_success = false
-    end
-    m.config_flow = FLOW_ONBOARD_RESULT
-end
-
-"""Get the first API key from security config, or `nothing` if lax/unconfigured."""
+"""Get the first API key from global config, or `nothing` if lax/unconfigured."""
 function _get_api_key()
-    cfg = load_global_security_config()
+    cfg = load_global_config()
     cfg === nothing && return nothing
     cfg.mode == :lax && return nothing
     isempty(cfg.api_keys) && return nothing
@@ -145,6 +303,7 @@ function execute_client_config!(m::KaimonModel)
         @match m.client_target begin
             :claude => _install_claude(m, port, api_key)
             :gemini => _install_gemini(m, port, api_key)
+            :antigravity => _install_antigravity(m, port, api_key)
             :codex => _install_codex(m, port, api_key)
             :copilot => _install_copilot(m, port, api_key)
             :vscode => _install_vscode(m, port, api_key)
@@ -161,18 +320,132 @@ function execute_client_config!(m::KaimonModel)
     m.config_flow = FLOW_CLIENT_RESULT
 end
 
+function execute_project_add!(m::KaimonModel)
+    if m._render_mode
+        m.flow_message = "(render mode — no files written)"
+        m.flow_success = true
+        m.config_flow = FLOW_PROJECT_ADD_RESULT
+        return
+    end
+    try
+        path = normalize_path(m.onboard_path)
+        isdir(path) || error("Directory does not exist: $path")
+        isfile(joinpath(path, "Project.toml")) ||
+            error("No Project.toml found in $path")
+
+        norm_path = path
+
+        # Check if already in list
+        entries = load_projects_config()
+        for entry in entries
+            entry_norm = normalize_path(entry.project_path)
+            if entry_norm == norm_path
+                m.flow_message = "Project already in allowed list"
+                m.flow_success = false
+                m.config_flow = FLOW_PROJECT_ADD_RESULT
+                return
+            end
+        end
+
+        push!(entries, ProjectEntry(norm_path, true))
+        save_projects_config(entries)
+        m.project_entries = entries
+        m.flow_message = "Added $(_short_path(norm_path)) to allowed projects"
+        m.flow_success = true
+    catch e
+        m.flow_message = "Error: $(sprint(showerror, e))"
+        m.flow_success = false
+    end
+    m.config_flow = FLOW_PROJECT_ADD_RESULT
+end
+
+function execute_project_remove!(m::KaimonModel)
+    if m._render_mode
+        m.flow_message = "(render mode — no files written)"
+        m.flow_success = true
+        m.config_flow = FLOW_PROJECT_REMOVE_RESULT
+        return
+    end
+    try
+        idx = m.selected_project
+        entries = load_projects_config()
+        if idx < 1 || idx > length(entries)
+            m.flow_message = "No project selected"
+            m.flow_success = false
+            m.config_flow = FLOW_PROJECT_REMOVE_RESULT
+            return
+        end
+
+        removed = entries[idx]
+        deleteat!(entries, idx)
+        save_projects_config(entries)
+        m.project_entries = entries
+        m.selected_project = min(m.selected_project, length(entries))
+        m.flow_message = "Removed $(_short_path(removed.project_path)) from allowed projects"
+        m.flow_success = true
+    catch e
+        m.flow_message = "Error: $(sprint(showerror, e))"
+        m.flow_success = false
+    end
+    m.config_flow = FLOW_PROJECT_REMOVE_RESULT
+end
+
+function execute_project_edit_launch!(m::KaimonModel)
+    if m._render_mode
+        m.config_flow = FLOW_IDLE
+        return
+    end
+    try
+        idx = m.selected_project
+        entries = load_projects_config()
+        if idx < 1 || idx > length(entries)
+            m.config_flow = FLOW_IDLE
+            return
+        end
+
+        threads = strip(Tachikoma.text(m.launch_config_inputs[:threads]))
+        gcthreads = strip(Tachikoma.text(m.launch_config_inputs[:gcthreads]))
+        heap = strip(Tachikoma.text(m.launch_config_inputs[:heap_size_hint]))
+        extra_raw = strip(Tachikoma.text(m.launch_config_inputs[:extra_flags]))
+        extra = isempty(extra_raw) ? String[] : String.(split(extra_raw))
+
+        lc = LaunchConfig(threads, gcthreads, heap, extra)
+        old = entries[idx]
+        entries[idx] = ProjectEntry(old.project_path, old.enabled, lc)
+        save_projects_config(entries)
+        m.project_entries = entries
+    catch e
+        _push_log!(:error, "Failed to save launch config: $(sprint(showerror, e))")
+    end
+    m.config_flow = FLOW_IDLE
+end
+
+function cycle_editor!(m::KaimonModel)
+    m._render_mode && return
+    idx = findfirst(==(m.editor), EDITOR_OPTIONS)
+    next_idx = idx === nothing ? 1 : mod1(idx + 1, length(EDITOR_OPTIONS))
+    m.editor = EDITOR_OPTIONS[next_idx]
+
+    # Persist to global config
+    update_global_config!(editor = m.editor)
+    _push_log!(:info, "Editor set to $(m.editor)")
+end
+
 function toggle_gate_mirror_repl!(m::KaimonModel)
     m._render_mode && return
     new_value = !m.gate_mirror_repl
     m.gate_mirror_repl = set_gate_mirror_repl_preference!(new_value)
 
+    session_prefs = load_session_prefs()
     applied = 0
     total = 0
     if m.conn_mgr !== nothing
-        conns = connected_sessions(m.conn_mgr)
-        total = length(conns)
-        for conn in conns
-            set_mirror_repl!(conn, m.gate_mirror_repl) && (applied += 1)
+        for conn in connected_sessions(m.conn_mgr)
+            total += 1
+            # Per-session override takes precedence over global toggle
+            override = resolve_session_pref(session_prefs, conn.project_path, :mirror_repl)
+            target = override !== nothing ? override : m.gate_mirror_repl
+            set_mirror_repl!(conn, target) && (applied += 1)
         end
     end
 
@@ -194,6 +467,7 @@ function remove_client_config!(m::KaimonModel)
         @match m.client_target begin
             :claude => _remove_claude(m)
             :gemini => _remove_gemini(m)
+            :antigravity => _remove_antigravity(m)
             :codex => _remove_codex(m)
             :copilot => _remove_copilot(m)
             :vscode => _remove_vscode(m)
@@ -225,6 +499,22 @@ function _remove_gemini(m::KaimonModel)
         try read(pipeline(`gemini mcp remove --scope $s kaimon`; stderr = devnull), String) catch end
     end
     m.flow_message = "Removed kaimon from Gemini CLI"
+    m.flow_success = true
+end
+
+function _remove_antigravity(m::KaimonModel)
+    mcp_file = joinpath(homedir(), ".gemini", "antigravity", "mcp_config.json")
+    if isfile(mcp_file)
+        try
+            data = JSON.parsefile(mcp_file)
+            servers = get(data, "mcpServers", Dict{String,Any}())
+            delete!(servers, "kaimon")
+            data["mcpServers"] = servers
+            write(mcp_file, _to_json(data))
+        catch
+        end
+    end
+    m.flow_message = "Removed kaimon from Antigravity"
     m.flow_success = true
 end
 
@@ -407,6 +697,28 @@ function _install_gemini(m::KaimonModel, port::Int, api_key)
     m.flow_success = true
 end
 
+function _install_antigravity(m::KaimonModel, port::Int, api_key)
+    mcp_dir = joinpath(homedir(), ".gemini", "antigravity")
+    isdir(mcp_dir) || mkpath(mcp_dir)
+    mcp_file = joinpath(mcp_dir, "mcp_config.json")
+
+    existing = if isfile(mcp_file)
+        try JSON.parsefile(mcp_file) catch; Dict{String,Any}() end
+    else
+        Dict{String,Any}()
+    end
+    servers = get(existing, "mcpServers", Dict{String,Any}())
+    entry = Dict{String,Any}("serverUrl" => "http://localhost:$port/mcp")
+    if api_key !== nothing
+        entry["headers"] = Dict{String,Any}("Authorization" => "Bearer $api_key")
+    end
+    servers["kaimon"] = entry
+    existing["mcpServers"] = servers
+    write(mcp_file, _to_json(existing))
+    m.flow_message = "Wrote $(_short_path(mcp_file))"
+    m.flow_success = true
+end
+
 function _install_kilo(m::KaimonModel, port::Int, api_key)
     url = "http://localhost:$port/mcp"
     kilo_dir = _kilo_settings_dir()
@@ -558,4 +870,37 @@ function _remove_opencode(m::KaimonModel)
     _remove_server_from_json!(target_file, "mcp")
     m.flow_message = "Removed kaimon from\n$(_short_path(target_file))"
     m.flow_success = true
+end
+
+function _install_vscode_remote_control!(m::KaimonModel)
+    # Find the first enabled project to use as workspace dir
+    workspace = nothing
+    for entry in m.project_entries
+        entry.enabled || continue
+        isdir(entry.project_path) || continue
+        workspace = entry.project_path
+        break
+    end
+    if workspace === nothing
+        m.config_flow = FLOW_CLIENT_RESULT
+        m.flow_message = "No enabled project found.\nAdd a project first."
+        m.flow_success = false
+        return
+    end
+    @async try
+        install_vscode_remote_control(workspace; allowed_commands=[
+            "workbench.action.terminal.new",
+            "workbench.action.terminal.sendSequence",
+            "workbench.action.terminal.focus",
+            "workbench.action.files.save",
+            "workbench.action.files.saveAll",
+        ])
+        m.config_flow = FLOW_CLIENT_RESULT
+        m.flow_message = "VSCode Remote Control installed.\nReload VSCode to activate."
+        m.flow_success = true
+    catch e
+        m.config_flow = FLOW_CLIENT_RESULT
+        m.flow_message = "Install failed:\n$(sprint(showerror, e))"
+        m.flow_success = false
+    end
 end

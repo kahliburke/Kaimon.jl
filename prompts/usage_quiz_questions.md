@@ -22,7 +22,7 @@ e) `ex(e="methods(my_function)")` - to analyze signatures
 
 ---
 
-## Question 3: Critique This Code (25 points)
+## Question 3: Critique This Code (20 points)
 
 Identify ALL problems and explain what should be done instead:
 
@@ -55,11 +55,29 @@ d) You want to find code that handles WebSocket connections
 
 ---
 
+## Question 6: Eval Tracking (10 points)
+
+a) When does the eval ID become available — before, during, or after the evaluation executes? How is it delivered?
+b) If a long-running `ex()` call times out on the client side, how can you check if it completed?
+
+---
+
+## Question 7: Background Jobs (15 points)
+
+a) What happens automatically when an `ex()` call takes longer than 30 seconds?
+b) How do you check on a promoted job's progress? What information is available?
+c) How often should you poll check_eval, and how does "last activity" help you decide?
+d) How can running code report intermediate values to the agent? Give an example.
+e) How does cooperative cancellation work? What must the running code do?
+f) What happens to background jobs if the Kaimon TUI is restarted?
+
+---
+
 ## Grading Scale
 
-- **90-100**: Excellent! Ready to use Kaimon effectively.
-- **75-89**: Good. Review missed areas before starting.
-- **60-74**: Review `usage_instructions` and retake.
-- **Below 60**: Study `usage_instructions` carefully and retake.
+- **90-115**: Excellent! Ready to use Kaimon effectively.
+- **85-89**: Good. Review missed areas before starting.
+- **70-84**: Review `usage_instructions` and retake.
+- **Below 70**: Study `usage_instructions` carefully and retake.
 
 **Check answers:** `usage_quiz(show_sols=true)`

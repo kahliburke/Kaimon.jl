@@ -6,7 +6,7 @@ const PREF_GATE_MIRROR_REPL = "gate_mirror_repl"
 Return whether gate evaluations should mirror command/result text in the host REPL.
 """
 function get_gate_mirror_repl_preference()
-    val = @load_preference(PREF_GATE_MIRROR_REPL, false)
+    val = @load_preference(PREF_GATE_MIRROR_REPL, true)
     return val === true
 end
 

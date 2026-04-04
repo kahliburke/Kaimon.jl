@@ -16,10 +16,7 @@ using Kaimon: MCPTool
         cd(test_dir)
 
         # Setup security configuration for testing with unique port
-        api_key = Kaimon.generate_api_key()
         test_port = 13100  # Use unique port to avoid conflicts
-        config = Kaimon.SecurityConfig(:relaxed, [api_key], ["127.0.0.1"], test_port)
-        Kaimon.save_security_config(config, test_dir)
 
         @testset "call_tool with Symbol" begin
             # Start server for testing

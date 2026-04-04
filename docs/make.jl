@@ -54,6 +54,7 @@ makedocs(;
             "Tool Catalog" => "tools.md",
             "The Gate" => "gate.md",
             "Sessions" => "sessions.md",
+            "Extensions" => "extensions.md",
             "Semantic Search" => "search.md",
             "Security" => "security.md",
             "VS Code" => "vscode.md",

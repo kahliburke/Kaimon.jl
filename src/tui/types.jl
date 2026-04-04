@@ -26,7 +26,9 @@ struct ToolCallResult
     duration_str::String   # "125ms" or "1.2s"
     success::Bool
     session_key::String    # 8-char short key for session routing ("" if none)
+    eval_id::String        # eval ID for ex() calls ("" for other tools)
 end
+ToolCallResult(ts, tn, aj, rt, ds, s, sk) = ToolCallResult(ts, tn, aj, rt, ds, s, sk, "")
 
 # ── In-Flight Tool Calls (live progress) ─────────────────────────────────────
 # Tracks tool calls that are currently executing, displayed at the top of the
@@ -65,10 +67,43 @@ end
     FLOW_CLIENT_SELECT         # Choose client
     FLOW_CLIENT_CONFIRM        # Modal confirmation
     FLOW_CLIENT_RESULT         # Success/failure feedback
+    # Allowed projects (agent-spawnable sessions)
+    FLOW_PROJECT_ADD_PATH      # TextInput for project path
+    FLOW_PROJECT_ADD_CONFIRM   # Modal confirmation
+    FLOW_PROJECT_ADD_RESULT    # Success/failure feedback
+    FLOW_PROJECT_REMOVE_CONFIRM # Modal confirmation for removal
+    FLOW_PROJECT_REMOVE_RESULT  # Success/failure feedback
+    # Launch config editing
+    FLOW_PROJECT_EDIT_LAUNCH    # Edit launch config for selected project
+
+    FLOW_TCP_GATE_ADD           # TextInput for host:port
+    FLOW_TCP_GATE_ADD_RESULT    # Success/failure feedback
+    FLOW_QDRANT_PREFIX          # TextInput for qdrant prefix
+    FLOW_QDRANT_PREFIX_RESULT   # Success/failure feedback
 end
 
 # Stress test state machine
 @enum StressState STRESS_IDLE STRESS_RUNNING STRESS_COMPLETE STRESS_ERROR
+
+# ── Per-session ECG state ─────────────────────────────────────────────────────
+
+@kwdef mutable struct ECGState
+    trace::Vector{Float64} = fill(0.5, 240)
+    pending_blips::Int = 0
+    inject_countdown::Int = 0
+    last_ping::DateTime = DateTime(0)
+end
+
+# ── Tab indices ───────────────────────────────────────────────────────────────
+const TAB_SERVER     = 1
+const TAB_SESSIONS   = 2
+const TAB_ACTIVITY   = 3
+const TAB_SEARCH     = 4
+const TAB_TESTS      = 5
+const TAB_CONFIG     = 6
+const TAB_DEBUG      = 7
+const TAB_EXTENSIONS = 8
+const TAB_ADVANCED   = 9
 
 # ── Model ─────────────────────────────────────────────────────────────────────
 
@@ -80,25 +115,51 @@ end
     tick::Int = 0
 
     # Tabs: 1=Server, 2=Sessions, 3=Activity, 4=Config
-    active_tab::Int = 1
+    tab_bar::TabBar = TabBar(
+        Vector{Span}[
+            [Span("1", tstyle(:warning)), Span(" Server", tstyle(:text))],
+            [Span("2", tstyle(:warning)), Span(" Sessions", tstyle(:text))],
+            [Span("3", tstyle(:warning)), Span(" Activity", tstyle(:text))],
+            [Span("4", tstyle(:warning)), Span(" Search", tstyle(:text))],
+            [Span("5", tstyle(:warning)), Span(" Tests", tstyle(:text))],
+            [Span("6", tstyle(:warning)), Span(" Config", tstyle(:text))],
+            [Span("7", tstyle(:warning)), Span(" Debug", tstyle(:text))],
+            [Span("8", tstyle(:warning)), Span(" Extensions", tstyle(:text))],
+            [Span("9", tstyle(:warning)), Span(" Advanced", tstyle(:text))],
+        ];
+        tab_style = TabBarStyle(decoration = BoxTabs(box=BOX_ROUNDED)),
+    )
+    _tab_theme_accent::Any = nothing  # tracks theme accent for tab color regeneration
 
     # REPL connections (managed by ConnectionManager)
     conn_mgr::Union{ConnectionManager,Nothing} = nothing
     selected_connection::Int = 1
+    sessions_table::Union{DataTable,Nothing} = nothing  # DataTable for REPL sessions list
+    _sessions_table_hash::UInt64 = UInt64(0)
+    agents_table::Union{DataTable,Nothing} = nothing   # DataTable for MCP agents list
+    _agents_table_hash::UInt64 = UInt64(0)
     sessions_detail_scroll::Int = 0     # vertical scroll offset for the detail pane
     sessions_detail_max_scroll::Int = 0 # updated each frame by view_sessions
     _sessions_detail_area::Rect = Rect() # cached for mouse hit-testing
+
+    # Session terminal (PTY console for agent-spawned sessions)
+    session_terminal_open::Bool = false
+    session_terminal::Any = nothing        # Union{TerminalWidget, Nothing}
+    session_terminal_key::String = ""      # session key of the displayed terminal
 
     # Session tab layouts (resizable)
     sessions_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(45), Fill()])
     sessions_left_layout::ResizableLayout = ResizableLayout(Vertical, [Fill(), Percent(40)])
 
     # Server tab layout (resizable)
-    server_layout::ResizableLayout = ResizableLayout(Vertical, [Fixed(9), Fill()])
+    server_layout::ResizableLayout = ResizableLayout(Vertical, [Fixed(4), Fill()])
 
     # Config tab layouts (resizable)
     config_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(50), Fill()])
-    config_left_layout::ResizableLayout = ResizableLayout(Vertical, [Fixed(8), Fill()])
+    config_left_layout::ResizableLayout = ResizableLayout(Vertical, [Fixed(7), Fill()])
+    config_right_layout::ResizableLayout = ResizableLayout(Vertical, [Percent(45), Fill()])
+    config_bottom_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(55), Fill()])
+    _config_actions_area::Rect = Rect()  # cached for mouse click detection
 
     # Activity feed — unified timeline of tool calls + streaming output
     activity_feed::Vector{ActivityEvent} = ActivityEvent[]
@@ -111,11 +172,13 @@ end
     result_scroll::Int = 0         # vertical scroll in detail panel
     activity_layout::ResizableLayout = ResizableLayout(Vertical, [Percent(35), Fill()])
     activity_filter::String = ""   # "" = all, or session_key to filter by
+    activity_filter_open::Bool = false
+    activity_filter_selected::Int = 0  # 0 = "All", 1+ = index into session list
     result_word_wrap::Bool = true   # word wrap in detail panel
     detail_paragraph::Union{Paragraph,Nothing} = nothing  # cached for scroll state
     _detail_for_result::Int = -1   # which selected_result the paragraph was built for
-    _activity_list_widget::Union{SelectableList,Nothing} = nothing  # cached for mouse handling
-    _activity_list_offset::Int = 0          # scroll offset of the SelectableList
+    activity_table::Union{DataTable,Nothing} = nothing  # DataTable for tool call list
+    _activity_table_hash::UInt64 = UInt64(0)
     _activity_detail_area::Rect = Rect()   # cached inner area of detail pane
 
     # In-flight tool calls — currently executing, shown at top of Activity list
@@ -133,6 +196,14 @@ end
     # Status
     total_tool_calls::Int = 0
     start_time::Float64 = time()
+    personality_icon::String = load_personality()
+
+    # Backtrace capture
+    backtrace_collecting::Bool = false
+    backtrace_modal::Any = nothing          # Modal while collecting
+    backtrace_viewer::Any = nothing         # ScrollPane showing result
+    backtrace_result::Union{String,Nothing} = nothing  # raw trace text for saving
+    backtrace_conn_name::String = ""
 
     # Config flow state machine
     config_flow::ConfigFlow = FLOW_IDLE
@@ -147,6 +218,7 @@ end
     client_target::Symbol = :claude
     client_scope::Symbol = :user
     gate_mirror_repl::Bool = false
+    editor::String = "vscode"  # Configured editor for file:line links
 
     # Flow result
     flow_message::String = ""
@@ -168,11 +240,8 @@ end
     last_tool_success::Float64 = 0.0    # time() of last successful tool call
     last_tool_error::Float64 = 0.0      # time() of last failed tool call
 
-    # ECG heartbeat trace
-    ecg_trace::Vector{Float64} = fill(0.5, 240)  # rolling Y-values, scrolls left each tick
-    ecg_pending_blips::Int = 0                    # queued QRS complexes waiting to fire
-    ecg_inject_countdown::Int = 0                 # countdown within current QRS injection
-    ecg_last_ping_seen::DateTime = DateTime(0)    # latest last_ping we've consumed
+    # ECG heartbeat trace — per-session keyed by session_id prefix
+    ecg_states::Dict{String,ECGState} = Dict{String,ECGState}()
 
     # Session reaping (wall-clock based, fps-independent)
     _last_reap_time::Float64 = time()
@@ -184,9 +253,6 @@ end
     # Auto-index: tracks sessions that have already been auto-indexed on connect
     _auto_indexed_sessions::Set{String} = Set{String}()
 
-    # Tab bar area for mouse click detection
-    _tab_bar_area::Rect = Rect()
-    _tab_visible_range::UnitRange{Int} = 1:7  # which tabs are currently rendered (for mouse hit + overflow)
 
     # Server log scroll pane
     log_pane::Union{ScrollPane,Nothing} = nothing
@@ -198,19 +264,27 @@ end
     # Tab 1: 1=status, 2=log | Tab 2: 1=gates, 2=agents, 3=detail
     # Tab 3: 1=list, 2=detail | Tab 4: 1=server, 2=actions, 3=clients
     # Tab 5: 1=form, 2=output | Tab 6: 1=runs list, 2=results
-    # Tab 7: 1=form, 2=horde, 3=output
-    focused_pane::Dict{Int,Int} =
-        Dict(1 => 2, 2 => 1, 3 => 1, 4 => 1, 5 => 1, 6 => 1, 7 => 1, 8 => 2)
+    # Tab 7: 1=form, 2=horde, 3=output | Tab 8: 1=list, 2=detail
+    focused_pane::Dict{Int,Int} = Dict(
+        TAB_SERVER => 2, TAB_SESSIONS => 1, TAB_ACTIVITY => 1,
+        TAB_SEARCH => 1, TAB_TESTS => 1, TAB_CONFIG => 1,
+        TAB_DEBUG => 2, TAB_EXTENSIONS => 1, TAB_ADVANCED => 1,
+    )
 
     # ── Tests tab (tab 6) ──
     test_runs::Vector{TestRun} = TestRun[]
     selected_test_run::Int = 0             # 0 = none, 1+ = index into test_runs
-    tests_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(35), Fill()])
+    tests_layout::ResizableLayout = ResizableLayout(Vertical, [Percent(30), Fill()])
+    tests_table::Union{DataTable,Nothing} = nothing
+    _tests_table_hash::UInt64 = UInt64(0)
     test_view_mode::Symbol = :results      # :results or :output (raw)
     test_follow::Bool = true               # follow mode: auto-select newest run
     test_output_pane::Union{ScrollPane,Nothing} = nothing
     _test_output_synced::Int = 0           # raw_output lines pushed to scroll pane
-    test_tree_view::Union{TreeView,Nothing} = nothing
+    test_results_pane::Union{ScrollPane,Nothing} = nothing
+    _test_tree_root::Union{TreeNode,Nothing} = nothing
+    _test_tree_flat::Vector{Any} = Any[]   # Vector{TreeFlatRow} (avoid import dep)
+    _test_tree_selected::Int = 1           # selected row in flat view
     _test_tree_synced::Int = 0             # raw_output length when tree was last built
     test_session_picker_open::Bool = false
     test_session_picker_items::Vector{@NamedTuple{label::String, project_path::String}} =
@@ -218,7 +292,7 @@ end
     test_session_picker_selected::Int = 1
     test_status_msg::String = ""           # shown in the empty-runs pane on error
 
-    # ── Advanced tab (stress test) ──
+    # ── Advanced tab (stress test, tab 9) ──
     stress_state::StressState = STRESS_IDLE
     stress_code::String = "sleep(3); 42"
     stress_tool::String = ""            # MCP tool name; empty = "ex" (eval path)
@@ -248,7 +322,7 @@ end
 
     # ── Search tab (tab 7) ──
     search_layout::ResizableLayout =
-        ResizableLayout(Vertical, [Fixed(11), Fixed(3), Fill()])
+        ResizableLayout(Vertical, [Fixed(6), Fixed(3), Fill()])
     search_qdrant_up::Bool = false
     search_ollama_up::Bool = false
     search_model_available::Bool = false
@@ -260,9 +334,11 @@ end
     search_query_editing::Bool = false
     search_results::Vector{Dict} = Dict[]
     search_results_pane::Union{ScrollPane,Nothing} = nothing
+    search_collection_picker_open::Bool = false  # popup collection selector
+    search_collection_delete_confirm::Bool = false  # confirm delete in picker
     search_chunk_type::String = "all"       # "all" / "definitions" / "windows"
     search_result_count::Int = 10
-    search_embedding_model::String = "qwen3-embedding:0.6b"
+    search_embedding_model::String = DEFAULT_EMBEDDING_MODEL
 
     # ── Search config panel ──
     search_config_open::Bool = false
@@ -271,6 +347,8 @@ end
     search_config_models::Vector{
         @NamedTuple{name::String, dims::Int, ctx::Int, installed::Bool}
     } = @NamedTuple{name::String, dims::Int, ctx::Int, installed::Bool}[]
+    search_config_custom_input::Any = nothing            # TextInput for custom model name
+    search_config_custom_editing::Bool = false          # true when editing custom model field
     search_config_col_info::Dict = Dict()              # cached collection_info result
     search_config_reindex_paths::Vector{Pair{String,String}} = Pair{String,String}[]  # project_path => collection pairs to reindex
     search_dimension_mismatch::Bool = false             # auto-detected dimension mismatch
@@ -283,9 +361,9 @@ end
     # ── Collection Manager modal ──
     search_manage_open::Bool = false
     search_manage_selected::Int = 1
-    search_manage_pane::Union{ScrollPane,Nothing} = nothing  # ScrollPane for entries list
-    _search_manage_pane_synced::Int = 0  # entries count when pane was last built
-    _search_manage_pane_sel::Int = 0     # selected index when pane was last built
+    search_manage_table::Union{DataTable,Nothing} = nothing  # DataTable for entries list
+    _search_manage_table_synced::Int = 0  # entries count when table was last built
+    _search_manage_table_sel::Int = 0     # selected index when table was last built
     search_manage_entries::Vector{
         @NamedTuple{
             label::String,
@@ -311,17 +389,22 @@ end
     search_manage_add_phase::Int = 1     # 1=path input, 2=edit config before confirm
     search_manage_path_input::Any = nothing  # TextInput
     search_manage_configuring::Bool = false
-    search_manage_config_field::Int = 1  # 1=dirs, 2=exts
+    search_manage_config_field::Int = 1  # 1=dirs, 2=exts, 3=auto-detect, 4=save, 5=cancel
     search_manage_config_dirs::String = ""
     search_manage_config_exts::String = ""
+    search_manage_config_exclude::String = ""
+    search_manage_dirs_input::Any = nothing      # TextInput for dirs
+    search_manage_exts_input::Any = nothing      # TextInput for extensions
+    search_manage_exclude_input::Any = nothing   # TextInput for exclude dirs
     search_manage_config_path::String = ""   # project path being configured (add flow)
     search_manage_detected::@NamedTuple{
         type::String,
         dirs::Vector{String},
         extensions::Vector{String},
-    } = (type = "", dirs = String[], extensions = String[])
+        git_aware::Bool,
+    } = (type = "", dirs = String[], extensions = String[], git_aware = false)
 
-    # ── Debug tab (tab 8) ──
+    # ── Debug tab (tab 7) ──
     debug_state::Symbol = :idle           # :idle, :paused
     debug_session_key::String = ""        # which gate session is paused
     debug_file::String = ""
@@ -344,17 +427,64 @@ end
     _debug_locals_synced::Int = 0         # for incremental pane sync
     _debug_history_synced::Int = 0
 
+    # ── Allowed projects (Config tab) ──
+    project_entries::Vector{ProjectEntry} = ProjectEntry[]
+    selected_project::Int = 1
+    project_path_input::Any = nothing  # TextInput for adding projects
+
+    # Launch config editing
+    launch_config_inputs::Dict{Symbol,Any} = Dict{Symbol,Any}()  # TextInput widgets for threads/gc/heap/extra
+    launch_config_selected::Int = 1  # which field is focused (1-4)
+
+    # ── TCP Gates (Config tab) ──
+    tcp_gate_entries::Vector{TCPGateEntry} = TCPGateEntry[]
+    selected_tcp_gate::Int = 1
+    tcp_gate_input::Any = nothing       # TextInput for host:port
+    tcp_gate_name_input::Any = nothing  # TextInput for display name
+    tcp_gate_token_input::Any = nothing # TextInput for auth token
+    tcp_gate_stream_port_input::Any = nothing  # TextInput for PUB stream port
+    qdrant_prefix_input::Any = nothing         # TextInput for qdrant prefix
+    _tcp_gate_field::Int = 1            # 1=host:port, 2=name, 3=token, 4=stream_port
+
+    # ── Extensions tab (tab 8) ──
+    ext_selected::Int = 1                 # selected extension in list
+    ext_detail_scroll::Int = 0            # scroll offset in detail pane
+    extensions_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(40), Fill()])
+
+    # Extension flow (add/remove)
+    ext_flow::Symbol = :idle              # :idle, :add_path, :add_confirm, :add_result, :remove_confirm, :remove_result
+    ext_path_input::Any = nothing         # TextInput for path entry
+    ext_flow_message::String = ""
+    ext_flow_success::Bool = false
+
+    # Extension detail view (Enter to expand)
+    ext_detail_open::Bool = false
+    ext_detail_pane::Union{ScrollPane,Nothing} = nothing
+
+    # Extension two-pane detail (right side ScrollPane)
+    ext_detail_side_pane::Union{ScrollPane,Nothing} = nothing
+    _ext_detail_side_synced::UInt64 = UInt64(0)  # hash for rebuild detection
+
+    # Extension TUI panel (overlay from tui_file)
+    ext_panel::Any = nothing  # Union{ActiveExtPanel, Nothing}
+
     # ── Code staleness (Revise reload) ──
     _code_stale::Bool = false
     _code_last_check::Float64 = 0.0
     _code_last_revise::Float64 = time()  # treat startup as "fresh"
+    _revise_polling::Bool = false         # true when Revise auto-poll is active
+    _revise_mod::Any = nothing            # Revise module ref for pre_render! hook
     _restart_requested::Bool = false      # unused, kept for struct stability
     _render_mode::Bool = false            # true during asset generation — disables all side effects
 end
 
 # Number of focusable panes per tab
-# Tab order: 1=Server 2=Sessions 3=Activity 4=Search 5=Tests 6=Config 7=Advanced
-const _PANE_COUNTS = Dict(1 => 2, 2 => 3, 3 => 2, 4 => 3, 5 => 2, 6 => 3, 7 => 3, 8 => 2)
+# Tab order: 1=Server 2=Sessions 3=Activity 4=Search 5=Tests 6=Config 7=Debug 8=Extensions 9=Advanced
+const _PANE_COUNTS = Dict(
+    TAB_SERVER => 2, TAB_SESSIONS => 3, TAB_ACTIVITY => 2,
+    TAB_SEARCH => 3, TAB_TESTS => 2, TAB_CONFIG => 5,
+    TAB_DEBUG => 2, TAB_EXTENSIONS => 2, TAB_ADVANCED => 3,
+)
 
 """Return the border style for a pane — highlighted if focused."""
 function _pane_border(m::KaimonModel, tab::Int, pane::Int)

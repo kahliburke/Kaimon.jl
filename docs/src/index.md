@@ -47,15 +47,16 @@ Kaimon (開門, "opening the gate") turns any Julia REPL into a Model Context Pr
 
 **1. Install**
 
-```bash
-git clone https://github.com/kahliburke/Kaimon.jl
-cd Kaimon.jl
+```julia
+]app add https://github.com/kahliburke/Kaimon.jl
 ```
+
+This installs the `kaimon` command to `~/.julia/bin/` (make sure it's on your `PATH`).
 
 **2. Launch the dashboard**
 
 ```bash
-./bin/kaimon
+kaimon
 ```
 
 The first run walks you through a setup wizard (security mode, API key, port). After that, the terminal dashboard opens.

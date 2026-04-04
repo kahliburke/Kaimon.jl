@@ -1,0 +1,6 @@
+[extension]
+namespace = "gatetooltest"
+module = "GateToolTest"
+tools_function = "extension_tools"
+description = "Test extension — TodoBoard tools for gate tool dispatch, type coercion, and progress streaming."
+shutdown_function = "on_shutdown"

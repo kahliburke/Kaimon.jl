@@ -1152,10 +1152,13 @@ function create_handler(
 
                     # Always push activity events in TUI mode (including ex, etc.)
                     inflight_id = 0
+                    args_json_ns = JSON.json(args)
+                    sk_ns = string(get(args, "ses", get(args, "session", "")))
+                    db_request_id_ns = ""
                     if tui_mode
                         _push_activity!(:tool_start, tool.name, "", "")
-                        sk = string(get(args, "ses", get(args, "session", "")))
-                        inflight_id = _push_inflight_start!(tool.name, JSON.json(args), sk)
+                        inflight_id = _push_inflight_start!(tool.name, args_json_ns, sk_ns)
+                        db_request_id_ns = _persist_tool_start!(tool.name, args_json_ns, sk_ns)
                     end
 
                     start_time = time()
@@ -1204,24 +1207,13 @@ function create_handler(
                         end
                     end
 
-                    # Push full tool result for TUI Activity inspection
+                    # Push full tool result for TUI Activity inspection + update DB
                     if tui_mode
                         rt = string(result_text)
-                        # Detect error strings returned without throwing
                         ok = tool_ok && !startswith(rt, "ERROR:")
-                        # Extract session key from tool args (ses for ex, session for others)
-                        sk = string(get(args, "ses", get(args, "session", "")))
-                        _push_tool_result!(
-                            ToolCallResult(
-                                now(),
-                                tool.name,
-                                JSON.json(args),
-                                rt,
-                                time_str,
-                                ok,
-                                sk,
-                            ),
-                        )
+                        tcr = ToolCallResult(now(), tool.name, args_json_ns, rt, time_str, ok, sk_ns)
+                        _push_tool_result!(tcr)
+                        _persist_tool_complete!(db_request_id_ns, tcr)
                     end
 
                     response = Dict(
@@ -1357,14 +1349,18 @@ function _handle_gate_tool_sse(
     progress_token = "tool-$(tool_name_str)-$(round(Int, time()))"
 
     # ── Flush pending notifications (e.g., resource list changes) ─────────
-    # Write an SSE event helper (defined below) is not available yet, so
-    # inline the flush here before the main send_sse_event closure.
+    # Deduplicate: multiple identical notifications (e.g. resources/list_changed)
+    # often queue up between requests — only send each method once.
+    seen_methods = Set{String}()
     while isready(_PENDING_NOTIFICATIONS)
         notif = try
             take!(_PENDING_NOTIFICATIONS)
         catch
             break
         end
+        method = get(notif, "method", "")
+        method in seen_methods && continue
+        push!(seen_methods, method)
         try
             notif_json = JSON.json(notif)
             write(http, "data: $(notif_json)\n\n")
@@ -1390,18 +1386,34 @@ function _handle_gate_tool_sse(
     # Send progress notification
     # Note: inflight_id is captured from the enclosing scope after it's assigned below
     _sse_inflight_id = Ref{Int}(0)
+    _sse_eval_id = Ref{String}("")
     function send_progress(message::String)
         step_counter[] += 1
+
+        # Detect structured eval_id tag → emit as proper JSON field, not message text
+        eval_id_match = match(r"^\[eval_id:([0-9a-f]+)\]$", message)
+        params = if eval_id_match !== nothing
+            eid = String(eval_id_match.captures[1])
+            _sse_eval_id[] = eid
+            Dict(
+                "progressToken" => progress_token,
+                "progress" => step_counter[],
+                "eval_id" => eid,
+            )
+        else
+            Dict(
+                "progressToken" => progress_token,
+                "progress" => step_counter[],
+                "message" =>
+                    length(message) > 200 ? first(message, 200) * "..." : message,
+            )
+        end
+
         send_sse_event(
             Dict(
                 "jsonrpc" => "2.0",
                 "method" => "notifications/progress",
-                "params" => Dict(
-                    "progressToken" => progress_token,
-                    "progress" => step_counter[],
-                    "message" =>
-                        length(message) > 200 ? first(message, 200) * "..." : message,
-                ),
+                "params" => params,
             ),
         )
         # Push progress to in-flight tracker for TUI display
@@ -1428,8 +1440,10 @@ function _handle_gate_tool_sse(
     # Push activity events in TUI mode
     _push_activity!(:tool_start, tool.name, "", "")
     sk = string(get(args, "ses", get(args, "session", "")))
-    inflight_id = _push_inflight_start!(tool.name, JSON.json(args), sk)
+    args_json = JSON.json(args)
+    inflight_id = _push_inflight_start!(tool.name, args_json, sk)
     _sse_inflight_id[] = inflight_id
+    db_request_id = _persist_tool_start!(tool.name, args_json, sk)
     start_time = time()
     tool_ok = true
 
@@ -1446,7 +1460,7 @@ function _handle_gate_tool_sse(
             code = get(args, "e", "")
             quiet = get(args, "q", true)
             silent = get(args, "s", false)
-            max_output = get(args, "max_output", 6000)
+            max_output = min(get(args, "max_output", 6000), 25000)
             ses = get(args, "ses", "")
             execute_via_gate_streaming(
                 code;
@@ -1473,23 +1487,31 @@ function _handle_gate_tool_sse(
         _push_inflight_done!(inflight_id)
     end
 
-    # Push tool result for TUI Activity inspection
-    elapsed = time() - start_time
-    time_str =
-        elapsed < 1.0 ? @sprintf("%.0fms", elapsed * 1000) : @sprintf("%.1fs", elapsed)
-    rt = string(result_text)
-    ok = tool_ok && !startswith(rt, "ERROR:")
-    sk = string(get(args, "ses", get(args, "session", "")))
-    _push_tool_result!(
-        ToolCallResult(now(), tool.name, JSON.json(args), rt, time_str, ok, sk),
-    )
+    # Push tool result for TUI Activity inspection + update DB record
+    try
+        elapsed = time() - start_time
+        time_str =
+            elapsed < 1.0 ? @sprintf("%.0fms", elapsed * 1000) : @sprintf("%.1fs", elapsed)
+        rt = string(result_text)
+        ok = tool_ok && !startswith(rt, "ERROR:")
+        sk = string(get(args, "ses", get(args, "session", "")))
+        tcr = ToolCallResult(now(), tool.name, args_json, rt, time_str, ok, sk, _sse_eval_id[])
+        _push_tool_result!(tcr)
+        _persist_tool_complete!(db_request_id, tcr)
+    catch e
+        _push_log!(:warn, "Failed to push tool result for TUI: $(sprint(showerror, e))")
+    end
 
     # Send final JSON-RPC result as last SSE event
+    result_dict = Dict{String,Any}("content" => [Dict("type" => "text", "text" => result_text)])
+    if !isempty(_sse_eval_id[])
+        result_dict["eval_id"] = _sse_eval_id[]
+    end
     send_sse_event(
         Dict(
             "jsonrpc" => "2.0",
             "id" => request_id,
-            "result" => Dict("content" => [Dict("type" => "text", "text" => result_text)]),
+            "result" => result_dict,
         ),
     )
 
@@ -1757,6 +1779,53 @@ function start_mcp_server(
                 end
             end
 
+            # ── REST API: /api/connect_tcp ─────────────────────────────────
+            # REST endpoint for programmatic TCP gate connections. Auth is
+            # handled by the standard API key check above — no special
+            # CORS or origin bypass needed.
+            if req.target == "/api/connect_tcp" && req.method == "POST"
+                try
+                    data = JSON.parse(body; dicttype = Dict{String,Any})
+                    host = get(data, "host", nothing)
+                    port = get(data, "port", nothing)
+                    name = get(data, "name", "remote")
+
+                    if host === nothing || port === nothing
+                        HTTP.setstatus(http, 400)
+                        HTTP.setheader(http, "Content-Type" => "application/json")
+                        HTTP.startwrite(http)
+                        write(http, JSON.json(Dict("error" => "host and port are required")))
+                        return nothing
+                    end
+
+                    port_int = Int(port)
+                    if port_int < 1 || port_int > 65535
+                        HTTP.setstatus(http, 400)
+                        HTTP.setheader(http, "Content-Type" => "application/json")
+                        HTTP.startwrite(http)
+                        write(http, JSON.json(Dict("error" => "port must be between 1 and 65535")))
+                        return nothing
+                    end
+
+                    conn = Kaimon.connect_tcp_to_active_manager(string(host), port_int; name=string(name))
+
+                    HTTP.setstatus(http, 200)
+                    HTTP.setheader(http, "Content-Type" => "application/json")
+                    HTTP.startwrite(http)
+                    write(http, JSON.json(Dict(
+                        "status" => "connected",
+                        "session_id" => conn !== nothing ? conn.session_id : nothing,
+                    )))
+                    return nothing
+                catch e
+                    HTTP.setstatus(http, 500)
+                    HTTP.setheader(http, "Content-Type" => "application/json")
+                    HTTP.startwrite(http)
+                    write(http, JSON.json(Dict("error" => sprint(showerror, e))))
+                    return nothing
+                end
+            end
+
             # Handle GET requests on MCP endpoint — open SSE stream per 2025-11-25 spec.
             # Kaimon has no server-initiated messages, so we open the stream and hold it
             # open with periodic keepalive comments until the client disconnects.
@@ -1918,6 +1987,8 @@ function start_mcp_server(
         catch e
             # Client disconnected — no response possible, no need to log
             e isa Base.IOError && return nothing
+
+            _push_log!(:error, "MCP handler error: $(sprint(showerror, e))")
 
             # Attempt a 500 JSON-RPC error response.  Wrap in its own try/catch
             # because startwrite throws if the response was already started

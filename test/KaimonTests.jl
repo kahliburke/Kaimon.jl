@@ -4,7 +4,6 @@ using ReTest
 
 # Include all test files
 include("security_tests.jl")
-include("setup_tests.jl")
 include("server_tests.jl")
 include("session_tests.jl")
 include("call_tool_tests.jl")
@@ -19,5 +18,6 @@ include("resources_prompts_tests.jl")
 include("tui_analytics_tests.jl")
 include("test_output_parser_tests.jl")
 include("gate_async_tests.jl")
+include("test_runner_tests.jl")
 
 end # module

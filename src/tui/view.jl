@@ -1,5 +1,83 @@
 # ── View ──────────────────────────────────────────────────────────────────────
 
+# ── Tab color generation from theme ──────────────────────────────────────────
+
+function _rgb_to_hsl(r::Float64, g::Float64, b::Float64)
+    cmax = max(r, g, b)
+    cmin = min(r, g, b)
+    delta = cmax - cmin
+    l = (cmax + cmin) / 2.0
+    if delta < 1e-6
+        return (0.0, 0.0, l)
+    end
+    s = delta / (1.0 - abs(2.0 * l - 1.0))
+    h = if cmax == r
+        60.0 * mod((g - b) / delta, 6.0)
+    elseif cmax == g
+        60.0 * ((b - r) / delta + 2.0)
+    else
+        60.0 * ((r - g) / delta + 4.0)
+    end
+    (h, s, l)
+end
+
+function _hsl_to_rgb(h::Float64, s::Float64, l::Float64)
+    c = (1.0 - abs(2.0 * l - 1.0)) * s
+    x = c * (1.0 - abs(mod(h / 60.0, 2.0) - 1.0))
+    m = l - c / 2.0
+    r1, g1, b1 = if h < 60; (c, x, 0.0)
+    elseif h < 120; (x, c, 0.0)
+    elseif h < 180; (0.0, c, x)
+    elseif h < 240; (0.0, x, c)
+    elseif h < 300; (x, 0.0, c)
+    else; (c, 0.0, x)
+    end
+    (r1 + m, g1 + m, b1 + m)
+end
+
+"""Generate 9 distinct tab colors by rotating hue from the theme's accent color."""
+function _generate_tab_colors(th)
+    accent = to_rgb(th.accent)
+    r, g, b = Float64(accent.r) / 255, Float64(accent.g) / 255, Float64(accent.b) / 255
+    h, s, l = _rgb_to_hsl(r, g, b)
+    # Keep saturation and lightness, rotate hue evenly across 9 tabs
+    colors = Style[]
+    for i in 0:8
+        hi = mod(h + i * 40.0, 360.0)  # 40° apart = good separation
+        ri, gi, bi = _hsl_to_rgb(hi, s, clamp(l, 0.4, 0.7))
+        push!(colors, Style(fg=ColorRGB(
+            round(UInt8, ri * 255),
+            round(UInt8, gi * 255),
+            round(UInt8, bi * 255),
+        )))
+    end
+    colors
+end
+
+"""Write a sequence of (text, style) pairs at (x, y), advancing x after each."""
+function _write_spans!(buf::Buffer, x::Int, y::Int, parts)
+    cx = x
+    for (text, style) in parts
+        set_string!(buf, cx, y, text, style)
+        cx += length(text)
+    end
+end
+
+"""
+    file_link_style(path::String; line::Int=0) -> Style
+
+Return accent/underline style with an OSC 8 hyperlink to the configured editor,
+or dim style if no URL can be constructed.
+"""
+function file_link_style(path::String; line::Int=0)
+    url = editor_file_url(path; line=line)
+    if isempty(url)
+        return tstyle(:text_dim, italic = true)
+    else
+        return tstyle(:accent, italic = true, underline = true, hyperlink = url)
+    end
+end
+
 function Tachikoma.view(m::KaimonModel, f::Frame)
     m.tick += 1
     _advance_ecg!(m)
@@ -22,7 +100,7 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         if inner.width >= 4
             for row = inner.y:bottom(inner)
                 for col = inner.x:right(inner)
-                    set_char!(buf, col, row, ' ', Style())
+                    set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
                 end
             end
             si = mod1(m.tick ÷ 2, length(SPINNER_BRAILLE))
@@ -123,6 +201,12 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         m._last_reap_time = time()
     end
 
+    # Monitor managed extensions and sessions (check health, auto-restart crashed ones)
+    if !m._render_mode && m.tick % 30 == 0  # ~1 Hz at 30 fps
+        _monitor_extensions!(m.conn_mgr)
+        _monitor_managed_sessions!(m.conn_mgr)
+    end
+
     # Deferred server start — kick off on first frame so the TUI is already
     # rendering and can report startup status in the Server tab.
     if !m.server_started && !m._render_mode
@@ -140,25 +224,22 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         end
 
         _push_log!(:info, "Starting MCP server on port $(m.server_port)...")
-        Threads.@spawn try
-            security_config = load_global_security_config()
-            tools = collect_tools()
-            m.mcp_server = start_mcp_server(
-                tools,
-                m.server_port;
-                verbose = false,
-                security_config = security_config,
-            )
-            # Populate module-level refs so _register_dynamic_tools! works
-            SERVER[] = m.mcp_server
-            ALL_TOOLS[] = tools
-            m.server_running = true
-            GATE_PORT[] = m.server_port
-            _push_log!(:info, "MCP server listening on port $(m.server_port)")
-
-        catch e
-            m.server_running = false
-            _push_log!(:error, "Server failed: $(sprint(showerror, e))")
+        let port = m.server_port
+            spawn_task!(m._task_queue, :mcp_server_started) do
+                try
+                    security_config = load_global_config()
+                    tools = collect_tools()
+                    server = start_mcp_server(
+                        tools,
+                        port;
+                        verbose = false,
+                        security_config = security_config,
+                    )
+                    (success=true, server=server, tools=tools, port=port)
+                catch e
+                    (success=false, error_msg=sprint(showerror, e))
+                end
+            end
         end
     end
 
@@ -226,126 +307,72 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
     main = render(outer, f.area, buf)
     main.width < 4 && return
 
-    rows = tsplit(Layout(Vertical, [Fixed(1), Fill(), Fixed(1)]), main)
+    rows = tsplit(Layout(Vertical, [Fixed(tab_height(m.tab_bar.tab_style.decoration)), Fill(), Fixed(1)]), main)
     length(rows) < 3 && return
     tab_area = rows[1]
     content_area = rows[2]
     status_area = rows[3]
 
-    # ── Tab bar (scrolling to keep active tab visible) ──
-    m._tab_bar_area = tab_area
-    _tab_labels = [
-        [Span("1", tstyle(:warning)), Span(" Server", tstyle(:text))],
-        [Span("2", tstyle(:warning)), Span(" Sessions", tstyle(:text))],
-        [Span("3", tstyle(:warning)), Span(" Activity", tstyle(:text))],
-        [Span("4", tstyle(:warning)), Span(" Search", tstyle(:text))],
-        [Span("5", tstyle(:warning)), Span(" Tests", tstyle(:text))],
-        [Span("6", tstyle(:warning)), Span(" Config", tstyle(:text))],
-        [Span("7", tstyle(:warning)), Span(" Advanced", tstyle(:text))],
-        [
-            Span("8", tstyle(:warning)),
-            Span(
-                " Debug",
-                m.debug_state == :paused ? tstyle(:error, bold = true) : tstyle(:text),
-            ),
-        ],
-    ]
+    # ── Tab bar ──
+    # Dynamic label styles (Debug tab changes color when paused)
+    debug_style = m.debug_state == :paused ? tstyle(:error, bold = true) : tstyle(:text)
+    m.tab_bar.labels[7] = [Span("7", tstyle(:warning)), Span(" Debug", debug_style)]
 
-    # Compute visible tab window that fits in tab_area and includes the active tab.
-    # Each tab = label_len + 2; separators = 3 chars between adjacent tabs.
-    # Reserve 1 char on each side that has hidden tabs for "…" indicator.
-    n_tabs = length(_tab_labels)
-    _tab_widths = [_TAB_LABEL_LENS[i] + 2 for i = 1:n_tabs]  # per-tab rendered width
-
-    function _tabs_fit(lo, hi, avail)
-        w = sum(_tab_widths[lo:hi]) + _TAB_SEPARATOR_LEN * max(0, hi - lo)
-        w <= avail
+    # Sync tab bar active/inactive styles with theme (in case theme changed)
+    th = Tachikoma.theme()
+    th_accent = th.accent
+    if m._tab_theme_accent != th_accent
+        m._tab_theme_accent = th_accent
+        ts = m.tab_bar.tab_style
+        m.tab_bar.tab_style = TabBarStyle(
+            decoration = ts.decoration,
+            active = tstyle(:accent, bold=true),
+            inactive = tstyle(:text_dim),
+            separator = ts.separator,
+            overflow_char = ts.overflow_char,
+            overflow_style = ts.overflow_style,
+            tab_colors = ts.tab_colors,
+        )
     end
 
-    avail_w = tab_area.width
-    vis_lo, vis_hi = 1, n_tabs
-
-    if !_tabs_fit(1, n_tabs, avail_w)
-        # Not all tabs fit — find a window containing m.active_tab
-        at = m.active_tab
-
-        # Start with just the active tab, expand outward
-        vis_lo, vis_hi = at, at
-
-        # Try to expand right first, then left, alternating
-        while true
-            expanded = false
-            if vis_hi < n_tabs
-                # Cost of adding one tab on the right: tab width + separator
-                need_left = vis_lo > 1 ? 1 : 0   # reserve for left "…"
-                need_right = (vis_hi + 1) < n_tabs ? 1 : 0  # reserve for right "…"
-                test_avail = avail_w - need_left - need_right
-                if _tabs_fit(vis_lo, vis_hi + 1, test_avail)
-                    vis_hi += 1
-                    expanded = true
-                end
-            end
-            if vis_lo > 1
-                need_left = (vis_lo - 1) > 1 ? 1 : 0
-                need_right = vis_hi < n_tabs ? 1 : 0
-                test_avail = avail_w - need_left - need_right
-                if _tabs_fit(vis_lo - 1, vis_hi, test_avail)
-                    vis_lo -= 1
-                    expanded = true
-                end
-            end
-            !expanded && break
-        end
-    end
-
-    m._tab_visible_range = vis_lo:vis_hi
-    has_left_overflow = vis_lo > 1
-    has_right_overflow = vis_hi < n_tabs
-
-    # Render the visible slice into a sub-area, leaving room for "…" indicators
-    render_x = tab_area.x + (has_left_overflow ? 1 : 0)
-    render_w = tab_area.width - (has_left_overflow ? 1 : 0) - (has_right_overflow ? 1 : 0)
-    if render_w > 0
-        sub_area = Rect(render_x, tab_area.y, render_w, 1)
-        vis_labels = _tab_labels[vis_lo:vis_hi]
-        vis_active = m.active_tab - vis_lo + 1  # active index within the visible slice
-        render(TabBar(vis_labels; active = vis_active), sub_area, buf)
-    end
-
-    # Draw overflow indicators
-    if has_left_overflow
-        set_char!(buf, tab_area.x, tab_area.y, '…', tstyle(:text_dim))
-    end
-    if has_right_overflow
-        set_char!(buf, right(tab_area), tab_area.y, '…', tstyle(:text_dim))
-    end
+    render(m.tab_bar, tab_area, buf)
 
     # ── Drain cross-thread buffers every frame (regardless of active tab) ──
     _drain_stress_output!(m)
     _drain_test_updates!(m.test_runs)
 
     # ── Content by tab ──
-    @match m.active_tab begin
-        1 => view_server(m, content_area, f)
-        2 => view_sessions(m, content_area, buf)
-        3 => view_activity(m, content_area, buf)
-        4 => view_search(m, content_area, buf)
-        5 => begin
+    @match m.tab_bar.active begin
+        $TAB_SERVER => view_server(m, content_area, f)
+        $TAB_SESSIONS => view_sessions(m, content_area, buf)
+        $TAB_ACTIVITY => begin
+            view_activity(m, content_area, buf)
+            m.activity_filter_open && _view_activity_filter(m, content_area, buf)
+        end
+        $TAB_SEARCH => view_search(m, content_area, buf)
+        $TAB_TESTS => begin
             # Follow mode: always snap to newest run
             if (m.test_follow || m.selected_test_run == 0) && !isempty(m.test_runs)
                 m.selected_test_run = length(m.test_runs)
             end
             view_tests(m, content_area, buf)
         end
-        6 => view_config(m, content_area, buf)
-        7 => view_advanced(m, content_area, buf)
-        8 => Base.invokelatest(view_debug, m, content_area, buf)
+        $TAB_CONFIG => view_config(m, content_area, buf)
+        $TAB_DEBUG => Base.invokelatest(view_debug, m, content_area, buf)
+        $TAB_EXTENSIONS => view_extensions(m, content_area, buf)
+        $TAB_ADVANCED => view_advanced(m, content_area, buf)
         _ => nothing
     end
 
     # ── Status bar ──
-    n_conns = m.conn_mgr !== nothing ? length(connected_sessions(m.conn_mgr)) : 0
-    n_total = m.conn_mgr !== nothing ? length(m.conn_mgr.connections) : 0
+    n_sessions, n_exts = if m.conn_mgr !== nothing
+        conns = connected_sessions(m.conn_mgr)
+        ns = count(c -> c.spawned_by != "extension", conns)
+        ne = count(c -> c.spawned_by == "extension", conns)
+        (ns, ne)
+    else
+        (0, 0)
+    end
     n_agents = lock(STANDALONE_SESSIONS_LOCK) do
         count(s -> s.state == Session.INITIALIZED, values(STANDALONE_SESSIONS))
     end
@@ -371,7 +398,9 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
                     ),
                 ),
                 Span("  $(DOT) ", tstyle(:border)),
-                Span("$(n_conns)/$(n_total) sessions", tstyle(:primary)),
+                Span("$(n_sessions) sessions", tstyle(:primary)),
+                Span("  $(DOT) ", tstyle(:border)),
+                Span("$(n_exts) exts", tstyle(:primary)),
                 Span("  $(DOT) ", tstyle(:border)),
                 Span("$(n_agents) agents", tstyle(:secondary)),
             ],
@@ -383,6 +412,25 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         status_area,
         buf,
     )
+
+    # Backtrace viewer overlay (full-screen ScrollPane with trace)
+    if m.backtrace_viewer !== nothing
+        _dim_area!(buf, f.area)
+        margin = 2
+        overlay = Rect(
+            f.area.x + margin,
+            f.area.y + margin,
+            f.area.width - 2 * margin,
+            f.area.height - 2 * margin,
+        )
+        render(m.backtrace_viewer, overlay, buf)
+    end
+
+    # Backtrace modal (collecting or timeout)
+    if m.backtrace_modal !== nothing
+        m.backtrace_modal.tick = m.tick
+        render(m.backtrace_modal, f.area, buf)
+    end
 
     # Quit confirmation modal
     if m.quit_confirm
@@ -398,6 +446,14 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         m.quit_confirm_modal.tick = m.tick
         render(m.quit_confirm_modal, f.area, buf)
     end
+
+    # Capture text snapshot every ~1s (every 30 frames at 30fps) for the screenshot tool
+    if m.tick % 30 == 0
+        try
+            TUI_LAST_FRAME[] = buffer_to_text(buf, f.area)
+        catch
+        end
+    end
 end
 
 # ── Server Tab ────────────────────────────────────────────────────────────────
@@ -411,49 +467,41 @@ function view_server(m::KaimonModel, area::Rect, f::Frame)
     # ── Top: Server status panel ──
     status_block = Block(
         title = "Server Status",
-        border_style = _pane_border(m, 1, 1),
-        title_style = _pane_title(m, 1, 1),
+        border_style = _pane_border(m, TAB_SERVER, 1),
+        title_style = _pane_title(m, TAB_SERVER, 1),
     )
     si = render(status_block, rows[1], buf)
     if si.width >= 4
         y = si.y
         x = si.x + 1
+        sep = " · "
+        dim = tstyle(:text_dim)
+        txt = tstyle(:text)
 
-        status_icon = if m.server_running
-            "●"
-        elseif m.server_started
-            "○"
-        else
-            "◌"
-        end
-        status_text = if m.server_running
-            "running"
-        elseif m.server_started
-            "stopped"
-        else
-            "starting…"
-        end
+        status_icon = m.server_running ? "●" : m.server_started ? "○" : "◌"
+        status_text = m.server_running ? "running" : m.server_started ? "stopped" : "starting…"
         status_style = m.server_running ? tstyle(:success) : tstyle(:error)
+        n_conns = m.conn_mgr !== nothing ? count(c -> c.spawned_by != "extension", connected_sessions(m.conn_mgr)) : 0
 
-        set_string!(buf, x, y, "$status_icon ", status_style)
-        set_string!(buf, x + 2, y, "MCP Server", tstyle(:text))
+        # Row 1: status + port + uptime
+        _write_spans!(buf, x, y, [
+            (status_icon * " ", status_style),
+            ("MCP Server", txt),
+            (sep, dim),
+            (":", dim), (string(m.server_port), txt),
+            (sep, dim),
+            (status_text, status_style),
+            (sep, dim),
+            ("⏱ ", dim), (format_uptime(time() - m.start_time), txt),
+        ])
         y += 1
-        set_string!(buf, x, y, rpad("Port", 14), tstyle(:text_dim))
-        set_string!(buf, x + 14, y, string(m.server_port), tstyle(:text))
-        y += 1
-        set_string!(buf, x, y, rpad("Status", 14), tstyle(:text_dim))
-        set_string!(buf, x + 14, y, status_text, status_style)
-        y += 1
-        n_conns = m.conn_mgr !== nothing ? length(connected_sessions(m.conn_mgr)) : 0
-        set_string!(buf, x, y, rpad("Gate", 14), tstyle(:text_dim))
-        set_string!(buf, x + 14, y, "$n_conns REPL sessions", tstyle(:text))
-        y += 1
-        set_string!(buf, x, y, rpad("Uptime", 14), tstyle(:text_dim))
-        set_string!(buf, x + 14, y, format_uptime(time() - m.start_time), tstyle(:text))
-        y += 1
-        set_string!(buf, x, y, rpad("Tool Calls", 14), tstyle(:text_dim))
-        set_string!(buf, x + 14, y, string(m.total_tool_calls), tstyle(:text))
 
+        # Row 2: gate + tools
+        _write_spans!(buf, x, y, [
+            ("Gate: ", dim), ("$n_conns sessions", txt),
+            (sep, dim),
+            ("Tool Calls: ", dim), (string(m.total_tool_calls), txt),
+        ])
     end
 
     # ── Bottom: Server log (ScrollPane) ──
@@ -463,8 +511,8 @@ function view_server(m::KaimonModel, area::Rect, f::Frame)
     follow_hint = pane.following ? "[F]ollow:on" : "[F]ollow:off"
     pane.block = Block(
         title = "Server Log ($(length(m.server_log))) [$wrap_hint] $follow_hint",
-        border_style = _pane_border(m, 1, 2),
-        title_style = _pane_title(m, 1, 2),
+        border_style = _pane_border(m, TAB_SERVER, 2),
+        title_style = _pane_title(m, TAB_SERVER, 2),
     )
     m._log_pane_width = rows[2].width - 2   # -2 for border
     _sync_log_pane!(m, m._log_pane_width)
@@ -564,6 +612,13 @@ function _refresh_client_status_async!(m::KaimonModel)
         "Gemini CLI" => _detect_in_files(
             joinpath(homedir(), ".gemini", "settings.json"),
             joinpath(pwd(), ".gemini", "settings.json"),
+        )
+    end
+
+    # Antigravity
+    spawn_task!(q, :client_status) do
+        "Antigravity" => _detect_in_files(
+            joinpath(homedir(), ".gemini", "antigravity", "mcp_config.json"),
         )
     end
 
@@ -686,6 +741,81 @@ function _complete_path!(input::TextInput)
     end
 end
 
+"""
+    _complete_relative_dir!(input::TextInput, project_root::String)
+
+Tab-complete directory names relative to `project_root` within a comma-separated
+TextInput. Completes the last entry (after the last comma). Only suggests
+directories, not files.
+"""
+function _complete_relative_dir!(input::TextInput, project_root::String)
+    isempty(project_root) && return
+    text = Tachikoma.text(input)
+
+    # Find the last comma-separated entry to complete
+    last_comma = findlast(',', text)
+    prefix_before = last_comma !== nothing ? text[1:last_comma] * " " : ""
+    partial = last_comma !== nothing ? strip(text[last_comma+1:end]) : strip(text)
+
+    # Resolve relative to project root
+    if isempty(partial)
+        search_dir = project_root
+        search_prefix = ""
+    else
+        # Could be a partial path like "src/co" → dir="src", prefix="co"
+        full = joinpath(project_root, partial)
+        if isdir(full)
+            search_dir = full
+            search_prefix = ""
+            # Add trailing / to partial for display
+            partial = endswith(partial, '/') ? partial : partial * "/"
+        else
+            search_dir = joinpath(project_root, dirname(partial))
+            search_prefix = basename(partial)
+        end
+    end
+
+    isdir(search_dir) || return
+
+    entries = try
+        filter(readdir(search_dir)) do name
+            startswith(name, search_prefix) &&
+            !startswith(name, ".") &&
+            isdir(joinpath(search_dir, name))
+        end
+    catch
+        return
+    end
+
+    if length(entries) == 1
+        rel = if isempty(partial) || endswith(partial, '/')
+            partial * entries[1]
+        else
+            joinpath(dirname(partial), entries[1])
+        end
+        Tachikoma.set_text!(input, prefix_before * rel)
+    elseif length(entries) > 1
+        # Complete common prefix
+        common = entries[1]
+        for e in entries[2:end]
+            i = 0
+            for (a, b) in zip(common, e)
+                a == b || break
+                i += 1
+            end
+            common = common[1:i]
+        end
+        if length(common) > length(search_prefix)
+            rel = if isempty(partial) || endswith(partial, '/')
+                partial * common
+            else
+                joinpath(dirname(partial), common)
+            end
+            Tachikoma.set_text!(input, prefix_before * rel)
+        end
+    end
+end
+
 """KiloCode settings directory inside VS Code's globalStorage."""
 function _kilo_settings_dir()
     gs = if Sys.isapple()
@@ -708,7 +838,7 @@ function _kilo_settings_dir()
     joinpath(gs, "kilocode.kilo-code", "settings")
 end
 
-function _short_path(path::String)
+function _short_path(path::AbstractString)
     home = homedir()
     if startswith(path, home)
         return "~" * path[length(home)+1:end]

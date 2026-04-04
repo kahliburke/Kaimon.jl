@@ -18,6 +18,11 @@ export init_db!,
     get_error_hotspots,
     get_test_runs,
     get_test_results,
+    persist_job!,
+    update_job!,
+    get_job,
+    list_jobs,
+    get_job_stats,
     get_test_failures,
     cleanup_old_data!,
     close_db!
@@ -216,6 +221,35 @@ function init_db!(db_path::String = get_default_db_path())
         """
     CREATE INDEX IF NOT EXISTS idx_test_failures_run
     ON test_failures(run_id)
+""",
+    )
+
+    # ── Background Jobs ───────────────────────────────────────────────────────
+    # Eval computations promoted to background when they exceed the time threshold.
+    # Persisted so results survive TUI restarts.
+    DBInterface.execute(
+        db,
+        """
+    CREATE TABLE IF NOT EXISTS background_jobs (
+        eval_id TEXT PRIMARY KEY,
+        session_key TEXT NOT NULL,
+        code TEXT NOT NULL,
+        started_at REAL NOT NULL,
+        finished_at REAL DEFAULT 0.0,
+        promoted_at REAL NOT NULL,
+        status TEXT NOT NULL DEFAULT 'running',
+        result TEXT DEFAULT '',
+        result_preview TEXT DEFAULT '',
+        cancelled INTEGER DEFAULT 0
+    )
+""",
+    )
+
+    DBInterface.execute(
+        db,
+        """
+    CREATE INDEX IF NOT EXISTS idx_background_jobs_status
+    ON background_jobs(status)
 """,
     )
 
@@ -595,6 +629,117 @@ function close_db!()
     if DB[] !== nothing
         SQLite.close(DB[])
         DB[] = nothing
+    end
+end
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Background Jobs
+# ═══════════════════════════════════════════════════════════════════════════════
+
+"""Persist a promoted background job to the database."""
+function persist_job!(eval_id::String, session_key::String, code::String,
+                      started_at::Float64, promoted_at::Float64)
+    db = DB[]
+    db === nothing && return
+    try
+        DBInterface.execute(
+            db,
+            """INSERT OR REPLACE INTO background_jobs
+               (eval_id, session_key, code, started_at, promoted_at, status)
+               VALUES (?, ?, ?, ?, ?, 'running')""",
+            [eval_id, session_key, first(code, 2000), started_at, promoted_at],
+        )
+    catch e
+        @debug "Failed to persist background job" eval_id exception=e
+    end
+end
+
+"""Update a background job's status and result."""
+function update_job!(eval_id::String; status::String="", result::String="",
+                     result_preview::String="", finished_at::Float64=0.0,
+                     cancelled::Bool=false)
+    db = DB[]
+    db === nothing && return
+    try
+        sets = String[]
+        vals = Any[]
+        if !isempty(status)
+            push!(sets, "status = ?"); push!(vals, status)
+        end
+        if !isempty(result)
+            push!(sets, "result = ?"); push!(vals, result)
+        end
+        if !isempty(result_preview)
+            push!(sets, "result_preview = ?"); push!(vals, first(result_preview, 500))
+        end
+        if finished_at > 0.0
+            push!(sets, "finished_at = ?"); push!(vals, finished_at)
+        end
+        if cancelled
+            push!(sets, "cancelled = 1")
+        end
+        isempty(sets) && return
+        push!(vals, eval_id)
+        DBInterface.execute(db,
+            "UPDATE background_jobs SET $(join(sets, ", ")) WHERE eval_id = ?", vals)
+    catch e
+        @debug "Failed to update background job" eval_id exception=e
+    end
+end
+
+"""Retrieve a background job by eval_id (prefix match)."""
+function get_job(eval_id::String)
+    db = DB[]
+    db === nothing && return nothing
+    try
+        df = DBInterface.execute(db,
+            "SELECT * FROM background_jobs WHERE eval_id LIKE ? ORDER BY promoted_at DESC LIMIT 1",
+            [eval_id * "%"]) |> DataFrame
+        nrow(df) == 0 && return nothing
+        return Dict(String(col) => df[1, col] for col in names(df))
+    catch
+        return nothing
+    end
+end
+
+"""List background jobs, optionally filtered by status."""
+function list_jobs(; status::String="", limit::Int=20)
+    db = DB[]
+    db === nothing && return Dict[]
+    try
+        query = if isempty(status)
+            "SELECT * FROM background_jobs ORDER BY promoted_at DESC LIMIT ?"
+        else
+            "SELECT * FROM background_jobs WHERE status = ? ORDER BY promoted_at DESC LIMIT ?"
+        end
+        params = isempty(status) ? Any[limit] : Any[status, limit]
+        df = DBInterface.execute(db, query, params) |> DataFrame
+        return [Dict(String(col) => row[col] for col in names(df)) for row in eachrow(df)]
+    catch
+        return Dict[]
+    end
+end
+
+"""Get aggregate stats on background jobs."""
+function get_job_stats()
+    db = DB[]
+    db === nothing && return Dict()
+    try
+        df = DBInterface.execute(db, """
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as running,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+                SUM(CASE WHEN cancelled = 1 THEN 1 ELSE 0 END) as cancelled,
+                AVG(CASE WHEN finished_at > 0 THEN finished_at - started_at END) as avg_duration,
+                MAX(CASE WHEN finished_at > 0 THEN finished_at - started_at END) as max_duration
+            FROM background_jobs
+        """) |> DataFrame
+        nrow(df) == 0 && return Dict()
+        return Dict(String(col) => df[1, col] for col in names(df))
+    catch
+        return Dict()
     end
 end
 

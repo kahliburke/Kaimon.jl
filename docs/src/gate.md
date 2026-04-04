@@ -270,3 +270,143 @@ MyApp.run()
 ```
 
 Run it with `julia --project my_app.jl`. The agent will see `myapp_create_job` and `myapp_list_jobs` as available tools, with schemas generated from the function signatures and docstrings.
+
+## TCP Mode
+
+By default, the Gate uses IPC (Unix domain sockets) for local communication. For remote sessions — servers, cloud instances, HPC nodes — use TCP mode:
+
+```julia
+Gate.serve(mode=:tcp, port=10005, stream_port=10007, force=true)
+```
+
+This binds the REP socket on `port` and the PUB socket on `stream_port`. Both ports are printed on startup:
+
+```
+⚡ Kaimon gate connected (myproject)
+  TCP mode: tcp://127.0.0.1:10005 (PUB: tcp://127.0.0.1:10007)
+  Auth: none (lax mode)
+```
+
+### SSH Tunneling
+
+To connect to a remote gate through an SSH tunnel, use fixed ports (not ephemeral) and tunnel both:
+
+```bash
+ssh -L 10006:localhost:10005 -L 10008:localhost:10007 remote-host
+```
+
+Then configure in Kaimon's Config tab with host `127.0.0.1`, port `10006`, stream port `10008`.
+
+### Environment Variables
+
+TCP mode can be configured via environment variables:
+
+| Variable | Description | Default |
+|---|---|---|
+| `KAIMON_GATE_MODE` | `"ipc"` or `"tcp"` | `"ipc"` |
+| `KAIMON_GATE_HOST` | Bind address | `"127.0.0.1"` |
+| `KAIMON_GATE_PORT` | REP socket port | `0` (ephemeral) |
+| `KAIMON_GATE_STREAM_PORT` | PUB socket port | `0` (ephemeral) |
+| `KAIMON_GATE_TOKEN` | Auth token | (none) |
+
+Setting `KAIMON_GATE_PORT` automatically implies TCP mode.
+
+### kaimon.toml Configuration
+
+Add a `[gate]` section to your project's `kaimon.toml` for automatic TCP gate startup:
+
+```toml
+[gate]
+mode = "tcp"
+port = 10005
+stream_port = 10007
+host = "0.0.0.0"
+force = true
+```
+
+When `Gate.serve()` is called (e.g., from `startup.jl`), it reads this configuration automatically.
+
+### Authentication
+
+TCP mode supports token-based authentication. Priority: `KAIMON_GATE_TOKEN` env var > security config API key > none (lax mode).
+
+When a token is set, every request must include it. The token is displayed on startup and can be queried with `Gate.status()`.
+
+## Background Jobs
+
+When an `ex()` evaluation exceeds 30 seconds, it's automatically promoted to a background job. The agent receives the job ID immediately and can continue working.
+
+### Checking Status
+
+```
+check_eval(eval_id="abc123")
+```
+
+Returns status, elapsed time, and the full result if completed.
+
+### Stashing Intermediate Values
+
+Running code can report intermediate values using `Gate.stash()`:
+
+```julia
+for epoch in 1:100
+    loss = train_epoch!(model)
+    Gate.stash("epoch", epoch)
+    Gate.stash("loss", loss)
+    Gate.progress("Epoch $epoch: loss=$loss")
+end
+```
+
+The agent sees stashed values when calling `check_eval`:
+
+```
+Stashed values:
+  epoch = 42
+  loss = 0.0231
+```
+
+### Cooperative Cancellation
+
+The agent can cancel a background job:
+
+```
+cancel_eval(eval_id="abc123")
+```
+
+Running code must check `Gate.is_cancelled()` cooperatively:
+
+```julia
+for epoch in 1:1000
+    Gate.is_cancelled() && break
+    loss = train_epoch!(model)
+    Gate.stash("epoch", epoch)
+end
+```
+
+### Listing Jobs
+
+```
+list_jobs(stats=true)
+```
+
+Shows all background jobs with status, elapsed time, and aggregate statistics.
+
+### Persistence
+
+Background jobs are stored in SQLite and survive TUI restarts. On restart, Kaimon reconciles stale jobs by querying gate sessions for cached results.
+
+## Streaming Progress
+
+`Gate.progress(message)` sends real-time SSE progress notifications from within a GateTool handler:
+
+```julia
+tool = GateTool("compile_kernel", function(name::String)
+    progress("Parsing $name...")
+    # ...
+    progress("Optimizing $name...")
+    # ...
+    return "Compiled $name"
+end)
+```
+
+Progress messages are visible in the Kaimon TUI Activity tab and delivered to the MCP client.
