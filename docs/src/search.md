@@ -119,8 +119,6 @@ Press `o` to open the model configuration overlay. This shows all supported embe
 | `nomic-embed-text:latest` | 768 | 512 tokens | Lightweight alternative |
 | `snowflake-arctic-embed:latest` | 1024 | 512 tokens | Not recommended |
 
-For a detailed comparison of these models with benchmark results across 15 queries, see [Embedding Models](../embedding-models.md).
-
 ### Switching Models
 
 Press `o` from the Search tab to open the model configuration overlay. Navigate with `↑`/`↓` and press `Enter` to select a model. Select "Custom..." at the bottom to enter any Ollama model name manually.
