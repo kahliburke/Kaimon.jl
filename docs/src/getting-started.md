@@ -44,8 +44,8 @@ no manual file editing needed.
 ![Kaimon config tab](./assets/kaimon_config.gif)
 
 Supported clients: Claude Code, VS Code (Copilot/Continue), Cursor, Gemini
-CLI, and KiloCode. The Config tab writes the correct config format for each
-one, including your API key if running in authenticated mode.
+CLI, Antigravity, OpenCode, and KiloCode. The Config tab writes the correct
+config format for each one, including your API key if running in authenticated mode.
 
 ## 3. Connect External REPLs
 

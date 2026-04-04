@@ -128,14 +128,24 @@ Press `Esc` to close the terminal overlay. The underlying Julia process and gate
 
 ## Restarting a Session
 
-To restart a session, use the `manage_repl` tool with the `restart` command:
+There are three ways to restart a session:
+
+**From the agent** — use the `manage_repl` tool:
 
 ```
 manage_repl(command="restart")
 manage_repl(command="restart", session="a3f8b2c1")
 ```
 
-Restart replaces the Julia process in-place using `execvp`, which swaps the running process image without spawning a child. This means:
+**From the REPL** — call `Gate.restart()` directly:
+
+```julia
+Gate.restart()
+```
+
+**From the TUI** — press `r` on the selected session in the Sessions tab.
+
+All three methods use `execvp`, which swaps the running process image without spawning a child. This means:
 
 - The process ID stays the same.
 - All Julia state is cleared (a fresh session begins).

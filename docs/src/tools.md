@@ -106,7 +106,7 @@ Kaimon integrates with Infiltrator.jl for interactive breakpoint debugging. When
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `run_tests` | Run project tests in a subprocess. Supports pattern filtering and coverage. | `pattern` (ReTest regex), `coverage`, `verbose`, `session` |
+| `run_tests` | Run project tests in a subprocess. Supports pattern filtering and coverage. | `pattern` (ReTest regex), `coverage`, `verbose`, `project_path`, `session` |
 | `profile_code` | Profile Julia code to identify performance bottlenecks. Uses `@profile` with flat output. | `code`, `session` |
 | `stress_test` | Spawn concurrent simulated MCP agents to stress-test a session. | `code`, `num_agents`, `stagger`, `timeout`, `session` |
 
@@ -120,7 +120,12 @@ run_tests(pattern="security")
 
 run_tests(coverage=true)
 # Runs all tests with coverage collection
+
+run_tests(project_path="/path/to/MyPackage.jl")
+# Run tests for a project without a gate session
 ```
+
+Provide `project_path` (absolute path to the project) or `session` to identify the project. If neither is given and only one session is connected, that session's project is used. The test runner handles both `test/Project.toml` environments and legacy `[extras]/[targets]` layouts automatically.
 
 ## Semantic Search (Qdrant)
 

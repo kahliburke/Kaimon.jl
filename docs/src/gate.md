@@ -206,7 +206,7 @@ The initial mirror state is read from the user's Preferences configuration.
 
 ## allow_restart
 
-By default, the agent can restart a session via `manage_repl(command="restart")`. This performs an `execvp` -- the process image is replaced with a fresh Julia, same PID, same terminal, fresh state. The session key is preserved so the agent reconnects seamlessly.
+By default, sessions can be restarted via the agent (`manage_repl(command="restart")`), directly from the REPL (`Gate.restart()`), or from the TUI Sessions tab (`r` key). All three methods use `execvp` -- the process image is replaced with a fresh Julia, same PID, same terminal, fresh state. The session key is preserved so the TUI and agents reconnect seamlessly.
 
 Set `allow_restart=false` to disable this:
 
@@ -214,7 +214,7 @@ Set `allow_restart=false` to disable this:
 serve(tools=my_tools, allow_restart=false)
 ```
 
-The agent will see a warning message and must restart the process manually (or rely on Revise for hot-reloading).
+Both agent-initiated and REPL-initiated restarts will be blocked. The agent will see a warning message and must restart the process manually (or rely on Revise for hot-reloading).
 
 ## Complete Example
 

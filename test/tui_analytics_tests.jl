@@ -31,7 +31,7 @@ function press!(m, k::Symbol)
     Tachikoma.update!(m, Tachikoma.KeyEvent(k, '\0'))
 end
 
-"""Push N tool results into the TUI buffer and drain into model."""
+"""Push N tool results into the TUI buffer, drain into model, and persist to DB."""
 function push_tool_results!(
     m;
     n_success::Int = 5,
@@ -49,6 +49,7 @@ function push_tool_results!(
             "sess0001",
         )
         Kaimon._push_tool_result!(r)
+        persist_tool_call!(r)
     end
     for i = 1:n_error
         r = Kaimon.ToolCallResult(
@@ -61,6 +62,7 @@ function push_tool_results!(
             "sess0001",
         )
         Kaimon._push_tool_result!(r)
+        persist_tool_call!(r)
     end
     Kaimon._drain_tool_results!(m.tool_results)
     if Kaimon._LAST_TOOL_SUCCESS[] > m.last_tool_success
@@ -86,6 +88,12 @@ end
 
 """Join rendered lines into a single string for content matching."""
 render_text(m; kw...) = join(render_activity(m; kw...), "\n")
+
+"""Persist a ToolCallResult to the database (start + complete)."""
+function persist_tool_call!(r::Kaimon.ToolCallResult)
+    rid = Kaimon._persist_tool_start!(r.tool_name, r.args_json, r.session_key)
+    Kaimon._persist_tool_complete!(rid, r)
+end
 
 # ── Unit Tests ───────────────────────────────────────────────────────────────
 
@@ -114,7 +122,7 @@ render_text(m; kw...) = join(render_activity(m; kw...), "\n")
                     true,
                     "s001",
                 )
-                Kaimon._persist_tool_call!(r)
+                persist_tool_call!(r)
 
                 rows = Database.get_tool_executions(; days = 1)
                 matching = filter(x -> get(x, "tool_name", "") == "test_persist", rows)
@@ -136,7 +144,7 @@ render_text(m; kw...) = join(render_activity(m; kw...), "\n")
                     false,
                     "s002",
                 )
-                Kaimon._persist_tool_call!(r)
+                persist_tool_call!(r)
 
                 rows = Database.get_tool_executions(; days = 1)
                 matching = filter(x -> get(x, "tool_name", "") == "test_err", rows)
@@ -158,7 +166,7 @@ render_text(m; kw...) = join(render_activity(m; kw...), "\n")
                         true,
                         "",
                     )
-                    Kaimon._persist_tool_call!(r)
+                    persist_tool_call!(r)
                 end
                 rows = Database.get_tool_executions(; days = 1)
                 for (dur_str, expected_ms) in cases
@@ -180,7 +188,7 @@ render_text(m; kw...) = join(render_activity(m; kw...), "\n")
                     true,
                     "",
                 )
-                Kaimon._persist_tool_call!(r)
+                persist_tool_call!(r)
 
                 rows = Database.get_tool_executions(; days = 1)
                 matching = filter(x -> get(x, "tool_name", "") == "test_trunc", rows)
@@ -192,7 +200,7 @@ render_text(m; kw...) = join(render_activity(m; kw...), "\n")
                 saved = Database.DB[]
                 Database.DB[] = nothing
                 r = Kaimon.ToolCallResult(now(), "no_db", "{}", "ok", "1ms", true, "")
-                Kaimon._persist_tool_call!(r)  # should not throw
+                persist_tool_call!(r)  # should not throw
                 Database.DB[] = saved
             end
         finally
@@ -355,7 +363,7 @@ render_text(m; kw...) = join(render_activity(m; kw...), "\n")
     @testset "Activity Mode Toggle Keybinding" begin
         m, db_path = setup_tui_model()
         try
-            m.active_tab = 3
+            m.tab_bar.active = 3
             push_tool_results!(m; n_success = 3)
 
             @testset "'d' toggles live → analytics" begin
@@ -387,10 +395,10 @@ render_text(m; kw...) = join(render_activity(m; kw...), "\n")
 
             @testset "'d' on other tabs is no-op" begin
                 m.activity_mode = :live
-                m.active_tab = 1
+                m.tab_bar.active = 1
                 press!(m, 'd')
                 @test m.activity_mode == :live
-                m.active_tab = 3  # restore
+                m.tab_bar.active = 3  # restore
             end
         finally
             Database.close_db!()
@@ -401,7 +409,7 @@ render_text(m; kw...) = join(render_activity(m; kw...), "\n")
     @testset "Live Mode Keys Disabled in Analytics" begin
         m, db_path = setup_tui_model()
         try
-            m.active_tab = 3
+            m.tab_bar.active = 3
             push_tool_results!(m; n_success = 3)
             press!(m, 'd')
             @test m.activity_mode == :analytics
@@ -551,7 +559,7 @@ render_text(m; kw...) = join(render_activity(m; kw...), "\n")
             end
 
             @testset "Mode switch changes rendered content" begin
-                m.active_tab = 3
+                m.tab_bar.active = 3
                 m.activity_mode = :live
                 live_text = render_text(m)
                 press!(m, 'd')  # needs active_tab == 3
@@ -579,7 +587,7 @@ render_text(m; kw...) = join(render_activity(m; kw...), "\n")
             @test length(rows) >= 18
 
             # 3. Switch to analytics via keypress
-            m.active_tab = 3
+            m.tab_bar.active = 3
             press!(m, 'd')
             @test m.activity_mode == :analytics
             @test m.analytics_cache !== nothing
@@ -610,7 +618,7 @@ render_text(m; kw...) = join(render_activity(m; kw...), "\n")
     @testset "Rapid Mode Toggle Stability" begin
         m, db_path = setup_tui_model()
         try
-            m.active_tab = 3
+            m.tab_bar.active = 3
             push_tool_results!(m; n_success = 5)
 
             # Rapidly toggle 20 times — should never crash
@@ -789,7 +797,7 @@ end
                         true,
                         "",
                     )
-                    Kaimon._persist_tool_call!(r)
+                    persist_tool_call!(r)
                 end
                 Kaimon._refresh_analytics!(m; force = true)
 

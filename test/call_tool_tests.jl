@@ -28,10 +28,10 @@ using Kaimon: MCPTool
                 @test result isa String
                 @test !isempty(result)
 
-                # Test with parameters - use a function with few methods to avoid long output
-                result2 = Kaimon.call_tool(:search_methods, Dict("query" => "iseven"))
+                # Test with parameters - use a tool that doesn't require a gate session
+                result2 = Kaimon.call_tool(:tool_help, Dict("tool_name" => "ping"))
                 @test result2 isa String
-                @test contains(result2, "Methods") || contains(result2, "methods")
+                @test contains(result2, "ping") || contains(result2, "Ping")
 
                 # Test error handling - nonexistent tool
                 @test_throws ErrorException Kaimon.call_tool(:nonexistent_tool, Dict())
