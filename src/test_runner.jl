@@ -40,174 +40,13 @@ end
 # 2. Runs runtests.jl
 # 3. Prints structured status lines to stdout
 
-_test_runner_script() = """
-# Test runner subprocess script — prints structured output for parser
-import Pkg
-import TOML
+const _TEST_RUNNER_TEMPLATE = abspath(joinpath(@__DIR__, "..", "templates", "test-runner.jl.tmpl"))
 
-project_path = ARGS[1]
-pattern = length(ARGS) >= 2 ? ARGS[2] : ""
-verbose_level = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 1
-
-println("TEST_RUNNER: START project=\$(basename(project_path))")
-flush(stdout)
-
-# ── Activate test environment ─────────────────────────────────────────────
-test_project = joinpath(project_path, "test", "Project.toml")
-
-if isfile(test_project)
-    # Test has its own Project.toml — activate the test env
-    Pkg.activate(joinpath(project_path, "test"))
-    try
-        Pkg.instantiate(; io=devnull)
-    catch e
-        println("TEST_RUNNER: WARN instantiate_failed message=\$(first(sprint(showerror, e), 120))")
-    end
-    # Ensure the main project is importable from the test env
-    try
-        Pkg.develop(Pkg.PackageSpec(path=project_path); io=devnull)
-    catch
-    end
-else
-    # No test/Project.toml — build a temp environment with [extras] deps.
-    # This replicates what Pkg.test() does, but lets us include() directly
-    # so we get verbose output and full control.
-    main_toml = TOML.parsefile(joinpath(project_path, "Project.toml"))
-    extras = get(main_toml, "extras", Dict())
-    targets = get(main_toml, "targets", Dict())
-    test_deps = get(targets, "test", String[])
-
-    # Create temp project with main deps + test extras
-    tmp = mktempdir()
-    Pkg.activate(tmp)
-    try
-        Pkg.develop(Pkg.PackageSpec(path=project_path); io=devnull)
-    catch
-    end
-    # Add test-only deps from [extras]
-    for dep_name in test_deps
-        if haskey(extras, dep_name)
-            try
-                Pkg.add(Pkg.PackageSpec(name=dep_name, uuid=extras[dep_name]); io=devnull)
-            catch
-                try
-                    Pkg.add(dep_name; io=devnull)
-                catch e
-                    println("TEST_RUNNER: WARN add_dep_failed dep=\$dep_name message=\$(first(sprint(showerror, e), 120))")
-                end
-            end
-        end
-    end
-    try
-        Pkg.instantiate(; io=devnull)
-    catch
-    end
-end
-
-# Stack the main project env on LOAD_PATH so all its deps (including dev'd
-# packages like Tachikoma) are directly importable from tests.
-if !(project_path in LOAD_PATH)
-    push!(LOAD_PATH, project_path)
-end
-
-flush(stdout)
-
-# ── Patch Test.jl for verbose output + structured result emission ─────────
-# 1. Force verbose=true so the final summary table shows nested testsets
-# 2. Emit TEST_RUNNER: TESTSET_DONE lines as each testset finishes, giving
-#    the TUI real-time incremental results with hierarchy depth info.
-# Use `import` (not `using`) to avoid exporting @testset into Main, which
-# conflicts with ReTest's @testset in test files.
-import Test
-
-_testset_depth = Ref(0)
-
-let _w = Base.get_world_counter()
-    @eval function Test.push_testset(ts::Test.DefaultTestSet)
-        ts.verbose = true
-        \$_testset_depth[] += 1
-        println("TEST_RUNNER: TESTSET_START name=", ts.description)
-        flush(stdout)
-        return Base.invoke_in_world(\$_w, Test.push_testset, ts)
-    end
-end
-
-# Patch finish to emit structured TESTSET_DONE as each testset completes.
-# Emitted BEFORE calling original finish (which may throw TestSetException).
-let _w2 = Base.get_world_counter()
-    @eval function Test.finish(ts::Test.DefaultTestSet; print_results::Bool=true)
-        _depth = max(0, \$_testset_depth[] - 1)
-        \$_testset_depth[] -= 1
-
-        # Compute cumulative counts via get_test_counts.
-        # Julia 1.12+ returns a TestCounts struct; older returns an 8-tuple.
-        _tc = Test.get_test_counts(ts)
-        _p = getproperty(_tc, :passes) + getproperty(_tc, :cumulative_passes)
-        _f = getproperty(_tc, :fails) + getproperty(_tc, :cumulative_fails)
-        _e = getproperty(_tc, :errors) + getproperty(_tc, :cumulative_errors)
-        _total = _p + _f + _e
-
-        # Emit structured line (name= last to allow spaces in testset names)
-        _msg = string(
-            "TEST_RUNNER: TESTSET_DONE pass=", _p,
-            " fail=", _f, " error=", _e,
-            " total=", _total, " depth=", _depth,
-            " name=", ts.description)
-        println(_msg)
-        flush(stdout)
-
-        return Base.invoke_in_world(\$_w2, Test.finish, ts; print_results=print_results)
-    end
-end
-
-# ── Run the tests ─────────────────────────────────────────────────────────
-runtests_path = joinpath(project_path, "test", "runtests.jl")
-exit_code = 0
-
-try
-    cd(project_path)
-
-    # Delegate execution to the project's official test entrypoint, but
-    # sanitize ARGS so runtests.jl sees only the intended test filter.
-    old_args = copy(ARGS)
-    empty!(ARGS)
-    if !isempty(pattern)
-        push!(ARGS, pattern)
-    end
-
-    try
-        include(runtests_path)
-    finally
-        empty!(ARGS)
-        append!(ARGS, old_args)
-    end
-
-    println("TEST_RUNNER: DONE status=passed")
-catch e
-    global exit_code = 1
-    # Test failures throw TestSetException (possibly wrapped in LoadError from include).
-    # These are expected — we already emitted TESTSET_DONE lines for each testset.
-    _is_test_failure = e isa Test.TestSetException
-    if e isa LoadError
-        _is_test_failure = e.error isa Test.TestSetException
-    end
-    if !_is_test_failure
-        println("TEST_RUNNER: ERROR \$(first(sprint(showerror, e), 500))")
-        bt = catch_backtrace()
-        println(stderr, sprint(showerror, e, bt))
-    end
-    println("TEST_RUNNER: DONE status=failed")
-end
-
-flush(stdout)
-flush(stderr)
-exit(exit_code)
-"""
-
-"""Write the test runner script to a temp file. Returns the path."""
+"""Write the test runner script to a temp file. Returns the path.
+Reads from the template file each time so edits are picked up without restart."""
 function _write_test_runner_script()::String
     path = joinpath(tempdir(), "kaimon_test_runner_$(getpid()).jl")
-    write(path, _test_runner_script())
+    write(path, read(_TEST_RUNNER_TEMPLATE, String))
     return path
 end
 
@@ -232,10 +71,16 @@ function spawn_test_run(
 
     script_path = _write_test_runner_script()
 
-    # Use --project for the main project (the script handles test env activation)
-    # Merge stderr into stdout so error messages are captured by the line reader
+    # Clean subprocess: no --project (script manages its own env via Pkg.activate),
+    # and clear JULIA_LOAD_PATH so the subprocess gets default LOAD_PATH
+    # (the Kaimon process sets JULIA_LOAD_PATH which would override everything).
+    # setenv replaces the full environment (addenv only merges, so inherited vars leak).
+    julia_exe = joinpath(Sys.BINDIR, "julia")
+    env = Dict(k => v for (k, v) in ENV)
+    delete!(env, "JULIA_LOAD_PATH")
+    delete!(env, "JULIA_PROJECT")
     cmd = pipeline(
-        `$(Base.julia_cmd()) --startup-file=no --project=$project_path $script_path $project_path $pattern $verbose`;
+        setenv(`$julia_exe --startup-file=no $script_path $project_path $pattern $verbose`, env);
         stderr = stdout,
     )
 

@@ -1,0 +1,127 @@
+# Kaimon test runner — spawned as a subprocess, prints structured output for parser.
+# Args: project_path [pattern] [verbose_level]
+import Pkg
+import TOML
+
+project_path = ARGS[1]
+pattern = length(ARGS) >= 2 ? ARGS[2] : ""
+verbose_level = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 1
+
+println("TEST_RUNNER: START project=$(basename(project_path))")
+flush(stdout)
+
+# ── Activate test environment ─────────────────────────────────────────────
+# First, activate the main project so its deps are resolved into LOAD_PATH.
+Pkg.activate(project_path)
+
+test_project = joinpath(project_path, "test", "Project.toml")
+
+if isfile(test_project)
+    # Standard: test/ has its own Project.toml with all deps declared.
+    # Push main project onto LOAD_PATH before switching to test env.
+    push!(LOAD_PATH, project_path)
+    Pkg.activate(joinpath(project_path, "test"))
+    try
+        Pkg.instantiate(; io=devnull)
+    catch e
+        println("TEST_RUNNER: WARN instantiate failed: $(first(sprint(showerror, e), 120))")
+    end
+else
+    # Legacy layout: test deps live in [extras]/[targets] in the main Project.toml.
+    # Build a throwaway temp env with just those deps.
+    main_toml = TOML.parsefile(joinpath(project_path, "Project.toml"))
+    extras = get(main_toml, "extras", Dict())
+    test_names = get(get(main_toml, "targets", Dict()), "test", String[])
+
+    push!(LOAD_PATH, project_path)
+    tmp = mktempdir()
+    Pkg.activate(tmp)
+    for name in test_names
+        uuid = get(extras, name, nothing)
+        try
+            if uuid !== nothing
+                Pkg.add(Pkg.PackageSpec(; name, uuid=Base.UUID(uuid)); io=devnull)
+            else
+                Pkg.add(name; io=devnull)
+            end
+        catch e
+            println("TEST_RUNNER: WARN could not add $name: $(first(sprint(showerror, e), 120))")
+        end
+    end
+end
+
+flush(stdout)
+
+# ── Patch Test.jl for structured output ───────────────────────────────────
+# Force verbose=true and emit TESTSET_START / TESTSET_DONE lines so the
+# TUI can show real-time incremental results.
+import Test
+
+_testset_depth = Ref(0)
+
+let _w = Base.get_world_counter()
+    @eval function Test.push_testset(ts::Test.DefaultTestSet)
+        ts.verbose = true
+        $_testset_depth[] += 1
+        println("TEST_RUNNER: TESTSET_START name=", ts.description)
+        flush(stdout)
+        return Base.invoke_in_world($_w, Test.push_testset, ts)
+    end
+end
+
+let _w2 = Base.get_world_counter()
+    @eval function Test.finish(ts::Test.DefaultTestSet; print_results::Bool=true)
+        _depth = max(0, $_testset_depth[] - 1)
+        $_testset_depth[] -= 1
+
+        _tc = Test.get_test_counts(ts)
+        _p = getproperty(_tc, :passes) + getproperty(_tc, :cumulative_passes)
+        _f = getproperty(_tc, :fails) + getproperty(_tc, :cumulative_fails)
+        _e = getproperty(_tc, :errors) + getproperty(_tc, :cumulative_errors)
+        _total = _p + _f + _e
+
+        println("TEST_RUNNER: TESTSET_DONE",
+            " pass=", _p, " fail=", _f, " error=", _e,
+            " total=", _total, " depth=", _depth,
+            " name=", ts.description)
+        flush(stdout)
+
+        return Base.invoke_in_world($_w2, Test.finish, ts; print_results=print_results)
+    end
+end
+
+# ── Run tests ─────────────────────────────────────────────────────────────
+runtests_path = joinpath(project_path, "test", "runtests.jl")
+exit_code = 0
+
+try
+    cd(project_path)
+
+    old_args = copy(ARGS)
+    empty!(ARGS)
+    !isempty(pattern) && push!(ARGS, pattern)
+
+    try
+        include(runtests_path)
+    finally
+        empty!(ARGS)
+        append!(ARGS, old_args)
+    end
+
+    println("TEST_RUNNER: DONE status=passed")
+catch e
+    global exit_code = 1
+    _is_test_failure = e isa Test.TestSetException
+    if e isa LoadError
+        _is_test_failure = e.error isa Test.TestSetException
+    end
+    if !_is_test_failure
+        println("TEST_RUNNER: ERROR $(first(sprint(showerror, e), 500))")
+        println(stderr, sprint(showerror, e, catch_backtrace()))
+    end
+    println("TEST_RUNNER: DONE status=failed")
+end
+
+flush(stdout)
+flush(stderr)
+exit(exit_code)

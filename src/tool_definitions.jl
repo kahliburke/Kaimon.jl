@@ -1909,7 +1909,11 @@ run_tests_tool = @mcp_tool(
     """Run tests and optionally generate coverage reports.
 
 Spawns a subprocess with correct test environment. Streams results in real-time.
-Pattern uses ReTest regex syntax to filter tests.""",
+Pattern uses ReTest regex syntax to filter tests.
+
+Provide either `project_path` (absolute path to the project) or `session`
+(gate session key) to identify the project. If neither is given and only
+one session is connected, that session's project is used.""",
     Dict(
         "type" => "object",
         "properties" => Dict(
@@ -1927,9 +1931,13 @@ Pattern uses ReTest regex syntax to filter tests.""",
                 "description" => "Enable verbose test output (default: false)",
                 "default" => 1,
             ),
+            "project_path" => Dict(
+                "type" => "string",
+                "description" => "Absolute path to the project directory (must contain Project.toml and test/runtests.jl). Use this instead of session if no gate session is running for the project.",
+            ),
             "session" => Dict(
                 "type" => "string",
-                "description" => "Session key (8-char ID). Required when multiple sessions are connected.",
+                "description" => "Session key (8-char ID). Used to resolve project path from a connected gate session.",
             ),
         ),
         "required" => [],
@@ -1940,6 +1948,7 @@ Pattern uses ReTest regex syntax to filter tests.""",
         verbose_arg = get(args, "verbose", 1)
         verbose = verbose_arg isa Int ? verbose_arg : parse(Int, verbose_arg)
         session = get(args, "session", "")
+        explicit_path = get(args, "project_path", "")
         on_progress = get(args, "_on_progress", nothing)
 
         # Normalize pattern
@@ -1947,16 +1956,18 @@ Pattern uses ReTest regex syntax to filter tests.""",
             pattern = ""
         end
 
-        if !GATE_MODE[]
-            return "Error: run_tests requires gate mode. Start a gate REPL with Gate.serve()."
+        # Resolve project path: explicit path > session > single connected session
+        project_path = if !isempty(explicit_path)
+            isdir(explicit_path) || return "Error: project_path not found: $explicit_path"
+            explicit_path
+        else
+            if !GATE_MODE[]
+                return "Error: Provide project_path or start a gate session."
+            end
+            conn, err = _resolve_gate_conn(session)
+            err !== nothing && return err
+            conn.project_path
         end
-
-        conn, err = _resolve_gate_conn(session)
-        err !== nothing && return err
-
-        # Derive project root — conn.project_path may point to a subdirectory
-        # (e.g. test/) if the user activated a different env on the session.
-        project_path = conn.project_path
         runtests_path = joinpath(project_path, "test", "runtests.jl")
         if !isfile(runtests_path)
             # Try parent directory (common when project_path is test/ subdir)
@@ -1984,8 +1995,13 @@ Pattern uses ReTest regex syntax to filter tests.""",
         while run.status == RUN_RUNNING
             sleep(0.5)
             if on_progress !== nothing
+                # total_pass/total_fail are only set when the top-level testset
+                # finishes; during the run, accumulate from individual results.
+                p = run.total_pass > 0 ? run.total_pass : sum((r.pass_count for r in run.results), init=0)
+                f = run.total_fail > 0 ? run.total_fail : sum((r.fail_count for r in run.results), init=0)
+                n_sets = length(run.results)
                 on_progress(
-                    "$(run.total_pass) passed, $(run.total_fail) failed",
+                    "$p passed, $f failed ($n_sets testsets done)",
                 )
             end
             if time() > deadline
