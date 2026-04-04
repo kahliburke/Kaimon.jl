@@ -684,6 +684,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
         end
 
         $TAB_SESSIONS => @match evt.char begin
+            'r' => _restart_selected_session!(m)
             'x' => _shutdown_selected_session!(m)
             't' => begin
                 conns = _visible_connections(m)

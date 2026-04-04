@@ -410,3 +410,31 @@ end
 
     empty!(Kaimon._TCP_POLL_BACKOFF)
 end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Gate.restart() guard tests — unit tests, no ZMQ needed
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "Gate.restart guards" begin
+    orig_running = Kaimon.Gate._RUNNING[]
+    orig_restart = Kaimon.Gate._ALLOW_RESTART[]
+
+    @testset "errors when gate is not running" begin
+        Kaimon.Gate._RUNNING[] = false
+        @test_throws ErrorException("Gate is not running") Kaimon.Gate.restart()
+    end
+
+    @testset "errors when restart is disabled" begin
+        Kaimon.Gate._RUNNING[] = true
+        Kaimon.Gate._ALLOW_RESTART[] = false
+        @test_throws ErrorException("Restart is disabled for this session (allow_restart=false)") Kaimon.Gate.restart()
+    end
+
+    Kaimon.Gate._RUNNING[] = orig_running
+    Kaimon.Gate._ALLOW_RESTART[] = orig_restart
+end
+
+# NOTE: handle_message(:restart) is not unit-tested here because the handler
+# spawns an @async task that calls _exec_restart → execvp / exit(1) after a
+# 0.3 s delay, which would kill the test process. The :restart message path
+# is covered by the MCP manage_repl integration tests instead.

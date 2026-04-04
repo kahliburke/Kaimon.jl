@@ -311,7 +311,7 @@ function _sync_sessions_table!(m::KaimonModel, connections::Vector{REPLConnectio
         ];
         selected = n > 0 ? clamp(m.selected_connection, 1, n) : 0,
         block = Block(
-            title = "REPL Sessions ($n) [x] shutdown [t] trace",
+            title = "REPL Sessions ($n) [r] restart [x] shutdown [t] trace",
             border_style = _pane_border(m, TAB_SESSIONS, 1),
             title_style = _pane_title(m, TAB_SESSIONS, 1),
         ),
@@ -443,6 +443,30 @@ function _shutdown_selected_session!(m::KaimonModel)
     m.selected_connection = clamp(m.selected_connection, 1, max(1, n))
 
     _push_log!(:info, "Shutdown session '$dname' ($sk)")
+end
+
+"""Restart the selected session from the Sessions tab."""
+function _restart_selected_session!(m::KaimonModel)
+    conns = _visible_connections(m)
+    (m.selected_connection < 1 || m.selected_connection > length(conns)) && return
+    conn = conns[m.selected_connection]
+    sk = short_key(conn)
+    dname = isempty(conn.display_name) ? conn.name : conn.display_name
+
+    # Close terminal widget if open for this session
+    if m.session_terminal_open && m.session_terminal_key == sk
+        _close_session_terminal!(m)
+    end
+
+    # Fire-and-forget: send restart command to gate.
+    # Unlike shutdown, we do NOT call stop_session! — execvp replaces the
+    # process image (same PID, same PTY) so the managed session stays valid
+    # and the gate will reconnect with the same session ID.
+    Threads.@spawn begin
+        send_restart!(conn)
+    end
+
+    _push_log!(:info, "Restart session '$dname' ($sk)")
 end
 
 """Save the current backtrace result to a file near the session's project."""

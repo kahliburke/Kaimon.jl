@@ -2235,6 +2235,43 @@ function stop()
     printstyled("disconnected\n"; color = :yellow)
 end
 
+"""
+    restart()
+
+Restart the Julia session, preserving the Kaimon session ID so the TUI
+reconnects automatically.  Equivalent to what the agent's `manage_repl` tool
+does, but callable directly from your REPL.
+
+Uses `execvp` to replace the current process image — same PID, fresh Julia
+state.  Your startup.jl runs again and `Gate.serve()` reconnects with the
+same session key.
+"""
+function restart()
+    _RUNNING[] || error("Gate is not running")
+    _ALLOW_RESTART[] || error("Restart is disabled for this session (allow_restart=false)")
+    sid  = _SESSION_ID[]
+    name = basename(dirname(something(Base.active_project(), "julia")))
+    proj = dirname(something(Base.active_project(), "."))
+
+    # Tell the message-loop's finally block to skip cleanup — we handle it here.
+    _RESTARTING[] = true
+    _RUNNING[] = false
+
+    # Wait for the message-loop task to exit before tearing down sockets,
+    # same as stop() does.
+    task = _GATE_TASK[]
+    if task !== nothing && !istaskdone(task)
+        try
+            wait(task)
+        catch
+        end
+    end
+
+    _RESTARTING[] = false
+    _cleanup()
+    _exec_restart(name, sid, proj)
+end
+
 function _cleanup()
     # Stop Revise watcher
     watcher = _REVISE_WATCHER_TASK[]
