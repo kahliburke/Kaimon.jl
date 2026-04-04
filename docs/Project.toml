@@ -13,7 +13,7 @@ Tachikoma = "468859d6-42d8-48b7-8ad9-1d312e0e3b0a"
 [compat]
 Documenter = "1"
 DocumenterVitepress = "0.1"
-Tachikoma = "1.1.2"
+Tachikoma = "2.1.0"
 
 [sources]
 Kaimon = {path = ".."}
