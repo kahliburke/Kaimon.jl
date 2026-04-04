@@ -2,6 +2,8 @@ using ReTest
 using Kaimon
 using Kaimon: MCPTool
 
+_call_tool_saved_xdg = get(ENV, "XDG_CONFIG_HOME", nothing)
+
 @testset "call_tool Function Tests" begin
     # Setup - clean test directory
     test_dir = mktempdir()
@@ -15,8 +17,14 @@ using Kaimon: MCPTool
     try
         cd(test_dir)
 
-        # Setup security configuration for testing with unique port
+        # Point config dir to a temp location so we don't touch the real config,
+        # and pre-create a config so start!() doesn't launch the TUI wizard
+        # (the wizard requires a TTY which isn't available in CI).
         test_port = 13100  # Use unique port to avoid conflicts
+        ENV["XDG_CONFIG_HOME"] = mktempdir()
+        Kaimon.save_global_config(Kaimon.KaimonConfig(
+            :lax, String[], ["127.0.0.1", "::1"], test_port, round(Int64, time()), "vscode", "",
+        ))
 
         @testset "call_tool with Symbol" begin
             # Start server for testing
@@ -76,5 +84,11 @@ using Kaimon: MCPTool
 
     finally
         cd(original_dir)
+        # Restore XDG_CONFIG_HOME
+        if _call_tool_saved_xdg === nothing
+            delete!(ENV, "XDG_CONFIG_HOME")
+        else
+            ENV["XDG_CONFIG_HOME"] = _call_tool_saved_xdg
+        end
     end
 end
