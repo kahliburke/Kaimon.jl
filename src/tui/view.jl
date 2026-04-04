@@ -615,6 +615,13 @@ function _refresh_client_status_async!(m::KaimonModel)
         )
     end
 
+    # Antigravity
+    spawn_task!(q, :client_status) do
+        "Antigravity" => _detect_in_files(
+            joinpath(homedir(), ".gemini", "antigravity", "mcp_config.json"),
+        )
+    end
+
     # Codex
     spawn_task!(q, :client_status) do
         "OpenAI Codex" => _detect_in_files(joinpath(homedir(), ".codex", "config.toml"))

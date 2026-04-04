@@ -142,10 +142,11 @@ end
 
 # ── Config Flow: Input Handler ───────────────────────────────────────────────
 
-const CLIENT_OPTIONS = [:claude, :gemini, :codex, :copilot, :vscode, :kilo, :cursor, :opencode]
+const CLIENT_OPTIONS = [:claude, :gemini, :antigravity, :codex, :copilot, :vscode, :kilo, :cursor, :opencode]
 const CLIENT_LABELS = [
     "Claude Code",
     "Gemini CLI",
+    "Antigravity",
     "OpenAI Codex",
     "GitHub Copilot",
     "VS Code / Copilot",
@@ -154,15 +155,16 @@ const CLIENT_LABELS = [
     "OpenCode",
 ]
 const CLIENT_LABEL = Dict(
-    :claude    => "Claude Code",
-    :gemini    => "Gemini CLI",
-    :codex     => "OpenAI Codex",
-    :copilot   => "GitHub Copilot",
-    :vscode    => "VS Code / Copilot",
-    :kilo      => "KiloCode",
-    :cursor    => "Cursor",
-    :opencode  => "OpenCode",
-    :startup_jl => "Julia startup.jl (global gate)",
+    :claude       => "Claude Code",
+    :gemini       => "Gemini CLI",
+    :antigravity  => "Antigravity",
+    :codex        => "OpenAI Codex",
+    :copilot      => "GitHub Copilot",
+    :vscode       => "VS Code / Copilot",
+    :kilo         => "KiloCode",
+    :cursor       => "Cursor",
+    :opencode     => "OpenCode",
+    :startup_jl   => "Julia startup.jl (global gate)",
 )
 
 function handle_flow_input!(m::KaimonModel, evt::KeyEvent)
@@ -301,6 +303,7 @@ function execute_client_config!(m::KaimonModel)
         @match m.client_target begin
             :claude => _install_claude(m, port, api_key)
             :gemini => _install_gemini(m, port, api_key)
+            :antigravity => _install_antigravity(m, port, api_key)
             :codex => _install_codex(m, port, api_key)
             :copilot => _install_copilot(m, port, api_key)
             :vscode => _install_vscode(m, port, api_key)
@@ -464,6 +467,7 @@ function remove_client_config!(m::KaimonModel)
         @match m.client_target begin
             :claude => _remove_claude(m)
             :gemini => _remove_gemini(m)
+            :antigravity => _remove_antigravity(m)
             :codex => _remove_codex(m)
             :copilot => _remove_copilot(m)
             :vscode => _remove_vscode(m)
@@ -495,6 +499,22 @@ function _remove_gemini(m::KaimonModel)
         try read(pipeline(`gemini mcp remove --scope $s kaimon`; stderr = devnull), String) catch end
     end
     m.flow_message = "Removed kaimon from Gemini CLI"
+    m.flow_success = true
+end
+
+function _remove_antigravity(m::KaimonModel)
+    mcp_file = joinpath(homedir(), ".gemini", "antigravity", "mcp_config.json")
+    if isfile(mcp_file)
+        try
+            data = JSON.parsefile(mcp_file)
+            servers = get(data, "mcpServers", Dict{String,Any}())
+            delete!(servers, "kaimon")
+            data["mcpServers"] = servers
+            write(mcp_file, _to_json(data))
+        catch
+        end
+    end
+    m.flow_message = "Removed kaimon from Antigravity"
     m.flow_success = true
 end
 
@@ -674,6 +694,28 @@ function _install_gemini(m::KaimonModel, port::Int, api_key)
     end
     read(pipeline(args; stderr = devnull), String)
     m.flow_message = "Added kaimon to Gemini CLI\n(scope: $scope)"
+    m.flow_success = true
+end
+
+function _install_antigravity(m::KaimonModel, port::Int, api_key)
+    mcp_dir = joinpath(homedir(), ".gemini", "antigravity")
+    isdir(mcp_dir) || mkpath(mcp_dir)
+    mcp_file = joinpath(mcp_dir, "mcp_config.json")
+
+    existing = if isfile(mcp_file)
+        try JSON.parsefile(mcp_file) catch; Dict{String,Any}() end
+    else
+        Dict{String,Any}()
+    end
+    servers = get(existing, "mcpServers", Dict{String,Any}())
+    entry = Dict{String,Any}("serverUrl" => "http://localhost:$port/mcp")
+    if api_key !== nothing
+        entry["headers"] = Dict{String,Any}("Authorization" => "Bearer $api_key")
+    end
+    servers["kaimon"] = entry
+    existing["mcpServers"] = servers
+    write(mcp_file, _to_json(existing))
+    m.flow_message = "Wrote $(_short_path(mcp_file))"
     m.flow_success = true
 end
 

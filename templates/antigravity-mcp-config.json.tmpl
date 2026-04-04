@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "kaimon": {
+      "serverUrl": "http://localhost:{{port}}/mcp"{% if has_api_key %},
+      "headers": {
+        "Authorization": "Bearer {{api_key}}"
+      }{% end %}
+    }
+  }
+}
