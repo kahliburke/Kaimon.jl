@@ -437,6 +437,14 @@ function _monitor_extensions!(conn_mgr)
 
             if ext.status == :running
                 ext.last_heartbeat = time()
+                # Sync session key — after eviction the connection may have
+                # a different session_id than what the monitor originally matched.
+                for conn in connected_sessions(conn_mgr)
+                    if conn.namespace == ns && short_key(conn) != ext.session_key
+                        ext.session_key = short_key(conn)
+                        break
+                    end
+                end
             end
 
             if ext.status == :crashed && ext.config.entry.auto_start

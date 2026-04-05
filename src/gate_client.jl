@@ -1400,8 +1400,12 @@ function drain_stream_messages!(mgr::ConnectionManager)
                 # Panel push: buffer raw data (before stringification) and skip
                 if ch == "panel_push"
                     raw_data = get(msg, :data, nothing)
+                    skey = short_key(conn)
                     if raw_data isa NamedTuple && hasfield(typeof(raw_data), :key)
-                        _buffer_panel_push!(short_key(conn), string(raw_data.key), raw_data.value)
+                        _buffer_panel_push!(skey, string(raw_data.key), raw_data.value)
+                        _push_log!(:info, "panel_push received: key=$(raw_data.key) session=$skey")
+                    else
+                        _push_log!(:warn, "panel_push malformed: session=$skey data=$(repr(raw_data))")
                     end
                     continue
                 end
@@ -2166,28 +2170,33 @@ function _resolve_namespace!(conn::REPLConnection, mgr::ConnectionManager)
         ]
     end
 
-    if isempty(colliders)
-        return base_ns
-    end
-
-    # Extension sessions are singletons — evict stale extension connections
-    # with the same namespace instead of deduplicating
+    # Extension sessions are singletons — evict ALL old extension connections
+    # with the same namespace (any status) instead of deduplicating.
+    # Must check all statuses because the old connection may have been marked
+    # :disconnected by the health checker before the new one resolves its namespace.
     if conn.spawned_by == "extension"
         lock(mgr.lock) do
-            for old in colliders
-                if old.spawned_by == "extension"
-                    @debug "Evicting stale extension connection" namespace = base_ns old_key = short_key(old) new_key = short_key(conn)
-                    _unregister_session_tools!(old)
-                    disconnect!(old)
-                    idx = findfirst(c -> c === old, mgr.connections)
-                    if idx !== nothing
-                        _remove_session_files(mgr.sock_dir, old.session_id)
-                        deleteat!(mgr.connections, idx)
-                    end
+            to_evict = [
+                c for c in mgr.connections if
+                c !== conn && c.spawned_by == "extension" && c.namespace == base_ns
+            ]
+            for old in to_evict
+                _push_log!(:info, "Evicting stale extension connection: $(base_ns) $(short_key(old)) → $(short_key(conn))")
+                _unregister_session_tools!(old)
+                disconnect!(old)
+                idx = findfirst(c -> c === old, mgr.connections)
+                if idx !== nothing
+                    _remove_session_files(mgr.sock_dir, old.session_id)
+                    deleteat!(mgr.connections, idx)
                 end
             end
         end
         _fire_sessions_changed(mgr)
+        return base_ns
+    end
+
+    # No active collisions for non-extension sessions — keep the namespace
+    if isempty(colliders)
         return base_ns
     end
 

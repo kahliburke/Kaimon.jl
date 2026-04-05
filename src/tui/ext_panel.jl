@@ -188,7 +188,9 @@ function _ext_panel_update!(panel::ActiveExtPanel, tick::Int)
         if ext.config.manifest.namespace == panel.ctx.namespace &&
                 !isempty(ext.session_key) &&
                 ext.session_key != panel.ctx.session_key
+            old_key = panel.ctx.session_key
             panel.ctx.session_key = ext.session_key
+            _push_log!(:info, "Panel session key updated: $old_key → $(ext.session_key)")
             break
         end
     end
