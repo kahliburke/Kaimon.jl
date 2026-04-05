@@ -2,4 +2,6 @@
 namespace = "hello"
 module = "HelloExtension"
 tools_function = "create_tools"
-description = "Example extension — greeting and utility tools."
+description = "Example extension — greeting, dice, and word count tools."
+shutdown_function = "on_shutdown"
+tui_file = "src/tui_panel.jl"

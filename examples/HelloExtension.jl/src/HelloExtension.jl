@@ -1,6 +1,6 @@
 module HelloExtension
 
-export create_tools
+export create_tools, on_shutdown
 
 """
     create_tools(GateTool) -> Vector{GateTool}
@@ -49,6 +49,16 @@ function create_tools(GateTool::Type)
         GateTool("roll_dice", roll_dice),
         GateTool("word_count", word_count),
     ]
+end
+
+"""
+    on_shutdown()
+
+Called by Kaimon before the extension process exits.
+Use this to flush state, close connections, or log a shutdown message.
+"""
+function on_shutdown()
+    @info "HelloExtension shutting down gracefully"
 end
 
 end # module
