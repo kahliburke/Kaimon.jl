@@ -2,6 +2,10 @@ module HelloExtension
 
 export create_tools, on_shutdown
 
+# Module-level history — tools append here, TUI panel reads via eval
+const GREETINGS = String[]
+const ROLLS = String[]
+
 """
     create_tools(GateTool) -> Vector{GateTool}
 
@@ -15,11 +19,13 @@ function create_tools(GateTool::Type)
     Return a greeting for the given name.
     """
     function greet(name::String, enthusiastic::Bool = false)::String
-        if enthusiastic
-            return "Hello, $(name)! 🎉 Welcome to Kaimon extensions!"
+        msg = if enthusiastic
+            "Hello, $(name)! 🎉 Welcome to Kaimon extensions!"
         else
-            return "Hello, $(name)."
+            "Hello, $(name)."
         end
+        push!(GREETINGS, msg)
+        return msg
     end
 
     """
@@ -29,7 +35,9 @@ function create_tools(GateTool::Type)
     """
     function roll_dice(sides::Int = 6)::String
         result = rand(1:sides)
-        return "🎲 Rolled a $result (d$sides)"
+        msg = "🎲 Rolled a $result (d$sides)"
+        push!(ROLLS, msg)
+        return msg
     end
 
     """
@@ -58,7 +66,7 @@ Called by Kaimon before the extension process exits.
 Use this to flush state, close connections, or log a shutdown message.
 """
 function on_shutdown()
-    @info "HelloExtension shutting down gracefully"
+    @info "HelloExtension shutting down gracefully ($(length(GREETINGS)) greetings, $(length(ROLLS)) rolls)"
 end
 
 end # module

@@ -2,6 +2,9 @@
 #
 # Lightweight panel shown inside Kaimon's Extensions tab when the user
 # presses [u] on the hello extension. Demonstrates the ext_panel protocol.
+#
+# The panel shows greetings and dice rolls — both from local keypresses
+# AND from agent tool calls (synced via ext_panel_eval polling).
 
 using Tachikoma
 
@@ -10,26 +13,54 @@ mutable struct HelloPanelState
     rolls::Vector{String}
     selected::Int       # 1 = greetings pane, 2 = rolls pane
     tick::Int
+    last_sync::Int      # tick of last remote sync
 end
 
 function init(ctx)
-    # Fetch any existing greetings/rolls from the extension session
-    HelloPanelState(String[], String[], 1, 0)
+    state = HelloPanelState(String[], String[], 1, 0, 0)
+    # Initial sync from extension process
+    _sync_from_extension!(state, ctx)
+    return state
 end
 
 function update!(state::HelloPanelState, ctx)
     state.tick = ctx.tick
+    # Sync every ~60 frames (~1s at 60fps) to pick up agent tool calls
+    if state.tick - state.last_sync > 60
+        _sync_from_extension!(state, ctx)
+        state.last_sync = state.tick
+    end
+end
+
+function _sync_from_extension!(state::HelloPanelState, ctx)
+    try
+        result = Kaimon.ext_panel_eval(ctx, "using HelloExtension; (HelloExtension.GREETINGS, HelloExtension.ROLLS)")
+        repr_str = result.value_repr
+        isempty(repr_str) && return
+        # Parse the tuple of vectors from the repr
+        val = Main.eval(Meta.parse(repr_str))
+        if val isa Tuple && length(val) == 2
+            remote_greetings, remote_rolls = val
+            # Merge: add any entries we don't have
+            for g in remote_greetings
+                g in state.greetings || push!(state.greetings, g)
+            end
+            for r in remote_rolls
+                r in state.rolls || push!(state.rolls, r)
+            end
+        end
+    catch
+        # Extension not ready or eval failed — skip
+    end
 end
 
 function view(state::HelloPanelState, area::Tachikoma.Rect, buf::Tachikoma.Buffer)
-    # Outer block
     outer = Tachikoma.Block(
         title = " Hello Extension [g]reet [r]oll [Tab] switch [Esc] close ",
         border_style = Tachikoma.tstyle(:border_focus),
     )
     content = Tachikoma.render(outer, area, buf)
 
-    # Two panes side by side
     layout = Tachikoma.Layout(
         Tachikoma.Horizontal,
         [Tachikoma.Fill(1), Tachikoma.Fill(1)];
