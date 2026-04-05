@@ -64,7 +64,7 @@ function handle_key!(state::HelloPanelState, evt::Tachikoma.KeyEvent)
         return true
     elseif evt.key == :char && evt.char == 'g'
         name = "User#$(rand(100:999))"
-        push!(state.greetings, "Hello, $name!")
+        push!(state.greetings, "Hello, $(name)!")
         return true
     elseif evt.key == :char && evt.char == 'r'
         result = rand(1:6)
