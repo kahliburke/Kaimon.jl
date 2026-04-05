@@ -40,7 +40,13 @@ import Kaimon:
     RUN_PASSED,
     RUN_FAILED,
     TEST_PASS,
-    TEST_FAIL
+    TEST_FAIL,
+    ManagedExtension,
+    ExtensionConfig,
+    ExtensionEntry,
+    ExtensionManifest,
+    MANAGED_EXTENSIONS,
+    MANAGED_EXTENSIONS_LOCK
 
 import Tachikoma:
     record_app,
@@ -951,6 +957,127 @@ const EVENTS_DEBUG = EventScript(
     pause(1.5),
 )
 
+# ═══════════════════════════════════════════════════════════════════════
+# Demo: kaimon_extensions — extensions tab with list + detail
+# ═══════════════════════════════════════════════════════════════════════
+
+"Build a mock ManagedExtension with the given state."
+function _mock_managed_ext(;
+    namespace::String,
+    module_name::String,
+    project_path::String,
+    description::String = "",
+    status::Symbol = :running,
+    session_key::String = "",
+    tui_file::String = "",
+    tools::Vector{Dict{String,Any}} = Dict{String,Any}[],
+    error_log::Vector{String} = String[],
+)
+    manifest = ExtensionManifest(
+        namespace, module_name, "create_tools", description,
+        "on_shutdown", String[], tui_file, String[],
+    )
+    entry = ExtensionEntry(project_path, true, true)
+    config = ExtensionConfig(entry, manifest)
+    ext = ManagedExtension(config)
+    ext.status = status
+    ext.session_key = session_key
+    ext.started_at = status == :running ? time() - 120.0 : 0.0
+    ext.last_heartbeat = status == :running ? time() : 0.0
+    ext.error_log = error_log
+    return ext
+end
+
+function _build_extensions_model()
+    # Mock extensions: one running, one stopped, one crashed
+    ext_hello = _mock_managed_ext(;
+        namespace = "hello",
+        module_name = "HelloExtension",
+        project_path = "/home/user/dev/HelloExtension.jl",
+        description = "Example extension — greeting, dice, and word count tools.",
+        status = :running,
+        session_key = "f8a1b2c3",
+        tui_file = "src/tui_panel.jl",
+    )
+    ext_analytics = _mock_managed_ext(;
+        namespace = "analytics",
+        module_name = "AnalyticsExt",
+        project_path = "/home/user/dev/AnalyticsExt.jl",
+        description = "Production analytics — query dashboards and export reports.",
+        status = :stopped,
+    )
+    ext_deploy = _mock_managed_ext(;
+        namespace = "deploy",
+        module_name = "DeployTools",
+        project_path = "/home/user/dev/DeployTools.jl",
+        description = "Deployment pipeline tools for staging and production.",
+        status = :crashed,
+        error_log = ["Process exited with code 1", "ERROR: LoadError: ArgumentError: Package NotAPackage not found"],
+    )
+
+    # Mock connections: hello extension needs a conn with matching namespace
+    hello_tools = [
+        Dict("name" => "greet", "arguments" => [
+            Dict("name" => "name", "type" => "String", "required" => true),
+            Dict("name" => "enthusiastic", "type" => "Bool", "required" => false),
+        ]),
+        Dict("name" => "roll_dice", "arguments" => [
+            Dict("name" => "sides", "type" => "Int", "required" => false),
+        ]),
+        Dict("name" => "word_count", "arguments" => [
+            Dict("name" => "text", "type" => "String", "required" => true),
+        ]),
+    ]
+
+    conn_hello = _mock_conn(;
+        session_id = "f8a1b2c3deadbeef",
+        display_name = "HelloExtension.jl",
+        project_path = "/home/user/dev/HelloExtension.jl",
+        pid = 52100,
+        tool_call_count = 14,
+        tools = hello_tools,
+    )
+    conn_hello.namespace = "hello"
+
+    mgr = ConnectionManager()
+    push!(mgr.connections, conn_hello)
+
+    # Populate the global managed extensions list for get_managed_extensions()
+    lock(MANAGED_EXTENSIONS_LOCK) do
+        empty!(MANAGED_EXTENSIONS)
+        push!(MANAGED_EXTENSIONS, ext_hello, ext_analytics, ext_deploy)
+    end
+
+    _model(
+        _render_mode = true,
+        tab = 8,
+        conn_mgr = mgr,
+        server_running = true,
+        server_started = true,
+        ext_selected = 1,
+    )
+end
+
+const EVENTS_EXTENSIONS = EventScript(
+    pause(1.5),                           # linger on extensions list
+    (0.0, key(:down)),                    # select analytics (stopped)
+    pause(0.8),
+    (0.0, key(:down)),                    # select deploy (crashed)
+    pause(0.8),
+    (0.0, key(:up)),                      # back to analytics
+    pause(0.3),
+    (0.0, key(:up)),                      # back to hello (running)
+    pause(0.5),
+    (0.0, key(:enter)),                   # open detail view
+    pause(2.0),                           # linger on full detail with tool docs
+    rep(key(:down), 6; gap = 0.15),       # scroll through tool documentation
+    pause(1.0),
+    rep(key(:up), 6; gap = 0.1),          # scroll back up
+    pause(1.0),
+    (0.0, key(:escape)),                  # close detail view
+    pause(1.0),
+)
+
 const DEMOS = [
     DemoSpec("kaimon_wizard",              _build_wizard_model,             EVENTS_WIZARD,              130, 34, 230, 15),
     DemoSpec("kaimon_overview",            _build_overview_model,           EVENTS_OVERVIEW,            130, 34, 180, 15),
@@ -964,6 +1091,7 @@ const DEMOS = [
     DemoSpec("kaimon_search_config",       _build_search_config_model,      EVENTS_SEARCH_CONFIG,       130, 34,  75, 15),
     DemoSpec("kaimon_collection_manager",  _build_collection_manager_model, EVENTS_COLLECTION_MANAGER,  130, 34,  90, 15),
     DemoSpec("kaimon_debug",               _build_debug_model,              EVENTS_DEBUG,               130, 34, 180, 15),
+    DemoSpec("kaimon_extensions",          _build_extensions_model,         EVENTS_EXTENSIONS,          130, 34, 150, 15),
 ]
 
 function render_demo(spec::DemoSpec, cache::Dict{String,String}; force::Bool = false)

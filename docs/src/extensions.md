@@ -96,7 +96,9 @@ When a gate session connects, the TUI registers its tools into the MCP server's 
 
 ## Managing Extensions in the TUI
 
-The TUI has an **Extensions tab** (tab 9) with a two-pane layout:
+![Extensions tab](assets/kaimon_extensions.gif)
+
+The TUI has an **Extensions tab** (tab 8) with a two-pane layout:
 
 - **Left pane** — Extension list with status indicators and uptime
 - **Right pane** — Detail view showing namespace, module, project path, description, status, session key, tools, and recent errors
@@ -112,8 +114,9 @@ The TUI has an **Extensions tab** (tab 9) with a two-pane layout:
 | `s` | Start extension (if stopped) |
 | `x` | Stop extension (if running) |
 | `r` | Restart extension |
+| `u` | Open TUI panel (if `tui_file` defined) |
 | `Enter` | Expand detail view |
-| `Esc` | Close detail view or cancel flow |
+| `Esc` | Close detail view / panel / cancel flow |
 
 ## The `extension_info` Tool
 
@@ -131,13 +134,18 @@ extension_info(name="smlabnotes")
 
 ### Project Structure
 
+A full-featured extension looks like this:
+
 ```
 MyExtension.jl/
 ├── Project.toml
 ├── kaimon.toml
 └── src/
-    └── MyExtension.jl
+    ├── MyExtension.jl     # module with tools + shutdown hook
+    └── tui_panel.jl       # optional TUI panel
 ```
+
+See [`examples/HelloExtension.jl`](https://github.com/kburke/Kaimon.jl/tree/main/examples/HelloExtension.jl) for a complete working example with tools, push-based panel updates, and a shutdown hook.
 
 ### `kaimon.toml`
 
@@ -145,35 +153,43 @@ MyExtension.jl/
 [extension]
 namespace = "myext"
 module = "MyExtension"
-tools_function = "tools"
-description = "A minimal example extension."
-# shutdown_function = "on_shutdown"   # optional: called before process exit
+tools_function = "create_tools"
+description = "What this extension does."
+shutdown_function = "on_shutdown"       # optional
+tui_file = "src/tui_panel.jl"          # optional
 ```
 
-### `src/MyExtension.jl`
+### Defining Tools
+
+The `tools_function` receives the `GateTool` type as its argument and returns a vector of tool instances. Each handler's type signature is reflected automatically to generate MCP JSON Schema — primitive types, enums, structs, `Union{T, Nothing}` (optional), and vectors are all supported.
 
 ```julia
 module MyExtension
 
-export tools
+export create_tools, on_shutdown
 
-function tools(GateTool::Type)
+function create_tools(GateTool::Type)
     """
-        greet(name::String) -> String
+        greet(name::String, enthusiastic::Bool = false) -> String
 
     Return a greeting for the given name.
     """
-    function greet(name::String)::String
-        return "Hello, $(name)!"
+    function greet(name::String, enthusiastic::Bool = false)::String
+        msg = enthusiastic ? "Hello, $(name)! 🎉" : "Hello, $(name)."
+        # Push state to TUI panel (see "TUI Panel Protocol" below)
+        Main.Kaimon.Gate.push_panel("last_greeting", msg)
+        return msg
     end
 
     return [GateTool("greet", greet)]
 end
 
+function on_shutdown()
+    @info "MyExtension shutting down"
+end
+
 end
 ```
-
-The `tools_function` receives the `GateTool` type as its argument and returns a vector of `GateTool` instances. Each tool handler's type signature is reflected automatically to generate MCP JSON Schema — primitive types, enums, structs, `Union{T, Nothing}` (optional parameters), and vectors are all supported.
 
 ### Registering
 
@@ -197,3 +213,98 @@ tools = Gate.list_tools()
 ```
 
 This uses a ZMQ REQ/REP connection to the Kaimon server's service socket, allowing extensions to compose with built-in tools and other extensions.
+
+## TUI Panel Protocol
+
+Extensions can provide a TUI panel that renders inside Kaimon's Extensions tab. Set `tui_file` in `kaimon.toml` to point at a Julia file that defines these functions:
+
+| Function | Required | Signature | Description |
+|----------|----------|-----------|-------------|
+| `init` | Yes | `(ctx) → state` | Create initial panel state |
+| `update!` | No | `(state, ctx)` | Called each frame (~60 fps); read pushed data here |
+| `view` | Yes | `(state, area::Rect, buf::Buffer)` | Render into a Tachikoma buffer region |
+| `handle_key!` | No | `(state, evt::KeyEvent) → Bool` | Process input; return `true` if consumed |
+| `cleanup!` | Yes | `(state, ctx)` | Tear down when panel closes |
+
+### Lifecycle
+
+1. User presses `u` on a running extension in the Extensions tab
+2. Kaimon `include()`s the `tui_file` into a fresh anonymous module
+3. `init(ctx)` is called to create the panel state
+4. Each frame: `update!(state, ctx)` then `view(state, area, buf)`
+5. Key events route to `handle_key!(state, evt)` — return `true` to consume
+6. When the user presses `Esc`, `cleanup!(state, ctx)` is called and the panel closes
+
+### ExtPanelContext
+
+The `ctx` argument passed to `init`, `update!`, and `cleanup!` provides:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `session_key` | `String` | 8-char gate session key for this extension |
+| `tick` | `Int` | Frame counter (increments each frame) |
+| `_cache` | `Dict{Symbol,Any}` | Scratch space; `:panel_state` is auto-populated by `push_panel` |
+| `eval` | `Function` | `eval(code::String) → NamedTuple` — evaluate code in the extension process |
+| `request` | `Function` | `request(tool, args) → String` — call a tool on the extension |
+
+### Key Handling with @match
+
+Use the `@match` macro (from [Match.jl](https://github.com/kmsquire/Match.jl), a Kaimon dependency) for clean dispatch:
+
+```julia
+using Match
+
+function handle_key!(state, evt::Tachikoma.KeyEvent)::Bool
+    @match (evt.key, evt.char) begin
+        (:tab, _)    => (state.selected = mod1(state.selected + 1, 3); true)
+        (:char, 'g') => begin do_greet!(state); true end
+        (:char, 'r') => begin do_roll!(state); true end
+        _            => false
+    end
+end
+```
+
+## `Gate.push_panel()` — Extension to Panel Communication
+
+Instead of polling the extension process with `ctx.eval()`, tool handlers can push state updates to the TUI panel in real time:
+
+```julia
+# In your tool handler (runs in the extension subprocess):
+Main.Kaimon.Gate.push_panel("key", value)
+
+# Batch form:
+Main.Kaimon.Gate.push_panel("greetings" => greetings, "status" => "ready")
+```
+
+Values can be any serializable Julia type — strings, numbers, vectors, dicts, etc. They're delivered via ZMQ PUB/SUB with no blocking.
+
+On the panel side, pushed values appear in `ctx._cache[:panel_state]` as a `Dict{String,Any}`:
+
+```julia
+function update!(state, ctx)
+    ps = get(ctx._cache, :panel_state, nothing)
+    ps === nothing && return
+    if haskey(ps, "greetings")
+        state.greetings = ps["greetings"]
+    end
+end
+```
+
+!!! note "Use `Main.Kaimon.Gate`"
+    Extension modules run in their own namespace. Since `Kaimon` is loaded at `Main` scope in the extension subprocess, you must use `Main.Kaimon.Gate.push_panel()` — not just `Gate.push_panel()`.
+
+!!! note "Copy mutable values"
+    Always `copy()` mutable values before pushing: `push_panel("data", copy(vec))`. The value is serialized asynchronously, and the original may be mutated before serialization completes.
+
+## Shutdown Hooks
+
+Declare `shutdown_function` in `kaimon.toml` to run cleanup logic before the extension exits:
+
+```julia
+function on_shutdown()
+    # Flush pending writes, close connections, save state...
+    @info "Extension shutting down"
+end
+```
+
+The hook has a **5-second timeout**. If it doesn't complete in time, the process is terminated. Use this for quick cleanup only — don't block on network requests or long computations.

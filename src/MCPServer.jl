@@ -1363,7 +1363,7 @@ function _handle_gate_tool_sse(
         push!(seen_methods, method)
         try
             notif_json = JSON.json(notif)
-            write(http, "data: $(notif_json)\n\n")
+            write(http, "event: message\ndata: $(notif_json)\n\n")
             flush(http)
         catch
         end
@@ -1375,7 +1375,7 @@ function _handle_gate_tool_sse(
     function send_sse_event(data::Dict)
         try
             event_json = JSON.json(data)
-            write(http, "data: $(event_json)\n\n")
+            write(http, "event: message\ndata: $(event_json)\n\n")
             flush(http)
             last_event_time[] = time()
         catch
@@ -1849,7 +1849,7 @@ function start_mcp_server(
                             method in seen && continue
                             push!(seen, method)
                             notif_json = JSON.json(notif)
-                            write(http, "data: $(notif_json)\n\n")
+                            write(http, "event: message\ndata: $(notif_json)\n\n")
                         end
                         flush(http)
                         sleep(1)

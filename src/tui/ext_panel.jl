@@ -182,6 +182,17 @@ function _ext_panel_update!(panel::ActiveExtPanel, tick::Int)
     isempty(panel.error_msg) || return
     panel.ctx.tick = tick
 
+    # If the extension restarted, its session key changed — update ours
+    # so we drain pushes from the correct buffer.
+    for ext in get_managed_extensions()
+        if ext.config.manifest.namespace == panel.ctx.namespace &&
+                !isempty(ext.session_key) &&
+                ext.session_key != panel.ctx.session_key
+            panel.ctx.session_key = ext.session_key
+            break
+        end
+    end
+
     # Drain any push_panel() messages into ctx._cache[:panel_state]
     pushes = drain_panel_pushes!(panel.ctx.session_key)
     if !isempty(pushes)
