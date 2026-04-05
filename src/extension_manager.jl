@@ -326,6 +326,22 @@ function stop_extension!(ext::ManagedExtension; timeout::Float64 = 5.0)
     end
 
     uptime = ext.started_at > 0 ? format_uptime(time() - ext.started_at) : "n/a"
+    # Disconnect the old gate connection immediately so the monitor won't
+    # falsely match it on restart (which would show :running too early).
+    if !isempty(ext.session_key)
+        mgr = GATE_CONN_MGR[]
+        if mgr !== nothing
+            lock(mgr.lock) do
+                idx = findfirst(c -> short_key(c) == ext.session_key, mgr.connections)
+                if idx !== nothing
+                    _unregister_session_tools!(mgr.connections[idx])
+                    disconnect!(mgr.connections[idx])
+                    _remove_session_files(mgr.sock_dir, mgr.connections[idx].session_id)
+                    deleteat!(mgr.connections, idx)
+                end
+            end
+        end
+    end
     ext.process = nothing
     ext.status = :stopped
     ext.session_key = ""

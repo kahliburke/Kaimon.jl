@@ -241,8 +241,35 @@ using .Prompts
 # Resource Change Notification Queue
 # ============================================================================
 
-"""Pending JSON-RPC notifications to flush on the next SSE response."""
-const _PENDING_NOTIFICATIONS = Channel{Dict{String,Any}}(32)
+"""Pending JSON-RPC notifications to flush on the next SSE response.
+
+Both GET SSE streams and POST response flushes drain this independently —
+each takes a snapshot and delivers it, so both paths see every notification.
+Notifications are deduplicated by method name within each flush.
+"""
+const _PENDING_NOTIFICATIONS = Dict{String,Dict{String,Any}}()  # method => notification
+const _PENDING_NOTIFICATIONS_LOCK = ReentrantLock()
+
+function _queue_notification!(notif::Dict{String,Any})
+    lock(_PENDING_NOTIFICATIONS_LOCK) do
+        _PENDING_NOTIFICATIONS[notif["method"]] = notif
+    end
+end
+
+function _take_notifications!()::Vector{Dict{String,Any}}
+    lock(_PENDING_NOTIFICATIONS_LOCK) do
+        isempty(_PENDING_NOTIFICATIONS) && return Dict{String,Any}[]
+        result = collect(values(_PENDING_NOTIFICATIONS))
+        empty!(_PENDING_NOTIFICATIONS)
+        return result
+    end
+end
+
+function _has_pending_notifications()::Bool
+    lock(_PENDING_NOTIFICATIONS_LOCK) do
+        !isempty(_PENDING_NOTIFICATIONS)
+    end
+end
 
 """
     register_sessions_changed_callback!(mgr::ConnectionManager)
@@ -252,18 +279,10 @@ Wire up `mgr.on_sessions_changed` so it enqueues a
 """
 function register_sessions_changed_callback!(mgr)
     mgr.on_sessions_changed =
-        () -> begin
-            try
-                push!(
-                    _PENDING_NOTIFICATIONS,
-                    Dict{String,Any}(
-                        "jsonrpc" => "2.0",
-                        "method" => "notifications/resources/list_changed",
-                    ),
-                )
-            catch
-            end
-        end
+        () -> _queue_notification!(Dict{String,Any}(
+            "jsonrpc" => "2.0",
+            "method" => "notifications/resources/list_changed",
+        ))
 end
 
 # ============================================================================
@@ -1349,18 +1368,7 @@ function _handle_gate_tool_sse(
     progress_token = "tool-$(tool_name_str)-$(round(Int, time()))"
 
     # ── Flush pending notifications (e.g., resource list changes) ─────────
-    # Deduplicate: multiple identical notifications (e.g. resources/list_changed)
-    # often queue up between requests — only send each method once.
-    seen_methods = Set{String}()
-    while isready(_PENDING_NOTIFICATIONS)
-        notif = try
-            take!(_PENDING_NOTIFICATIONS)
-        catch
-            break
-        end
-        method = get(notif, "method", "")
-        method in seen_methods && continue
-        push!(seen_methods, method)
+    for notif in _take_notifications!()
         try
             notif_json = JSON.json(notif)
             write(http, "data: $(notif_json)\n\n")
@@ -1840,14 +1848,18 @@ function start_mcp_server(
                 HTTP.setheader(http, "Connection" => "keep-alive")
                 HTTP.startwrite(http)
                 try
+                    # Track which notifications this stream has already delivered
+                    # so we don't re-send every second but also don't consume them
+                    # (POST flush is the primary delivery path).
+                    sent = Set{String}()
                     while isopen(http)
-                        # Flush any pending notifications (tools/list_changed, etc.)
-                        seen = Set{String}()
-                        while isready(_PENDING_NOTIFICATIONS)
-                            notif = try; take!(_PENDING_NOTIFICATIONS); catch; break; end
+                        notifs = lock(_PENDING_NOTIFICATIONS_LOCK) do
+                            collect(values(_PENDING_NOTIFICATIONS))
+                        end
+                        for notif in notifs
                             method = get(notif, "method", "")
-                            method in seen && continue
-                            push!(seen, method)
+                            method in sent && continue
+                            push!(sent, method)
                             notif_json = JSON.json(notif)
                             write(http, "data: $(notif_json)\n\n")
                         end
@@ -1988,22 +2000,17 @@ function start_mcp_server(
             # Check for pending notifications (e.g. tools/list_changed from extensions).
             # If any are queued, upgrade this response to SSE so we can send both
             # the notifications and the JSON-RPC result as separate events.
-            has_notifications = isready(_PENDING_NOTIFICATIONS)
+            pending = _take_notifications!()
 
-            if has_notifications
+            if !isempty(pending)
                 HTTP.setstatus(http, 200)
                 HTTP.setheader(http, "Content-Type" => "text/event-stream")
                 HTTP.setheader(http, "Cache-Control" => "no-cache")
                 HTTP.setheader(http, "Mcp-Session-Id" => session !== nothing ? session.id : "")
                 HTTP.startwrite(http)
-                # Flush notifications
-                seen = Set{String}()
-                while isready(_PENDING_NOTIFICATIONS)
-                    notif = try; take!(_PENDING_NOTIFICATIONS); catch; break; end
-                    method = get(notif, "method", "")
-                    method in seen && continue
-                    push!(seen, method)
+                for notif in pending
                     notif_json = JSON.json(notif)
+                    method = get(notif, "method", "")
                     _push_log!(:info, "SSE notification flush: $method")
                     write(http, "data: $(notif_json)\n\n")
                 end

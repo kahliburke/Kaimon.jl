@@ -1163,17 +1163,10 @@ Push a `notifications/tools/list_changed` notification to the pending queue
 so MCP clients re-fetch the tool list on the next SSE response.
 """
 function _notify_tools_changed()
-    try
-        push!(
-            _PENDING_NOTIFICATIONS,
-            Dict{String,Any}(
-                "jsonrpc" => "2.0",
-                "method" => "notifications/tools/list_changed",
-            ),
-        )
-    catch
-        # Channel full or not initialized — non-critical
-    end
+    _queue_notification!(Dict{String,Any}(
+        "jsonrpc" => "2.0",
+        "method" => "notifications/tools/list_changed",
+    ))
 end
 
 # ── Gate mode globals ──────────────────────────────────────────────────────
