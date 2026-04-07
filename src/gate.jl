@@ -1196,15 +1196,27 @@ function _eval_silent(expr)
         end
     end
 
-    exception_str = caught !== nothing ? sprint(showerror, caught) : nothing
-    bt_str = bt !== nothing ? sprint(Base.show_backtrace, bt) : nothing
+    # Match _eval_with_capture: embed backtrace in the exception string so
+    # the client's _format_gate_response (which only reads :exception) sees
+    # the full traceback.
+    exception_str = if caught !== nothing
+        io = IOBuffer()
+        try
+            Base.invokelatest(showerror, io, caught, bt)
+        catch
+            Base.invokelatest(showerror, io, caught)
+        end
+        String(take!(io))
+    else
+        nothing
+    end
 
     return (
         stdout = "",
         stderr = "",
         value_repr = value_repr,
         exception = exception_str,
-        backtrace = bt_str,
+        backtrace = nothing,
     )
 end
 
