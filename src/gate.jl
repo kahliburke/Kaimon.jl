@@ -79,6 +79,11 @@ end
 const GATE_LOCK = ReentrantLock()
 const _PUB_LOCK = ReentrantLock()
 
+# Concurrent eval support: tracks active evals so the 2nd/3rd can skip
+# GATE_LOCK and run silently (no stdout capture) alongside the primary.
+const _ACTIVE_EVAL_COUNT = Threads.Atomic{Int}(0)
+const _MAX_CONCURRENT_EVALS = 3
+
 # Global state for the running gate
 const _GATE_TASK = Ref{Union{Task,Nothing}}(nothing)
 const _GATE_CONTEXT = Ref{Union{ZMQ.Context,Nothing}}(nothing)
@@ -1148,6 +1153,61 @@ function _start_revise_watcher()
     end
 end
 
+"""
+    _eval_silent(expr) -> NamedTuple
+
+Evaluate an expression without acquiring GATE_LOCK or capturing stdout/stderr.
+Used for concurrent evals (2nd/3rd) that run alongside the primary eval.
+Returns the same NamedTuple shape as `_eval_with_capture` so callers don't
+need to distinguish.
+"""
+function _eval_silent(expr)
+    value = nothing
+    caught = nothing
+    bt = nothing
+    try
+        # Apply REPL ast_transforms (Revise, softscope, etc.)
+        if isdefined(Base, :active_repl_backend) && Base.active_repl_backend !== nothing
+            for xf in Base.active_repl_backend.ast_transforms
+                expr = Base.invokelatest(xf, expr)
+            end
+        end
+        value = Core.eval(Main, expr)
+    catch e
+        caught = e
+        bt = catch_backtrace()
+    end
+
+    value_repr = ""
+    if caught === nothing && value !== nothing
+        try
+            io = IOBuffer()
+            Base.invokelatest(show, io, MIME"text/plain"(), value)
+            value_repr = String(take!(io))
+            if length(value_repr) > 10000
+                value_repr = first(value_repr, 10000) * "\n… (truncated)"
+            end
+        catch
+            value_repr = try
+                sprint(show, value)
+            catch
+                "(display error)"
+            end
+        end
+    end
+
+    exception_str = caught !== nothing ? sprint(showerror, caught) : nothing
+    bt_str = bt !== nothing ? sprint(Base.show_backtrace, bt) : nothing
+
+    return (
+        stdout = "",
+        stderr = "",
+        value_repr = value_repr,
+        exception = exception_str,
+        backtrace = bt_str,
+    )
+end
+
 function _eval_with_capture(expr)
     orig_stdout = stdout
     orig_stderr = stderr
@@ -1560,26 +1620,41 @@ function handle_message(request::NamedTuple)
         code = get(request, :code, "")
         display_code = get(request, :display_code, code)
         request_id = get(request, :request_id, "")
-        # Run eval on a default-pool thread so the interactive message loop
-        # stays responsive to pings during CPU-intensive evals.
+
+        # Concurrency check: allow up to _MAX_CONCURRENT_EVALS simultaneous evals.
+        # The first eval gets the full REPL experience (GATE_LOCK + stdout capture).
+        # Concurrent evals use _eval_silent (no lock, no stdout capture).
+        current = Threads.atomic_add!(_ACTIVE_EVAL_COUNT, 1)
+        if current >= _MAX_CONCURRENT_EVALS
+            Threads.atomic_sub!(_ACTIVE_EVAL_COUNT, 1)
+            return (type = :error, message = "Too many concurrent evals ($current/$_MAX_CONCURRENT_EVALS running)")
+        end
+        is_concurrent = current > 0
+
         Threads.@spawn begin
             try
                 task_local_storage(:gate_request_id, request_id)
-                result = gate_eval(code; display_code = display_code)
+                result = if is_concurrent
+                    # Silent eval: no GATE_LOCK, no stdout/stderr capture
+                    expr = Base.parse_input_line(code)
+                    _eval_silent(expr)
+                else
+                    # Primary eval: full REPL experience
+                    gate_eval(code; display_code = display_code)
+                end
                 try
                     serialized = _serialize_result(result)
-                    # Cache result so TUI can retrieve it after a restart
                     lock(_COMPLETED_RESULTS_LOCK) do
                         _COMPLETED_RESULTS[request_id] = Vector{UInt8}(serialized)
-                        # Trim to max size
                         while length(_COMPLETED_RESULTS) > _COMPLETED_RESULTS_MAX
                             delete!(_COMPLETED_RESULTS, first(keys(_COMPLETED_RESULTS)))
                         end
                     end
-                    _stderr_finish!()  # finalize any \r-overwritten progress/stash lines
+                    if !is_concurrent
+                        _stderr_finish!()
+                    end
                     _publish_stream("eval_complete", serialized; request_id)
                 catch pub_err
-                    # Serialization of result failed — send a plain-text fallback
                     @error "Failed to serialize eval result" exception = pub_err
                     fallback = (
                         stdout = "",
@@ -1599,6 +1674,8 @@ function handle_message(request::NamedTuple)
                     backtrace = nothing,
                 )
                 _publish_stream("eval_error", _serialize_result(error_result); request_id)
+            finally
+                Threads.atomic_sub!(_ACTIVE_EVAL_COUNT, 1)
             end
         end
         return (type = :accepted, request_id = request_id)
