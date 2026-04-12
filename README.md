@@ -37,7 +37,7 @@ code search.
 ## Quick Start
 
 ```julia
-]app add https://github.com/kahliburke/Kaimon.jl
+]app add Kaimon
 ```
 
 This installs the `kaimon` command to `~/.julia/bin/` (make sure it's on your `PATH`). Then:
