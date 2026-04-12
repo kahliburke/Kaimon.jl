@@ -11,7 +11,7 @@
 Use Julia's package app system to install the `kaimon` command globally:
 
 ```julia
-]app add https://github.com/kahliburke/Kaimon.jl#v1.2.0
+]app add Kaimon
 ```
 
 This installs a `kaimon` script to `~/.julia/bin/`. Make sure `~/.julia/bin` is on your `PATH`, then launch from anywhere:
@@ -23,10 +23,14 @@ kaimon
 To update to a newer release later:
 
 ```julia
-]app add https://github.com/kahliburke/Kaimon.jl#v1.2.0
+]app add Kaimon
 ```
 
-Replace `v1.2.0` with the [latest release tag](https://github.com/kahliburke/Kaimon.jl/releases).
+To pin a specific version:
+
+```julia
+]app add Kaimon@1.2.2
+```
 
 ### As a Library
 
@@ -34,7 +38,7 @@ To use Kaimon as a Julia package (e.g., for `Gate.serve()` in your own projects)
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/kahliburke/Kaimon.jl", rev="v1.2.0")
+Pkg.add("Kaimon")
 ```
 
 Or to track the development branch:

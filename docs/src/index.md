@@ -48,7 +48,7 @@ Kaimon (開門, "opening the gate") turns any Julia REPL into a Model Context Pr
 **1. Install**
 
 ```julia
-]app add https://github.com/kahliburke/Kaimon.jl
+]app add Kaimon
 ```
 
 This installs the `kaimon` command to `~/.julia/bin/` (make sure it's on your `PATH`).
