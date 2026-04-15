@@ -19,7 +19,7 @@ Usage:
     ])
 """
 function install_vscode_remote_control(
-    workspace_dir::AbstractString;
+    workspace_dir::Union{AbstractString,Nothing} = nothing;
     publisher::AbstractString = "Kaimon",
     name::AbstractString = "vscode-remote-control",
     version::AbstractString = "0.0.1",
@@ -32,9 +32,6 @@ function install_vscode_remote_control(
     exts_dir = vscode_extensions_dir()
     ext_path = joinpath(exts_dir, ext_folder_name)
     src_path = joinpath(ext_path, "out")
-    workspace_dir = abspath(workspace_dir)
-    ws_vscode = joinpath(workspace_dir, ".vscode")
-    ws_settings_path = joinpath(ws_vscode, "settings.json")
 
     # Remove old extension versions if they exist
     if isdir(exts_dir)
@@ -53,7 +50,6 @@ function install_vscode_remote_control(
     end
 
     mkpath(src_path)
-    mkpath(ws_vscode)
 
     # --------------------------- write package.json -------------------------
     pkgjson = """
@@ -73,12 +69,25 @@ function install_vscode_remote_control(
           "properties": {
             "vscode-remote-control.allowedCommands": {
               "type": "array",
-              "default": ["workbench.action.files.save"],
+              "default": [
+                "workbench.action.files.save",
+                "workbench.action.files.saveAll",
+                "workbench.action.files.openFile",
+                "workbench.action.terminal.new",
+                "workbench.action.terminal.sendSequence",
+                "workbench.action.terminal.focus",
+                "workbench.action.quickOpen",
+                "workbench.action.gotoLine",
+                "workbench.action.showAllSymbols",
+                "workbench.action.reloadWindow",
+                "workbench.action.findInFiles",
+                "vscode.open"
+              ],
               "description": "Command IDs this extension may run."
             },
             "vscode-remote-control.requireConfirmation": {
               "type": "boolean",
-              "default": true,
+              "default": false,
               "description": "Ask before executing a command."
             }
           }
@@ -422,35 +431,42 @@ function install_vscode_remote_control(
     end
 
     # ----------------------------- settings.json ----------------------------
-    # Merge workspace settings using JSON
-    existing = Dict{String,Any}()
-    if isfile(ws_settings_path)
-        try
-            existing =
-                JSON.parse(read(ws_settings_path, String); dicttype = Dict{String,Any})
-        catch e
-            @warn "Could not parse existing workspace settings.json; will preserve it unchanged." exception =
-                e
+    # Only update workspace settings if a workspace dir was provided
+    if workspace_dir !== nothing
+        workspace_dir = abspath(workspace_dir)
+        ws_vscode = joinpath(workspace_dir, ".vscode")
+        ws_settings_path = joinpath(ws_vscode, "settings.json")
+        mkpath(ws_vscode)
+
+        existing = Dict{String,Any}()
+        if isfile(ws_settings_path)
+            try
+                existing =
+                    JSON.parse(read(ws_settings_path, String); dicttype = Dict{String,Any})
+            catch e
+                @warn "Could not parse existing workspace settings.json; will preserve it unchanged." exception =
+                    e
+            end
         end
+
+        # Merge our keys
+        ns = "vscode-remote-control"
+        key_allowed = "$ns.allowedCommands"
+        key_confirm = "$ns.requireConfirmation"
+
+        # Merge allowed commands (union with existing)
+        allowed_set = Set{String}(get(existing, key_allowed, String[]))
+        union!(allowed_set, allowed_commands)
+        existing[key_allowed] = sort(collect(allowed_set))
+        existing[key_confirm] = require_confirmation
+
+        # Write back with pretty-printed JSON (2-space indentation)
+        json_str = JSON.json(existing, 2)
+        write(ws_settings_path, json_str)
+        println("Workspace settings updated at: ", ws_settings_path)
     end
 
-    # Merge our keys
-    ns = "vscode-remote-control"
-    key_allowed = "$ns.allowedCommands"
-    key_confirm = "$ns.requireConfirmation"
-
-    # Merge allowed commands (union with existing)
-    allowed_set = Set{String}(get(existing, key_allowed, String[]))
-    union!(allowed_set, allowed_commands)
-    existing[key_allowed] = sort(collect(allowed_set))
-    existing[key_confirm] = require_confirmation
-
-    # Write back with pretty-printed JSON (2-space indentation)
-    json_str = JSON.json(existing, 2)
-    write(ws_settings_path, json_str)
-
     println("Installed extension into: ", ext_path)
-    println("Workspace settings updated at: ", ws_settings_path)
     println("Now you can call, e.g.:")
     println("  open(\"vscode://$(publisher).$(name)?cmd=workbench.action.reloadWindow\")")
 
@@ -469,4 +485,42 @@ function vscode_extensions_dir()
         # macOS & Linux
         return joinpath(home, ".vscode", "extensions")
     end
+end
+
+function _vscode_user_settings_path()
+    home = homedir()
+    if Sys.isapple()
+        joinpath(home, "Library", "Application Support", "Code", "User", "settings.json")
+    elseif Sys.iswindows()
+        joinpath(get(ENV, "APPDATA", home), "Code", "User", "settings.json")
+    else
+        joinpath(home, ".config", "Code", "User", "settings.json")
+    end
+end
+
+"""
+    read_vscode_settings() -> Dict
+
+Read VS Code settings, checking workspace `.vscode/settings.json` first,
+then falling back to VS Code user settings. Returns an empty Dict if neither exists.
+Strips `//` line comments before parsing (VS Code allows them, JSON doesn't).
+"""
+function read_vscode_settings()
+    # Try workspace settings first, then user settings
+    candidates = [
+        joinpath(pwd(), ".vscode", "settings.json"),
+        _vscode_user_settings_path(),
+    ]
+    for path in candidates
+        isfile(path) || continue
+        try
+            content = read(path, String)
+            lines = split(content, '\n')
+            cleaned = join(filter(l -> !startswith(strip(l), "//"), lines), '\n')
+            return JSON.parse(cleaned; dicttype = Dict)
+        catch e
+            @warn "Failed to read VS Code settings at $path" exception = e
+        end
+    end
+    return Dict()
 end

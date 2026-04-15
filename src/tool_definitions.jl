@@ -883,22 +883,39 @@ list_vscode_commands_tool = @mcp_tool(
     :list_vscode_commands,
     """List all VS Code commands that are allowed for execution.
 
-Returns the list of commands configured in `.vscode/settings.json` under `vscode-remote-control.allowedCommands`.
+Checks workspace .vscode/settings.json, then VS Code user settings, then extension defaults.
 Use this to discover which commands are available for the `execute_vscode_command` tool.""",
     Dict("type" => "object", "properties" => Dict(), "required" => []),
     args -> begin
         try
-            settings = read_vscode_settings()
+            settings = Base.invokelatest(read_vscode_settings)
             allowed_commands =
                 get(settings, "vscode-remote-control.allowedCommands", nothing)
 
-            if allowed_commands === nothing || isempty(allowed_commands)
-                return "No VS Code commands configured. Run Kaimon.setup() to configure the Remote Control extension."
+            source = if allowed_commands !== nothing && !isempty(allowed_commands)
+                "settings"
+            else
+                # Fall back to extension defaults
+                allowed_commands = [
+                    "workbench.action.files.save",
+                    "workbench.action.files.saveAll",
+                    "workbench.action.files.openFile",
+                    "workbench.action.terminal.new",
+                    "workbench.action.terminal.sendSequence",
+                    "workbench.action.terminal.focus",
+                    "workbench.action.quickOpen",
+                    "workbench.action.gotoLine",
+                    "workbench.action.showAllSymbols",
+                    "workbench.action.reloadWindow",
+                    "workbench.action.findInFiles",
+                    "vscode.open",
+                ]
+                "extension defaults"
             end
 
-            result = "📋 Allowed VS Code Commands ($(length(allowed_commands)))\n\n"
+            result = "Allowed VS Code Commands ($(length(allowed_commands)), from $source)\n\n"
             for cmd in sort(allowed_commands)
-                result *= "  • $cmd\n"
+                result *= "  - $cmd\n"
             end
             return result
         catch e

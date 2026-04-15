@@ -1,14 +1,21 @@
 # VS Code Integration
 
-Kaimon.jl provides deep integration with Visual Studio Code through the [VS Code Remote Control](https://marketplace.visualstudio.com/items?itemName=nicolo-ribaudo.remote-control) extension. This enables bidirectional communication between the Julia REPL and VS Code, powering features like command execution, debugging, and file navigation.
+Kaimon.jl provides deep integration with Visual Studio Code through a built-in VS Code extension. This enables bidirectional communication between the Julia REPL and VS Code, powering features like command execution, debugging, and file navigation.
 
 ## Setup
 
-Install the **Remote Control** extension in VS Code. Kaimon detects the extension automatically when running inside a VS Code terminal.
+Kaimon ships its own **VS Code Remote Control** extension. Install it from the TUI Config tab (press `v`), or from the Julia REPL:
+
+```julia
+using Kaimon
+Kaimon.install_vscode_remote_control()
+```
+
+Reload VS Code after installation. The extension comes with sensible default allowed commands for Kaimon workflows.
 
 ### Allowed Commands
 
-VS Code commands must be explicitly allowlisted in your `.vscode/settings.json` before they can be executed via MCP:
+VS Code commands must be explicitly allowlisted before they can be executed via MCP. The extension ships with common defaults (file save, terminal control). To customize, edit your VS Code settings (user or workspace):
 
 ```json
 {

@@ -63,14 +63,14 @@ Qdrant is not required for core functionality. The semantic search tools will si
 
 ### VS Code Remote Control
 
-To use VS Code integration tools (`execute_vscode_command`, `navigate_to_file`, etc.), install the **Remote Control** extension in VS Code:
+To use VS Code integration tools (`execute_vscode_command`, `navigate_to_file`, etc.), Kaimon includes a built-in VS Code extension. Install it from the TUI Config tab (press `v`), or from the Julia REPL:
 
-1. Open VS Code
-2. Go to Extensions (Ctrl+Shift+X / Cmd+Shift+X)
-3. Search for "Remote Control" by jeandeaual
-4. Install the extension
+```julia
+using Kaimon
+Kaimon.install_vscode_remote_control()
+```
 
-This enables AI agents to execute VS Code commands and navigate to specific file locations from the MCP interface.
+Reload VS Code after installation to activate. This enables AI agents to execute VS Code commands and navigate to specific file locations from the MCP interface.
 
 ## Verify Installation
 
