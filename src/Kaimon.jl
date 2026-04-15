@@ -2562,6 +2562,36 @@ function (@main)(ARGS)
 
             dismissed = _get_global_install_dismissed()
 
+            # Version check: if Kaimon IS installed, verify version compatibility
+            if in_global
+                try
+                    global_manifest = joinpath(global_env, "Manifest.toml")
+                    if isfile(global_manifest)
+                        manifest = Pkg.TOML.parsefile(global_manifest)
+                        deps = get(manifest, "deps", Dict())
+                        kaimon_entries = get(deps, "Kaimon", [])
+                        if !isempty(kaimon_entries)
+                            entry = first(kaimon_entries)
+                            installed_ver = get(entry, "version", "")
+                            is_dev = haskey(entry, "path")
+                            dev_path = get(entry, "path", "")
+                            app_dir = dirname(@__DIR__)
+                            if is_dev && dev_path != app_dir
+                                printstyled("\n  ⚠ Kaimon in global env is dev'd to a different path:\n", color=:yellow, bold=true)
+                                printstyled("    Global env: $dev_path\n", color=:yellow)
+                                printstyled("    App:        $app_dir\n", color=:yellow)
+                                printstyled("    This can cause version mismatches. Run `]dev Kaimon` in the global env to fix.\n\n", color=:yellow)
+                            elseif !is_dev && !isempty(installed_ver) && installed_ver != PACKAGE_VERSION
+                                printstyled("\n  ⚠ Version mismatch: kaimon app is v$PACKAGE_VERSION but global env has Kaimon v$installed_ver.\n", color=:yellow, bold=true)
+                                printstyled("    Run `]update Kaimon` in the global env or `]app add Kaimon` to sync.\n\n", color=:yellow)
+                            end
+                        end
+                    end
+                catch e
+                    @debug "Version check failed" exception = e
+                end
+            end
+
             if !in_global && !dismissed
                 println("""
 

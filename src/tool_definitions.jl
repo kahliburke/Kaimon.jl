@@ -215,7 +215,7 @@ ping_tool = @mcp_tool(
 
                 # Recent server errors from log buffer
                 errs = lock(_TUI_LOG_LOCK) do
-                    filter(e -> e.level == :error, _TUI_LOG_BUFFER)
+                    filter(e -> e.level == :error, _TUI_LOG_RING)
                 end
                 if !isempty(errs)
                     status *= "\n\nServer errors in log buffer: $(length(errs))"
@@ -283,37 +283,23 @@ server_log_tool = @mcp_tool(
         _format_entry(e::ServerLogEntry) =
             "$(Dates.format(e.timestamp, "yyyy-mm-dd HH:MM:SS")) [$(rpad(uppercase(string(e.level)),5))] $(e.message)"
 
-        log_path = _TUI_LOG_PATH
-        isfile(log_path) || return "No log file found at $log_path"
-
-        all_lines = try
-            readlines(log_path)
-        catch e
-            return "Failed to read log file: $e"
+        # Read from persistent ring buffer (thread-safe, last 500 entries)
+        entries = lock(_TUI_LOG_LOCK) do
+            copy(_TUI_LOG_RING)
         end
 
-        # Filter by since (log line format: "YYYY-MM-DD HH:MM:SS [LEVEL] msg")
+        # Filter by since
         if since_dt !== nothing
-            filter!(all_lines) do line
-                length(line) < 19 && return true
-                try
-                    DateTime(line[1:19], "yyyy-mm-dd HH:MM:SS") >= since_dt
-                catch
-                    true
-                end
-            end
+            filter!(e -> e.timestamp >= since_dt, entries)
         end
 
         # Filter by level
-        if level_filter in ("warn", "warning")
-            filter!(l -> contains(l, "[WARN ") || contains(l, "[ERROR"), all_lines)
-        elseif level_filter == "error"
-            filter!(l -> contains(l, "[ERROR"), all_lines)
-        end
+        entries = _apply_level_filter(entries, level_filter)
 
-        length(all_lines) > limit && (all_lines = all_lines[end-limit+1:end])
-        isempty(all_lines) && return "No log entries found matching the specified criteria."
-        return join(all_lines, "\n")
+        # Take the last N entries
+        length(entries) > limit && (entries = entries[end-limit+1:end])
+        isempty(entries) && return "No log entries found matching the specified criteria."
+        return join([_format_entry(e) for e in entries], "\n")
     end
 )
 

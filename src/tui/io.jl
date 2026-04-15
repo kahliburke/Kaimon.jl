@@ -4,8 +4,9 @@
 # corrupting the TUI's terminal output.
 
 
-const _TUI_LOG_BUFFER = ServerLogEntry[]
-const _TUI_LOG_LOCK = ReentrantLock()
+const _TUI_LOG_BUFFER = ServerLogEntry[]   # drained into model each frame
+const _TUI_LOG_RING = ServerLogEntry[]     # persistent ring for tool reads (never drained)
+const _TUI_LOG_LOCK = ReentrantLock()      # protects both buffers
 
 # Track when this Kaimon server process started (used for uptime reporting)
 const _SERVER_START_TIME = Dates.now()
@@ -19,9 +20,17 @@ const _TUI_STDERR_RUNNING = Ref{Bool}(false)
 
 const _TUI_LOG_PATH = joinpath(kaimon_cache_dir(), "server.log")
 
+const _LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+
 function _open_log_file!()
     try
         mkpath(dirname(_TUI_LOG_PATH))
+        # Rotate if too large
+        if isfile(_TUI_LOG_PATH) && filesize(_TUI_LOG_PATH) > _LOG_MAX_BYTES
+            rotated = _TUI_LOG_PATH * ".1"
+            try; rm(rotated; force=true); catch; end
+            try; mv(_TUI_LOG_PATH, rotated); catch; end
+        end
         _TUI_LOG_FILE[] = open(_TUI_LOG_PATH, "a")
     catch
         _TUI_LOG_FILE[] = nothing
@@ -86,10 +95,15 @@ function Logging.handle_message(
         msg *= "  " * join(parts, " ")
     end
     ts = now()
+    entry = ServerLogEntry(ts, lvl, msg)
     lock(_TUI_LOG_LOCK) do
-        push!(_TUI_LOG_BUFFER, ServerLogEntry(ts, lvl, msg))
+        push!(_TUI_LOG_BUFFER, entry)
         while length(_TUI_LOG_BUFFER) > 500
             popfirst!(_TUI_LOG_BUFFER)
+        end
+        push!(_TUI_LOG_RING, entry)
+        while length(_TUI_LOG_RING) > 500
+            popfirst!(_TUI_LOG_RING)
         end
     end
     _write_log_entry(ts, lvl, msg)
@@ -108,8 +122,13 @@ end
 
 function _push_log!(level::Symbol, message::String)
     ts = now()
+    entry = ServerLogEntry(ts, level, message)
     lock(_TUI_LOG_LOCK) do
-        push!(_TUI_LOG_BUFFER, ServerLogEntry(ts, level, message))
+        push!(_TUI_LOG_BUFFER, entry)
+        push!(_TUI_LOG_RING, entry)
+        while length(_TUI_LOG_RING) > 500
+            popfirst!(_TUI_LOG_RING)
+        end
     end
     _write_log_entry(ts, level, message)
 end
