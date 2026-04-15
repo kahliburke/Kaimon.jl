@@ -396,14 +396,21 @@ function _persist_tool_complete!(db_request_id::String, r::ToolCallResult)
     end
 end
 
+"""
+Drain tool results from the thread-safe buffer into `dest`.
+Returns the number of new results drained (for updating counters).
+"""
 function _drain_tool_results!(dest::Vector{ToolCallResult})
+    n = 0
     lock(_TUI_TOOL_RESULTS_LOCK) do
+        n = length(_TUI_TOOL_RESULTS_BUFFER)
         append!(dest, _TUI_TOOL_RESULTS_BUFFER)
         empty!(_TUI_TOOL_RESULTS_BUFFER)
     end
     while length(dest) > 500
         popfirst!(dest)
     end
+    return n
 end
 
 

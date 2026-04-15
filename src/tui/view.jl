@@ -123,7 +123,8 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
     _drain_activity_buffer!(m.activity_feed)
 
     # Drain tool call results for Activity tab inspection
-    _drain_tool_results!(m.tool_results)
+    n_new_calls = _drain_tool_results!(m.tool_results)
+    m.total_tool_calls += n_new_calls
 
     # Sync health gauge timestamps from thread-safe Refs
     if _LAST_TOOL_SUCCESS[] > m.last_tool_success
@@ -243,8 +244,8 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         end
     end
 
-    # Simulate tool call rate for sparkline
-    push!(m.tool_call_history, 0.0)
+    # Track tool call rate for sparkline (calls per frame, last 120 frames ≈ 2 min)
+    push!(m.tool_call_history, Float64(n_new_calls))
     length(m.tool_call_history) > 120 && popfirst!(m.tool_call_history)
 
     # ── Layout: outer frame → tab bar | content | status bar ──

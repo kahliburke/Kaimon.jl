@@ -47,15 +47,6 @@ end
 
 # ── Data types ────────────────────────────────────────────────────────────────
 
-struct ToolCallRecord
-    timestamp::DateTime
-    tool_name::String
-    session_name::String     # which REPL handled it
-    agent_id::String         # which agent sent it
-    duration_ms::Int
-    success::Bool
-end
-
 # Modal flow states
 @enum ConfigFlow begin
     FLOW_IDLE
@@ -163,8 +154,7 @@ const TAB_ADVANCED   = 9
 
     # Activity feed — unified timeline of tool calls + streaming output
     activity_feed::Vector{ActivityEvent} = ActivityEvent[]
-    recent_tool_calls::Vector{ToolCallRecord} = ToolCallRecord[]
-    tool_call_history::Vector{Float64} = zeros(120)  # calls per second, last 2 min
+    tool_call_history::Vector{Float64} = zeros(120)  # calls per frame, last 120 frames
 
     # Tool call results — inspectable from Activity tab
     tool_results::Vector{ToolCallResult} = ToolCallResult[]
