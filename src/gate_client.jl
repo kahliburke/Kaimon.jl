@@ -54,6 +54,7 @@ mutable struct REPLConnection
     status::Symbol               # :connected, :evaluating, :disconnected, :connecting, :stalled
     project_path::String
     julia_version::String
+    kaimon_version::String
     pid::Int
     connected_at::DateTime
     last_seen::DateTime
@@ -82,6 +83,7 @@ function REPLConnection(;
     stream_endpoint::String = "",
     project_path::String = "",
     julia_version::String = "",
+    kaimon_version::String = "",
     pid::Int = 0,
     session_tools::Vector{Dict{String,Any}} = Dict{String,Any}[],
     namespace::String = "",
@@ -107,6 +109,7 @@ function REPLConnection(;
         :disconnected,
         project_path,
         julia_version,
+        kaimon_version,
         pid,
         t,
         t,
@@ -1656,6 +1659,24 @@ function start!(mgr::ConnectionManager)
     return mgr
 end
 
+# Track which sessions we've already warned about to avoid spamming
+const _VERSION_WARNED = Set{String}()
+
+function _version_mismatch_warning!(mgr::ConnectionManager, conn::REPLConnection, app_ver::String, gate_ver::String)
+    conn.session_id in _VERSION_WARNED && return
+    push!(_VERSION_WARNED, conn.session_id)
+    name = isempty(conn.display_name) ? conn.session_id : conn.display_name
+    msg = "Version mismatch: kaimon app is v$app_ver but session '$name' loaded Kaimon v$gate_ver. " *
+          "Run `]app add Kaimon` to update, or check for a dev'd copy in your global env."
+    @warn msg
+    _emit_event!(mgr, :version_mismatch, (
+        session_id = conn.session_id,
+        display_name = name,
+        app_version = app_ver,
+        gate_version = gate_ver,
+    ))
+end
+
 """Process the result of a health check ping for one connection."""
 function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, result, to_remove::Vector{REPLConnection})
     if result === :busy
@@ -1672,6 +1693,16 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
             conn.diagnostics = nothing
             conn.status = :connected
             _fire_sessions_changed(mgr)
+        end
+
+        # Check Kaimon version compatibility
+        gate_kv = string(get(result, :kaimon_version, ""))
+        if !isempty(gate_kv) && gate_kv != "unknown"
+            conn.kaimon_version = gate_kv
+            app_kv = try; parentmodule(@__MODULE__).PACKAGE_VERSION; catch; ""; end
+            if !isempty(app_kv) && gate_kv != app_kv
+                _version_mismatch_warning!(mgr, conn, app_kv, gate_kv)
+            end
         end
 
         # Update metadata file with fresh pong data

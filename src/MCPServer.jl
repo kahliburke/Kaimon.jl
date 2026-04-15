@@ -743,7 +743,7 @@ function create_handler(
                                 "logging" => Dict(),
                             ),
                             "serverInfo" =>
-                                Dict("name" => "Kaimon", "title" => "Kaimon MCP Server", "version" => "0.4.0"),
+                                Dict("name" => "Kaimon", "title" => "Kaimon MCP Server", "version" => PACKAGE_VERSION),
                         )
                     end
 

@@ -1623,11 +1623,13 @@ function handle_message(request::NamedTuple)
     elseif msg_type == :ping
         _PING_COUNT[] += 1
         _LAST_PING_TIME[] = time()
+        _kv = try; parentmodule(@__MODULE__).PACKAGE_VERSION; catch; "unknown"; end
         return (
             type = :pong,
             pid = getpid(),
             uptime = time() - _START_TIME[],
             julia_version = string(VERSION),
+            kaimon_version = _kv,
             project_path = dirname(Base.active_project()),
             tools = [_reflect_tool(t) for t in _SESSION_TOOLS[]],
             namespace = _SESSION_NAMESPACE[],

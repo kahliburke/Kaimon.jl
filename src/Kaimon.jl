@@ -181,6 +181,12 @@ function find_free_port(start_port::Int = 40000, end_port::Int = 49999)
     error(error_msg)
 end
 
+"""Semver version string from Project.toml (e.g. "1.2.2"). Cached at load time."""
+const PACKAGE_VERSION = let
+    pf = joinpath(pkgdir(@__MODULE__), "Project.toml")
+    isfile(pf) ? get(TOML.parsefile(pf), "version", "0.0.0") : "0.0.0"
+end
+
 # Version tracking - gets git commit hash at runtime
 function version_info()
     try

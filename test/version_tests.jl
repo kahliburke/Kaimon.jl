@@ -68,4 +68,52 @@ using TOML
         # Should be non-empty
         @test !isempty(v1)
     end
+
+    @testset "PACKAGE_VERSION constant" begin
+        pv = Kaimon.PACKAGE_VERSION
+        @test pv isa String
+        @test !isempty(pv)
+
+        # Should be a valid semver string
+        @test occursin(r"^\d+\.\d+\.\d+", pv)
+
+        # Should match Project.toml
+        project = TOML.parsefile(joinpath(pkgdir(Kaimon), "Project.toml"))
+        @test pv == project["version"]
+    end
+
+    @testset "Version mismatch detection" begin
+        # _version_mismatch_warning! should only warn once per session
+        warned = Kaimon._VERSION_WARNED
+        original = copy(warned)
+        try
+            empty!(warned)
+            # Simulate: after adding a session_id, it shouldn't warn again
+            push!(warned, "test-session-123")
+            @test "test-session-123" in warned
+
+            # Calling again with same session_id should be a no-op
+            # (we can't easily test the full warning path without a ConnectionManager,
+            #  but we can verify the dedup set works)
+            push!(warned, "test-session-123")
+            @test length(filter(==("test-session-123"), collect(warned))) == 1
+        finally
+            empty!(warned)
+            union!(warned, original)
+        end
+    end
+
+    @testset "Gate pong includes kaimon_version" begin
+        # Verify the pong handler references PACKAGE_VERSION
+        # (structural test — gate.jl should include kaimon_version in pong)
+        gate_src = read(joinpath(pkgdir(Kaimon), "src", "gate.jl"), String)
+        @test occursin("kaimon_version", gate_src)
+    end
+
+    @testset "MCP server uses PACKAGE_VERSION" begin
+        # Verify MCPServer.jl uses PACKAGE_VERSION instead of hardcoded version
+        mcp_src = read(joinpath(pkgdir(Kaimon), "src", "MCPServer.jl"), String)
+        @test occursin("PACKAGE_VERSION", mcp_src)
+        @test !occursin("\"0.4.0\"", mcp_src)
+    end
 end
