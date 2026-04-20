@@ -221,6 +221,29 @@ function version_info()
     end
 end
 
+"""
+    connect!()
+
+Connect this Julia session to a running Kaimon TUI. Loads Revise (if
+available) for live code reloading, then starts the gate server.
+
+Call from any Julia REPL where Kaimon is available:
+
+    using Kaimon
+    Kaimon.connect!()
+"""
+function connect!()
+    try
+        Base.require(Base.PkgId(Base.UUID("295af30f-e4ad-537b-8983-00126c2a3abe"), "Revise"))
+        @info "Revise loaded"
+    catch
+        @info "Revise not available (optional)"
+    end
+    @async Gate.serve()
+    @info "Kaimon gate started — session will appear in the TUI shortly"
+    nothing
+end
+
 # ============================================================================
 # Tool Definition Macros
 # ============================================================================
