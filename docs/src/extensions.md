@@ -145,7 +145,7 @@ MyExtension.jl/
     └── tui_panel.jl       # optional TUI panel
 ```
 
-See [`examples/HelloExtension.jl`](https://github.com/kburke/Kaimon.jl/tree/main/examples/HelloExtension.jl) for a complete working example with tools, push-based panel updates, and a shutdown hook.
+See [`examples/HelloExtension.jl`](https://github.com/kahliburke/Kaimon.jl/tree/main/examples/HelloExtension.jl) for a complete working example with tools, push-based panel updates, and a shutdown hook.
 
 ### `kaimon.toml`
 
@@ -249,7 +249,7 @@ The `ctx` argument passed to `init`, `update!`, and `cleanup!` provides:
 
 ### Key Handling with @match
 
-Use the `@match` macro (from [Match.jl](https://github.com/kmsquire/Match.jl), a Kaimon dependency) for clean dispatch:
+Use the `@match` macro (from [Match.jl](https://github.com/JuliaServices/Match.jl), a Kaimon dependency) for clean dispatch:
 
 ```julia
 using Match

@@ -176,7 +176,7 @@ The extension manager (`src/extension_manager.jl`) handles the lifecycle of `Man
 ## TUI Architecture
 
 The terminal dashboard (`src/tui.jl` and `src/tui/`) is built on
-[Tachikoma.jl](https://github.com/kburke/Tachikoma.jl), a Julia TUI
+[Tachikoma.jl](https://github.com/kahliburke/Tachikoma.jl), a Julia TUI
 framework. It follows the Elm architecture:
 
 ```mermaid

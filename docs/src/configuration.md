@@ -154,7 +154,7 @@ This is useful for restricting which operations MCP agents can perform in sensit
 
 ## TUI Configuration
 
-The TUI (Terminal User Interface) built on [Tachikoma.jl](https://github.com/...) supports customization of:
+The TUI (Terminal User Interface) built on [Tachikoma.jl](https://github.com/kahliburke/Tachikoma.jl) supports customization of:
 
 - **Themes** -- Visual appearance of the TUI panels and widgets
 - **Layouts** -- Panel arrangement, sizes, and visibility
