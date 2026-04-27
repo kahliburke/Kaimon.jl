@@ -208,7 +208,12 @@ const _TUI_STDOUT_RUNNING = Ref{Bool}(false)
 function _start_stdout_capture!()
     _TUI_STDOUT_RUNNING[] = true
     _TUI_ORIG_STDOUT[] = stdout
-    _TUI_REAL_STDOUT[] = open("/dev/tty", "w")
+    if Sys.iswindows()
+        _TUI_REAL_STDOUT[] = open("CONOUT\$", "w")
+    else
+        _TUI_REAL_STDOUT[] = open("/dev/tty", "w")
+    end
+
     rd, wr = redirect_stdout()
     _TUI_STDOUT_WR[] = wr
     _TUI_STDOUT_TASK[] = @async begin

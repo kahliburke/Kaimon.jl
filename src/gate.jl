@@ -1902,7 +1902,7 @@ function serve(;
         elseif toml_mode == "tcp" || has_toml_port
             :tcp
         else
-            :ipc
+            Sys.iswindows() ? :tcp : :ipc
         end
     end
     if host === nothing
@@ -2647,25 +2647,32 @@ end
 # Kaimon calling into the gate, the gate calls back into Kaimon.
 
 const _SERVICE_SOCKET = Ref{Union{ZMQ.Socket,Nothing}}(nothing)
+const _SERVICE_TCP_PORT = Ref{Int}(9877)
 const _SERVICE_LOCK = ReentrantLock()
 
 """
     _connect_service!() -> Bool
 
 Connect to the Kaimon service endpoint. Returns true on success.
-The service socket is a ZMQ REQ that connects to the Kaimon server's
-REP socket at `ipc://~/.cache/kaimon/sock/kaimon-service.sock`.
+IPC on Unix, TCP on Windows (127.0.0.1:$(_SERVICE_TCP_PORT[])).
 """
 function _connect_service!()
-    sock_path = joinpath(SOCK_DIR, "kaimon-service.sock")
-    ispath(sock_path) || return false
     ctx = _GATE_CONTEXT[]
     ctx === nothing && return false
+
+    if Sys.iswindows()
+        endpoint = "tcp://127.0.0.1:$(_SERVICE_TCP_PORT[])"
+    else
+        sock_path = joinpath(SOCK_DIR, "kaimon-service.sock")
+        ispath(sock_path) || return false
+        endpoint = "ipc://$(sock_path)"
+    end
+
     sock = Socket(ctx, REQ)
-    sock.rcvtimeo = 30000  # 30s timeout (some tools are slow)
-    sock.sndtimeo = 5000   # 5s send timeout
+    sock.rcvtimeo = 30000
+    sock.sndtimeo = 5000
     sock.linger = 0
-    connect(sock, "ipc://$(sock_path)")
+    connect(sock, endpoint)
     _SERVICE_SOCKET[] = sock
     return true
 end

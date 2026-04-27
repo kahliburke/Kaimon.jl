@@ -404,6 +404,15 @@ function _try_revise!()
     return false
 end
 
+function _set_windows_utf8!()
+    Sys.iswindows() || return
+    try
+        ccall((:SetConsoleOutputCP, "kernel32"), Int32, (UInt32,), 65001)
+        ccall((:SetConsoleCP, "kernel32"), Int32, (UInt32,), 65001)
+    catch
+    end
+end
+
 """
     tui(; port=2828, theme=:kokaku)
 
@@ -417,6 +426,7 @@ connections in `~/.cache/kaimon/sock/`.
 - `theme::Symbol=:kokaku`: Tachikoma theme name
 """
 function tui(; port::Int = 2828, theme_name::Union{Symbol,Nothing} = nothing, revise_polling::Bool = false, revise_mod::Any = nothing)
+    _set_windows_utf8!()
     if Threads.nthreads() < 2
         @warn """Kaimon TUI running with only 1 thread — UI may be unresponsive.
                  Start Julia with: julia -t auto

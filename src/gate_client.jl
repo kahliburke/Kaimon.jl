@@ -250,6 +250,7 @@ mutable struct ConnectionManager
     eval_history::Vector{EvalRecord}       # ring buffer, capped at 64 entries
     eval_history_lock::ReentrantLock
     event_pub_socket::Union{ZMQ.Socket,Nothing}  # global PUB for extension events
+    event_pub_endpoint::String                    # resolved PUB endpoint
     task_queue::Any  # Tachikoma.TaskQueue (or nothing if headless)
 end
 
@@ -266,6 +267,7 @@ function ConnectionManager(; sock_dir::String = joinpath(kaimon_cache_dir(), "so
         nothing,
         EvalRecord[],
         ReentrantLock(),
+        "",
         nothing,
         task_queue,
     )
@@ -305,6 +307,8 @@ end
 # Re-broadcasts gate stream events on a single PUB socket so extensions can
 # SUB to one well-known endpoint with topic filtering.
 
+const _EVENT_PUB_TCP_PORT = Ref{Int}(9878)
+
 """Start the global event PUB socket. Extensions SUB to this."""
 function _start_event_pub!(mgr::ConnectionManager)
     sock_path = joinpath(mgr.sock_dir, "kaimon-events.sock")
@@ -312,8 +316,14 @@ function _start_event_pub!(mgr::ConnectionManager)
     pub = Socket(mgr.zmq_context, PUB)
     pub.sndhwm = 10000  # drop events if extensions can't keep up
     pub.linger = 0
-    bind(pub, "ipc://$sock_path")
+    if Sys.iswindows()
+        endpoint = "tcp://127.0.0.1:$(_EVENT_PUB_TCP_PORT[])"
+    else
+        endpoint = "ipc://$sock_path"
+    end
+    bind(pub, endpoint)
     mgr.event_pub_socket = pub
+    mgr.event_pub_endpoint = endpoint
 end
 
 """Stop the global event PUB socket."""
@@ -322,9 +332,12 @@ function _stop_event_pub!(mgr::ConnectionManager)
     if pub !== nothing
         try; close(pub); catch; end
         mgr.event_pub_socket = nothing
+        mgr.event_pub_endpoint = ""
     end
-    sock_path = joinpath(mgr.sock_dir, "kaimon-events.sock")
-    ispath(sock_path) && try; rm(sock_path); catch; end
+    if !Sys.iswindows()
+        sock_path = joinpath(mgr.sock_dir, "kaimon-events.sock")
+        ispath(sock_path) && try; rm(sock_path); catch; end
+    end
 end
 
 """Re-publish a gate event on the global PUB socket (2-frame: topic + payload)."""
