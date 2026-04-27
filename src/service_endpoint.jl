@@ -27,11 +27,14 @@ and calls its handler.
 Returns `(endpoint, socket, context)` on success.
 """
 function start_service_endpoint!()
-    endpoint = "ipc://$(Gate.SOCK_DIR)/kaimon-service.sock"
-    sock_path = replace(endpoint, "ipc://" => "")
-
-    # Clean up stale socket file
-    ispath(sock_path) && rm(sock_path)
+    if Sys.iswindows()
+        endpoint = "tcp://127.0.0.1:$(Gate._SERVICE_TCP_PORT[])"
+    else
+        endpoint = "ipc://$(Gate.SOCK_DIR)/kaimon-service.sock"
+        sock_path = replace(endpoint, "ipc://" => "")
+        # Clean up stale socket file
+        ispath(sock_path) && rm(sock_path)
+    end
 
     ctx = ZMQ.Context()
     sock = Socket(ctx, REP)
@@ -95,11 +98,13 @@ function stop_service_endpoint!()
     end
     _SERVICE_TASK[] = nothing
 
-    # Clean up socket file
-    endpoint = _SERVICE_ENDPOINT[]
-    if !isempty(endpoint)
-        sock_path = replace(endpoint, "ipc://" => "")
-        ispath(sock_path) && rm(sock_path; force = true)
+    # Clean up socket file (IPC only — Windows uses TCP, nothing to clean)
+    if !Sys.iswindows()
+        endpoint = _SERVICE_ENDPOINT[]
+        if !isempty(endpoint)
+            sock_path = replace(endpoint, "ipc://" => "")
+            ispath(sock_path) && rm(sock_path; force = true)
+        end
     end
 
     # Null refs — let GC handle ZMQ cleanup (same pattern as Gate._cleanup)

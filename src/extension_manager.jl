@@ -135,7 +135,11 @@ function _build_extension_script(config::ExtensionConfig)
     let sock_dir = Kaimon.Gate.SOCK_DIR
         sub = Kaimon.ZMQ.Socket(Kaimon.Gate._GATE_CONTEXT[], Kaimon.ZMQ.SUB)
         sub.rcvtimeo = 1000  # 1s timeout so loop can check for shutdown
-        Kaimon.ZMQ.connect(sub, "ipc://\$(sock_dir)/kaimon-events.sock")
+        if Sys.iswindows()
+            Kaimon.ZMQ.connect(sub, "tcp://127.0.0.1:\$(Kaimon._EVENT_PUB_TCP_PORT[])")
+        else
+            Kaimon.ZMQ.connect(sub, "ipc://\$(sock_dir)/kaimon-events.sock")
+        end
         $topics_code
         @async begin
             while true
