@@ -48,7 +48,7 @@ kaimon
 
 The first run opens a setup wizard (security mode, API key, port). After that, the terminal dashboard launches:
 
-![Kaimon dashboard](docs/src/assets/kaimon_overview.gif)
+![Kaimon dashboard](https://github.com/kahliburke/Kaimon.jl/releases/download/docs-assets/kaimon_overview.gif)
 
 From the dashboard:
 - Press **`i`** in the Config tab to write MCP config for Claude Code, Cursor, VS Code, or Gemini CLI
@@ -99,7 +99,7 @@ Full documentation: [kahliburke.github.io/Kaimon.jl](https://kahliburke.github.i
 - Julia 1.12+
 - Any MCP-compatible client (Claude Code, Cursor, VS Code with MCP extension)
 - Optional: [Qdrant](https://qdrant.tech) for semantic code search
-- Optional: [VS Code Remote Control](https://marketplace.visualstudio.com/items?itemName=nicollasricas.vscode-remote-control) extension for VS Code integration
+- Optional: [VS Code Remote Control](https://github.com/estruyf/vscode-remote-control) extension for VS Code integration (auto-installed by Kaimon's setup wizard)
 
 ## Contributing
 

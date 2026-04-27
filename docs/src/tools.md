@@ -129,7 +129,7 @@ Provide `project_path` (absolute path to the project) or `session` to identify t
 
 ## Semantic Search (Qdrant)
 
-Semantic search requires [Qdrant](https://qdrant.tech/) running locally and [Ollama](https://ollama.ai/) for embeddings. The default embedding model is `qwen3-embedding:0.6b`.
+Semantic search requires [Qdrant](https://qdrant.tech/) running locally and [Ollama](https://ollama.com/) for embeddings. The default embedding model is `qwen3-embedding:0.6b`.
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
