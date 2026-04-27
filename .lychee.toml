@@ -1,0 +1,13 @@
+exclude = [
+  "@ref",
+  "@cite",
+  "^https://github.com/.*/releases/tag/v.*$",
+  "^https://doi.org/FIXME$",
+  "zenodo.org/badge/DOI/FIXME$",
+  # docs/src/*.md references like ./assets/kaimon_*.gif are rewritten by the
+  # VitePress plugin (docs/src/.vitepress/config.mts) to point at the
+  # docs-assets GitHub Release at build time; lychee can't see that rewrite.
+  "docs/src/assets/kaimon_.*\\.gif$",
+]
+
+exclude_path = ["docs/build"]
