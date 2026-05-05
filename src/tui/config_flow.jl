@@ -753,15 +753,15 @@ function _install_codex(m::KaimonModel, port::Int, api_key)
         read(pipeline(`codex mcp remove kaimon`; stderr = devnull), String)
     catch
     end
+
+    header = "Authorization:Bearer \${MCPREPL_API_KEY}"
     args = if api_key !== nothing
-        `codex mcp add --url $url --bearer-token-env-var MCPREPL_API_KEY kaimon`
+        `codex mcp add --env MCPREPL_API_KEY=$api_key kaimon npx -y mcp-remote $url --allow-http --header $header --silent`
     else
-        `codex mcp add --url $url kaimon`
+        `codex mcp add kaimon npx -y mcp-remote $url --allow-http --silent`
     end
+
     read(pipeline(args; stderr = devnull), String)
-    if api_key !== nothing
-        _codex_env_set!("MCPREPL_API_KEY", api_key)
-    end
     m.flow_message = "Added kaimon to Codex CLI\n(~/.codex/config.toml)"
     m.flow_success = true
 end
