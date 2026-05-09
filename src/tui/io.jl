@@ -208,7 +208,9 @@ const _TUI_STDOUT_RUNNING = Ref{Bool}(false)
 function _start_stdout_capture!()
     _TUI_STDOUT_RUNNING[] = true
     _TUI_ORIG_STDOUT[] = stdout
-    _TUI_REAL_STDOUT[] = open("/dev/tty", "w")
+    # Open a handle to the controlling terminal that survives `redirect_stdout`.
+    # Unix: /dev/tty. Windows: CON (the console device).
+    _TUI_REAL_STDOUT[] = open(Sys.iswindows() ? "CON" : "/dev/tty", "w")
     rd, wr = redirect_stdout()
     _TUI_STDOUT_WR[] = wr
     _TUI_STDOUT_TASK[] = @async begin
