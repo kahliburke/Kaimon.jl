@@ -31,12 +31,15 @@ end
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 const _GATE_CACHE_DIR = let
-    d = get(ENV, "XDG_CACHE_HOME") do
-        Sys.iswindows() ?
+    d = if haskey(ENV, "XDG_CACHE_HOME")
+        joinpath(ENV["XDG_CACHE_HOME"], "kaimon")
+    elseif Sys.iswindows()
         joinpath(
             get(ENV, "LOCALAPPDATA", joinpath(homedir(), "AppData", "Local")),
             "Kaimon",
-        ) : joinpath(homedir(), ".cache", "kaimon")
+        )
+    else
+        joinpath(homedir(), ".cache", "kaimon")
     end
     mkpath(d)
     d
