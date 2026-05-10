@@ -149,6 +149,42 @@ function spawn_session!(ms::ManagedSession)
         ms.process = nothing
         ms.status = :starting
 
+        # Open log file and tee PTY output to disk so crashed sessions leave
+        # a forensic trail. The TerminalWidget overrides `on_data` if/when the
+        # user opens the session viewer, at which point logging stops and the
+        # widget takes over consumption of the channel.
+        log_io = try
+            io = open(ms.log_file, "a")
+            println(io, "\n--- Session $(ms.name) starting at $(Dates.now()) (PID=$(Int(pty.child_pid))) ---")
+            flush(io)
+            io
+        catch e
+            _push_log!(
+                :warn,
+                "Could not open session log $(ms.log_file): $(sprint(showerror, e))",
+            )
+            nothing
+        end
+
+        if log_io !== nothing
+            pty.on_data = let log_io = log_io, ch = pty.output
+                () -> begin
+                    while isready(ch)
+                        data = try
+                            take!(ch)
+                        catch
+                            break
+                        end
+                        try
+                            write(log_io, data)
+                            flush(log_io)
+                        catch
+                        end
+                    end
+                end
+            end
+        end
+
         # Background task to detect PTY/process exit
         @async begin
             while Tachikoma.pty_alive(pty)
@@ -161,6 +197,25 @@ function spawn_session!(ms::ManagedSession)
                     :warn,
                     "Managed session '$(ms.name)' process exited unexpectedly",
                 )
+            end
+            # Final drain and close log
+            if log_io !== nothing
+                try
+                    while isready(pty.output)
+                        data = try
+                            take!(pty.output)
+                        catch
+                            break
+                        end
+                        write(log_io, data)
+                    end
+                    println(log_io, "--- Session $(ms.name) exited at $(Dates.now()) ---")
+                catch
+                end
+                try
+                    close(log_io)
+                catch
+                end
             end
         end
 
