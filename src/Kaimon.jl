@@ -28,6 +28,15 @@ using Match
 # Everything else is accessible as Kaimon.foo() to avoid namespace pollution.
 export Gate, @mcp_tool, MCPTool
 
+# Captured at module load. Holds the path to the environment under which
+# Kaimon was loaded — the env that pins Kaimon's own dependency manifest.
+# Used by `session_manager.jl` to append this env to spawned subprocesses'
+# `JULIA_LOAD_PATH` so that Kaimon can always be recompiled from source if
+# its precompile cache is invalidated by the target project's manifest.
+const _KAIMON_LOAD_ENV = let p = Base.active_project()
+    p === nothing ? "" : dirname(p)
+end
+
 # ── Shared cache directory ────────────────────────────────────────────────────
 # Single source of truth for ~/.cache/kaimon (respects XDG_CACHE_HOME).
 # All operational files (logs, sockets, sessions, db, pid files) go here.

@@ -54,17 +54,38 @@ Generate the Julia `-e` script that boots a session subprocess.
 function _build_session_script(project_path::String;
                                name::String = "",
                                allow_restart::Bool = true)
-    # The subprocess is launched with --project=<path>, so the project and its
-    # deps are available immediately.  Kaimon is added to LOAD_PATH so it
-    # doesn't need to be in the user's global environment.
-    kaimon_dir = pkgdir(Kaimon)
+    # The subprocess is launched with --project=<path>, so the target project
+    # and its deps are available immediately. Kaimon's own load env is
+    # appended to JULIA_LOAD_PATH in `_build_session_env` so that `using
+    # Kaimon` resolves via Kaimon's manifest — required when the precompile
+    # cache is invalidated by the target project's manifest and the
+    # subprocess must rebuild Kaimon from source.
     return """
     try; using Revise; catch; end
-    insert!(LOAD_PATH, 1, $(repr(kaimon_dir)))
     using Kaimon
     import Pkg; Pkg.instantiate(; io=devnull)
     @async Kaimon.Gate.serve(force=true, allow_mirror=true, allow_restart=$(allow_restart), spawned_by="agent")
     """
+end
+
+"""
+    _build_session_env() -> Dict{String,String}
+
+Build the environment-variable overlay for a spawned session subprocess.
+
+Sets `JULIA_LOAD_PATH` to the shell-default stack (`@:@v#.#:@stdlib`) so
+that `--project=<target>` controls the active environment as usual, then
+appends Kaimon's own load env (captured at module load) so the subprocess
+can resolve Kaimon's direct deps when forced to recompile Kaimon from
+source against a target project's manifest.
+"""
+function _build_session_env()
+    base = "@:@v#.#:@stdlib"
+    load_path = isempty(_KAIMON_LOAD_ENV) ? base : "$base:$_KAIMON_LOAD_ENV"
+    return Dict{String,String}(
+        "JULIA_LOAD_PATH" => load_path,
+        "JULIA_PROJECT" => "",
+    )
 end
 
 """
@@ -136,14 +157,12 @@ function spawn_session!(ms::ManagedSession)
     try
         lc = _resolve_launch_config(ms.project_path)
         cmd = _build_julia_cmd(lc, script; project = ms.project_path)
-        # Override JULIA_LOAD_PATH to restore the default ["@", "@v#.#", "@stdlib"]
-        # and clear JULIA_PROJECT so --project controls the active environment,
-        # matching the behavior of running `julia --project=<path>` from the shell.
-        # (pty_spawn merges env into the parent ENV, so we set explicit values.)
-        env = Dict{String,String}(
-            "JULIA_LOAD_PATH" => "@:@v#.#:@stdlib",
-            "JULIA_PROJECT" => "",
-        )
+        # Build the env overlay (JULIA_LOAD_PATH / JULIA_PROJECT) so that
+        # --project=<target> controls the active environment but Kaimon's
+        # own deps remain resolvable for a from-source recompile.
+        # pty_spawn merges env into the parent ENV, so explicit values
+        # shadow the parent's.
+        env = _build_session_env()
         pty = Tachikoma.pty_spawn(cmd; rows = 24, cols = 80, env)
         ms.pty = pty
         ms.process = nothing
