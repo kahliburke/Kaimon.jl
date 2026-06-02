@@ -130,7 +130,7 @@ end
         sleep(0.15)
     end
 
-    sock_dir = Kaimon.Gate.SOCK_DIR
+    sock_dir = Kaimon.Gate.sock_dir()
     rep_path = joinpath(sock_dir, "$session_id.sock")
     pub_path = joinpath(sock_dir, "$session_id-stream.sock")
 

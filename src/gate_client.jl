@@ -195,7 +195,7 @@ stderr. Waits briefly for the file to appear, then reads and returns it.
 Returns the backtrace text, or `nothing` if the file doesn't appear in time.
 """
 function trigger_backtrace(conn::REPLConnection)::Union{String,Nothing}
-    bt_path = joinpath(Gate.SOCK_DIR, "$(conn.session_id)-backtrace.txt")
+    bt_path = joinpath(Gate.sock_dir(), "$(conn.session_id)-backtrace.txt")
     # Remove stale file from previous trigger
     rm(bt_path; force=true)
     # Send SIGINFO (macOS) or SIGUSR1 (Linux) via POSIX kill(2)

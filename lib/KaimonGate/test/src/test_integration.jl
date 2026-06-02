@@ -35,7 +35,7 @@ end
 
     @test KaimonGate._RUNNING[]
 
-    sock_dir  = KaimonGate.SOCK_DIR
+    sock_dir  = KaimonGate.sock_dir()
     rep_path  = joinpath(sock_dir, "$session_id.sock")
 
     ctx = ZMQ.Context()
@@ -85,7 +85,7 @@ end
         pub_sock = KaimonGate._STREAM_SOCKET[]
         pub_path = rstrip(ZMQ._get_last_endpoint(pub_sock), '\0')
     else
-        sock_dir = KaimonGate.SOCK_DIR
+        sock_dir = KaimonGate.sock_dir()
         rep_path = "ipc://" * joinpath(sock_dir, "$session_id.sock")
         pub_path = "ipc://" * joinpath(sock_dir, "$session_id-stream.sock")
     end

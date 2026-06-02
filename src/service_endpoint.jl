@@ -27,7 +27,7 @@ and calls its handler.
 Returns `(endpoint, socket, context)` on success.
 """
 function start_service_endpoint!()
-    endpoint = "ipc://$(Gate.SOCK_DIR)/kaimon-service.sock"
+    endpoint = "ipc://$(Gate.sock_dir())/kaimon-service.sock"
     sock_path = replace(endpoint, "ipc://" => "")
 
     # Clean up stale socket file

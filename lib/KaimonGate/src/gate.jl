@@ -28,7 +28,12 @@ end
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-const _GATE_CACHE_DIR = let
+# Cache + socket directories MUST be resolved at runtime (functions), not as
+# top-level consts. A const is evaluated at precompile time, baking in whatever
+# XDG_CACHE_HOME was set then — which breaks per-instance isolation (e.g. a
+# second kaimon server, or a gate meant to register in an alternate cache dir).
+# Mirrors the server-side Kaimon.kaimon_cache_dir().
+function _gate_cache_dir()
     d = get(ENV, "XDG_CACHE_HOME") do
         Sys.iswindows() ?
         joinpath(
@@ -37,21 +42,28 @@ const _GATE_CACHE_DIR = let
         ) : joinpath(homedir(), ".cache", "kaimon")
     end
     mkpath(d)
-    d
+    return d
 end
-const SOCK_DIR = joinpath(_GATE_CACHE_DIR, "sock")
+
+"""Directory holding the gate's IPC sockets and session metadata. Honors
+`XDG_CACHE_HOME` at runtime (see `_gate_cache_dir`)."""
+function sock_dir()
+    d = joinpath(_gate_cache_dir(), "sock")
+    mkpath(d)
+    return d
+end
 
 """
     _install_peek_report_override(session_id::String)
 
 Override `Profile.peek_report[]` so that SIGINFO/SIGUSR1 writes the profile
-report to `SOCK_DIR/<session_id>-backtrace.txt` instead of stderr. This avoids
+report to `sock_dir()/<session_id>-backtrace.txt` instead of stderr. This avoids
 deadlocking PTY-backed sessions where the kernel buffer is small.
 """
 function _install_peek_report_override(session_id::String)
     try
         Profile = Base.require(Base.PkgId(Base.UUID("9abbd945-dff8-562f-b5e8-e1ebf5ef1b79"), "Profile"))
-        bt_path = joinpath(SOCK_DIR, "$(session_id)-backtrace.txt")
+        bt_path = joinpath(sock_dir(),"$(session_id)-backtrace.txt")
         Profile.peek_report[] = function ()
             try
                 open(bt_path, "w") do io
@@ -1293,7 +1305,7 @@ function write_metadata(
     spawned_by::String = "user",
     mode::Symbol = :ipc,
 )
-    meta_path = joinpath(SOCK_DIR, "$(session_id).json")
+    meta_path = joinpath(sock_dir(),"$(session_id).json")
     meta = Dict{String,Any}(
         "session_id" => session_id,
         "name" => name,
@@ -1324,7 +1336,7 @@ end
 function cleanup_files(session_id::String)
     # Always clean up the metadata JSON. Socket files only exist in IPC mode.
     for ext in [".sock", "-stream.sock", ".json"]
-        path = joinpath(SOCK_DIR, "$(session_id)$(ext)")
+        path = joinpath(sock_dir(),"$(session_id)$(ext)")
         isfile(path) && rm(path; force = true)
     end
 end
@@ -2025,7 +2037,7 @@ function _serve(;
     _ON_SHUTDOWN[] = on_shutdown
 
     # Ensure socket directory exists
-    mkpath(SOCK_DIR)
+    sock_dir()  # ensure it exists (mkpath is inside)
 
     # Generate or reuse session ID
     sid = session_id !== nothing ? session_id : string(Base.UUID(rand(UInt128)))
@@ -2082,7 +2094,7 @@ function _serve(;
         m = match(r":(\d+)$", endpoint)
         _TCP_PORT[] = m !== nothing ? parse(Int, m.captures[1]) : port
     else
-        sock_path = joinpath(SOCK_DIR, "$(sid).sock")
+        sock_path = joinpath(sock_dir(),"$(sid).sock")
         endpoint = "ipc://$(sock_path)"
         bind(socket, endpoint)
     end
@@ -2099,7 +2111,7 @@ function _serve(;
         m = match(r":(\d+)$", stream_endpoint)
         _TCP_STREAM_PORT[] = m !== nothing ? parse(Int, m.captures[1]) : stream_port
     else
-        stream_endpoint = "ipc://$(joinpath(SOCK_DIR, "$(sid)-stream.sock"))"
+        stream_endpoint = "ipc://$(joinpath(sock_dir(),"$(sid)-stream.sock"))"
         bind(pub_socket, stream_endpoint)
     end
     _STREAM_SOCKET[] = pub_socket
@@ -2651,7 +2663,7 @@ The service socket is a ZMQ REQ that connects to the Kaimon server's
 REP socket at `ipc://~/.cache/kaimon/sock/kaimon-service.sock`.
 """
 function _connect_service!()
-    sock_path = joinpath(SOCK_DIR, "kaimon-service.sock")
+    sock_path = joinpath(sock_dir(),"kaimon-service.sock")
     ispath(sock_path) || return false
     ctx = _GATE_CONTEXT[]
     ctx === nothing && return false
