@@ -84,7 +84,7 @@ using TOML
     end
 
     @testset "Version mismatch detection" begin
-        # _version_mismatch_warning! should only warn once per session
+        # protocol mismatch warnings should only fire once per session (via _VERSION_WARNED)
         warned = Kaimon._VERSION_WARNED
         original = copy(warned)
         try
@@ -105,9 +105,9 @@ using TOML
     end
 
     @testset "Gate pong includes kaimon_version" begin
-        # Verify the pong handler references PACKAGE_VERSION
-        # (structural test — gate.jl should include kaimon_version in pong)
-        gate_src = read(joinpath(pkgdir(Kaimon), "src", "gate.jl"), String)
+        # Verify the pong handler includes kaimon_version (structural test).
+        # The gate now lives in the KaimonGate package.
+        gate_src = read(joinpath(pkgdir(Kaimon.Gate), "src", "gate.jl"), String)
         @test occursin("kaimon_version", gate_src)
     end
 

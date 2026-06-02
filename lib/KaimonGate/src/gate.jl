@@ -4,15 +4,13 @@
 # Runs inside the user's Julia session. Binds a ZMQ REP socket on an IPC
 # endpoint so the persistent TUI server can send eval requests without living
 # inside this process. Dependencies: ZMQ.jl + Serialization (stdlib).
+#
+# This file is `include`d into the `KaimonGate` module (see KaimonGate.jl),
+# which provides the `using` imports and the host-integration hooks
+# (`_VERSION_PROVIDER`, `_MIRROR_PREF_PROVIDER`, `_PERSONALITY_PROVIDER`,
+# `_TACHIKOMA`). When KaimonGate runs standalone the hooks return safe
+# defaults; when Kaimon loads KaimonGate it installs richer providers.
 # ═══════════════════════════════════════════════════════════════════════════════
-
-module Gate
-
-using ZMQ
-using REPL
-using Serialization
-using Dates
-using TOML
 
 # ── Thread-safe ZMQ recv ──────────────────────────────────────────────────────
 # ZMQ Message objects have finalizers that call zmq_msg_close, which is NOT
@@ -1498,12 +1496,8 @@ function _exec_restart(name::String, session_id::String, project_path::String)
         # will already be running with the correct session_id; our serve() call
         # becomes a no-op that updates mutable options (mirror, restart flag).
         # If startup.jl didn't call serve, this creates the gate from scratch.
-        serve_code = """
-        try; using Revise; catch; end
-        using Kaimon
-        delete!(ENV, "KAIMON_RESTART_SESSION")
-        Gate.serve(session_id=$(repr(session_id))$ns_kwarg$mirror_kwarg$restart_kwarg$tcp_kwargs)
-        """
+        serve_args = "session_id=$(repr(session_id))$ns_kwarg$mirror_kwarg$restart_kwarg$tcp_kwargs"
+        serve_code = _RESTART_CODE_BUILDER[](serve_args)
         vcat(julia_args, ["--project=$project_path", "-i", "-e", serve_code])
     end
 
@@ -1511,11 +1505,10 @@ function _exec_restart(name::String, session_id::String, project_path::String)
     # with_terminal() has the TUI in alt screen/raw mode and stdout/stderr
     # redirected to pipes. prepare_for_exec!() restores everything at the
     # OS fd level so the new process gets clean TTY IO.
-    # Use dynamic lookup since the gate submodule doesn't depend on Tachikoma.
+    # Use the host-injected Tachikoma hook; nothing when running standalone.
     try
-        tachi = parentmodule(@__MODULE__)  # Kaimon
-        if isdefined(tachi, :Tachikoma)
-            T = getfield(tachi, :Tachikoma)
+        T = _TACHIKOMA[]
+        if T !== nothing
             if isdefined(T, :prepare_for_exec!)
                 Base.invokelatest(getfield(T, :prepare_for_exec!))
             end
@@ -1623,12 +1616,13 @@ function handle_message(request::NamedTuple)
     elseif msg_type == :ping
         _PING_COUNT[] += 1
         _LAST_PING_TIME[] = time()
-        _kv = try; parentmodule(@__MODULE__).PACKAGE_VERSION; catch; "unknown"; end
+        _kv = try; _VERSION_PROVIDER[](); catch; "unknown"; end
         return (
             type = :pong,
             pid = getpid(),
             uptime = time() - _START_TIME[],
             julia_version = string(VERSION),
+            protocol_version = PROTOCOL_VERSION,
             kaimon_version = _kv,
             project_path = dirname(Base.active_project()),
             tools = [_reflect_tool(t) for t in _SESSION_TOOLS[]],
@@ -2039,7 +2033,7 @@ function _serve(;
     _START_TIME[] = time()
     _MIRROR_REPL[] = if allow_mirror
         try
-            parentmodule(@__MODULE__).get_gate_mirror_repl_preference()
+            _MIRROR_PREF_PROVIDER[]()
         catch
             false
         end
@@ -2201,7 +2195,7 @@ function _serve(;
     _install_peek_report_override(sid)
 
     emoticon = try
-        parentmodule(@__MODULE__).load_personality()
+        _PERSONALITY_PROVIDER[]()
     catch
         "⚡"
     end
@@ -2843,5 +2837,3 @@ function _auto_serve!()
         @warn "Gate auto-start failed" exception=e
     end
 end
-
-end # module Gate

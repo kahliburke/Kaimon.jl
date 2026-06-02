@@ -1662,18 +1662,20 @@ end
 # Track which sessions we've already warned about to avoid spamming
 const _VERSION_WARNED = Set{String}()
 
-function _version_mismatch_warning!(mgr::ConnectionManager, conn::REPLConnection, app_ver::String, gate_ver::String)
+function _protocol_mismatch_warning!(mgr::ConnectionManager, conn::REPLConnection, app_proto::Int, gate_proto::Int, gate_ver::String)
     conn.session_id in _VERSION_WARNED && return
     push!(_VERSION_WARNED, conn.session_id)
     name = isempty(conn.display_name) ? conn.session_id : conn.display_name
-    msg = "Version mismatch: kaimon app is v$app_ver but session '$name' loaded Kaimon v$gate_ver. " *
-          "Run `]app add Kaimon` to update, or check for a dev'd copy in your global env."
+    gv = isempty(gate_ver) ? "?" : gate_ver
+    msg = "Gate protocol mismatch: kaimon speaks gate protocol v$app_proto but session " *
+          "'$name' (KaimonGate v$gv) speaks v$gate_proto. Update KaimonGate (`]up KaimonGate`) " *
+          "or the kaimon app so both sides match."
     @warn msg
     _emit_event!(mgr, :version_mismatch, (
         session_id = conn.session_id,
         display_name = name,
-        app_version = app_ver,
-        gate_version = gate_ver,
+        app_version = string(app_proto),
+        gate_version = string(gate_proto),
     ))
 end
 
@@ -1695,14 +1697,19 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
             _fire_sessions_changed(mgr)
         end
 
-        # Check Kaimon version compatibility
+        # Record the gate's reported package version for display only. The gate
+        # (KaimonGate) and this client (Kaimon) are now separate packages with
+        # independent version numbers, so version equality is not a compat signal.
         gate_kv = string(get(result, :kaimon_version, ""))
         if !isempty(gate_kv) && gate_kv != "unknown"
             conn.kaimon_version = gate_kv
-            app_kv = try; parentmodule(@__MODULE__).PACKAGE_VERSION; catch; ""; end
-            if !isempty(app_kv) && gate_kv != app_kv
-                _version_mismatch_warning!(mgr, conn, app_kv, gate_kv)
-            end
+        end
+
+        # Wire-protocol version is the authoritative compatibility check. Pongs
+        # without a protocol_version (older gates) are assumed compatible.
+        gate_proto = get(result, :protocol_version, nothing)
+        if gate_proto isa Integer && Int(gate_proto) != Gate.PROTOCOL_VERSION
+            _protocol_mismatch_warning!(mgr, conn, Gate.PROTOCOL_VERSION, Int(gate_proto), gate_kv)
         end
 
         # Update metadata file with fresh pong data

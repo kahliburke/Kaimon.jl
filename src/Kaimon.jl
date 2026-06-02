@@ -23,6 +23,22 @@ using Printf
 using UUIDs
 using Tachikoma
 using Match
+using KaimonGate
+
+# The eval gate lives in the lightweight `KaimonGate` package (ZMQ + stdlib),
+# so it can be installed in user sessions without Kaimon's full dependency
+# tree. `Gate` is kept as an alias for the historical `Kaimon.Gate.*` API —
+# every existing `Gate.foo` reference (and `using Kaimon; Gate.serve()`) keeps
+# working. Kaimon enriches the gate via host hooks installed in `__init__`.
+const Gate = KaimonGate
+
+"""Kaimon-flavored restart preamble: respawn with the full Kaimon package."""
+_gate_restart_code(serve_args::AbstractString) = """
+try; using Revise; catch; end
+using Kaimon
+delete!(ENV, "KAIMON_RESTART_SESSION")
+Gate.serve($serve_args)
+"""
 
 # Only export Gate (primary user-facing API) and @mcp_tool (for tool authors).
 # Everything else is accessible as Kaimon.foo() to avoid namespace pollution.
@@ -102,7 +118,6 @@ include("qdrant_client.jl")
 include("tools.jl")
 include("Generate.jl")
 include("gate_prefs.jl")
-include("gate.jl")
 include("gate_client.jl")
 include("extensions.jl")
 include("extension_manager.jl")
@@ -2684,6 +2699,16 @@ end
 include("precompile.jl")
 
 function __init__()
+    # Wire Kaimon's host integrations into KaimonGate. Standalone, the gate uses
+    # safe defaults; here we give it Kaimon's version, personality, REPL-mirror
+    # preference, Tachikoma (for TTY hand-off on restart), and a restart preamble
+    # that respawns the full Kaimon package. Must run before _auto_serve!().
+    KaimonGate.set_version_provider!(() -> PACKAGE_VERSION)
+    KaimonGate.set_personality_provider!(load_personality)
+    KaimonGate.set_mirror_pref_provider!(get_gate_mirror_repl_preference)
+    KaimonGate.set_tachikoma!(Tachikoma)
+    KaimonGate.set_restart_code_builder!(_gate_restart_code)
+
     # Set Qdrant collection prefix from env var or config
     env_prefix = get(ENV, "KAIMON_QDRANT_PREFIX", "")
     if !isempty(env_prefix)
