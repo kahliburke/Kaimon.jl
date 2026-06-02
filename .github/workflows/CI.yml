@@ -62,3 +62,27 @@ jobs:
           path: |
             ${{ steps.julia-cache.outputs.cache-paths }}
           key: ${{ steps.julia-cache.outputs.cache-key }}
+
+  # The gate lives in the lightweight KaimonGate subpackage (lib/KaimonGate).
+  # Test it standalone so it stays installable on its own (ZMQ + stdlib only).
+  test-kaimongate:
+    name: KaimonGate (lib) - Julia ${{ matrix.version }} - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      actions: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - '1.12'
+        os:
+          - ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.version }}
+      - uses: julia-actions/cache@v2
+      - name: Test KaimonGate (standalone)
+        run: julia --project=lib/KaimonGate -e 'using Pkg; Pkg.test()'
