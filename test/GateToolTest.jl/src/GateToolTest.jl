@@ -2,7 +2,7 @@ module GateToolTest
 
 using Tachikoma
 using Infiltrator
-using Kaimon.Gate: GateTool, serve, progress, tty_path, tty_size, restore_tty!
+using KaimonGate: GateTool, serve, progress, tty_path, tty_size, restore_tty!
 
 include("types.jl")
 include("tools.jl")

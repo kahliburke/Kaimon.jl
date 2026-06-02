@@ -6,7 +6,7 @@
 # _dispatch_tool_call coerces incoming Dict values automatically.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-using Kaimon.Gate: GateTool
+using KaimonGate: GateTool
 
 """
     create_tools(model::TodoBoardModel) -> Vector{GateTool}
