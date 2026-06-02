@@ -1,12 +1,15 @@
-# Kaimon Gate — auto-connect this REPL to the TUI server
+# Kaimon Gate — auto-connect this REPL to the TUI server.
+# Uses the lightweight KaimonGate package (ZMQ + stdlib) so every session can
+# connect without pulling in Kaimon's full dependency tree.
 try
     using Revise
 catch e
     @info "ℹ Revise not loaded (optional - install with: Pkg.add(\"Revise\"))"
 end
 try
-    using Kaimon
-    Gate.serve()
+    using KaimonGate
+    KaimonGate.serve()
 catch e
-    @warn "Kaimon Gate failed to start" exception = e
+    @warn "KaimonGate failed to start (is it in your global env? run the kaimon CLI to install it)" exception = e
 end
+# Kaimon Gate — end

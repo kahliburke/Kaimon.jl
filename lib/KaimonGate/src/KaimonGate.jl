@@ -68,8 +68,30 @@ set_restart_code_builder!(f)  = (_RESTART_CODE_BUILDER[] = f)
 
 include("gate.jl")
 
+"""
+    connect!()
+
+Connect this Julia session to a running Kaimon TUI. Loads Revise (if available)
+for live code reloading, then starts the gate in the background. Call from any
+REPL where KaimonGate is available:
+
+    using KaimonGate
+    KaimonGate.connect!()
+"""
+function connect!()
+    try
+        Base.require(Base.PkgId(Base.UUID("295af30f-e4ad-537b-8983-00126c2a3abe"), "Revise"))
+        @info "Revise loaded"
+    catch
+        @info "Revise not available (optional)"
+    end
+    @async serve()
+    @info "KaimonGate started — session will appear in the Kaimon TUI shortly"
+    nothing
+end
+
 # ── Public API (mirrors the former `Kaimon.Gate.*` surface) ──────────────────
-public serve, stop, restart, status
+public serve, stop, restart, status, connect!
 public GateTool, call_tool, list_tools
 public is_cancelled, stash, progress, push_panel
 public tty_path, tty_size, uninstall_infiltrator_hook!

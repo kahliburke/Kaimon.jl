@@ -259,6 +259,32 @@ function connect!()
     nothing
 end
 
+"""
+    _install_gate_global(kaimongate_dir; remove_kaimon=false)
+
+Install KaimonGate into the user's global Julia environment so every session can
+run the gate. Prefers the registry; falls back to the bundled `lib/KaimonGate`
+path while KaimonGate is unregistered. Optionally removes the heavyweight Kaimon
+package from the global env (the `kaimon` CLI lives in its own app environment,
+so removing it here does not affect the app).
+"""
+function _install_gate_global(kaimongate_dir::String; remove_kaimon::Bool = false)
+    env = copy(ENV)
+    delete!(env, "JULIA_PROJECT")
+    delete!(env, "JULIA_LOAD_PATH")
+    rm_line = remove_kaimon ? "try; Pkg.rm(\"Kaimon\"); catch; end\n    " : ""
+    code = """
+    using Pkg
+    $(rm_line)try
+        Pkg.add("KaimonGate")
+    catch
+        Pkg.develop(path=$(repr(kaimongate_dir)))
+    end
+    """
+    run(setenv(`$(Base.julia_cmd()) --startup-file=no -e $code`, env))
+    return nothing
+end
+
 # ============================================================================
 # Tool Definition Macros
 # ============================================================================
@@ -2594,79 +2620,73 @@ function (@main)(ARGS)
         start!(; port = port)
         Base.JLOptions().isinteractive == 0 && wait(Condition())
     else
-        # Check that Kaimon is in the global Julia environment.
-        # Only prompt if (a) it's not installed and (b) the user hasn't
-        # previously declined. The decline is persisted in config.json
-        # under the `global_install_dismissed` key. Users with workspace
-        # setups or tools like ShareAdd.jl can dismiss this once.
+        # Make the gate available in the global Julia environment so any session
+        # can connect. The gate now lives in the lightweight KaimonGate package
+        # (ZMQ + stdlib); installing full Kaimon globally would pull its entire
+        # dependency tree into every Julia session. The prompt is suppressed once
+        # the user declines (persisted under `global_install_dismissed`).
         if isa(stdin, Base.TTY)
             global_env = joinpath(homedir(), ".julia", "environments",
                                   "v$(VERSION.major).$(VERSION.minor)")
             global_proj = joinpath(global_env, "Project.toml")
-            in_global = isfile(global_proj) &&
-                haskey(get(Pkg.TOML.parsefile(global_proj), "deps", Dict()), "Kaimon")
-
+            global_deps = isfile(global_proj) ?
+                get(Pkg.TOML.parsefile(global_proj), "deps", Dict()) : Dict()
+            gate_in_global = haskey(global_deps, "KaimonGate")
+            kaimon_in_global = haskey(global_deps, "Kaimon")
             dismissed = _get_global_install_dismissed()
+            kaimongate_dir = joinpath(dirname(@__DIR__), "lib", "KaimonGate")
 
-            # Version check: if Kaimon IS installed, verify version compatibility
-            if in_global
-                try
-                    global_manifest = joinpath(global_env, "Manifest.toml")
-                    if isfile(global_manifest)
-                        manifest = Pkg.TOML.parsefile(global_manifest)
-                        deps = get(manifest, "deps", Dict())
-                        kaimon_entries = get(deps, "Kaimon", [])
-                        if !isempty(kaimon_entries)
-                            entry = first(kaimon_entries)
-                            installed_ver = get(entry, "version", "")
-                            is_dev = haskey(entry, "path")
-                            dev_path = get(entry, "path", "")
-                            app_dir = dirname(@__DIR__)
-                            if is_dev && dev_path != app_dir
-                                printstyled("\n  ⚠ Kaimon in global env is dev'd to a different path:\n", color=:yellow, bold=true)
-                                printstyled("    Global env: $dev_path\n", color=:yellow)
-                                printstyled("    App:        $app_dir\n", color=:yellow)
-                                printstyled("    This can cause version mismatches. Run `]dev Kaimon` in the global env to fix.\n\n", color=:yellow)
-                            elseif !is_dev && !isempty(installed_ver) && installed_ver != PACKAGE_VERSION
-                                printstyled("\n  ⚠ Version mismatch: kaimon app is v$PACKAGE_VERSION but global env has Kaimon v$installed_ver.\n", color=:yellow, bold=true)
-                                printstyled("    Run `]update Kaimon` in the global env or `]app add Kaimon` to sync.\n\n", color=:yellow)
-                            end
+            if gate_in_global
+                # KaimonGate already available everywhere — nothing to do.
+            elseif kaimon_in_global
+                # Legacy setup: full Kaimon in the global env. The gate now ships
+                # as the lightweight KaimonGate; offer to replace it.
+                if !dismissed
+                    println("""
+
+                    Your global Julia environment has the full Kaimon package, which
+                    pulls ~120 dependencies into every Julia session. The gate now
+                    lives in the lightweight KaimonGate package (ZMQ + stdlib only).
+                    """)
+                    print("Replace Kaimon with KaimonGate in your global env? [Y/n/never]: ")
+                    response = lowercase(strip(readline()))
+                    if isempty(response) || response in ("y", "yes")
+                        @info "Installing KaimonGate and removing Kaimon from the global environment..."
+                        try
+                            _install_gate_global(kaimongate_dir; remove_kaimon = true)
+                            println("\nDone. KaimonGate is now in your global env and Kaimon was removed. New sessions auto-connect via the lightweight gate.\n")
+                        catch e
+                            @warn "Global transition failed" exception = e
                         end
+                    elseif response in ("never", "n", "no")
+                        _set_global_install_dismissed(true)
+                        println("\nGot it — won't ask again. Run `kaimon --reset-global-prompt` if you change your mind.\n")
+                    else
+                        println()
                     end
-                catch e
-                    @debug "Version check failed" exception = e
                 end
-            end
-
-            if !in_global && !dismissed
+            elseif !dismissed
                 println("""
 
-                Kaimon is not installed in your global Julia environment.
+                KaimonGate is not installed in your global Julia environment.
 
-                Gate.serve() must be called from your project REPLs to connect them
-                to the Kaimon dashboard. For this to work, Kaimon needs to be
-                available in every Julia session — the global environment is one
-                way to make it available everywhere.
+                To connect a session to the Kaimon dashboard you run
+                `KaimonGate.serve()` in it. For that to work in any session,
+                KaimonGate (a lightweight ZMQ + stdlib package) needs to be
+                available everywhere — the global environment is one way.
 
                 Alternatives if you prefer to keep your global env minimal:
-                  - Use Julia 1.12+ workspaces to share Kaimon across projects
-                  - Use ShareAdd.jl to add Kaimon on-demand: `@usingany Kaimon`
-                  - Add Kaimon as a dep to each project that needs the gate
+                  - Use Julia 1.12+ workspaces to share KaimonGate across projects
+                  - Use ShareAdd.jl on-demand: `@usingany KaimonGate`
+                  - Add KaimonGate as a dep to each project that needs the gate
                 """)
-                print("Add Kaimon to your global Julia environment now? [Y/n/never]: ")
+                print("Add KaimonGate to your global Julia environment now? [Y/n/never]: ")
                 response = lowercase(strip(readline()))
                 if isempty(response) || response in ("y", "yes")
-                    @info "Installing Kaimon in global environment..."
+                    @info "Installing KaimonGate in global environment..."
                     try
-                        kaimon_dir = dirname(@__DIR__)
-                        env = copy(ENV)
-                        delete!(env, "JULIA_PROJECT")
-                        delete!(env, "JULIA_LOAD_PATH")
-                        run(setenv(```$(Base.julia_cmd()) --startup-file=no -e """
-                            using Pkg
-                            Pkg.develop(path=$(repr(kaimon_dir)))
-                            """```, env))
-                        println("\nDone. You can now call `using Kaimon` from any Julia session.\n")
+                        _install_gate_global(kaimongate_dir; remove_kaimon = false)
+                        println("\nDone. You can now call `using KaimonGate; KaimonGate.serve()` from any Julia session.\n")
                     catch e
                         @warn "Global install failed" exception = e
                     end

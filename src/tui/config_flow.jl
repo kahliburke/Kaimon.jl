@@ -557,19 +557,51 @@ function _remove_kilo(m::KaimonModel)
 end
 
 const _STARTUP_MARKER = "# Kaimon Gate — auto-connect"
+const _STARTUP_END_MARKER = "# Kaimon Gate — end"
+
+"""Remove any existing managed Kaimon-gate block from startup.jl content.
+Handles the current marker-delimited block and the legacy (pre-KaimonGate)
+snippet that had no end marker."""
+function _strip_gate_block(content::AbstractString)
+    # Current style: delimited by begin + end markers.
+    if occursin(_STARTUP_END_MARKER, content)
+        content = replace(content,
+            Regex("\\n*" * _STARTUP_MARKER * "[\\s\\S]*?" * _STARTUP_END_MARKER * "\\n?") => "")
+    end
+    # Legacy style: marker through the two `end`s (Revise try + Kaimon try),
+    # with no end marker. Best-effort for the unedited snippet.
+    if occursin(_STARTUP_MARKER, content)
+        content = replace(content,
+            Regex("\\n*" * _STARTUP_MARKER * "[\\s\\S]*?end\\n[\\s\\S]*?end\\n") => "\n")
+    end
+    return content
+end
 
 function _install_startup_jl(m::KaimonModel)
     startup_dir = joinpath(homedir(), ".julia", "config")
     isdir(startup_dir) || mkpath(startup_dir)
     startup_file = joinpath(startup_dir, "startup.jl")
     existing = isfile(startup_file) ? read(startup_file, String) : ""
-    if occursin(_STARTUP_MARKER, existing)
-        m.flow_message = "Gate snippet already present in\n$(_short_path(startup_file))"
+    snippet = Generate.render_template("julia-startup.jl")
+
+    had_block = occursin(_STARTUP_MARKER, existing)
+    is_current = had_block && occursin("using KaimonGate", existing)
+    is_legacy = had_block && !is_current  # old `using Kaimon` snippet
+
+    if is_current
+        m.flow_message = "Gate snippet already up to date in\n$(_short_path(startup_file))"
+        m.flow_success = true
+        return
+    end
+
+    cleaned = rstrip(_strip_gate_block(existing))
+    new_content = isempty(cleaned) ? snippet : cleaned * "\n\n" * snippet
+    write(startup_file, new_content * "\n")
+
+    m.flow_message = if is_legacy
+        "Migrated the old (full-Kaimon) gate snippet to the lightweight KaimonGate in\n$(_short_path(startup_file))"
     else
-        open(startup_file, "a") do io
-            write(io, "\n" * Generate.render_template("julia-startup.jl"))
-        end
-        m.flow_message = "Appended gate snippet to\n$(_short_path(startup_file))\n\nEvery new Julia session will now auto-connect to Kaimon."
+        "Appended gate snippet to\n$(_short_path(startup_file))\n\nEvery new Julia session will now auto-connect via KaimonGate."
     end
     m.flow_success = true
 end
