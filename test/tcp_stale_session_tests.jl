@@ -1,0 +1,361 @@
+"""
+    TCP Stale Session Tests (GitHub #35)
+
+Reproduces the bug where a gate restart on the same REQ port but different
+PUB port leaves the client's SUB socket pointing at the dead PUB endpoint.
+Health check pings succeed (REQ port works), but `ex` hangs forever because
+the SUB socket never receives eval_complete messages.
+
+Usage:
+    julia --project test/tcp_stale_session_tests.jl
+"""
+
+using ReTest
+using ZMQ
+using Serialization
+using Dates
+
+using Kaimon
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Mock gate — a minimal REP + PUB server that responds to :ping and :eval_async
+# ─────────────────────────────────────────────────────────────────────────────
+
+mutable struct MockGate
+    ctx::ZMQ.Context
+    rep::ZMQ.Socket      # REP socket (like the gate's main socket)
+    pub::ZMQ.Socket      # PUB socket (like the gate's stream socket)
+    rep_port::Int
+    pub_port::Int
+    running::Bool
+    task::Union{Task,Nothing}
+    instance_id::String  # unique per gate instance
+end
+
+"""Start a mock gate on fixed REQ port, ephemeral PUB port."""
+function start_mock_gate(req_port::Int; pub_port::Int=0)
+    ctx = Context()
+    rep = Socket(ctx, REP)
+    rep.rcvtimeo = 1000
+    rep.sndtimeo = 1000
+    rep.linger = 0
+    bind(rep, "tcp://127.0.0.1:$req_port")
+
+    pub = Socket(ctx, PUB)
+    pub.sndhwm = 0
+    pub.linger = 0
+    bind(pub, "tcp://127.0.0.1:$pub_port")
+    pub_endpoint = rstrip(ZMQ._get_last_endpoint(pub), '\0')
+    m = match(r":(\d+)$", pub_endpoint)
+    actual_pub_port = parse(Int, m.captures[1])
+
+    gate = MockGate(ctx, rep, pub, req_port, actual_pub_port, true, nothing,
+                    string(Base.UUID(rand(UInt128))))
+
+    gate.task = Threads.@spawn _run_mock_gate(gate)
+    return gate
+end
+
+function _run_mock_gate(gate::MockGate)
+    while gate.running
+        raw = try
+            recv(gate.rep, Vector{UInt8})
+        catch
+            continue
+        end
+
+        msg = try
+            Serialization.deserialize(IOBuffer(raw))
+        catch
+            # Send error response
+            io = IOBuffer()
+            Serialization.serialize(io, (type = :error, message = "deserialize failed"))
+            send(gate.rep, take!(io))
+            continue
+        end
+
+        resp = if get(msg, :type, nothing) == :ping
+            (
+                type = :pong,
+                pid = getpid(),
+                uptime = 42.0,
+                julia_version = string(VERSION),
+                kaimon_version = "test",
+                project_path = @__DIR__,
+                tools = [],
+                namespace = "",
+                stream_endpoint = "tcp://127.0.0.1:$(gate.pub_port)",
+                allow_restart = false,
+                allow_mirror = false,
+                mirror_repl = false,
+                instance_id = gate.instance_id,
+            )
+        elseif get(msg, :type, nothing) == :eval_async
+            rid = get(msg, :request_id, "")
+            # Publish eval_complete on the PUB socket after a short delay
+            Threads.@spawn begin
+                sleep(0.1)
+                _mock_publish(gate, rid, "42")
+            end
+            (type = :accepted, request_id = rid)
+        else
+            (type = :error, message = "unknown request type: $(get(msg, :type, nothing))")
+        end
+
+        io = IOBuffer()
+        Serialization.serialize(io, resp)
+        try
+            send(gate.rep, take!(io))
+        catch
+        end
+    end
+end
+
+"""Publish an eval_complete message on the mock gate's PUB socket."""
+function _mock_publish(gate::MockGate, request_id::String, result_str::String)
+    io = IOBuffer()
+    Serialization.serialize(io, (
+        channel = "eval_complete",
+        request_id = request_id,
+        data = result_str,
+        mime = "text/plain",
+    ))
+    try
+        send(gate.pub, take!(io))
+    catch
+    end
+end
+
+function stop_mock_gate!(gate::MockGate)
+    gate.running = false
+    # Wait for task to finish (it polls with 1s recv timeout)
+    if gate.task !== nothing
+        try; wait(gate.task); catch; end
+    end
+    try; close(gate.rep); catch; end
+    try; close(gate.pub); catch; end
+    try; close(gate.ctx); catch; end
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Use a high port unlikely to conflict
+const TEST_REQ_PORT = 39_876
+
+@testset "TCP Stale Session (#35)" begin
+
+    @testset "stream_endpoint not updated when gate restarts" begin
+        # Phase 1: Start gate, connect, verify stream works
+        gate1 = start_mock_gate(TEST_REQ_PORT)
+        sleep(0.3)  # let gate bind
+
+        mgr = Kaimon.ConnectionManager(sock_dir = mktempdir())
+        try
+            conn = Kaimon.connect_tcp!(mgr, "127.0.0.1", TEST_REQ_PORT)
+            @test conn.status == :connected
+            @test conn.sub_socket !== nothing
+            old_stream = conn.stream_endpoint
+            @test old_stream == "tcp://127.0.0.1:$(gate1.pub_port)"
+            old_sub = conn.sub_socket
+
+            # Phase 2: Kill gate1, start gate2 on same REQ port (different PUB port)
+            stop_mock_gate!(gate1)
+            sleep(0.5)  # let ZMQ clean up
+
+            gate2 = start_mock_gate(TEST_REQ_PORT)
+            sleep(0.3)
+            @test gate2.pub_port != gate1.pub_port  # ephemeral port should differ
+
+            try
+                # Phase 3: Simulate a health check pong from the new gate
+                pong = Kaimon.ping(conn)
+                # REQ socket needs reconnection after gate restart
+                if pong === nothing
+                    # Reconnect REQ socket (gate2 is on the same port)
+                    lock(conn.req_lock) do
+                        if conn.req_socket !== nothing
+                            try; close(conn.req_socket); catch; end
+                        end
+                        sock = Socket(mgr.zmq_context, REQ)
+                        sock.rcvtimeo = 5000
+                        sock.sndtimeo = 2000
+                        sock.linger = 0
+                        connect(sock, conn.endpoint)
+                        conn.req_socket = sock
+                    end
+                    conn.status = :connected
+                    pong = Kaimon.ping(conn)
+                end
+                @test pong !== nothing
+
+                # The pong from gate2 reports the NEW stream_endpoint
+                new_stream_from_pong = string(get(pong, :stream_endpoint, ""))
+                @test new_stream_from_pong == "tcp://127.0.0.1:$(gate2.pub_port)"
+                @test new_stream_from_pong != old_stream
+
+                # Phase 4: Process the pong through _process_health_result!
+                # This is what the health check loop does
+                to_remove = Kaimon.REPLConnection[]
+                Kaimon._process_health_result!(mgr, conn, pong, to_remove)
+
+                # FIX: The SUB socket should be reconnected to the new PUB port
+                # when _process_health_result! detects a stream_endpoint change.
+                @test conn.stream_endpoint == "tcp://127.0.0.1:$(gate2.pub_port)"
+                @test conn.sub_socket !== old_sub  # replaced with new socket
+                @test conn.sub_socket !== nothing
+
+            finally
+                stop_mock_gate!(gate2)
+            end
+        finally
+            # Clean up connection manager
+            lock(mgr.lock) do
+                for c in mgr.connections
+                    Kaimon.disconnect!(c)
+                end
+            end
+        end
+    end
+
+    @testset "_process_health_result! should detect stream_endpoint mismatch" begin
+        # Unit test: directly test the pong handler with a mismatched stream_endpoint
+        mgr = Kaimon.ConnectionManager(sock_dir = mktempdir())
+        conn = Kaimon.REPLConnection(
+            session_id = "tcp-127.0.0.1-99999",
+            endpoint = "tcp://127.0.0.1:99999",
+            stream_endpoint = "tcp://127.0.0.1:44444",  # old PUB port
+            spawned_by = "user",
+        )
+        # Simulate having an existing SUB socket (stale, connected to old PUB)
+        stale_ctx = Context()
+        stale_sub = Socket(stale_ctx, SUB)
+        stale_sub.linger = 0
+        conn.sub_socket = stale_sub
+        conn.status = :connected
+
+        # Simulate a pong from a restarted gate with a different stream_endpoint
+        pong = (
+            type = :pong,
+            pid = getpid(),
+            uptime = 10.0,
+            julia_version = string(VERSION),
+            kaimon_version = "test",
+            project_path = @__DIR__,
+            tools = [],
+            namespace = "",
+            stream_endpoint = "tcp://127.0.0.1:55555",  # NEW PUB port
+            allow_restart = false,
+            allow_mirror = false,
+            mirror_repl = false,
+        )
+
+        to_remove = Kaimon.REPLConnection[]
+        Kaimon._process_health_result!(mgr, conn, pong, to_remove)
+
+        # FIX: stream_endpoint should be updated to the new value
+        @test conn.stream_endpoint == "tcp://127.0.0.1:55555"
+        # FIX: sub_socket should have been replaced
+        @test conn.sub_socket !== stale_sub
+        @test conn.sub_socket !== nothing
+
+        # Clean up
+        try; close(stale_sub); catch; end
+        try; close(stale_ctx); catch; end
+    end
+
+    @testset "eval hangs when SUB points to dead PUB port" begin
+        # Start gate, connect, then restart gate on same REQ port.
+        # Attempt an eval — it should time out because SUB is stale.
+        gate1 = start_mock_gate(TEST_REQ_PORT)
+        sleep(0.3)
+
+        mgr = Kaimon.ConnectionManager(sock_dir = mktempdir())
+        try
+            conn = Kaimon.connect_tcp!(mgr, "127.0.0.1", TEST_REQ_PORT)
+            @test conn.status == :connected
+
+            # Verify eval works with gate1
+            rid1 = "eval-test-$(rand(UInt16))"
+            resp1 = Kaimon._req_send_recv(conn,
+                (type = :eval_async, code = "1+1", request_id = rid1);
+                caller_timeout = 5.0)
+            @test resp1.ok
+            @test get(resp1.response, :type, nothing) == :accepted
+
+            # Drain the PUB result from gate1
+            sleep(0.3)
+            Kaimon.drain_stream_messages!(mgr)
+
+            # Restart: kill gate1, start gate2
+            stop_mock_gate!(gate1)
+            sleep(0.5)
+
+            gate2 = start_mock_gate(TEST_REQ_PORT)
+            sleep(0.3)
+
+            try
+                # Reconnect REQ socket to gate2
+                lock(conn.req_lock) do
+                    if conn.req_socket !== nothing
+                        try; close(conn.req_socket); catch; end
+                    end
+                    sock = Socket(mgr.zmq_context, REQ)
+                    sock.rcvtimeo = 5000
+                    sock.sndtimeo = 2000
+                    sock.linger = 0
+                    connect(sock, conn.endpoint)
+                    conn.req_socket = sock
+                end
+                conn.status = :connected
+
+                # Process a health pong (simulates the health checker)
+                pong = Kaimon.ping(conn)
+                @test pong !== nothing
+                to_remove = Kaimon.REPLConnection[]
+                Kaimon._process_health_result!(mgr, conn, pong, to_remove)
+
+                # Allow ZMQ SUB subscription to propagate (slow joiner)
+                sleep(0.3)
+
+                # Now send an eval to gate2, with a pre-created inbox
+                # (mirroring what eval_remote_async does internally)
+                rid2 = "eval-test-$(rand(UInt16))"
+                inbox = Channel{Any}(Inf)
+                lock(conn._eval_inboxes_lock) do
+                    conn._eval_inboxes[rid2] = inbox
+                end
+
+                resp2 = Kaimon._req_send_recv(conn,
+                    (type = :eval_async, code = "2+2", request_id = rid2);
+                    caller_timeout = 5.0)
+                @test resp2.ok
+                @test get(resp2.response, :type, nothing) == :accepted
+
+                # Wait for gate2 to publish eval_complete, then drain
+                sleep(0.5)
+                Kaimon.drain_stream_messages!(mgr)
+
+                # FIX: After health pong reconnects the SUB socket, the eval
+                # result should arrive from gate2's PUB port.
+                @test isready(inbox)  # eval result arrives via new SUB socket
+
+                # Clean up inbox
+                lock(conn._eval_inboxes_lock) do
+                    delete!(conn._eval_inboxes, rid2)
+                end
+
+            finally
+                stop_mock_gate!(gate2)
+            end
+        finally
+            lock(mgr.lock) do
+                for c in mgr.connections
+                    Kaimon.disconnect!(c)
+                end
+            end
+        end
+    end
+
+end

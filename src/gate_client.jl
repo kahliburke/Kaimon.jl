@@ -1772,22 +1772,38 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
         conn.allow_mirror = Bool(get(result, :allow_mirror, true))
         conn.mirror_repl = Bool(get(result, :mirror_repl, false))
 
-        # Connect SUB socket from pong stream_endpoint (TCP ephemeral port support)
+        # Connect or reconnect SUB socket from pong stream_endpoint.
+        # When a gate restarts on the same REQ port, the PUB port changes but
+        # the old SUB socket is still set — detect this via endpoint mismatch
+        # and replace the stale SUB socket. (#35)
         pong_stream = string(get(result, :stream_endpoint, ""))
-        if !isempty(pong_stream) && conn.sub_socket === nothing
-            conn.stream_endpoint = pong_stream
-            try
-                sub_ctx = Context()
-                sub = Socket(sub_ctx, SUB)
-                sub.rcvtimeo = 0
-                sub.linger = 0
-                sub.rcvhwm = 0
-                subscribe(sub, "")
-                ZMQ.connect(sub, pong_stream)
-                conn.sub_socket = sub
-                _push_log!(:info, "TCP stream connected: $pong_stream ($(conn.display_name))")
-            catch e
-                _push_log!(:warn, "TCP stream connect failed: $pong_stream — $(sprint(showerror, e))")
+        if !isempty(pong_stream)
+            needs_sub = conn.sub_socket === nothing
+            if !needs_sub && pong_stream != conn.stream_endpoint
+                # Gate restarted — PUB port changed. Close the stale SUB socket.
+                _push_log!(:info, "TCP stream endpoint changed: $(conn.stream_endpoint) → $pong_stream ($(conn.display_name))")
+                try; close(conn.sub_socket); catch; end
+                conn.sub_socket = nothing
+                needs_sub = true
+            end
+            if needs_sub
+                conn.stream_endpoint = pong_stream
+                try
+                    sub_ctx = Context()
+                    sub = Socket(sub_ctx, SUB)
+                    sub.rcvtimeo = 0
+                    sub.linger = 0
+                    sub.rcvhwm = 0
+                    subscribe(sub, "")
+                    ZMQ.connect(sub, pong_stream)
+                    conn.sub_socket = sub
+                    _push_log!(:info, "TCP stream connected: $pong_stream ($(conn.display_name))")
+                catch e
+                    _push_log!(:warn, "TCP stream connect failed: $pong_stream — $(sprint(showerror, e))")
+                end
+                # Update metadata file with new stream_endpoint
+                _update_session_metadata!(mgr.sock_dir, conn.session_id;
+                    stream_endpoint = pong_stream)
             end
         end
     else
