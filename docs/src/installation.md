@@ -32,9 +32,32 @@ To pin a specific version:
 ]app add Kaimon@1.2.2
 ```
 
-### As a Library
+### Connect a Julia session (KaimonGate)
 
-To use Kaimon as a Julia package (e.g., for `Gate.serve()` in your own projects):
+To make one of your project's Julia sessions reachable by the `kaimon` dashboard,
+you only need the lightweight **[KaimonGate](https://github.com/kahliburke/Kaimon.jl)**
+package. It depends on just ZMQ and the standard library, so it won't pull
+Kaimon's full dependency tree into your project — keeping installs fast and
+avoiding version conflicts (important on remote/compute nodes):
+
+```julia
+pkg> add KaimonGate
+```
+
+Then, in the session you want to expose:
+
+```julia
+using KaimonGate
+KaimonGate.serve()
+```
+
+The session appears in the running `kaimon` TUI. This is the recommended way to
+connect your own projects, whether local or remote.
+
+### As a Library (full Kaimon)
+
+You can also add the full `Kaimon` package as a dependency. It re-exports the gate
+as `Kaimon.Gate`, so `Kaimon.Gate.serve()` works as before:
 
 ```julia
 using Pkg

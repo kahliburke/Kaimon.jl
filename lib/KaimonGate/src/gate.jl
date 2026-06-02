@@ -135,7 +135,7 @@ publishes breakpoint info via the PUB socket, and blocks until an agent
 sends a continue command via the debug protocol.
 
 Insert into code as:
-    Kaimon.Gate._breakpoint_hook(Base.@locals; file=@__FILE__, line=@__LINE__)
+    KaimonGate._breakpoint_hook(Base.@locals; file=@__FILE__, line=@__LINE__)
 """
 function _breakpoint_hook(locals::Dict{Symbol,Any}; file::String = "unknown", line::Int = 0)
     # Keep Infiltrator's async check disabled so subsequent @infiltrate calls work
@@ -275,7 +275,7 @@ function send_key(key::String, modifier::Symbol=:none)
     # handle key event
 end
 
-Gate.serve(tools=[GateTool("send_key", send_key)])
+KaimonGate.serve(tools=[GateTool("send_key", send_key)])
 ```
 """
 struct GateTool
@@ -1848,14 +1848,14 @@ to override the TTY check.
 
 # Example
 ```julia
-using Kaimon
-Gate.serve()
+using KaimonGate
+KaimonGate.serve()
 
 # With custom tools
-Gate.serve(tools=[GateTool("send_key", my_key_handler)])
+KaimonGate.serve(tools=[GateTool("send_key", my_key_handler)])
 
 # TCP mode for remote debugging (e.g. from a model server)
-Gate.serve(mode=:tcp, port=9876, force=true)
+KaimonGate.serve(mode=:tcp, port=9876, force=true)
 ```
 
 # Environment variables
@@ -2256,7 +2256,7 @@ reconnects automatically.  Equivalent to what the agent's `manage_repl` tool
 does, but callable directly from your REPL.
 
 Uses `execvp` to replace the current process image — same PID, fresh Julia
-state.  Your startup.jl runs again and `Gate.serve()` reconnects with the
+state.  Your startup.jl runs again and `KaimonGate.serve()` reconnects with the
 same session key.
 """
 function restart()
