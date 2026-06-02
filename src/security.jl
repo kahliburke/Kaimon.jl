@@ -266,6 +266,54 @@ function _set_global_install_dismissed(dismissed::Bool)
 end
 
 """
+    _get_gate_setup_version() -> Int
+
+Read the `gate_setup_version` from the config file — the version of the
+gate/session setup the user has applied. 0 (or missing) means a pre-versioned
+setup. Compared against `Kaimon.GATE_SETUP_VERSION` at startup so new setup
+updates can be offered once and then marked as applied.
+"""
+function _get_gate_setup_version()
+    config_path = get_global_config_path()
+    isfile(config_path) || return 0
+    try
+        data = JSON.parse(read(config_path, String); dicttype = Dict{String,Any})
+        return Int(get(data, "gate_setup_version", 0))
+    catch
+        return 0
+    end
+end
+
+"""
+    _set_gate_setup_version(version::Int) -> Bool
+
+Persist the `gate_setup_version` in the config file. Preserves all other keys.
+"""
+function _set_gate_setup_version(version::Int)
+    config_path = get_global_config_path()
+    config_dir = dirname(config_path)
+    isdir(config_dir) || mkpath(config_dir)
+    existing = if isfile(config_path)
+        try
+            JSON.parse(read(config_path, String); dicttype = Dict{String,Any})
+        catch
+            Dict{String,Any}()
+        end
+    else
+        Dict{String,Any}()
+    end
+    existing["gate_setup_version"] = version
+    try
+        write(config_path, JSON.json(existing, 2))
+        Sys.iswindows() || chmod(config_path, 0o600)
+        return true
+    catch e
+        @warn "Failed to save gate setup version" exception = e
+        return false
+    end
+end
+
+"""
     validate_api_key(key::String, config::SecurityConfig) -> Bool
 
 Validate an API key against the security configuration.

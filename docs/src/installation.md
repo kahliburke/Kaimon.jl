@@ -36,9 +36,8 @@ To pin a specific version:
 
 To make one of your project's Julia sessions reachable by the `kaimon` dashboard,
 you only need the lightweight **[KaimonGate](https://github.com/kahliburke/Kaimon.jl)**
-package. It depends on just ZMQ and the standard library, so it won't pull
-Kaimon's full dependency tree into your project — keeping installs fast and
-avoiding version conflicts (important on remote/compute nodes):
+package. It depends on just ZMQ and the standard library — fast to install and
+free of dependency conflicts (handy on remote/compute nodes):
 
 ```julia
 pkg> add KaimonGate

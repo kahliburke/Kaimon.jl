@@ -7,7 +7,7 @@ persistent Kaimon TUI server can send eval requests without living inside this
 process.
 
 `KaimonGate` carries only minimal dependencies (ZMQ + stdlib), so it can be
-added to any project without dragging in Kaimon's full dependency tree. The full
+added to any project. The full
 [Kaimon.jl](https://github.com/kahliburke/Kaimon.jl) package depends on
 `KaimonGate` for the gate implementation and wire protocol.
 

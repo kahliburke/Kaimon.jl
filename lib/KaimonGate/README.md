@@ -7,14 +7,12 @@ the piece that runs *inside* your Julia session so the Kaimon MCP server can exe
 code, debug, profile, and introspect it.
 
 `KaimonGate` depends only on **ZMQ + the standard library** (REPL, Serialization, Dates,
-TOML), so you can drop it into any project without pulling in Kaimon's full dependency
-tree (HTTP server, Qdrant client, TUI, …). This sidesteps version conflicts (e.g. JSON)
-and keeps install/precompile fast — which matters most on remote compute nodes and shared
-clusters.
+TOML), so you can drop it into any project without dependency conflicts. Install and
+precompile are fast — which matters most on remote compute nodes and shared clusters.
 
-> The full `kaimon` CLI is installed separately as a Julia app (`]app add Kaimon`) and
-> carries the heavy dependencies in its own isolated environment. You only need
-> `KaimonGate` in the sessions you want the CLI to connect to.
+> The full `kaimon` CLI is installed separately as a Julia app (`]app add Kaimon`) in its
+> own isolated environment. You only need `KaimonGate` in the sessions you want the CLI to
+> connect to.
 
 ## Installation
 

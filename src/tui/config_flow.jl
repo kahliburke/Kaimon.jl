@@ -577,7 +577,16 @@ function _strip_gate_block(content::AbstractString)
     return content
 end
 
-function _install_startup_jl(m::KaimonModel)
+"""
+    _write_gate_startup!() -> (status::Symbol, path::String)
+
+Install or migrate the gate auto-connect snippet in ~/.julia/config/startup.jl.
+Strips any existing managed block (current or legacy) and writes the current
+snippet. Returns `:current` if already up to date (no write), `:migrated` if an
+old block was replaced, or `:installed` if freshly added. Model-free so both the
+Config tab and the CLI setup-update can use it.
+"""
+function _write_gate_startup!()
     startup_dir = joinpath(homedir(), ".julia", "config")
     isdir(startup_dir) || mkpath(startup_dir)
     startup_file = joinpath(startup_dir, "startup.jl")
@@ -586,22 +595,22 @@ function _install_startup_jl(m::KaimonModel)
 
     had_block = occursin(_STARTUP_MARKER, existing)
     is_current = had_block && occursin("using KaimonGate", existing)
-    is_legacy = had_block && !is_current  # old `using Kaimon` snippet
-
-    if is_current
-        m.flow_message = "Gate snippet already up to date in\n$(_short_path(startup_file))"
-        m.flow_success = true
-        return
-    end
+    is_current && return (:current, startup_file)
 
     cleaned = rstrip(_strip_gate_block(existing))
     new_content = isempty(cleaned) ? snippet : cleaned * "\n\n" * snippet
     write(startup_file, new_content * "\n")
+    return (had_block ? :migrated : :installed, startup_file)
+end
 
-    m.flow_message = if is_legacy
-        "Migrated the old (full-Kaimon) gate snippet to the lightweight KaimonGate in\n$(_short_path(startup_file))"
+function _install_startup_jl(m::KaimonModel)
+    status, startup_file = _write_gate_startup!()
+    m.flow_message = if status === :current
+        "Gate snippet already up to date in\n$(_short_path(startup_file))"
+    elseif status === :migrated
+        "Updated the gate snippet in\n$(_short_path(startup_file))"
     else
-        "Appended gate snippet to\n$(_short_path(startup_file))\n\nEvery new Julia session will now auto-connect via KaimonGate."
+        "Appended gate snippet to\n$(_short_path(startup_file))\n\nEvery new Julia session will now auto-connect to Kaimon."
     end
     m.flow_success = true
 end

@@ -25,10 +25,9 @@ using Tachikoma
 using Match
 using KaimonGate
 
-# The eval gate lives in the lightweight `KaimonGate` package (ZMQ + stdlib),
-# so it can be installed in user sessions without Kaimon's full dependency
-# tree. `Gate` is kept as an alias for the historical `Kaimon.Gate.*` API —
-# every existing `Gate.foo` reference (and `using Kaimon; Gate.serve()`) keeps
+# The eval gate lives in the lightweight `KaimonGate` package (ZMQ + stdlib).
+# `Gate` is kept as an alias for the historical `Kaimon.Gate.*` API — every
+# existing `Gate.foo` reference (and `using Kaimon; Gate.serve()`) keeps
 # working. Kaimon enriches the gate via host hooks installed in `__init__`.
 const Gate = KaimonGate
 
@@ -283,6 +282,86 @@ function _install_gate_global(kaimongate_dir::String; remove_kaimon::Bool = fals
     """
     run(setenv(`$(Base.julia_cmd()) --startup-file=no -e $code`, env))
     return nothing
+end
+
+"""
+Current version of the gate/session setup the CLI knows how to produce. Bump
+this and add a step to `_apply_gate_setup_update!` whenever a change to how
+sessions connect should be offered to existing users; the new version is then
+prompted once and recorded.
+"""
+const GATE_SETUP_VERSION = 1
+
+"""
+    _apply_gate_setup_update!(; remove_kaimon)
+
+Apply the current gate setup: ensure the lightweight KaimonGate is in the global
+environment (optionally removing a legacy full-Kaimon install) and install or
+migrate the startup.jl auto-connect snippet.
+"""
+function _apply_gate_setup_update!(; remove_kaimon::Bool)
+    kaimongate_dir = joinpath(dirname(@__DIR__), "lib", "KaimonGate")
+    _install_gate_global(kaimongate_dir; remove_kaimon = remove_kaimon)
+    _write_gate_startup!()
+    return nothing
+end
+
+"""
+    _maybe_run_setup_update()
+
+On an interactive startup, check whether the user's gate setup is behind
+`GATE_SETUP_VERSION`. If so, offer a one-time opt-in update; record the applied
+version so it isn't offered again. If the setup is already current (e.g. the user
+configured it manually), record the version silently.
+"""
+function _maybe_run_setup_update()
+    isa(stdin, Base.TTY) || return
+    _get_gate_setup_version() >= GATE_SETUP_VERSION && return
+
+    # Inspect the current setup to decide whether anything needs doing.
+    global_env = joinpath(homedir(), ".julia", "environments",
+                          "v$(VERSION.major).$(VERSION.minor)")
+    global_proj = joinpath(global_env, "Project.toml")
+    global_deps = isfile(global_proj) ?
+        get(Pkg.TOML.parsefile(global_proj), "deps", Dict()) : Dict()
+    gate_in_global = haskey(global_deps, "KaimonGate")
+    kaimon_in_global = haskey(global_deps, "Kaimon")
+
+    startup_file = joinpath(homedir(), ".julia", "config", "startup.jl")
+    startup = isfile(startup_file) ? read(startup_file, String) : ""
+    legacy_startup = occursin("# Kaimon Gate — auto-connect", startup) &&
+        !occursin("using KaimonGate", startup)
+
+    needs_action = !gate_in_global || kaimon_in_global || legacy_startup
+    if !needs_action
+        # Already on the current setup — record and move on without prompting.
+        _set_gate_setup_version(GATE_SETUP_VERSION)
+        return
+    end
+
+    println("""
+
+    A Kaimon setup update is available — it improves how your Julia sessions
+    connect to the dashboard.
+    """)
+    print("Apply this update now? [Y/n/never]: ")
+    response = lowercase(strip(readline()))
+    if isempty(response) || response in ("y", "yes")
+        @info "Applying Kaimon setup update..."
+        try
+            _apply_gate_setup_update!(; remove_kaimon = kaimon_in_global)
+            _set_gate_setup_version(GATE_SETUP_VERSION)
+            println("\nDone — your Julia sessions are set up to connect to Kaimon.\n")
+        catch e
+            @warn "Setup update failed" exception = e
+        end
+    elseif response == "never"
+        _set_gate_setup_version(GATE_SETUP_VERSION)
+        println("\nGot it — won't ask again. Run `kaimon --reset-global-prompt` to re-check.\n")
+    else
+        # "n"/"no" (not now): leave the version so we ask again next start.
+        println()
+    end
 end
 
 # ============================================================================
@@ -2554,7 +2633,8 @@ function (@main)(ARGS)
             headless = true
         elseif arg == "--reset-global-prompt"
             _set_global_install_dismissed(false)
-            println("Reset: Kaimon will ask about global installation on next start.")
+            _set_gate_setup_version(0)
+            println("Reset: Kaimon will re-check your gate setup on next start.")
             return
         elseif arg in ("--help", "-h")
             println("""
@@ -2620,84 +2700,10 @@ function (@main)(ARGS)
         start!(; port = port)
         Base.JLOptions().isinteractive == 0 && wait(Condition())
     else
-        # Make the gate available in the global Julia environment so any session
-        # can connect. The gate now lives in the lightweight KaimonGate package
-        # (ZMQ + stdlib); installing full Kaimon globally would pull its entire
-        # dependency tree into every Julia session. The prompt is suppressed once
-        # the user declines (persisted under `global_install_dismissed`).
-        if isa(stdin, Base.TTY)
-            global_env = joinpath(homedir(), ".julia", "environments",
-                                  "v$(VERSION.major).$(VERSION.minor)")
-            global_proj = joinpath(global_env, "Project.toml")
-            global_deps = isfile(global_proj) ?
-                get(Pkg.TOML.parsefile(global_proj), "deps", Dict()) : Dict()
-            gate_in_global = haskey(global_deps, "KaimonGate")
-            kaimon_in_global = haskey(global_deps, "Kaimon")
-            dismissed = _get_global_install_dismissed()
-            kaimongate_dir = joinpath(dirname(@__DIR__), "lib", "KaimonGate")
-
-            if gate_in_global
-                # KaimonGate already available everywhere — nothing to do.
-            elseif kaimon_in_global
-                # Legacy setup: full Kaimon in the global env. The gate now ships
-                # as the lightweight KaimonGate; offer to replace it.
-                if !dismissed
-                    println("""
-
-                    Your global Julia environment has the full Kaimon package, which
-                    pulls ~120 dependencies into every Julia session. The gate now
-                    lives in the lightweight KaimonGate package (ZMQ + stdlib only).
-                    """)
-                    print("Replace Kaimon with KaimonGate in your global env? [Y/n/never]: ")
-                    response = lowercase(strip(readline()))
-                    if isempty(response) || response in ("y", "yes")
-                        @info "Installing KaimonGate and removing Kaimon from the global environment..."
-                        try
-                            _install_gate_global(kaimongate_dir; remove_kaimon = true)
-                            println("\nDone. KaimonGate is now in your global env and Kaimon was removed. New sessions auto-connect via the lightweight gate.\n")
-                        catch e
-                            @warn "Global transition failed" exception = e
-                        end
-                    elseif response in ("never", "n", "no")
-                        _set_global_install_dismissed(true)
-                        println("\nGot it — won't ask again. Run `kaimon --reset-global-prompt` if you change your mind.\n")
-                    else
-                        println()
-                    end
-                end
-            elseif !dismissed
-                println("""
-
-                KaimonGate is not installed in your global Julia environment.
-
-                To connect a session to the Kaimon dashboard you run
-                `KaimonGate.serve()` in it. For that to work in any session,
-                KaimonGate (a lightweight ZMQ + stdlib package) needs to be
-                available everywhere — the global environment is one way.
-
-                Alternatives if you prefer to keep your global env minimal:
-                  - Use Julia 1.12+ workspaces to share KaimonGate across projects
-                  - Use ShareAdd.jl on-demand: `@usingany KaimonGate`
-                  - Add KaimonGate as a dep to each project that needs the gate
-                """)
-                print("Add KaimonGate to your global Julia environment now? [Y/n/never]: ")
-                response = lowercase(strip(readline()))
-                if isempty(response) || response in ("y", "yes")
-                    @info "Installing KaimonGate in global environment..."
-                    try
-                        _install_gate_global(kaimongate_dir; remove_kaimon = false)
-                        println("\nDone. You can now call `using KaimonGate; KaimonGate.serve()` from any Julia session.\n")
-                    catch e
-                        @warn "Global install failed" exception = e
-                    end
-                elseif response in ("never", "n", "no")
-                    _set_global_install_dismissed(true)
-                    println("\nGot it — won't ask again. Run `kaimon --reset-global-prompt` if you change your mind.\n")
-                else
-                    println()
-                end
-            end
-        end
+        # Offer a one-time, versioned setup update if the user's gate setup is
+        # behind GATE_SETUP_VERSION (e.g. a legacy full-Kaimon global install or
+        # startup snippet). Records the applied version so it isn't re-prompted.
+        _maybe_run_setup_update()
 
         # First-time setup: launch security wizard if no config exists
         has_config = load_global_config() !== nothing
