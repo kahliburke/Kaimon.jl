@@ -2,7 +2,7 @@
 #
 # Complete example Kaimon extension demonstrating:
 #   - Tool registration via create_tools(GateTool)
-#   - Push-based panel updates via Gate.push_panel()
+#   - Push-based panel updates via KaimonGate.push_panel()
 #   - Graceful shutdown hook
 #   - TUI panel (see src/tui_panel.jl)
 #
@@ -14,7 +14,7 @@ module HelloExtension
 export create_tools, on_shutdown
 
 # Module-level state vectors. Tool handlers append here, then push snapshots
-# to the TUI panel via Gate.push_panel() so the panel updates in real time.
+# to the TUI panel via KaimonGate.push_panel() so the panel updates in real time.
 const GREETINGS = String[]
 const ROLLS = String[]
 
@@ -39,12 +39,12 @@ function create_tools(GateTool::Type)
             "Hello, $(name)! 🎉 Welcome to Kaimon extensions!" :
             "Hello, $(name)."
         push!(GREETINGS, msg)
-        # Push a snapshot to the TUI panel. Must use Main.Kaimon.Gate because
+        # Push a snapshot to the TUI panel. Must use Main.Kaimon.KaimonGate because
         # this module runs inside the extension subprocess where Kaimon is
         # loaded at Main scope, not inside this module's namespace.
         # copy() is required — push_panel serializes the value across ZMQ,
         # and the original vector may be mutated before serialization completes.
-        Main.Kaimon.Gate.push_panel("greetings", copy(GREETINGS))
+        Main.Kaimon.KaimonKaimonGate.push_panel("greetings", copy(GREETINGS))
         return msg
     end
 
@@ -57,7 +57,7 @@ function create_tools(GateTool::Type)
         result = rand(1:sides)
         msg = "🎲 Rolled a $result (d$sides)"
         push!(ROLLS, msg)
-        Main.Kaimon.Gate.push_panel("rolls", copy(ROLLS))
+        Main.Kaimon.KaimonKaimonGate.push_panel("rolls", copy(ROLLS))
         return msg
     end
 

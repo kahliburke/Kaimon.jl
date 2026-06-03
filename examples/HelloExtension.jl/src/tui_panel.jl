@@ -29,7 +29,7 @@ mutable struct HelloPanelState
     activity::Vector{String}   # timestamped event log
     selected::Int              # focused pane: 1=greetings, 2=rolls, 3=activity
     tick::Int
-    push_count::Int            # total Gate.push_panel() updates received
+    push_count::Int            # total KaimonGate.push_panel() updates received
     session_key::String        # extension's gate session key
 end
 
@@ -48,13 +48,13 @@ end
 function init(ctx)
     state = HelloPanelState(String[], String[], String[], 1, 0, 0, ctx.session_key)
     _log!(state, "Panel initialized — session $(ctx.session_key)")
-    _log!(state, "Waiting for Gate.push_panel() events via PUB/SUB...")
+    _log!(state, "Waiting for KaimonGate.push_panel() events via PUB/SUB...")
     return state
 end
 
 # ── Protocol: update! ────────────────────────────────────────────────────────
 # Called every frame (~60 fps). Read pushed state from ctx._cache[:panel_state]
-# which is populated automatically by Gate.push_panel() calls in the extension.
+# which is populated automatically by KaimonGate.push_panel() calls in the extension.
 
 function update!(state::HelloPanelState, ctx)
     state.tick = ctx.tick

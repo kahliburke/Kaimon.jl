@@ -132,8 +132,8 @@ function _build_extension_script(config::ExtensionConfig)
         """
     # Event subscription: connect SUB to Kaimon's global event PUB
     using Serialization
-    let sock_dir = Kaimon.Gate.sock_dir()
-        sub = Kaimon.ZMQ.Socket(Kaimon.Gate._GATE_CONTEXT[], Kaimon.ZMQ.SUB)
+    let sock_dir = Kaimon.KaimonGate.sock_dir()
+        sub = Kaimon.ZMQ.Socket(Kaimon.KaimonGate._GATE_CONTEXT[], Kaimon.ZMQ.SUB)
         sub.rcvtimeo = 1000  # 1s timeout so loop can check for shutdown
         Kaimon.ZMQ.connect(sub, "ipc://\$(sock_dir)/kaimon-events.sock")
         $topics_code
@@ -174,8 +174,8 @@ function _build_extension_script(config::ExtensionConfig)
         ))
     end
     using $(m.module_name)
-    tools = $(m.module_name).$(m.tools_function)(Kaimon.Gate.GateTool)
-    Kaimon.Gate.serve(tools=tools, namespace=$(repr(m.namespace)), force=true, allow_mirror=false, allow_restart=false, spawned_by="extension"$on_shutdown_kwarg)
+    tools = $(m.module_name).$(m.tools_function)(Kaimon.KaimonGate.GateTool)
+    Kaimon.KaimonGate.serve(tools=tools, namespace=$(repr(m.namespace)), force=true, allow_mirror=false, allow_restart=false, spawned_by="extension"$on_shutdown_kwarg)
     $event_hook
     while true; sleep(60); end
     """

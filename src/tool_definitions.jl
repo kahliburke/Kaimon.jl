@@ -570,7 +570,7 @@ connect_tcp_tool = @mcp_tool(
     :connect_tcp,
     """Connect to a remote Julia gate session over TCP.
 
-Use this to connect to a gate started with `Gate.serve(mode=:tcp, port=9876)` on
+Use this to connect to a gate started with `KaimonGate.serve(mode=:tcp, port=9876)` on
 a remote (or local) machine. The PUB stream endpoint is resolved from the gate's handshake.""",
     Dict(
         "type" => "object",
@@ -738,7 +738,7 @@ set_tty_tool = @mcp_tool(
 macOS/Linux only. Requires a Unix TTY device path (e.g. /dev/ttys042).
 
 Detects the terminal size and stores the path so the app can call
-`Tachikoma.app(model; tty_out = Gate.tty_path(), tty_size = Gate.tty_size())` to render there.
+`Tachikoma.app(model; tty_out = KaimonGate.tty_path(), tty_size = KaimonGate.tty_size())` to render there.
 
 Automatically pauses the shell in the remote terminal (via SIGSTOP) and disables echo, so the display is clean. Both are restored when the TUI exits via `restore_tty!`.
 
@@ -2288,7 +2288,7 @@ and `tool_args` directly for a custom gate tool call.
         sess_key = if isempty(session)
             conns = connected_sessions(mgr)
             if length(conns) == 0
-                return "ERROR: No REPL sessions connected. Start a gate in your Julia REPL:\n  Gate.serve()"
+                return "ERROR: No REPL sessions connected. Start a gate in your Julia REPL:\n  using KaimonGate; KaimonGate.serve()"
             elseif length(conns) == 1
                 resolved_conn = conns[1]
                 short_key(conns[1])
@@ -2479,9 +2479,9 @@ cancel_eval_tool = @mcp_tool(
     """Cancel a running background job by eval ID.
 
 Sends a cancellation signal to the gate session and marks the job in the database.
-Running code that calls `Gate.is_cancelled()` in its loop will stop cooperatively.
+Running code that calls `KaimonGate.is_cancelled()` in its loop will stop cooperatively.
 Julia doesn't support forced thread interruption, so cancellation is cooperative —
-the running code must check `Gate.is_cancelled()` periodically.""",
+the running code must check `KaimonGate.is_cancelled()` periodically.""",
     Dict(
         "type" => "object",
         "properties" => Dict(
@@ -2510,7 +2510,7 @@ the running code must check `Gate.is_cancelled()` periodically.""",
                 end
             end
 
-            # Send cancel to the gate session so Gate.is_cancelled() returns true
+            # Send cancel to the gate session so KaimonGate.is_cancelled() returns true
             if !isempty(session_key)
                 conn = get_connection_by_key(mgr, session_key)
                 if conn !== nothing
@@ -2527,7 +2527,7 @@ the running code must check `Gate.is_cancelled()` periodically.""",
         # Update database
         Database.update_job!(eval_id; status="cancelled", cancelled=true, finished_at=time())
 
-        "Job $eval_id marked as cancelled. Running code can check Gate.is_cancelled() to stop cooperatively."
+        "Job $eval_id marked as cancelled. Running code can check KaimonGate.is_cancelled() to stop cooperatively."
     end
 )
 

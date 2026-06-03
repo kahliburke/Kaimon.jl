@@ -9,10 +9,10 @@ Tests the gate ↔ kaimon streaming channel under load. Specifically exercises:
   - REQ socket reliability under rapid fire
 
 Prerequisites:
-  A Julia session with Gate.serve() active, e.g.:
+  A Julia session with KaimonGate.serve() active, e.g.:
       julia --project test/GateToolTest.jl/src/GateToolTest.jl -e 'using GateToolTest; GateToolTest.run()'
   OR any Julia REPL that called:
-      using Kaimon; Gate.serve()
+      using KaimonGate; KaimonKaimonGate.serve()
 
 Usage (in any Julia REPL with Kaimon available):
   include("test/zmq_stress.jl")
@@ -121,7 +121,7 @@ function _acquire(session)
         Kaimon.stop!(mgr)
         error(
             "No connected gate session found in $(sock_dir). " *
-            "Start a gate with Gate.serve() first.",
+            "Start a gate with KaimonGate.serve() first.",
         )
     end
 
@@ -382,7 +382,7 @@ function run(; session = nothing, scenarios = 1:6, verbose = false)
         _acquire(session)
     catch e
         println("\nERROR: ", sprint(showerror, e))
-        println("\nStart a gate first:  julia --project -e 'using Kaimon; Gate.serve(force=true)'")
+        println("\nStart a gate first:  julia --project -e 'using KaimonGate; KaimonGate.serve(force=true)'")
         return nothing
     end
 

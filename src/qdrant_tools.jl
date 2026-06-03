@@ -777,7 +777,7 @@ qdrant_reindex_file_tool = @mcp_tool(
 )
 
 # ============================================================================
-# Low-Level Tools (for extensions calling via Gate.call_tool)
+# Low-Level Tools (for extensions calling via KaimonGate.call_tool)
 # ============================================================================
 
 qdrant_collection_exists_tool = @mcp_tool(

@@ -20,14 +20,14 @@ const _SERVICE_ENDPOINT = Ref{String}("")
     start_service_endpoint!() -> NamedTuple
 
 Bind a ZMQ REP socket for tool call requests from gate sessions.
-Gate code calls `Gate.call_tool(name, args)` which sends requests to this
+Gate code calls `KaimonGate.call_tool(name, args)` which sends requests to this
 endpoint. The dispatcher looks up the tool in Kaimon's MCP tool registry
 and calls its handler.
 
 Returns `(endpoint, socket, context)` on success.
 """
 function start_service_endpoint!()
-    endpoint = "ipc://$(Gate.sock_dir())/kaimon-service.sock"
+    endpoint = "ipc://$(KaimonGate.sock_dir())/kaimon-service.sock"
     sock_path = replace(endpoint, "ipc://" => "")
 
     # Clean up stale socket file
@@ -47,7 +47,7 @@ function start_service_endpoint!()
     _SERVICE_TASK[] = @async begin
         while _SERVICE_RUNNING[]
             try
-                raw = Gate._zmq_recv(sock)
+                raw = KaimonGate._zmq_recv(sock)
                 request = Serialization.deserialize(IOBuffer(raw))
                 response = Base.invokelatest(_dispatch_service, request)
                 io = IOBuffer()
@@ -102,7 +102,7 @@ function stop_service_endpoint!()
         ispath(sock_path) && rm(sock_path; force = true)
     end
 
-    # Null refs — let GC handle ZMQ cleanup (same pattern as Gate._cleanup)
+    # Null refs — let GC handle ZMQ cleanup (same pattern as KaimonGate._cleanup)
     _SERVICE_SOCKET[] = nothing
     _SERVICE_CONTEXT[] = nothing
     _SERVICE_ENDPOINT[] = ""

@@ -53,7 +53,7 @@ The first run opens a setup wizard (security mode, API key, port). After that, t
 From the dashboard:
 - Press **`i`** in the Config tab to write MCP config for Claude Code, Cursor, VS Code, or Gemini CLI
 - Press **`g`** to add a Gate snippet to `~/.julia/config/startup.jl` so every Julia session auto-connects
-- Or connect manually from any REPL: `using Kaimon; Gate.serve()`
+- Or connect manually from any REPL: `]add KaimonGate; using KaimonGate; KaimonGate.serve()`
 
 ## Tool Categories
 
@@ -72,10 +72,18 @@ From the dashboard:
 
 ## The Gate
 
+The gate is a separately installable, lightweight package — **`KaimonGate`**
+(ZMQ + stdlib only, no heavy deps) — so you can drop it into any project, or
+onto a remote/compute node, without the full Kaimon dependency tree:
+
+```julia
+]add KaimonGate
+```
+
 Connect any Julia process and expose domain-specific tools to AI agents:
 
 ```julia
-using Kaimon.Gate: GateTool, serve
+using KaimonGate: GateTool, serve
 
 function analyze_data(path::String, threshold::Float64=0.95)
     data = load(path)
@@ -83,12 +91,13 @@ function analyze_data(path::String, threshold::Float64=0.95)
 end
 
 # Kaimon auto-generates the MCP schema from the function signature
-serve(tools=[GateTool(analyze_data)])
+serve(tools=[GateTool("analyze_data", analyze_data)])
 ```
 
 The connected REPL appears as a session in Kaimon's TUI. The agent can call
 `analyze_data` alongside all built-in tools, with full argument validation
-and type checking.
+and type checking. The full `Kaimon` install bundles `KaimonGate` automatically
+(a deprecated `Kaimon.Gate` alias keeps old `Gate.serve()` snippets working).
 
 ## Documentation
 

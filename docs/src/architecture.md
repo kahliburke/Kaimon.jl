@@ -100,12 +100,17 @@ The server (`src/MCPServer.jl`) is an HTTP.jl server that handles:
 
 ## The Gate Module
 
-The Gate (`src/gate.jl`) is the bridge between the Kaimon server and
-external Julia processes.
+The Gate is the bridge between the Kaimon server and external Julia processes.
+It lives in the standalone **`KaimonGate`** subpackage (`lib/KaimonGate/`),
+which depends only on ZMQ + stdlib so it can be installed on its own
+(`]add KaimonGate`). The full `Kaimon` package depends on `KaimonGate` and
+enriches it at load time via host hooks (below). It also keeps a **deprecated**
+`Kaimon.Gate` alias for the historical `Kaimon.Gate.*` API; internally and in
+new code, everything uses `KaimonGate` directly.
 
 ### Gate Server (REPL side)
 
-`Gate.serve()` runs inside the user's Julia REPL. It:
+`KaimonGate.serve()` runs inside the user's Julia REPL. It:
 
 1. Binds a ZMQ REP socket at `~/.cache/kaimon/sock/<session-id>.sock`.
 2. Opens a ZMQ PUB socket for streaming stdout/stderr during eval.
@@ -130,12 +135,36 @@ process. It:
 4. Provides `eval_remote()` and `eval_remote_async()` for sending code to
    specific sessions.
 
+### Wire Protocol & Host Hooks
+
+Because `KaimonGate` and `Kaimon` are versioned independently, wire
+compatibility is governed by a dedicated `KaimonGate.PROTOCOL_VERSION` (carried
+in the ping/pong) rather than by comparing package versions. The client warns
+only when the protocol versions differ; older gates that predate the field are
+treated as compatible.
+
+`KaimonGate` runs standalone with safe defaults. When the full `Kaimon` package
+loads, its `__init__` injects richer behavior through host-hook setters, so the
+lightweight gate can report Kaimon's version, apply personality, read the
+REPL-mirror preference, drive Tachikoma for TTY hand-off on restart, derive a
+TCP auth token from the security config, and respawn the full package on
+restart:
+
+| Hook setter | Standalone default | Under full Kaimon |
+|---|---|---|
+| `set_version_provider!` | KaimonGate's version | Kaimon's `PACKAGE_VERSION` |
+| `set_personality_provider!` | `"⚡"` | `Kaimon.load_personality` |
+| `set_mirror_pref_provider!` | `false` | preference reader |
+| `set_tachikoma!` | `nothing` (no TTY hand-off) | the Tachikoma module |
+| `set_auth_token_provider!` | `""` (no token) | token from security config |
+| `set_restart_code_builder!` | reload KaimonGate | reload full Kaimon |
+
 ### Session-Scoped Tools (GateTool)
 
 Gate sessions can register custom tools:
 
 ```julia
-Gate.serve(tools=[Gate.GateTool("my_tool", my_handler)])
+KaimonGate.serve(tools=[KaimonGate.GateTool("my_tool", my_handler)])
 ```
 
 The Gate reflects on the handler function's type signature using Julia's
@@ -157,8 +186,8 @@ The Gate provides a service endpoint that allows gate sessions (including extens
 
 ```julia
 # From a gate session or extension:
-result = Gate.call_tool(:qdrant_search_code, Dict{String,Any}("query" => "routing"))
-tools = Gate.list_tools()
+result = KaimonGate.call_tool(:qdrant_search_code, Dict{String,Any}("query" => "routing"))
+tools = KaimonGate.list_tools()
 ```
 
 This enables extensions to compose with built-in tools — for example, a documentation extension can use `qdrant_search_code` to find relevant code before generating docs.

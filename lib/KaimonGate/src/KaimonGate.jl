@@ -28,11 +28,17 @@ using Dates
 using TOML
 
 # ── Wire protocol version ────────────────────────────────────────────────────
-# The gate and the Kaimon client exchange Serialization-encoded messages over
-# ZMQ. This version gates wire compatibility independently of the package
-# version — bump it only on a wire-breaking change to the REQ/REP or PUB/SUB
-# message format. The client compares this (reported in the pong) against the
-# range it speaks, rather than comparing package versions.
+"""
+    KaimonGate.PROTOCOL_VERSION
+
+Wire-protocol version reported in the gate's pong. The gate and the Kaimon
+client exchange Serialization-encoded messages over ZMQ; this constant gates
+wire compatibility **independently of the package version** — it is bumped only
+on a wire-breaking change to the REQ/REP or PUB/SUB message format. The client
+compares this against the range it speaks rather than comparing package
+versions, so a `KaimonGate` session and a `Kaimon` CLI on different releases
+interoperate as long as their protocol versions match.
+"""
 const PROTOCOL_VERSION = 1
 
 # ── Host-integration hooks ───────────────────────────────────────────────────
@@ -45,6 +51,10 @@ const _VERSION_PROVIDER     = Ref{Function}(() -> string(something(pkgversion(@_
 const _MIRROR_PREF_PROVIDER = Ref{Function}(() -> false)
 const _PERSONALITY_PROVIDER = Ref{Function}(() -> "⚡")
 const _TACHIKOMA            = Ref{Union{Module,Nothing}}(nothing)
+# TCP auth token for the gate when KAIMON_GATE_TOKEN is unset. Standalone there's
+# no token (open, same as :lax); the host (Kaimon) injects a provider that derives
+# one from its security config so a strict config still enforces auth.
+const _AUTH_TOKEN_PROVIDER  = Ref{Function}(() -> "")
 
 """Default restart preamble for a standalone gate: reload KaimonGate and serve."""
 default_restart_code(serve_args::AbstractString) = """
@@ -63,6 +73,8 @@ set_mirror_pref_provider!(f)  = (_MIRROR_PREF_PROVIDER[] = f)
 set_personality_provider!(f)  = (_PERSONALITY_PROVIDER[] = f)
 """Install the host's Tachikoma module (or `nothing` to disable TTY hand-off)."""
 set_tachikoma!(m)             = (_TACHIKOMA[] = m)
+"""Install the host's TCP auth-token provider — `() -> String` (`""` for no auth)."""
+set_auth_token_provider!(f)   = (_AUTH_TOKEN_PROVIDER[] = f)
 """Install the host's restart-code builder — `(serve_args::String) -> code::String`."""
 set_restart_code_builder!(f)  = (_RESTART_CODE_BUILDER[] = f)
 
@@ -97,6 +109,6 @@ public is_cancelled, stash, progress, push_panel
 public tty_path, tty_size, uninstall_infiltrator_hook!
 public PROTOCOL_VERSION
 public set_version_provider!, set_mirror_pref_provider!, set_personality_provider!
-public set_tachikoma!, set_restart_code_builder!
+public set_tachikoma!, set_restart_code_builder!, set_auth_token_provider!
 
 end # module KaimonGate

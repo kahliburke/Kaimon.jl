@@ -18,11 +18,12 @@ There are three ways to connect a REPL, ranging from manual to fully automatic.
 
 ### Manual
 
-Call `Gate.serve()` in any running REPL:
+Add the lightweight `KaimonGate` package and call `serve()` in any running REPL:
 
 ```julia
-using Kaimon
-Gate.serve()
+]add KaimonGate
+using KaimonGate
+KaimonGate.serve()
 ```
 
 This is non-blocking — the gate runs in a background task and the REPL remains
@@ -38,7 +39,7 @@ it launches in that directory:
 julia --load=.julia-startup.jl
 ```
 
-The generated file loads Revise and calls `Gate.serve()`, both wrapped in
+The generated file loads Revise and calls `KaimonGate.serve()`, both wrapped in
 `try/catch` so startup succeeds even when Kaimon is not running:
 
 ```julia
@@ -49,10 +50,10 @@ catch e
     @info "ℹ Revise not loaded (optional)"
 end
 try
-    using Kaimon
-    Gate.serve()
+    using KaimonGate
+    KaimonGate.serve()
 catch e
-    @warn "Kaimon Gate failed to start" exception = e
+    @warn "KaimonGate failed to start" exception = e
 end
 ```
 
@@ -62,7 +63,7 @@ The Config tab's **"Julia startup.jl (global gate)"** option appends the same
 snippet to `~/.julia/config/startup.jl`. After that, every Julia session on
 your machine auto-connects to Kaimon without any project-level setup.
 
-Each REPL that calls `Gate.serve()` registers as a separate session with its own session key.
+Each REPL that calls `KaimonGate.serve()` registers as a separate session with its own session key.
 
 ### Managed sessions
 
@@ -80,7 +81,7 @@ When a managed session starts, Kaimon:
 
 1. Spawns a Julia subprocess via PTY (pseudo-terminal).
 2. Activates the project environment and runs `Pkg.instantiate`.
-3. Loads Revise and calls `Gate.serve(spawned_by="agent")`.
+3. Loads Revise and calls `KaimonGate.serve(spawned_by="agent")`.
 4. Waits up to 120 seconds for the gate connection.
 
 The spawned process connects back as a regular gate session. It appears in the Sessions tab like any other session, but is tagged with `spawned_by: agent` to distinguish it from manually started REPLs.
@@ -137,10 +138,10 @@ manage_repl(command="restart")
 manage_repl(command="restart", session="a3f8b2c1")
 ```
 
-**From the REPL** — call `Gate.restart()` directly:
+**From the REPL** — call `KaimonGate.restart()` directly:
 
 ```julia
-Gate.restart()
+KaimonGate.restart()
 ```
 
 **From the TUI** — press `r` on the selected session in the Sessions tab.
@@ -167,7 +168,7 @@ This stops the session permanently. The session key is deregistered, and the REP
 
 ## Auto-Discovery
 
-Kaimon uses a file-based discovery mechanism. When a REPL calls `Gate.serve()`, it writes a ZMQ socket file to:
+Kaimon uses a file-based discovery mechanism. When a REPL calls `KaimonGate.serve()`, it writes a ZMQ socket file to:
 
 ```
 ~/.cache/kaimon/sock/

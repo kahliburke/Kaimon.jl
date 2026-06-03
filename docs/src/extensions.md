@@ -10,7 +10,7 @@ An extension is a Julia project that:
 2. Declares those tools in a `kaimon.toml` manifest at the project root.
 3. Is registered in Kaimon's extension registry (`~/.config/kaimon/extensions.json`).
 
-When Kaimon starts (or when you manually start an extension), it spawns a Julia subprocess that activates the extension project, calls its tools function, and connects back via `Gate.serve()`. The extension's tools appear in the MCP tool list under a namespace prefix (e.g., `smlabnotes.search`).
+When Kaimon starts (or when you manually start an extension), it spawns a Julia subprocess that activates the extension project, calls its tools function, and connects back via `KaimonGate.serve()`. The extension's tools appear in the MCP tool list under a namespace prefix (e.g., `smlabnotes.search`).
 
 ## The `kaimon.toml` Manifest
 
@@ -177,7 +177,7 @@ function create_tools(GateTool::Type)
     function greet(name::String, enthusiastic::Bool = false)::String
         msg = enthusiastic ? "Hello, $(name)! 🎉" : "Hello, $(name)."
         # Push state to TUI panel (see "TUI Panel Protocol" below)
-        Main.Kaimon.Gate.push_panel("last_greeting", msg)
+        Main.Kaimon.KaimonGate.push_panel("last_greeting", msg)
         return msg
     end
 
@@ -200,16 +200,16 @@ Add the extension through the TUI Extensions tab (`a` key) or add an entry to `~
 Extensions can call back into Kaimon's MCP tools via the service endpoint:
 
 ```julia
-using Kaimon
+# In a tool handler (Kaimon is loaded at Main scope in the extension subprocess):
 
 # Call any registered MCP tool
-result = Gate.call_tool(:qdrant_search_code, Dict{String,Any}(
+result = Main.Kaimon.KaimonGate.call_tool(:qdrant_search_code, Dict{String,Any}(
     "query" => "HTTP routing",
     "limit" => "5",
 ))
 
 # Discover available tools
-tools = Gate.list_tools()
+tools = Main.Kaimon.KaimonGate.list_tools()
 ```
 
 This uses a ZMQ REQ/REP connection to the Kaimon server's service socket, allowing extensions to compose with built-in tools and other extensions.
@@ -264,16 +264,16 @@ function handle_key!(state, evt::Tachikoma.KeyEvent)::Bool
 end
 ```
 
-## `Gate.push_panel()` — Extension to Panel Communication
+## `KaimonGate.push_panel()` — Extension to Panel Communication
 
 Instead of polling the extension process with `ctx.eval()`, tool handlers can push state updates to the TUI panel in real time:
 
 ```julia
 # In your tool handler (runs in the extension subprocess):
-Main.Kaimon.Gate.push_panel("key", value)
+Main.Kaimon.KaimonGate.push_panel("key", value)
 
 # Batch form:
-Main.Kaimon.Gate.push_panel("greetings" => greetings, "status" => "ready")
+Main.Kaimon.KaimonGate.push_panel("greetings" => greetings, "status" => "ready")
 ```
 
 Values can be any serializable Julia type — strings, numbers, vectors, dicts, etc. They're delivered via ZMQ PUB/SUB with no blocking.
@@ -290,8 +290,8 @@ function update!(state, ctx)
 end
 ```
 
-!!! note "Use `Main.Kaimon.Gate`"
-    Extension modules run in their own namespace. Since `Kaimon` is loaded at `Main` scope in the extension subprocess, you must use `Main.Kaimon.Gate.push_panel()` — not just `Gate.push_panel()`.
+!!! note "Use `Main.Kaimon.KaimonGate`"
+    Extension modules run in their own namespace. Since `Kaimon` is loaded at `Main` scope in the extension subprocess, you must use `Main.Kaimon.KaimonGate.push_panel()` — not just `KaimonGate.push_panel()`.
 
 !!! note "Copy mutable values"
     Always `copy()` mutable values before pushing: `push_panel("data", copy(vec))`. The value is serialized asynchronously, and the original may be mutated before serialization completes.

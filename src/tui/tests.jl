@@ -727,7 +727,7 @@ function _start_test_run_from_tui!(m::KaimonModel)
     conns = mgr !== nothing ? connected_sessions(mgr) : REPLConnection[]
 
     if isempty(conns)
-        m.test_status_msg = "No gate sessions connected — run Gate.serve() in a Julia REPL first"
+        m.test_status_msg = "No gate sessions connected — run KaimonGate.serve() in a Julia REPL first"
         return
     end
 

@@ -25,23 +25,25 @@ using Tachikoma
 using Match
 using KaimonGate
 
-# The eval gate lives in the lightweight `KaimonGate` package (ZMQ + stdlib).
-# `Gate` is kept as an alias for the historical `Kaimon.Gate.*` API — every
-# existing `Gate.foo` reference (and `using Kaimon; Gate.serve()`) keeps
-# working. Kaimon enriches the gate via host hooks installed in `__init__`.
-const Gate = KaimonGate
+# The eval gate lives in the lightweight `KaimonGate` package (ZMQ + stdlib);
+# Kaimon code uses `KaimonGate.*` directly. `Gate` is retained only as a
+# DEPRECATED alias so the historical `Kaimon.Gate.*` API (and old
+# `using Kaimon; Gate.serve()` snippets) keep working during the transition —
+# it emits a deprecation warning under `--depwarn=yes`. Kaimon enriches the gate
+# via host hooks installed in `__init__`.
+Base.@deprecate_binding Gate KaimonGate
 
 """Kaimon-flavored restart preamble: respawn with the full Kaimon package."""
 _gate_restart_code(serve_args::AbstractString) = """
 try; using Revise; catch; end
 using Kaimon
 delete!(ENV, "KAIMON_RESTART_SESSION")
-Gate.serve($serve_args)
+Kaimon.KaimonGate.serve($serve_args)
 """
 
-# Only export Gate (primary user-facing API) and @mcp_tool (for tool authors).
-# Everything else is accessible as Kaimon.foo() to avoid namespace pollution.
-export Gate, @mcp_tool, MCPTool
+# `@deprecate_binding` above already exports `Gate` (deprecated). Export the
+# tool-authoring macro and type; everything else is accessible as Kaimon.foo().
+export @mcp_tool, MCPTool
 
 # ── Shared cache directory ────────────────────────────────────────────────────
 # Single source of truth for ~/.cache/kaimon (respects XDG_CACHE_HOME).
@@ -253,7 +255,7 @@ function connect!()
     catch
         @info "Revise not available (optional)"
     end
-    @async Gate.serve()
+    @async KaimonGate.serve()
     @info "Kaimon gate started — session will appear in the TUI shortly"
     nothing
 end
@@ -344,6 +346,15 @@ function _maybe_run_setup_update()
     A Kaimon setup update is available — it improves how your Julia sessions
     connect to the dashboard.
     """)
+    if kaimon_in_global
+        println("""\
+    This will install the lightweight KaimonGate into your global environment and
+    remove the heavyweight Kaimon package from it. The `kaimon` CLI lives in its
+    own app environment, so this does not affect the CLI — but if you rely on
+    `using Kaimon` from your global environment, choose "n" and add KaimonGate
+    yourself instead.
+    """)
+    end
     print("Apply this update now? [Y/n/never]: ")
     response = lowercase(strip(readline()))
     if isempty(response) || response in ("y", "yes")
@@ -1374,7 +1385,8 @@ function _resolve_gate_conn(session::String)
         if isempty(available)
             return (
                 nothing,
-                "ERROR: No REPL sessions connected. Start a gate in your Julia REPL:\n  Gate.serve()",
+                "ERROR: No REPL sessions connected. Start a gate in your Julia REPL:\n" *
+                "  using KaimonGate; KaimonGate.serve()   # or, in a full Kaimon session: Gate.serve()",
             )
         end
         return (nothing, "ERROR: No session matched '$(session)'. Available: $available")
@@ -2734,6 +2746,10 @@ function __init__()
     KaimonGate.set_mirror_pref_provider!(get_gate_mirror_repl_preference)
     KaimonGate.set_tachikoma!(Tachikoma)
     KaimonGate.set_restart_code_builder!(_gate_restart_code)
+    KaimonGate.set_auth_token_provider!() do
+        config = load_global_config()
+        (config.mode != :lax && !isempty(config.api_keys)) ? first(config.api_keys) : ""
+    end
 
     # Set Qdrant collection prefix from env var or config
     env_prefix = get(ENV, "KAIMON_QDRANT_PREFIX", "")
@@ -2750,7 +2766,7 @@ function __init__()
     end
 
     # Auto-start TCP gate if configured via env vars or kaimon.toml [gate]
-    Gate._auto_serve!()
+    KaimonGate._auto_serve!()
 end
 
 end #module

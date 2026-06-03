@@ -9,12 +9,12 @@ using Serialization
 
 """Temporarily replace _SESSION_TOOLS[], restore on exit."""
 function with_tools(f, tools)
-    original = Kaimon.Gate._SESSION_TOOLS[]
-    Kaimon.Gate._SESSION_TOOLS[] = tools
+    original = Kaimon.KaimonGate._SESSION_TOOLS[]
+    Kaimon.KaimonGate._SESSION_TOOLS[] = tools
     try
         f()
     finally
-        Kaimon.Gate._SESSION_TOOLS[] = original
+        Kaimon.KaimonGate._SESSION_TOOLS[] = original
     end
 end
 
@@ -25,8 +25,8 @@ end
 @testset "Gate.handle_message :tool_call_async" begin
 
     @testset "unknown tool returns :error" begin
-        with_tools(Kaimon.Gate.GateTool[]) do
-            resp = Kaimon.Gate.handle_message((
+        with_tools(Kaimon.KaimonGate.GateTool[]) do
+            resp = Kaimon.KaimonGate.handle_message((
                 type = :tool_call_async,
                 name = "no_such_tool",
                 arguments = Dict{String,Any}(),
@@ -38,10 +38,10 @@ end
     end
 
     @testset "known tool returns :accepted with matching request_id" begin
-        tool = Kaimon.Gate.GateTool("noop_tool", (msg::String) -> msg)
+        tool = Kaimon.KaimonGate.GateTool("noop_tool", (msg::String) -> msg)
         with_tools([tool]) do
             rid = "req-accepted-42"
-            resp = Kaimon.Gate.handle_message((
+            resp = Kaimon.KaimonGate.handle_message((
                 type = :tool_call_async,
                 name = "noop_tool",
                 arguments = Dict{String,Any}("msg" => "hello"),
@@ -53,9 +53,9 @@ end
     end
 
     @testset "empty request_id is echoed back" begin
-        tool = Kaimon.Gate.GateTool("noop_tool2", () -> "ok")
+        tool = Kaimon.KaimonGate.GateTool("noop_tool2", () -> "ok")
         with_tools([tool]) do
-            resp = Kaimon.Gate.handle_message((
+            resp = Kaimon.KaimonGate.handle_message((
                 type = :tool_call_async,
                 name = "noop_tool2",
                 arguments = Dict{String,Any}(),
@@ -72,13 +72,13 @@ end
 
     @testset "is a no-op without a socket (does not throw)" begin
         # _STREAM_SOCKET[] is nothing → _publish_stream returns early
-        @test_nowarn Kaimon.Gate.progress("no socket")
+        @test_nowarn Kaimon.KaimonGate.progress("no socket")
     end
 
     @testset "is a no-op without gate_request_id in task-local storage" begin
         result = @async begin
             # No task_local_storage(:gate_request_id, ...) set → rid is nothing → return
-            Kaimon.Gate.progress("no request id set")
+            Kaimon.KaimonGate.progress("no request id set")
             :ok
         end
         @test fetch(result) == :ok
@@ -88,7 +88,7 @@ end
         result = @async begin
             task_local_storage(:gate_request_id, "synthetic-req-id")
             # _STREAM_SOCKET[] is still nothing → _publish_stream is a no-op
-            Kaimon.Gate.progress("synthetic progress")
+            Kaimon.KaimonGate.progress("synthetic progress")
             :ok
         end
         @test fetch(result) == :ok
@@ -105,9 +105,9 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 
 @testset "Gate async integration: progress + result" begin
-    tool = Kaimon.Gate.GateTool("counted_op", function (n::Int)
+    tool = Kaimon.KaimonGate.GateTool("counted_op", function (n::Int)
         for i = 1:n
-            Kaimon.Gate.progress("step $i of $n")
+            Kaimon.KaimonGate.progress("step $i of $n")
         end
         return "done:$n"
     end)
@@ -116,21 +116,21 @@ end
     # session), attach to it non-destructively: temporarily add the test tool to
     # the existing gate's tool list instead of stopping and restarting the gate.
     # Otherwise start a fresh gate for the test and stop it when done.
-    was_running = Kaimon.Gate._RUNNING[]
+    was_running = Kaimon.KaimonGate._RUNNING[]
 
     if was_running
-        orig_tools = copy(Kaimon.Gate._SESSION_TOOLS[])
-        session_id = Kaimon.Gate._SESSION_ID[]
-        Kaimon.Gate._SESSION_TOOLS[] = vcat(orig_tools, [tool])
+        orig_tools = copy(Kaimon.KaimonGate._SESSION_TOOLS[])
+        session_id = Kaimon.KaimonGate._SESSION_ID[]
+        Kaimon.KaimonGate._SESSION_TOOLS[] = vcat(orig_tools, [tool])
         # No sleep needed — sockets are already bound
     else
         session_id = "test-async-$(bytes2hex(rand(UInt8, 4)))"
-        Kaimon.Gate._serve(name = "test", session_id = session_id, force = true, tools = [tool])
+        Kaimon.KaimonGate._serve(name = "test", session_id = session_id, force = true, tools = [tool])
         # Give the gate a moment to bind its IPC sockets
         sleep(0.15)
     end
 
-    sock_dir = Kaimon.Gate.sock_dir()
+    sock_dir = Kaimon.KaimonGate.sock_dir()
     rep_path = joinpath(sock_dir, "$session_id.sock")
     pub_path = joinpath(sock_dir, "$session_id-stream.sock")
 
@@ -198,9 +198,9 @@ end
         close(ctx)
         if was_running
             # Restore original tools without disturbing the running gate
-            Kaimon.Gate._SESSION_TOOLS[] = orig_tools
+            Kaimon.KaimonGate._SESSION_TOOLS[] = orig_tools
         else
-            Kaimon.Gate.stop()
+            Kaimon.KaimonGate.stop()
         end
     end
 end
@@ -210,58 +210,58 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 
 @testset "Gate TCP auth" begin
-    orig_mode = Kaimon.Gate._MODE[]
-    orig_token = Kaimon.Gate._AUTH_TOKEN[]
+    orig_mode = Kaimon.KaimonGate._MODE[]
+    orig_token = Kaimon.KaimonGate._AUTH_TOKEN[]
 
     @testset "IPC mode skips auth" begin
-        Kaimon.Gate._MODE[] = :ipc
-        Kaimon.Gate._AUTH_TOKEN[] = "secret123"
-        resp = Kaimon.Gate.handle_message((type = :ping,))
+        Kaimon.KaimonGate._MODE[] = :ipc
+        Kaimon.KaimonGate._AUTH_TOKEN[] = "secret123"
+        resp = Kaimon.KaimonGate.handle_message((type = :ping,))
         @test resp.type == :pong
     end
 
     @testset "TCP mode with empty token skips auth" begin
-        Kaimon.Gate._MODE[] = :tcp
-        Kaimon.Gate._AUTH_TOKEN[] = ""
-        resp = Kaimon.Gate.handle_message((type = :ping,))
+        Kaimon.KaimonGate._MODE[] = :tcp
+        Kaimon.KaimonGate._AUTH_TOKEN[] = ""
+        resp = Kaimon.KaimonGate.handle_message((type = :ping,))
         @test resp.type == :pong
     end
 
     @testset "TCP mode rejects missing token" begin
-        Kaimon.Gate._MODE[] = :tcp
-        Kaimon.Gate._AUTH_TOKEN[] = "secret123"
-        resp = Kaimon.Gate.handle_message((type = :ping,))
+        Kaimon.KaimonGate._MODE[] = :tcp
+        Kaimon.KaimonGate._AUTH_TOKEN[] = "secret123"
+        resp = Kaimon.KaimonGate.handle_message((type = :ping,))
         @test resp.type == :error
         @test occursin("Authentication", resp.message)
     end
 
     @testset "TCP mode rejects wrong token" begin
-        Kaimon.Gate._MODE[] = :tcp
-        Kaimon.Gate._AUTH_TOKEN[] = "secret123"
-        resp = Kaimon.Gate.handle_message((type = :ping, token = "wrong"))
+        Kaimon.KaimonGate._MODE[] = :tcp
+        Kaimon.KaimonGate._AUTH_TOKEN[] = "secret123"
+        resp = Kaimon.KaimonGate.handle_message((type = :ping, token = "wrong"))
         @test resp.type == :error
         @test occursin("Authentication", resp.message)
     end
 
     @testset "TCP mode accepts correct token" begin
-        Kaimon.Gate._MODE[] = :tcp
-        Kaimon.Gate._AUTH_TOKEN[] = "secret123"
-        resp = Kaimon.Gate.handle_message((type = :ping, token = "secret123"))
+        Kaimon.KaimonGate._MODE[] = :tcp
+        Kaimon.KaimonGate._AUTH_TOKEN[] = "secret123"
+        resp = Kaimon.KaimonGate.handle_message((type = :ping, token = "secret123"))
         @test resp.type == :pong
     end
 
     @testset "pong includes stream_endpoint" begin
-        Kaimon.Gate._MODE[] = :ipc
-        Kaimon.Gate._AUTH_TOKEN[] = ""
-        Kaimon.Gate._STREAM_ENDPOINT[] = "ipc:///tmp/test-stream.sock"
-        resp = Kaimon.Gate.handle_message((type = :ping,))
+        Kaimon.KaimonGate._MODE[] = :ipc
+        Kaimon.KaimonGate._AUTH_TOKEN[] = ""
+        Kaimon.KaimonGate._STREAM_ENDPOINT[] = "ipc:///tmp/test-stream.sock"
+        resp = Kaimon.KaimonGate.handle_message((type = :ping,))
         @test resp.type == :pong
         @test resp.stream_endpoint == "ipc:///tmp/test-stream.sock"
-        Kaimon.Gate._STREAM_ENDPOINT[] = ""
+        Kaimon.KaimonGate._STREAM_ENDPOINT[] = ""
     end
 
-    Kaimon.Gate._MODE[] = orig_mode
-    Kaimon.Gate._AUTH_TOKEN[] = orig_token
+    Kaimon.KaimonGate._MODE[] = orig_mode
+    Kaimon.KaimonGate._AUTH_TOKEN[] = orig_token
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -269,7 +269,7 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 
 @testset "Gate TCP ephemeral port + auth" begin
-    if Kaimon.Gate._RUNNING[]
+    if Kaimon.KaimonGate._RUNNING[]
         @info "Skipping TCP test — gate already running"
         @test_skip false
         return
@@ -278,8 +278,8 @@ end
     token = "test_token_$(bytes2hex(rand(UInt8, 8)))"
     session_id = "test-tcp-$(bytes2hex(rand(UInt8, 4)))"
 
-    Kaimon.Gate._AUTH_TOKEN[] = token
-    Kaimon.Gate._serve(
+    Kaimon.KaimonGate._AUTH_TOKEN[] = token
+    Kaimon.KaimonGate._serve(
         name = "test-tcp",
         session_id = session_id,
         force = true,
@@ -289,16 +289,16 @@ end
     )
     sleep(0.2)
 
-    @test Kaimon.Gate._RUNNING[]
-    @test Kaimon.Gate._MODE[] == :tcp
+    @test Kaimon.KaimonGate._RUNNING[]
+    @test Kaimon.KaimonGate._MODE[] == :tcp
 
-    sock = Kaimon.Gate._GATE_SOCKET[]
+    sock = Kaimon.KaimonGate._GATE_SOCKET[]
     @test sock !== nothing
     rep_endpoint = rstrip(ZMQ._get_last_endpoint(sock), '\0')
     @test startswith(rep_endpoint, "tcp://")
 
-    @test !isempty(Kaimon.Gate._STREAM_ENDPOINT[])
-    @test startswith(Kaimon.Gate._STREAM_ENDPOINT[], "tcp://")
+    @test !isempty(Kaimon.KaimonGate._STREAM_ENDPOINT[])
+    @test startswith(Kaimon.KaimonGate._STREAM_ENDPOINT[], "tcp://")
 
     ctx = Context()
     req = Socket(ctx, REQ)
@@ -340,12 +340,12 @@ end
     finally
         close(req)
         close(ctx)
-        Kaimon.Gate.stop()
+        Kaimon.KaimonGate.stop()
         sleep(0.1)
     end
 
-    @test !Kaimon.Gate._RUNNING[]
-    @test isempty(Kaimon.Gate._AUTH_TOKEN[])
+    @test !Kaimon.KaimonGate._RUNNING[]
+    @test isempty(Kaimon.KaimonGate._AUTH_TOKEN[])
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -416,22 +416,22 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 
 @testset "Gate.restart guards" begin
-    orig_running = Kaimon.Gate._RUNNING[]
-    orig_restart = Kaimon.Gate._ALLOW_RESTART[]
+    orig_running = Kaimon.KaimonGate._RUNNING[]
+    orig_restart = Kaimon.KaimonGate._ALLOW_RESTART[]
 
     @testset "errors when gate is not running" begin
-        Kaimon.Gate._RUNNING[] = false
-        @test_throws ErrorException("Gate is not running") Kaimon.Gate.restart()
+        Kaimon.KaimonGate._RUNNING[] = false
+        @test_throws ErrorException("Gate is not running") Kaimon.KaimonGate.restart()
     end
 
     @testset "errors when restart is disabled" begin
-        Kaimon.Gate._RUNNING[] = true
-        Kaimon.Gate._ALLOW_RESTART[] = false
-        @test_throws ErrorException("Restart is disabled for this session (allow_restart=false)") Kaimon.Gate.restart()
+        Kaimon.KaimonGate._RUNNING[] = true
+        Kaimon.KaimonGate._ALLOW_RESTART[] = false
+        @test_throws ErrorException("Restart is disabled for this session (allow_restart=false)") Kaimon.KaimonGate.restart()
     end
 
-    Kaimon.Gate._RUNNING[] = orig_running
-    Kaimon.Gate._ALLOW_RESTART[] = orig_restart
+    Kaimon.KaimonGate._RUNNING[] = orig_running
+    Kaimon.KaimonGate._ALLOW_RESTART[] = orig_restart
 end
 
 # NOTE: handle_message(:restart) is not unit-tested here because the handler

@@ -26,7 +26,7 @@ features:
     details: Code execution, type introspection, macro expansion, profiling, test running with coverage, VS Code debugging, package management, and more.
   - icon: <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
     title: The Gate
-    details: ZMQ bridge that connects external Julia processes to the MCP server, allowing packages to register custom tools with full schema and documentation.
+    details: ZMQ bridge that connects external Julia processes to the MCP server, allowing packages to register custom tools with full schema and documentation. Ships as the lightweight, separately installable KaimonGate package (ZMQ + stdlib only).
   - icon: <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
     title: Terminal Dashboard
     details: Real-time TUI built on Tachikoma.jl that monitors all connected sessions, tool calls, output streams, and server status from one terminal.
@@ -67,9 +67,12 @@ Press **`i`** in the Config tab to install MCP config for Claude Code, Cursor, V
 
 **4. Connect a Julia REPL**
 
+Add the lightweight gate package to the project you want to expose, then serve:
+
 ```julia
-using Kaimon
-Gate.serve()
+]add KaimonGate
+using KaimonGate
+KaimonGate.serve()
 ```
 
 Press **`g`** in the Config tab to append a snippet to `~/.julia/config/startup.jl` so every Julia session auto-connects.

@@ -240,7 +240,7 @@ function _install_infiltrator_hook!()
         mod, locals::Dict{Symbol,Any}, file, fileline, ex = nothing, bt = nothing;
         terminal = nothing, repl = nothing, nostack = false,
     )
-        Gate._breakpoint_hook(locals; file = string(file), line = Int(fileline))
+        $(@__MODULE__)._breakpoint_hook(locals; file = string(file), line = Int(fileline))
     end
     _INFILTRATOR_HOOKED[] = true
     @info "Infiltrator.jl integration active — @infiltrate routes through gate debug protocol"
@@ -987,7 +987,7 @@ Return the TTY device path configured for this gate session (e.g.
 Use this in app code to forward rendering to a separate terminal window:
 
 ```julia
-Tachikoma.app(model; tty_out = Gate.tty_path(), tty_size = Gate.tty_size())
+Tachikoma.app(model; tty_out = KaimonGate.tty_path(), tty_size = KaimonGate.tty_size())
 ```
 """
 tty_path() = _GATE_TTY_PATH[]
@@ -1485,7 +1485,7 @@ function _exec_restart(name::String, session_id::String, project_path::String)
     else
         # Plain REPL session — reconstruct from the original argv, preserving
         # all launch flags (-t, --heap-size-hint, --gcthreads, -O, etc.), then
-        # inject our own --project / -i / -e Gate.serve(...).
+        # inject our own --project / -i / -e serve(...).
         julia_args = _base_julia_args()
         ns      = _SESSION_NAMESPACE[]
         mirror  = _ALLOW_MIRROR[]
@@ -1504,7 +1504,7 @@ function _exec_restart(name::String, session_id::String, project_path::String)
             ""
         end
         # The injected -e code runs after startup.jl.  If startup.jl already
-        # called Gate.serve() and picked up KAIMON_RESTART_SESSION, the gate
+        # called serve() and picked up KAIMON_RESTART_SESSION, the gate
         # will already be running with the correct session_id; our serve() call
         # becomes a no-op that updates mutable options (mirror, restart flag).
         # If startup.jl didn't call serve, this creates the gate from scratch.
@@ -2061,20 +2061,22 @@ function _serve(;
     _MODE[] = mode
 
     # Set auth token for TCP mode.
-    # Priority: KAIMON_GATE_TOKEN env var > security config API key > none.
-    # Lax mode and missing config = no auth required.
+    # Priority: KAIMON_GATE_TOKEN env var > host-provided token > none.
+    # Standalone there's no host token, so the gate is open unless the env var is
+    # set; full Kaimon injects a token derived from its security config via
+    # set_auth_token_provider!.
     if mode == :tcp
         env_token = get(ENV, "KAIMON_GATE_TOKEN", "")
         if !isempty(env_token)
             _AUTH_TOKEN[] = env_token
         else
+            # Host-provided token (Kaimon derives it from its security config).
+            # Standalone the default provider returns "" — no auth, same as :lax.
             try
-                config = load_global_config()
-                if config.mode != :lax && !isempty(config.api_keys)
-                    _AUTH_TOKEN[] = first(config.api_keys)
-                end
+                tok = Base.invokelatest(_AUTH_TOKEN_PROVIDER[])
+                isempty(tok) || (_AUTH_TOKEN[] = tok)
             catch
-                # No config — no auth (same as lax)
+                # No provider/config — no auth (same as lax)
             end
         end
     end
@@ -2387,7 +2389,7 @@ function status()
 end
 
 """
-    Gate.progress(message::String)
+    KaimonGate.progress(message::String)
 
 Send a progress update from a long-running GateTool handler. The message is
 streamed to the MCP client as an SSE progress notification.
@@ -2482,10 +2484,10 @@ detected automatically. Otherwise, pass `job_id` explicitly.
 # Example
 ```julia
 for epoch in 1:1000
-    Gate.is_cancelled() && break
+    KaimonGate.is_cancelled() && break
     loss = train_epoch!(model)
-    Gate.stash("epoch", epoch)
-    Gate.progress("Epoch \$epoch: loss=\$loss")
+    KaimonGate.stash("epoch", epoch)
+    KaimonGate.progress("Epoch \$epoch: loss=\$loss")
 end
 ```
 """
@@ -2512,10 +2514,10 @@ Retrieve stashed values with `check_eval` or `inspect_job`.
 ```julia
 for epoch in 1:100
     loss = train_epoch!(model)
-    Gate.stash("epoch", epoch)
-    Gate.stash("loss", loss)
-    Gate.stash("lr", get_lr(optimizer))
-    Gate.progress("Epoch \$epoch: loss=\$loss")
+    KaimonGate.stash("epoch", epoch)
+    KaimonGate.stash("loss", loss)
+    KaimonGate.stash("lr", get_lr(optimizer))
+    KaimonGate.progress("Epoch \$epoch: loss=\$loss")
 end
 ```
 """
@@ -2560,7 +2562,7 @@ Stash multiple values at once.
 
 # Example
 ```julia
-Gate.stash("epoch" => epoch, "loss" => loss, "accuracy" => acc)
+KaimonGate.stash("epoch" => epoch, "loss" => loss, "accuracy" => acc)
 ```
 """
 function stash(pairs::Pair{String}...; job_id::String="")
@@ -2591,8 +2593,8 @@ panel without the panel needing to poll via `ctx.eval()`.
 ```julia
 function my_tool_handler(args)
     result = do_work(args)
-    Gate.push_panel("result", result)
-    Gate.push_panel("status", "done")
+    KaimonGate.push_panel("result", result)
+    KaimonGate.push_panel("status", "done")
     return "OK"
 end
 ```
@@ -2608,7 +2610,7 @@ Push multiple panel state updates at once.
 
 # Example
 ```julia
-Gate.push_panel("greetings" => greetings, "rolls" => rolls)
+KaimonGate.push_panel("greetings" => greetings, "rolls" => rolls)
 ```
 """
 function push_panel(pairs::Pair{String}...)
@@ -2648,7 +2650,7 @@ function clear_stash(job_id::String)
 end
 
 # ── Service Client (reverse channel to Kaimon server) ─────────────────────────
-# Extensions call Gate.call_tool(name, args) to invoke any registered Kaimon
+# Extensions call KaimonGate.call_tool(name, args) to invoke any registered Kaimon
 # MCP tool. This is the reverse of the existing gate protocol: instead of
 # Kaimon calling into the gate, the gate calls back into Kaimon.
 
@@ -2723,7 +2725,7 @@ function _service_request(request)
 end
 
 """
-    Gate.call_tool(tool_name::Symbol, args::Dict{String,Any}) -> Any
+    KaimonGate.call_tool(tool_name::Symbol, args::Dict{String,Any}) -> Any
 
 Call a Kaimon MCP tool from within a gate session. The request is sent over
 a dedicated ZMQ REQ socket to the Kaimon server's service endpoint, which
@@ -2736,13 +2738,13 @@ own clients.
 # Example
 ```julia
 # From a gate tool handler:
-result = Gate.call_tool(:qdrant_search_code, Dict{String,Any}(
+result = KaimonGate.call_tool(:qdrant_search_code, Dict{String,Any}(
     "query" => "function that handles HTTP routing",
     "limit" => "5",
 ))
 
 # List collections
-collections = Gate.call_tool(:qdrant_list_collections, Dict{String,Any}())
+collections = KaimonGate.call_tool(:qdrant_list_collections, Dict{String,Any}())
 ```
 """
 function call_tool(tool_name::Symbol, args::Dict{String,Any} = Dict{String,Any}())
@@ -2750,14 +2752,14 @@ function call_tool(tool_name::Symbol, args::Dict{String,Any} = Dict{String,Any}(
 end
 
 """
-    Gate.list_tools() -> Vector{NamedTuple}
+    KaimonGate.list_tools() -> Vector{NamedTuple}
 
 Discover all MCP tools registered on the Kaimon server.
 Returns a vector of `(name, description, parameters)` tuples.
 
 # Example
 ```julia
-tools = Gate.list_tools()
+tools = KaimonGate.list_tools()
 for t in tools
     println(t.name, " — ", first(split(t.description, '\\n')))
 end
@@ -2798,7 +2800,11 @@ end
     _auto_serve!()
 
 Auto-start the gate if environment variables or kaimon.toml `[gate]` section
-indicate TCP mode. Called once during module loading.
+indicate TCP mode.
+
+Invoked by the host package (Kaimon) from its `__init__`. A standalone
+`using KaimonGate` session does **not** auto-start — call [`serve`](@ref)
+explicitly (it still reads env vars / `kaimon.toml` for its settings).
 
 Configuration priority: env vars > kaimon.toml > defaults.
 """

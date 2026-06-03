@@ -29,23 +29,34 @@ using KaimonGate
 KaimonGate.serve()      # binds a ZMQ socket; the kaimon CLI auto-discovers it
 ```
 
-That's it — start the `kaimon` TUI and the session appears. For remote/TCP sessions,
-SSH tunnels, fixed ports, and auto-start via `kaimon.toml`, see the
+That's it — start the `kaimon` TUI and the session appears. `KaimonGate.connect!()`
+is a convenience wrapper that loads Revise (if present) and serves in the background.
+For remote/TCP sessions, SSH tunnels, and fixed ports, see the
 [Kaimon documentation](https://kahliburke.github.io/Kaimon.jl).
+
+`serve()` reads its settings from `KAIMON_GATE_*` env vars and a project's
+`kaimon.toml` `[gate]` section, but standalone `KaimonGate` does **not** auto-start
+from them — call `serve()` explicitly. (The full `Kaimon` install auto-starts the
+gate when it loads.)
 
 ### Public API
 
-`serve`, `stop`, `restart`, `status`, `GateTool`, `call_tool`, `list_tools`,
-`is_cancelled`, `stash`, `progress`, `push_panel`, `tty_path`, `tty_size`,
-`uninstall_infiltrator_hook!`.
+`serve`, `stop`, `restart`, `status`, `connect!`, `GateTool`, `call_tool`,
+`list_tools`, `is_cancelled`, `stash`, `progress`, `push_panel`, `tty_path`,
+`tty_size`, `uninstall_infiltrator_hook!`, `PROTOCOL_VERSION`.
+
+Embedders integrating `KaimonGate` into another host can override its defaults via
+`set_version_provider!`, `set_personality_provider!`, `set_mirror_pref_provider!`,
+`set_tachikoma!`, `set_auth_token_provider!`, and `set_restart_code_builder!`.
 
 ## Relationship to Kaimon.jl
 
 `KaimonGate` is developed in the [Kaimon.jl](https://github.com/kahliburke/Kaimon.jl)
 monorepo (under `lib/KaimonGate`) and owns the gate implementation and wire protocol.
 The full `Kaimon` package depends on `KaimonGate` and enriches it at load time (version
-reporting, personality, REPL mirroring, Tachikoma TTY hand-off). Running standalone,
-`KaimonGate` uses safe defaults.
+reporting, personality, REPL mirroring, Tachikoma TTY hand-off, and a TCP auth token
+derived from the security config). Running standalone, `KaimonGate` uses safe defaults —
+notably, a TCP gate is unauthenticated unless `KAIMON_GATE_TOKEN` is set.
 
 Wire compatibility between a gate and the Kaimon client is governed by
 `KaimonGate.PROTOCOL_VERSION`, independent of package versions.

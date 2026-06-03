@@ -1,12 +1,12 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Demo: Streaming progress to agents via Gate.progress and GateTools
+# Demo: Streaming progress to agents via KaimonGate.progress and GateTools
 #
-# Gate.progress() sends real-time progress updates to the MCP client during
+# KaimonGate.progress() sends real-time progress updates to the MCP client during
 # long-running tool calls. This is the preferred method for agents to receive
 # incremental updates without waiting for the full result.
 # ─────────────────────────────────────────────────────────────────────────────
 
-using Kaimon.Gate: GateTool, progress
+using KaimonGate: GateTool, progress
 
 # ── Simple streaming progress ────────────────────────────────────────────────
 
@@ -44,4 +44,4 @@ demo_compile_tool = GateTool(
 )
 
 # Register tools with the running gate
-append!(Kaimon.Gate._SESSION_TOOLS[], [demo_progress_tool, demo_compile_tool])
+append!(Kaimon.KaimonGate._SESSION_TOOLS[], [demo_progress_tool, demo_compile_tool])

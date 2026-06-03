@@ -55,8 +55,10 @@ connect your own projects, whether local or remote.
 
 ### As a Library (full Kaimon)
 
-You can also add the full `Kaimon` package as a dependency. It re-exports the gate
-as `Kaimon.Gate`, so `Kaimon.Gate.serve()` works as before:
+You can also add the full `Kaimon` package as a dependency; it bundles
+`KaimonGate`, so `KaimonGate.serve()` works exactly as above. (The full package
+also keeps a **deprecated** `Kaimon.Gate` alias for the historical
+`Kaimon.Gate.*` API — new code should use `KaimonGate`.)
 
 ```julia
 using Pkg

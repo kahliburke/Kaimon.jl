@@ -66,6 +66,31 @@ You can restrict which IP addresses are permitted to connect:
 
 When the allowlist is empty, all IPs are permitted (subject to API key requirements based on the security mode). Once at least one IP is added to the allowlist, only those IPs are accepted.
 
+## Gate (TCP) Authentication
+
+The sections above govern the **MCP HTTP server**. A separate concern is the
+**gate** (`KaimonGate`) when it binds a TCP socket for remote access — see
+[TCP Mode](gate.md#tcp-mode). The gate enforces its own token, independent of
+the MCP server's API keys:
+
+- **Standalone `KaimonGate`** (the lightweight `]add KaimonGate` install, e.g. on
+  a remote/compute node): the gate token comes **only** from the
+  `KAIMON_GATE_TOKEN` environment variable. If it is unset, the TCP gate is
+  **open** — any client that can reach the port can evaluate code in the session.
+  Always set `KAIMON_GATE_TOKEN` before exposing a gate on a shared or
+  network-reachable host (and prefer binding to `127.0.0.1` + an SSH tunnel over
+  `0.0.0.0`).
+- **Full `Kaimon`** install: the token is taken from `KAIMON_GATE_TOKEN` if set,
+  otherwise derived from your security config's API keys when the config mode is
+  not `:lax`. So a strict/relaxed config automatically protects TCP gates started
+  by that process.
+
+!!! warning
+    IPC (Unix-socket) gates are protected by filesystem permissions on
+    `~/.cache/kaimon/sock/` and do not use a token. The token only applies to
+    TCP mode. A `0.0.0.0` bind with no token exposes a remote code-execution
+    endpoint to the network.
+
 ## Configuration
 
 Security settings are stored in a global JSON configuration file:

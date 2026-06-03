@@ -63,7 +63,7 @@ function _build_session_script(project_path::String;
     insert!(LOAD_PATH, 1, $(repr(kaimon_dir)))
     using Kaimon
     import Pkg; Pkg.instantiate(; io=devnull)
-    @async Kaimon.Gate.serve(force=true, allow_mirror=true, allow_restart=$(allow_restart), spawned_by="agent")
+    @async Kaimon.KaimonGate.serve(force=true, allow_mirror=true, allow_restart=$(allow_restart), spawned_by="agent")
     """
 end
 

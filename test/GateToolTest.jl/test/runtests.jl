@@ -205,7 +205,7 @@ end
 @testset "dispatch coercion" begin
     # Simulate MCP JSON transport: all values arrive as strings.
     # _dispatch_tool_call must coerce them to declared types before calling the handler.
-    dispatch = Kaimon.Gate._dispatch_tool_call
+    dispatch = Kaimon.KaimonGate._dispatch_tool_call
 
     model = TodoBoardModel()
     tools = create_tools(model)

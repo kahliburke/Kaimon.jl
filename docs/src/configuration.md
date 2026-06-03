@@ -151,6 +151,20 @@ This is useful for restricting which operations MCP agents can perform in sensit
 | `APPDATA` | Windows | Windows config directory. Kaimon stores config in `$APPDATA/Kaimon/`. |
 | `XDG_CACHE_HOME` | Linux/macOS | Override the default cache directory (`~/.cache`). Kaimon stores data in `$XDG_CACHE_HOME/kaimon/`. |
 | `LOCALAPPDATA` | Windows | Windows equivalent of the cache directory. Kaimon stores data in `$LOCALAPPDATA/Kaimon/`. |
+| `KAIMON_GATE_MODE` | all | Gate transport: `"ipc"` (default) or `"tcp"`. |
+| `KAIMON_GATE_HOST` | all | TCP bind address (default `127.0.0.1`). |
+| `KAIMON_GATE_PORT` | all | TCP REP socket port (default `0` = ephemeral). Setting it implies TCP mode. |
+| `KAIMON_GATE_STREAM_PORT` | all | TCP PUB socket port (default `0` = ephemeral). |
+| `KAIMON_GATE_TOKEN` | all | Gate auth token for TCP mode. See [Gate Authentication](security.md#gate-tcp-authentication). |
+
+These configure the gate (`KaimonGate`); they can also be set in a project's
+`kaimon.toml` `[gate]` section (see [TCP Mode](gate.md#tcp-mode)).
+
+!!! note
+    Under a full `Kaimon` install the gate **auto-starts** from these variables /
+    `kaimon.toml` when the package loads. A standalone `using KaimonGate` session
+    does not auto-start — it reads them for settings but you must call
+    `KaimonGate.serve()` explicitly.
 
 ## TUI Configuration
 

@@ -28,7 +28,7 @@ mutable struct EvalRecord
     result_preview::String    # first 500 chars of formatted result (empty while running)
     full_result::String       # complete formatted result (stored for promoted jobs)
     promoted::Bool            # true if promoted to background job
-    stash::Dict{String,String} # key => repr(value) from Gate.stash()
+    stash::Dict{String,String} # key => repr(value) from KaimonGate.stash()
 end
 
 struct ProcessDiagnostics
@@ -195,7 +195,7 @@ stderr. Waits briefly for the file to appear, then reads and returns it.
 Returns the backtrace text, or `nothing` if the file doesn't appear in time.
 """
 function trigger_backtrace(conn::REPLConnection)::Union{String,Nothing}
-    bt_path = joinpath(Gate.sock_dir(), "$(conn.session_id)-backtrace.txt")
+    bt_path = joinpath(KaimonGate.sock_dir(), "$(conn.session_id)-backtrace.txt")
     # Remove stale file from previous trigger
     rm(bt_path; force=true)
     # Send SIGINFO (macOS) or SIGUSR1 (Linux) via POSIX kill(2)
@@ -771,7 +771,7 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
     _fire_sessions_changed(mgr)
 
     # Write a local metadata file so reconnect works after TUI restart
-    Gate.write_metadata(sid, conn.name, endpoint, conn.stream_endpoint; spawned_by = "user", mode = :tcp)
+    KaimonGate.write_metadata(sid, conn.name, endpoint, conn.stream_endpoint; spawned_by = "user", mode = :tcp)
 
     return conn
 end
@@ -1668,7 +1668,7 @@ function _protocol_mismatch_warning!(mgr::ConnectionManager, conn::REPLConnectio
     name = isempty(conn.display_name) ? conn.session_id : conn.display_name
     gv = isempty(gate_ver) ? "?" : gate_ver
     msg = "Gate protocol mismatch: kaimon speaks gate protocol v$app_proto but session " *
-          "'$name' (KaimonGate v$gv) speaks v$gate_proto. Update KaimonGate (`]up KaimonGate`) " *
+          "'$name' (reports v$gv) speaks v$gate_proto. Update KaimonGate (`]up KaimonGate`) " *
           "or the kaimon app so both sides match."
     @warn msg
     _emit_event!(mgr, :version_mismatch, (
@@ -1708,8 +1708,8 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
         # Wire-protocol version is the authoritative compatibility check. Pongs
         # without a protocol_version (older gates) are assumed compatible.
         gate_proto = get(result, :protocol_version, nothing)
-        if gate_proto isa Integer && Int(gate_proto) != Gate.PROTOCOL_VERSION
-            _protocol_mismatch_warning!(mgr, conn, Gate.PROTOCOL_VERSION, Int(gate_proto), gate_kv)
+        if gate_proto isa Integer && Int(gate_proto) != KaimonGate.PROTOCOL_VERSION
+            _protocol_mismatch_warning!(mgr, conn, KaimonGate.PROTOCOL_VERSION, Int(gate_proto), gate_kv)
         end
 
         # Update metadata file with fresh pong data

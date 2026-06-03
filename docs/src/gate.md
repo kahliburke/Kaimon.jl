@@ -2,6 +2,17 @@
 
 The Gate is Kaimon's bridge between external Julia processes and the MCP server. It lets any Julia REPL -- your application, a data pipeline, a TUI -- expose itself as a live session that AI agents can interact with, complete with custom tools.
 
+!!! note "Two ways to get the gate"
+    The gate lives in its own lightweight package, **`KaimonGate`** (ZMQ + stdlib only — safe to add to any project, fast to install on remote/compute nodes):
+
+    ```julia
+    ]add KaimonGate
+    using KaimonGate
+    KaimonGate.serve()
+    ```
+
+    The full `Kaimon` CLI bundles `KaimonGate` and installs it automatically — use `KaimonGate.*` everywhere. (`Kaimon.Gate` is retained only as a **deprecated** alias so old `using Kaimon; Gate.serve()` code keeps working; new code should use `KaimonGate`.)
+
 ## Architecture
 
 The Gate uses ZMQ (ZeroMQ) IPC sockets for communication:
@@ -17,7 +28,7 @@ flowchart TD
     end
 
     subgraph repl["Your Julia Process"]
-        gate["Gate.serve()"]
+        gate["KaimonGate.serve()"]
         tools["Custom GateTools"]
         code["Application Code"]
         gate --- tools
@@ -47,21 +58,21 @@ end
 
 The `name` field becomes the MCP tool name (potentially prefixed by the session namespace). The `handler` is any Julia function whose signature will be introspected.
 
-## Gate.serve()
+## serve()
 
 Start the gate from any Julia REPL:
 
 ```julia
-using Kaimon
-Gate.serve()
+using KaimonGate
+KaimonGate.serve()
 ```
 
-This is non-blocking. The gate runs in a background task and returns immediately. Kaimon's server discovers the session automatically.
+This is non-blocking. The gate runs in a background task and returns immediately. Kaimon's server discovers the session automatically. `KaimonGate.connect!()` is a convenience wrapper that loads Revise (if available) and then calls `serve()` in the background.
 
 ### Full signature
 
 ```julia
-Gate.serve(;
+KaimonGate.serve(;
     session_id::Union{String,Nothing} = nothing,
     force::Bool = false,
     tools::Vector{GateTool} = GateTool[],
@@ -85,7 +96,7 @@ Gate.serve(;
 Define a plain Julia function with typed arguments, then wrap it in a `GateTool`:
 
 ```julia
-using Kaimon.Gate: GateTool, serve
+using KaimonGate: GateTool, serve
 
 function greet(name::String, excited::Bool=false)
     msg = "Hello, $name!"
@@ -206,7 +217,7 @@ The initial mirror state is read from the user's Preferences configuration.
 
 ## allow_restart
 
-By default, sessions can be restarted via the agent (`manage_repl(command="restart")`), directly from the REPL (`Gate.restart()`), or from the TUI Sessions tab (`r` key). All three methods use `execvp` -- the process image is replaced with a fresh Julia, same PID, same terminal, fresh state. The session key is preserved so the TUI and agents reconnect seamlessly.
+By default, sessions can be restarted via the agent (`manage_repl(command="restart")`), directly from the REPL (`KaimonGate.restart()`), or from the TUI Sessions tab (`r` key). All three methods use `execvp` -- the process image is replaced with a fresh Julia, same PID, same terminal, fresh state. The session key is preserved so the TUI and agents reconnect seamlessly.
 
 Set `allow_restart=false` to disable this:
 
@@ -224,7 +235,7 @@ A minimal application with custom tools:
 # my_app.jl
 module MyApp
 
-using Kaimon.Gate: GateTool, serve
+using KaimonGate: GateTool, serve
 
 # Domain types
 @enum Status pending running done
@@ -276,8 +287,11 @@ Run it with `julia --project my_app.jl`. The agent will see `myapp_create_job` a
 By default, the Gate uses IPC (Unix domain sockets) for local communication. For remote sessions — servers, cloud instances, HPC nodes — use TCP mode:
 
 ```julia
-Gate.serve(mode=:tcp, port=10005, stream_port=10007, force=true)
+KaimonGate.serve(mode=:tcp, port=10005, stream_port=10007, force=true)
 ```
+
+!!! tip "Lightweight remote gates"
+    `KaimonGate` is the ideal way to make a remote or compute-node session reachable: it pulls in only ZMQ + stdlib, so `]add KaimonGate` is fast even on a fresh Slurm/SSH node. Install it there, start a TCP gate, and set `KAIMON_GATE_TOKEN` for authentication (see [Authentication](#authentication) — the security-config token tier is only available under a full Kaimon install).
 
 This binds the REP socket on `port` and the PUB socket on `stream_port`. Both ports are printed on startup:
 
@@ -324,13 +338,19 @@ host = "0.0.0.0"
 force = true
 ```
 
-When `Gate.serve()` is called (e.g., from `startup.jl`), it reads this configuration automatically.
+When `serve()` is called (e.g., from `startup.jl`), it reads this configuration automatically.
+
+!!! warning "Auto-start is full-Kaimon only"
+    Under the full `Kaimon` install, the gate **auto-starts** from `[gate]` / `KAIMON_GATE_*` when the package loads (no explicit `serve()` call needed). A standalone `using KaimonGate` session does **not** auto-start — call `KaimonGate.serve()` explicitly (it still reads `kaimon.toml`/env for its settings).
 
 ### Authentication
 
-TCP mode supports token-based authentication. Priority: `KAIMON_GATE_TOKEN` env var > security config API key > none (lax mode).
+TCP mode supports token-based authentication.
 
-When a token is set, every request must include it. The token is displayed on startup and can be queried with `Gate.status()`.
+- **Standalone `KaimonGate`:** the token comes from the `KAIMON_GATE_TOKEN` env var. If it's unset, the gate is **open** (no auth, same as lax mode) — set the env var before exposing a gate on a shared network.
+- **Full `Kaimon`:** priority is `KAIMON_GATE_TOKEN` env var > a token derived from your security config's API keys (when the config mode isn't `:lax`) > none.
+
+When a token is set, every request must include it. The token is displayed on startup and can be queried with `KaimonGate.status()`.
 
 ## Background Jobs
 
@@ -346,14 +366,14 @@ Returns status, elapsed time, and the full result if completed.
 
 ### Stashing Intermediate Values
 
-Running code can report intermediate values using `Gate.stash()`:
+Running code can report intermediate values using `KaimonGate.stash()`:
 
 ```julia
 for epoch in 1:100
     loss = train_epoch!(model)
-    Gate.stash("epoch", epoch)
-    Gate.stash("loss", loss)
-    Gate.progress("Epoch $epoch: loss=$loss")
+    KaimonGate.stash("epoch", epoch)
+    KaimonGate.stash("loss", loss)
+    KaimonGate.progress("Epoch $epoch: loss=$loss")
 end
 ```
 
@@ -373,13 +393,13 @@ The agent can cancel a background job:
 cancel_eval(eval_id="abc123")
 ```
 
-Running code must check `Gate.is_cancelled()` cooperatively:
+Running code must check `KaimonGate.is_cancelled()` cooperatively:
 
 ```julia
 for epoch in 1:1000
-    Gate.is_cancelled() && break
+    KaimonGate.is_cancelled() && break
     loss = train_epoch!(model)
-    Gate.stash("epoch", epoch)
+    KaimonGate.stash("epoch", epoch)
 end
 ```
 
@@ -397,7 +417,7 @@ Background jobs are stored in SQLite and survive TUI restarts. On restart, Kaimo
 
 ## Streaming Progress
 
-`Gate.progress(message)` sends real-time SSE progress notifications from within a GateTool handler:
+`KaimonGate.progress(message)` sends real-time SSE progress notifications from within a GateTool handler:
 
 ```julia
 tool = GateTool("compile_kernel", function(name::String)

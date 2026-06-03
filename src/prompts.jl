@@ -42,7 +42,7 @@ They appear namespaced under your session: e.g. `myapp.greet`.
 ## Minimal Example
 
 ```julia
-using Kaimon.Gate
+using KaimonGate
 
 \"\"\"
     greet(name, loud) -> String
@@ -53,7 +53,7 @@ function greet(name::String, loud::Bool = false)
     loud ? uppercase("Hello, \$name!") : "Hello, \$name!"
 end
 
-Gate.serve(tools = [GateTool("greet", greet)], namespace = "myapp")
+KaimonGate.serve(tools = [GateTool("greet", greet)], namespace = "myapp")
 ```
 
 The agent calls: `myapp.greet(name="world")` → `"Hello, world!"`
@@ -115,14 +115,14 @@ end
 
 ## Progress Updates for Long-Running Tools
 
-Call `Gate.progress("message")` to stream incremental updates to the agent
+Call `KaimonGate.progress("message")` to stream incremental updates to the agent
 (displayed as SSE notifications, prevents HTTP timeouts on slow operations):
 
 ```julia
 function analyze(passes::Int)
     for i in 1:passes
         sleep(1)
-        Gate.progress("pass \$i/\$passes complete")
+        KaimonGate.progress("pass \$i/\$passes complete")
     end
     return "analysis done"
 end
@@ -141,13 +141,13 @@ end
 
 ## Updating Tools at Runtime
 
-Call `Gate.serve()` again with a new tools list to replace the registered tools.
+Call `KaimonGate.serve()` again with a new tools list to replace the registered tools.
 The MCP server sends a `tools/list_changed` notification automatically.
 
 ## Closing the Gate
 
 ```julia
-Gate.stop()
+KaimonGate.stop()
 ```
 """
     else

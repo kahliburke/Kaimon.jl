@@ -107,7 +107,7 @@ using TOML
     @testset "Gate pong includes kaimon_version" begin
         # Verify the pong handler includes kaimon_version (structural test).
         # The gate now lives in the KaimonGate package.
-        gate_src = read(joinpath(pkgdir(Kaimon.Gate), "src", "gate.jl"), String)
+        gate_src = read(joinpath(pkgdir(Kaimon.KaimonGate), "src", "gate.jl"), String)
         @test occursin("kaimon_version", gate_src)
     end
 
