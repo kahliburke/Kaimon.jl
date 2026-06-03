@@ -9,6 +9,15 @@ const BASE = '/Kaimon.jl/'
 // Locally, falls back to VitePress public/assets/ served under the site base.
 const ASSET_BASE = process.env.KAIMON_ASSET_BASE ?? (BASE + 'assets/')
 
+// `themeConfig.logo` is run through VitePress's withBase(), which prepends BASE
+// to a root-relative path. So locally it must be a BASE-relative path
+// ('assets/...') — withBase adds BASE exactly once. In CI the absolute release
+// URL (KAIMON_ASSET_BASE) passes through withBase unchanged. (The favicon below
+// is a raw <head> href, not withBase'd, so it keeps the full ASSET_BASE path.)
+const LOGO_SRC = process.env.KAIMON_ASSET_BASE
+  ? process.env.KAIMON_ASSET_BASE + 'kaimon_logo1.png'
+  : 'assets/kaimon_logo1.png'
+
 // Rewrite ./assets/kaimon_*.gif to use ASSET_BASE via Vue's :src binding.
 // Using :src makes it a runtime expression so VitePress doesn't try to
 // resolve the path as an ESM import during SSR.
@@ -71,7 +80,7 @@ export default withMermaid(defineConfig({
   mermaid: {},
 
   themeConfig: {
-    logo: ASSET_BASE + 'kaimon_logo1.png',
+    logo: LOGO_SRC,
     nav: [
       { text: 'Guide', link: '/getting-started' },
       { text: 'Tools', link: '/tools' },
