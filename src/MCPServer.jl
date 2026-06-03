@@ -271,6 +271,16 @@ function _has_pending_notifications()::Bool
     end
 end
 
+"""Drop all pending notifications. Called on server start/stop so the queue is
+bound to a server's lifecycle — a freshly-started server must not flush
+notifications queued before it existed (e.g. by a previous server instance),
+which would otherwise upgrade its first POST response to SSE unexpectedly."""
+function _clear_notifications!()
+    lock(_PENDING_NOTIFICATIONS_LOCK) do
+        empty!(_PENDING_NOTIFICATIONS)
+    end
+end
+
 """
     register_sessions_changed_callback!(mgr::ConnectionManager)
 
@@ -1538,6 +1548,11 @@ function start_mcp_server(
     # Use provided UUID or generate a new one (persists across reconnections)
     session_uuid = session_uuid !== nothing ? session_uuid : string(UUIDs.uuid4())
 
+    # Start with a clean notification queue: any notifications queued before
+    # this server existed belong to no client of ours and must not trigger an
+    # SSE upgrade on our first response.
+    _clear_notifications!()
+
     # Build symbol-keyed registry
     tools_dict = Dict{Symbol,MCPTool}(tool.id => tool for tool in tools)
     # Build string→symbol mapping for JSON-RPC
@@ -2094,6 +2109,9 @@ function stop_mcp_server(server::MCPServer)
         end
         empty!(STANDALONE_SESSIONS)
     end
+
+    # Discard any notifications queued for this server's (now-gone) clients.
+    _clear_notifications!()
 
     HTTP.forceclose(server.server)
 end
