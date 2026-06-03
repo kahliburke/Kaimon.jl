@@ -1,6 +1,7 @@
 using Documenter
 using DocumenterVitepress
 using Kaimon
+using KaimonGate
 
 # Copy assets into VitePress public/assets/.
 # In CI (KAIMON_ASSET_BASE set) all assets are served from the docs-assets
@@ -36,7 +37,7 @@ end
 # Step 1: Generate markdown only — skip VitePress so we can patch config first
 makedocs(;
     sitename = "Kaimon.jl",
-    modules = [Kaimon],
+    modules = [Kaimon, KaimonGate],
     remotes = nothing,
     format = DocumenterVitepress.MarkdownVitepress(;
         repo = "https://github.com/kahliburke/Kaimon.jl",

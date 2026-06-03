@@ -2428,6 +2428,26 @@ function _stderr_finish!()
     end
 end
 
+"""
+    progress(message::String)
+
+Stream a real-time progress update to the agent from inside a running eval or
+`GateTool` handler. The message is delivered as an MCP `notifications/progress`
+event (and echoed in the host REPL), which also keeps long-running HTTP requests
+from timing out.
+
+Only has an effect while running inside a gate request (it keys off the current
+request via task-local storage); outside one it's a no-op.
+
+```julia
+function analyze(passes::Int)
+    for i in 1:passes
+        KaimonGate.progress("pass \$i/\$passes complete")
+        # ...
+    end
+end
+```
+"""
 function progress(message::String)
     rid = get(task_local_storage(), :gate_request_id, nothing)
     rid === nothing && return

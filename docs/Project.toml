@@ -6,6 +6,7 @@ DocumenterVitepress = "4710194d-e776-4893-9690-8d956a29c365"
 FreeTypeAbstraction = "663a7486-cb36-511b-a19d-713bb74d65c9"
 JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
 Kaimon = "d3856c55-31fd-4246-b7e8-380411123c01"
+KaimonGate = "5ee84a8c-75bd-412f-a7b8-4e6463aa635f"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 Tachikoma = "468859d6-42d8-48b7-8ad9-1d312e0e3b0a"
@@ -17,3 +18,4 @@ Tachikoma = "2.1.0"
 
 [sources]
 Kaimon = {path = ".."}
+KaimonGate = {path = "../lib/KaimonGate"}

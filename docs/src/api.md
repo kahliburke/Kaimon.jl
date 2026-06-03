@@ -26,36 +26,36 @@ should use `KaimonGate`.)
 ### Lifecycle
 
 ```@docs
-Kaimon.KaimonGate.serve
-Kaimon.KaimonGate.stop
-Kaimon.KaimonGate.restart
-Kaimon.KaimonGate.status
-Kaimon.KaimonGate.connect!
+KaimonGate.serve
+KaimonGate.stop
+KaimonGate.restart
+KaimonGate.status
+KaimonGate.connect!
 ```
 
 ### Tools
 
 ```@docs
-Kaimon.KaimonGate.GateTool
-Kaimon.KaimonGate.call_tool
-Kaimon.KaimonGate.list_tools
+KaimonGate.GateTool
+KaimonGate.call_tool
+KaimonGate.list_tools
 ```
 
 ### Background jobs & progress
 
 ```@docs
-Kaimon.KaimonGate.is_cancelled
-Kaimon.KaimonGate.stash
-Kaimon.KaimonGate.progress
-Kaimon.KaimonGate.push_panel
+KaimonGate.is_cancelled
+KaimonGate.stash
+KaimonGate.progress
+KaimonGate.push_panel
 ```
 
 ### Terminal
 
 ```@docs
-Kaimon.KaimonGate.tty_path
-Kaimon.KaimonGate.tty_size
-Kaimon.KaimonGate.uninstall_infiltrator_hook!
+KaimonGate.tty_path
+KaimonGate.tty_size
+KaimonGate.uninstall_infiltrator_hook!
 ```
 
 ### Host-integration hooks
@@ -65,11 +65,11 @@ standalone gate can report Kaimon's version, apply personality, and so on. They
 are only needed when embedding `KaimonGate` in another host.
 
 ```@docs
-Kaimon.KaimonGate.PROTOCOL_VERSION
-Kaimon.KaimonGate.set_version_provider!
-Kaimon.KaimonGate.set_personality_provider!
-Kaimon.KaimonGate.set_mirror_pref_provider!
-Kaimon.KaimonGate.set_tachikoma!
-Kaimon.KaimonGate.set_auth_token_provider!
-Kaimon.KaimonGate.set_restart_code_builder!
+KaimonGate.PROTOCOL_VERSION
+KaimonGate.set_version_provider!
+KaimonGate.set_personality_provider!
+KaimonGate.set_mirror_pref_provider!
+KaimonGate.set_tachikoma!
+KaimonGate.set_auth_token_provider!
+KaimonGate.set_restart_code_builder!
 ```
