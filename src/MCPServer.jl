@@ -955,7 +955,7 @@ function create_handler(
                         ),
                     )
                     return HTTP.Response(
-                        400,
+                        200,
                         ["Content-Type" => "application/json"],
                         JSON.json(error_response),
                     )
@@ -1024,7 +1024,7 @@ function create_handler(
                         ),
                     )
                     return HTTP.Response(
-                        400,
+                        200,
                         ["Content-Type" => "application/json"],
                         JSON.json(response),
                     )
@@ -1042,7 +1042,7 @@ function create_handler(
                         ),
                     )
                     return HTTP.Response(
-                        404,
+                        200,
                         ["Content-Type" => "application/json"],
                         JSON.json(response),
                     )
@@ -1091,7 +1091,7 @@ function create_handler(
                         ),
                     )
                     return HTTP.Response(
-                        400,
+                        200,
                         ["Content-Type" => "application/json"],
                         JSON.json(error_response),
                     )
@@ -1154,7 +1154,7 @@ function create_handler(
                             ),
                         )
                         return HTTP.Response(
-                            400,
+                            200,
                             ["Content-Type" => "application/json"],
                             JSON.json(error_response),
                         )
@@ -1268,7 +1268,7 @@ function create_handler(
                         ),
                     )
                     return HTTP.Response(
-                        404,
+                        200,
                         ["Content-Type" => "application/json"],
                         JSON.json(error_response),
                     )

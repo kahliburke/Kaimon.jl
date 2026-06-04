@@ -199,3 +199,80 @@ end
     end
 end
 
+@testset "Tool Call Invalid Arguments (HTTP 200 + JSON-RPC error)" begin
+    # A tools/call with bad arguments is a JSON-RPC *application* error, not an
+    # HTTP transport error: it MUST return HTTP 200 with a JSON-RPC error
+    # payload. Returning 4xx makes MCP clients tear down the entire SSE session
+    # (the connection-crash bug reported with type_info / qdrant / list_names).
+    test_port = 13005
+    server = Kaimon.start_mcp_server(server_tools, test_port)
+    sleep(0.1)
+
+    try
+        # (1) Unknown parameter name (e.g. passing the wrong arg key)
+        unknown_arg = JSON.json(
+            Dict(
+                "jsonrpc" => "2.0",
+                "id" => 10,
+                "method" => "tools/call",
+                "params" => Dict(
+                    "name" => "reverse_text",
+                    "arguments" => Dict("wrong_name" => "hello"),
+                ),
+            ),
+        )
+        r1 = HTTP.post(
+            "http://localhost:$test_port/",
+            ["Content-Type" => "application/json"],
+            unknown_arg;
+            status_exception = false,
+        )
+        @test r1.status == 200            # NOT 400 — must keep the transport alive
+        j1 = JSON.parse(String(r1.body))
+        @test j1.id == 10
+        @test haskey(j1, :error)
+        @test j1.error.code == -32602
+        @test occursin("Unknown parameter", j1.error.message)
+
+        # (2) Missing required parameter
+        missing_arg = JSON.json(
+            Dict(
+                "jsonrpc" => "2.0",
+                "id" => 11,
+                "method" => "tools/call",
+                "params" => Dict(
+                    "name" => "reverse_text",
+                    "arguments" => Dict{String,Any}(),
+                ),
+            ),
+        )
+        r2 = HTTP.post(
+            "http://localhost:$test_port/",
+            ["Content-Type" => "application/json"],
+            missing_arg;
+            status_exception = false,
+        )
+        @test r2.status == 200
+        j2 = JSON.parse(String(r2.body))
+        @test haskey(j2, :error)
+        @test j2.error.code == -32602
+        @test occursin("Missing required parameter", j2.error.message)
+
+        # (3) The connection must still be usable after the errors (no crash).
+        followup =
+            JSON.json(Dict("jsonrpc" => "2.0", "id" => 12, "method" => "tools/list"))
+        r3 = HTTP.post(
+            "http://localhost:$test_port/",
+            ["Content-Type" => "application/json"],
+            followup;
+            status_exception = false,
+        )
+        @test r3.status == 200
+        @test haskey(JSON.parse(String(r3.body)).result, "tools")
+
+    finally
+        Kaimon.stop_mcp_server(server)
+        sleep(0.1)
+    end
+end
+
