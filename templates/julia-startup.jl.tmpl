@@ -1,14 +1,17 @@
-# Kaimon Gate — auto-connect this REPL to the TUI server.
-# Uses the lightweight KaimonGate package.
-try
-    using Revise
-catch e
-    @info "ℹ Revise not loaded (optional - install with: Pkg.add(\"Revise\"))"
-end
-try
-    using KaimonGate
-    KaimonGate.serve()
-catch e
-    @warn "KaimonGate failed to start (is it in your global env? run the kaimon CLI to install it)" exception = e
+# Kaimon Gate — auto-connect this REPL to the Kaimon dashboard.
+# Uses the lightweight KaimonGate package. Activates only when KaimonGate is
+# available in this environment, so other Julia versions or clean envs start
+# silently — no warnings in sessions that don't have it.
+if Base.identify_package("KaimonGate") !== nothing
+    try
+        @eval using Revise
+    catch
+    end
+    try
+        @eval using KaimonGate
+        @eval KaimonGate.serve()
+    catch e
+        @warn "KaimonGate failed to start" exception = e
+    end
 end
 # Kaimon Gate — end
