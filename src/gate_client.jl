@@ -251,6 +251,7 @@ mutable struct ConnectionManager
     eval_history_lock::ReentrantLock
     event_pub_socket::Union{ZMQ.Socket,Nothing}  # global PUB for extension events
     task_queue::Any  # Tachikoma.TaskQueue (or nothing if headless)
+    drain_task::Union{Task,Nothing}  # headless-only SUB drain pump (see start!)
 end
 
 function ConnectionManager(; sock_dir::String = joinpath(kaimon_cache_dir(), "sock"),
@@ -268,6 +269,7 @@ function ConnectionManager(; sock_dir::String = joinpath(kaimon_cache_dir(), "so
         ReentrantLock(),
         nothing,
         task_queue,
+        nothing,
     )
 end
 
@@ -602,11 +604,18 @@ function discover_sessions(mgr::ConnectionManager)
         # Skip if we already track this session with the exact same PID —
         # nothing changed.  If the PID is different the process restarted:
         # don't skip so the watcher can replace the stale connection.
-        # For TCP sessions, always skip if already tracked (any status) —
-        # the PID may differ between metadata file and pong, and replacing
-        # would lose the SUB socket established by connect_tcp!.
+        # TCP gates are owned exclusively by _poll_tcp_gates!, which connects
+        # them via connect_tcp! with the auth token from tcp_gates.json. On a
+        # successful connect_tcp!, the hub writes a `mode=:tcp` advert into its
+        # own sock_dir (for reconnect-after-restart). This discovery sweep would
+        # then re-read that advert and reconnect the same session via the path
+        # below — which builds a REPLConnection WITHOUT a token — installing a
+        # tokenless duplicate. Every request on it then fails the gate's token
+        # check ("Authentication required"). So skip TCP adverts here entirely;
+        # the token-aware poll owns them. (The earlier `&& haskey(known_id_pids)`
+        # guard missed the window before the poll's connection was tracked.)
         session_mode = Symbol(get(meta, "mode", "ipc"))
-        if session_mode == :tcp && haskey(known_id_pids, session_id)
+        if session_mode == :tcp
             continue
         end
         if session_mode != :tcp && haskey(known_id_pids, session_id) && known_id_pids[session_id] == pid
@@ -1656,6 +1665,40 @@ function start!(mgr::ConnectionManager)
         end
     end
 
+    # Stream drain pump — headless only.
+    #
+    # eval_remote_async waits for eval_complete/eval_error on a per-request inbox
+    # that is filled exclusively by drain_stream_messages! (it reads each gate's
+    # SUB socket and routes messages by request_id). In TUI mode the render loop
+    # calls drain_stream_messages! every frame; headless has no render loop, so
+    # without this pump the SUB sockets are never drained, inboxes never fill,
+    # and every eval times out at the 30s promotion threshold into a phantom job.
+    #
+    # Gated on task_queue === nothing (the existing headless indicator) so we do
+    # NOT run concurrently with the TUI's drain — two readers of the same SUB
+    # socket would steal each other's messages. The return value (unrouted
+    # stdout/stderr meant for TUI display) is discarded; the eval_complete →
+    # inbox routing happens as a side effect inside drain_stream_messages!.
+    #
+    # drain_stream_messages! is non-blocking (it polls POLLIN and returns
+    # immediately when no messages are pending), so we pace it with a sleep.
+    # The interval trades eval-result latency against idle wakeups: at 100ms a
+    # result is delivered within ~100ms (imperceptible, and 300x under the 30s
+    # promotion threshold) while idle CPU stays well under 1% of a core. Lower
+    # intervals (e.g. 10ms) raise idle cost ~10x for no useful latency gain.
+    if mgr.task_queue === nothing
+        mgr.drain_task = Threads.@spawn begin
+            while mgr.running
+                try
+                    drain_stream_messages!(mgr)
+                catch e
+                    @debug "Headless drain error" exception = e
+                end
+                sleep(0.1)
+            end
+        end
+    end
+
     return mgr
 end
 
@@ -1837,7 +1880,7 @@ function stop!(mgr::ConnectionManager)
 
     # Let background tasks finish (they'll exit on next loop since running=false)
     Threads.@spawn begin
-        for task in [mgr.watcher_task, mgr.health_task]
+        for task in [mgr.watcher_task, mgr.health_task, mgr.drain_task]
             if task !== nothing && !istaskdone(task)
                 try
                     wait(task)
