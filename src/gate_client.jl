@@ -1660,26 +1660,6 @@ function start!(mgr::ConnectionManager)
     end
 
     # Stream drain pump — headless only.
-    #
-    # eval_remote_async waits for eval_complete/eval_error on a per-request inbox
-    # that is filled exclusively by drain_stream_messages! (it reads each gate's
-    # SUB socket and routes messages by request_id). In TUI mode the render loop
-    # calls drain_stream_messages! every frame; headless has no render loop, so
-    # without this pump the SUB sockets are never drained, inboxes never fill,
-    # and every eval times out at the 30s promotion threshold into a phantom job.
-    #
-    # Gated on task_queue === nothing (the existing headless indicator) so we do
-    # NOT run concurrently with the TUI's drain — two readers of the same SUB
-    # socket would steal each other's messages. The return value (unrouted
-    # stdout/stderr meant for TUI display) is discarded; the eval_complete →
-    # inbox routing happens as a side effect inside drain_stream_messages!.
-    #
-    # drain_stream_messages! is non-blocking (it polls POLLIN and returns
-    # immediately when no messages are pending), so we pace it with a sleep.
-    # The interval trades eval-result latency against idle wakeups: at 100ms a
-    # result is delivered within ~100ms (imperceptible, and 300x under the 30s
-    # promotion threshold) while idle CPU stays well under 1% of a core. Lower
-    # intervals (e.g. 10ms) raise idle cost ~10x for no useful latency gain.
     if mgr.task_queue === nothing
         mgr.drain_task = Threads.@spawn begin
             while mgr.running
