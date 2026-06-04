@@ -341,21 +341,34 @@ function _maybe_run_setup_update()
         return
     end
 
+    is_migration = kaimon_in_global || legacy_startup
+    if is_migration
+        println("""
+
+        A Kaimon setup update is available — it modernizes how your Julia
+        sessions connect to the dashboard. Applying it will:
+        """)
+    else
+        println("""
+
+        Make every Julia session auto-connect to the Kaimon dashboard?
+        Saying yes will:
+        """)
+    end
+    println("  • add the lightweight KaimonGate package to your global Julia")
+    println("    environment ($global_env)")
+    println("  • append an auto-connect block to $startup_file")
+    if kaimon_in_global
+        println("  • remove the heavyweight Kaimon package from that global env")
+        println("    (the `kaimon` CLI has its own app environment and is unaffected)")
+    end
     println("""
 
-    A Kaimon setup update is available — it improves how your Julia sessions
-    connect to the dashboard.
+    You can undo this anytime: delete the block from startup.jl and run
+    `]rm KaimonGate` in your global env. Choose "never" to stop being asked.
     """)
-    if kaimon_in_global
-        println("""\
-    This will install the lightweight KaimonGate into your global environment and
-    remove the heavyweight Kaimon package from it. The `kaimon` CLI lives in its
-    own app environment, so this does not affect the CLI — but if you rely on
-    `using Kaimon` from your global environment, choose "n" and add KaimonGate
-    yourself instead.
-    """)
-    end
-    print("Apply this update now? [Y/n/never]: ")
+    print(is_migration ? "Apply this update now? [Y/n/never]: " :
+                         "Set this up now? [Y/n/never]: ")
     response = lowercase(strip(readline()))
     if isempty(response) || response in ("y", "yes")
         @info "Applying Kaimon setup update..."
