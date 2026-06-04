@@ -958,7 +958,12 @@ qdrant_search_tool = @mcp_tool(
         limit = Int(get(args, "limit", 10))
         filter = get(args, "filter", nothing)
 
-        return QdrantClient.search(collection, vector; limit = limit, filter = filter)
+        # Serialize to a JSON string so the MCP layer wraps it as text content.
+        # Returning the raw array makes the server emit a bare JSON array, which
+        # MCP clients can't unmarshal into the standard content format.
+        return JSON.json(
+            QdrantClient.search(collection, vector; limit = limit, filter = filter),
+        )
     end
 )
 

@@ -206,4 +206,24 @@ const MY_TEST_CONST = 42
             rm(tmp_dir; recursive = true, force = true)
         end
     end
+
+    @testset "type_info Union / UnionAll handling" begin
+        # _type_info_code is self-contained (Base + InteractiveUtils only), so
+        # the generated code can run here without a live gate session.
+        run_ti(expr) = Base.include_string(Module(), Kaimon._type_info_code(expr))
+
+        # Ordinary DataType — full report including Supertype
+        @test occursin("Supertype:", run_ti("Int64"))
+
+        # Union — must NOT call supertype(::Union); reports members instead.
+        # Regression for `MethodError: no method matching supertype(::Union)`.
+        u1 = run_ti("Union{Int,String}")
+        @test occursin("Union type", u1)
+        @test occursin("Int64", u1)
+        @test occursin("String", u1)
+        @test occursin("Union type", run_ti("Union{Nothing,Int}"))
+
+        # UnionAll (parametric) — reports its base type, no supertype error
+        @test occursin("UnionAll", run_ti("Vector"))
+    end
 end

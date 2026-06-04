@@ -1141,6 +1141,60 @@ macro_expand_tool = @mcp_tool(
     end
 )
 
+"""
+    _type_info_code(type_expr) -> String
+
+Build the self-contained introspection code run in the gate session for
+`type_info`. Handles `Union` and `UnionAll` types — where `supertype`,
+`fieldnames`, and `subtypes` are undefined — in addition to ordinary `DataType`s,
+so querying e.g. `Union{Int,String}` reports the members instead of throwing
+`MethodError: no method matching supertype(::Union)`.
+"""
+function _type_info_code(type_expr::AbstractString)::String
+    return """
+    using InteractiveUtils
+    T = $type_expr
+    _buf = IOBuffer()
+    print(_buf, "Type Information for: \$T\\n")
+    print(_buf, "=" ^ 60, "\\n\\n")
+    if T isa Union
+        print(_buf, "Kind: Union type\\n\\nMembers:\\n")
+        for t in Base.uniontypes(T)
+            print(_buf, "  - \$t\\n")
+        end
+    elseif T isa UnionAll
+        print(_buf, "Kind: UnionAll (parametric) type\\n")
+        print(_buf, "Base type: \$(Base.unwrap_unionall(T))\\n")
+    else
+        print(_buf, "Abstract: ", isabstracttype(T), "\\n")
+        print(_buf, "Primitive: ", isprimitivetype(T), "\\n")
+        print(_buf, "Mutable: ", ismutabletype(T), "\\n\\n")
+        print(_buf, "Supertype: ", supertype(T), "\\n")
+        if !isabstracttype(T)
+            print(_buf, "\\nFields:\\n")
+            if fieldcount(T) > 0
+                for (i, fname) in enumerate(fieldnames(T))
+                    ftype = fieldtype(T, i)
+                    print(_buf, "  \$i. \$fname :: \$ftype\\n")
+                end
+            else
+                print(_buf, "  (no fields)\\n")
+            end
+        end
+        print(_buf, "\\nDirect subtypes:\\n")
+        subs = subtypes(T)
+        if isempty(subs)
+            print(_buf, "  (no direct subtypes)\\n")
+        else
+            for sub in subs
+                print(_buf, "  - \$sub\\n")
+            end
+        end
+    end
+    String(take!(_buf))
+    """
+end
+
 type_info_tool = @mcp_tool(
     :type_info,
     "Get type information: hierarchy, fields, parameters, and properties.",
@@ -1166,40 +1220,8 @@ type_info_tool = @mcp_tool(
                 return "Error: type_expr parameter is required"
             end
 
-            code = """
-            using InteractiveUtils
-            T = $type_expr
-            _buf = IOBuffer()
-            print(_buf, "Type Information for: \$T\\n")
-            print(_buf, "=" ^ 60, "\\n\\n")
-            print(_buf, "Abstract: ", isabstracttype(T), "\\n")
-            print(_buf, "Primitive: ", isprimitivetype(T), "\\n")
-            print(_buf, "Mutable: ", ismutabletype(T), "\\n\\n")
-            print(_buf, "Supertype: ", supertype(T), "\\n")
-            if !isabstracttype(T)
-                print(_buf, "\\nFields:\\n")
-                if fieldcount(T) > 0
-                    for (i, fname) in enumerate(fieldnames(T))
-                        ftype = fieldtype(T, i)
-                        print(_buf, "  \$i. \$fname :: \$ftype\\n")
-                    end
-                else
-                    print(_buf, "  (no fields)\\n")
-                end
-            end
-            print(_buf, "\\nDirect subtypes:\\n")
-            subs = subtypes(T)
-            if isempty(subs)
-                print(_buf, "  (no direct subtypes)\\n")
-            else
-                for sub in subs
-                    print(_buf, "  - \$sub\\n")
-                end
-            end
-            String(take!(_buf))
-            """
             execute_repllike(
-                code;
+                _type_info_code(type_expr);
                 description = "[Getting type info for: $type_expr]",
                 quiet = false,
                 show_prompt = false,
