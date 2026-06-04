@@ -2217,6 +2217,11 @@ function _serve(;
     printstyled("Kaimon gate "; color = :green, bold = true)
     printstyled("connected"; color = :green)
     printstyled(" ($name)\n"; color = :light_black)
+    let (kg_ver, kg_dir) = _build_info()
+        printstyled("  KaimonGate v$kg_ver"; color = :light_black)
+        kg_dir === nothing || printstyled(" — $kg_dir"; color = :light_black)
+        print("\n")
+    end
     if mode == :tcp
         printstyled("  TCP mode: "; color = :light_black)
         printstyled("$endpoint"; color = :cyan)

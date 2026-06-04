@@ -1,4 +1,29 @@
-"""
+module KaimonGate
+
+using ZMQ
+using REPL
+using Serialization
+using Dates
+using TOML
+
+"""Return `(version, dir)` for this KaimonGate build — its package version
+string and on-disk source directory, so you can tell which copy is running.
+Surfaced in the module docstring and the `serve()` startup banner."""
+function _build_info()
+    ver = try
+        string(something(pkgversion(@__MODULE__), "dev"))
+    catch
+        "dev"
+    end
+    dir = try
+        pkgdir(@__MODULE__)
+    catch
+        nothing
+    end
+    return (ver, dir)
+end
+
+@doc """
     KaimonGate
 
 Thin eval gate for the Kaimon MCP server — the piece that runs *inside* the
@@ -18,14 +43,10 @@ KaimonGate.serve()      # start the gate; the kaimon CLI auto-discovers it
 ```
 
 See `serve`, `stop`, `restart`, `status`.
-"""
-module KaimonGate
 
-using ZMQ
-using REPL
-using Serialization
-using Dates
-using TOML
+---
+**This build:** v$(_build_info()[1])$(_build_info()[2] === nothing ? "" : " — `$(_build_info()[2])`")
+""" KaimonGate
 
 # ── Wire protocol version ────────────────────────────────────────────────────
 """
