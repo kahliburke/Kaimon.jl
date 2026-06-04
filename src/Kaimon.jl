@@ -309,6 +309,30 @@ function _apply_gate_setup_update!(; remove_kaimon::Bool)
 end
 
 """
+    _apply_wizard_gate_choice!(choice::Symbol)
+
+Apply the gate auto-connect decision made in the first-run wizard (`:yes` /
+`:no` / `:never`). Called after the wizard's TUI has closed, so the (slow) Pkg
+install and its console output happen in the normal terminal.
+"""
+function _apply_wizard_gate_choice!(choice::Symbol)
+    if choice === :yes
+        println("\nSetting up auto-connect (installing KaimonGate, updating startup.jl)…")
+        try
+            _apply_gate_setup_update!(; remove_kaimon = false)
+            _set_gate_setup_version(GATE_SETUP_VERSION)
+            println("Done — every Julia session will now connect to Kaimon.\n")
+        catch e
+            @warn "Auto-connect setup failed" exception = e
+        end
+    elseif choice === :never
+        _set_gate_setup_version(GATE_SETUP_VERSION)
+    end
+    # :no — leave the version unset so it can be offered again on a later start.
+    return nothing
+end
+
+"""
     _maybe_run_setup_update()
 
 On an interactive startup, check whether the user's gate setup is behind
@@ -2728,13 +2752,15 @@ function (@main)(ARGS)
         # Offer a one-time, versioned setup update if the user's gate setup is
         # behind GATE_SETUP_VERSION (e.g. a legacy full-Kaimon global install or
         # startup snippet). Records the applied version so it isn't re-prompted.
-        _maybe_run_setup_update()
-
-        # First-time setup: launch security wizard if no config exists
+        # First-time setup: launch the security wizard, which now includes the
+        # gate auto-connect step. Existing users instead get the one-time gate
+        # setup migration prompt (they won't re-run the wizard).
         has_config = load_global_config() !== nothing
         if !has_config
             result = setup_wizard_tui()
             result === nothing && return
+        else
+            _maybe_run_setup_update()
         end
 
         _revise_active = use_revise && _Revise !== nothing

@@ -172,6 +172,7 @@ const COMPANION_WIZ_B = split(_WIZ_B_ART, '\n')
     PHASE_IP_ALLOWLIST     # (Advanced) Add/remove IPs
     PHASE_INDEX_DIRS       # (Advanced) Add index directories
     PHASE_SUMMARY          # (Advanced) Review + confirm/cancel Modal
+    PHASE_GATE             # Auto-connect every Julia session? (Yes / Not now / Never)
     PHASE_SAVING           # Animated Gauge progress, writes config at midpoint
     PHASE_DONE             # Success screen, any key exits
 end
@@ -217,6 +218,10 @@ end
     index_dirs::Vector{String} = String[]
     index_list_selected::Int = 1
     summary_selected::Symbol = :confirm
+
+    # Gate auto-connect choice (first-run setup)
+    gate_selected::Int = 1
+    gate_choice::Symbol = :yes   # :yes / :no / :never
 
     # Save state
     save_progress::Float64 = 0.0
@@ -293,6 +298,8 @@ function enter_phase!(m::SetupWizardModel, phase::WizardPhase)
         m.index_list_selected = 1
     elseif phase == PHASE_SUMMARY
         m.summary_selected = :confirm
+    elseif phase == PHASE_GATE
+        m.gate_selected = 1
     elseif phase == PHASE_SAVING
         m.save_done = false
         m.save_success = false
@@ -322,13 +329,15 @@ function advance_phase!(m::SetupWizardModel)
         if m.advanced
             enter_phase!(m, PHASE_IP_ALLOWLIST)
         else
-            enter_phase!(m, PHASE_SAVING)
+            enter_phase!(m, PHASE_GATE)
         end
     elseif m.phase == PHASE_IP_ALLOWLIST
         enter_phase!(m, PHASE_INDEX_DIRS)
     elseif m.phase == PHASE_INDEX_DIRS
         enter_phase!(m, PHASE_SUMMARY)
     elseif m.phase == PHASE_SUMMARY
+        enter_phase!(m, PHASE_GATE)
+    elseif m.phase == PHASE_GATE
         enter_phase!(m, PHASE_SAVING)
     elseif m.phase == PHASE_SAVING
         enter_phase!(m, PHASE_DONE)
@@ -430,6 +439,8 @@ function Tachikoma.update!(m::SetupWizardModel, evt::KeyEvent)
         update_index_dirs!(m, evt)
     elseif m.phase == PHASE_SUMMARY
         update_summary!(m, evt)
+    elseif m.phase == PHASE_GATE
+        update_gate!(m, evt)
     elseif m.phase == PHASE_SAVING
         # No user input during save
     elseif m.phase == PHASE_DONE
@@ -610,6 +621,17 @@ function update_summary!(m::SetupWizardModel, evt::KeyEvent)
 end
 
 # ── Tick-based animation updates (called from view) ─────────────────────────
+
+function update_gate!(m::SetupWizardModel, evt::KeyEvent)
+    if evt.key == :up
+        m.gate_selected = max(1, m.gate_selected - 1)
+    elseif evt.key == :down
+        m.gate_selected = min(3, m.gate_selected + 1)
+    elseif evt.key == :enter
+        m.gate_choice = [:yes, :no, :never][m.gate_selected]
+        advance_phase!(m)
+    end
+end
 
 function update_animations!(m::SetupWizardModel)
     tick!(m.animator)
@@ -1557,6 +1579,8 @@ function view_config_step(m::SetupWizardModel, f::Frame)
         view_index_dirs_step(m, step_area, buf)
     elseif m.phase == PHASE_SUMMARY
         view_summary_step(m, step_area, buf)
+    elseif m.phase == PHASE_GATE
+        view_gate_step(m, step_area, buf)
     elseif m.phase == PHASE_SAVING
         view_saving_step(m, step_area, buf)
     end
@@ -1579,7 +1603,8 @@ function phase_to_step_index(phase::WizardPhase)
     phase == PHASE_IP_ALLOWLIST && return 5
     phase == PHASE_INDEX_DIRS && return 6
     phase == PHASE_SUMMARY && return 7
-    phase == PHASE_SAVING && return 8
+    phase == PHASE_GATE && return 8
+    phase == PHASE_SAVING && return 9
     return 0
 end
 
@@ -1596,12 +1621,13 @@ function view_progress_list(m::SetupWizardModel, area::Rect, buf::Buffer)
             "IP Allowlist",
             "Index Dirs",
             "Summary",
+            "Auto-connect",
             "Save",
-        ] : ["Security Mode", "Port", "API Key", "Quick/Advanced", "Save"]
+        ] : ["Security Mode", "Port", "API Key", "Quick/Advanced", "Auto-connect", "Save"]
 
     items = ProgressItem[]
     for (i, label) in enumerate(steps)
-        real_step = m.advanced ? i : (i <= 4 ? i : 8)
+        real_step = m.advanced ? i : (i <= 4 ? i : (i == 5 ? 8 : 9))
         status = if real_step < current_step
             task_done
         elseif real_step == current_step
@@ -1647,6 +1673,62 @@ function view_security_mode_step(m::SetupWizardModel, area::Rect, buf::Buffer)
         set_string!(buf, area.x + 1, row_y, "$marker $name", name_style)
         set_string!(buf, area.x + 4, row_y + 1, desc, desc_style)
         set_string!(buf, area.x + 4, row_y + 2, detail, tstyle(:text_dim, dim = true))
+    end
+end
+
+function view_gate_step(m::SetupWizardModel, area::Rect, buf::Buffer)
+    flavor = mode_flavor_text(m)
+    y = area.y + 1
+
+    # Themed tagline
+    set_string!(buf, area.x + 1, y, flavor[:gate_tagline], tstyle(:accent, bold = true))
+    y += 2
+
+    # Plain-language explanation of what "auto-connect" actually does
+    for line in (
+        "Every Julia session you start will show up in the",
+        "Kaimon dashboard automatically — your AI tools can",
+        "reach it with no per-session setup.",
+    )
+        set_string!(buf, area.x + 1, y, line, tstyle(:text))
+        y += 1
+    end
+    y += 1
+
+    # The exact footprint (and that it's reversible)
+    set_string!(
+        buf,
+        area.x + 1,
+        y,
+        "It adds KaimonGate to your global environment and a",
+        tstyle(:text_dim),
+    )
+    y += 1
+    set_string!(
+        buf,
+        area.x + 1,
+        y,
+        "small auto-connect block to startup.jl. Undo anytime.",
+        tstyle(:text_dim),
+    )
+    y += 2
+
+    options = [
+        ("YES", flavor[:gate_yes]),
+        ("NOT NOW", flavor[:gate_no]),
+        ("NEVER", flavor[:gate_never]),
+    ]
+    for (i, (name, desc)) in enumerate(options)
+        row_y = y + (i - 1) * 2
+        row_y > bottom(area) && break
+
+        is_sel = i == m.gate_selected
+        marker = is_sel ? ">" : " "
+        name_style = is_sel ? tstyle(:accent, bold = true) : tstyle(:text)
+        desc_style = is_sel ? tstyle(:text) : tstyle(:text_dim)
+
+        set_string!(buf, area.x + 1, row_y, "$marker $name", name_style)
+        set_string!(buf, area.x + 12, row_y, desc, desc_style)
     end
 end
 
@@ -2403,6 +2485,7 @@ function phase_title(m::SetupWizardModel)
         PHASE_IP_ALLOWLIST => " IP Allowlist ",
         PHASE_INDEX_DIRS => " Index Directories ",
         PHASE_SUMMARY => " Summary ",
+        PHASE_GATE => " Auto-connect ",
         PHASE_SAVING => " Saving ",
     )
     get(titles, m.phase, " Setup ")
@@ -2417,6 +2500,7 @@ function step_title_text(m::SetupWizardModel)
         PHASE_IP_ALLOWLIST => "IPS",
         PHASE_INDEX_DIRS => "DIRS",
         PHASE_SUMMARY => "REVIEW",
+        PHASE_GATE => "CONNECT",
         PHASE_SAVING => "SAVE",
     )
     get(texts, m.phase, "SETUP")
@@ -2431,6 +2515,7 @@ function step_hints(m::SetupWizardModel)
         PHASE_IP_ALLOWLIST => " Enter  add/continue    Up/Down  select    [d]  remove    Esc  quit",
         PHASE_INDEX_DIRS => " Enter  add/continue    Up/Down  select    [d]  remove    Esc  quit",
         PHASE_SUMMARY => " Left/Right  toggle    Enter  confirm    Esc  quit",
+        PHASE_GATE => " Up/Down  select    Enter  confirm    Esc  quit",
         PHASE_SAVING => " Saving...",
     )
     get(hints, m.phase, " Esc  quit")
@@ -2443,6 +2528,10 @@ function mode_flavor_text(m::SetupWizardModel)
             :relaxed => "Lower the drawbridge",
             :lax => "Brave, or foolish?",
             :api_key => "Guard this with your life!",
+            :gate_tagline => "Summon every session to the gate.",
+            :gate_yes => "Open the gate — every REPL answers the call",
+            :gate_no => "Hold the gate shut, for now",
+            :gate_never => "Seal it — you'll raise the gate by hand",
         )
     elseif m.mode == GENTLE
         Dict(
@@ -2450,6 +2539,10 @@ function mode_flavor_text(m::SetupWizardModel)
             :relaxed => "Flexible but secure",
             :lax => "Simple and local",
             :api_key => "Keep this safe and sound!",
+            :gate_tagline => "Let every session find its way home.",
+            :gate_yes => "Yes please — connect them all for me",
+            :gate_no => "Maybe later — leave things as they are",
+            :gate_never => "No thanks — I'll connect when I want",
         )
     else
         Dict(
@@ -2457,6 +2550,10 @@ function mode_flavor_text(m::SetupWizardModel)
             :relaxed => "Partial countermeasures",
             :lax => "Running dark - local only",
             :api_key => "Don't let it leak into the matrix",
+            :gate_tagline => "Jack every session into the grid.",
+            :gate_yes => "Wire the rig — auto-jack every console",
+            :gate_no => "Hold — stay off the grid for now",
+            :gate_never => "Run dark — manual jack only",
         )
     end
 end
@@ -2506,5 +2603,11 @@ function setup_wizard_tui(; mode::Symbol = :auto)
     end
 
     app(model; fps = 60)
-    model.save_success ? load_global_config() : nothing
+    # The TUI has closed — apply the gate auto-connect choice here, in the
+    # console, where the (slow) Pkg work and its output belong.
+    if model.save_success
+        _apply_wizard_gate_choice!(model.gate_choice)
+        return load_global_config()
+    end
+    return nothing
 end
