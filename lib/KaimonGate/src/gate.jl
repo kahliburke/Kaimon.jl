@@ -2220,6 +2220,15 @@ function _serve(;
     let (kg_ver, kg_dir) = _build_info()
         printstyled("  KaimonGate v$kg_ver"; color = :light_black)
         kg_dir === nothing || printstyled(" — $kg_dir"; color = :light_black)
+        # Under the full Kaimon CLI, the host injects its own version via the
+        # provider hook. Surface it only when it differs from KaimonGate's own
+        # (standalone they're the same, so nothing extra is shown).
+        host_ver = try
+            string(Base.invokelatest(_VERSION_PROVIDER[]))
+        catch
+            kg_ver
+        end
+        host_ver == kg_ver || printstyled(" (Kaimon v$host_ver)"; color = :light_black)
         print("\n")
     end
     if mode == :tcp
