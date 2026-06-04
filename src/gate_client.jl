@@ -606,14 +606,8 @@ function discover_sessions(mgr::ConnectionManager)
         # don't skip so the watcher can replace the stale connection.
         # TCP gates are owned exclusively by _poll_tcp_gates!, which connects
         # them via connect_tcp! with the auth token from tcp_gates.json. On a
-        # successful connect_tcp!, the hub writes a `mode=:tcp` advert into its
-        # own sock_dir (for reconnect-after-restart). This discovery sweep would
-        # then re-read that advert and reconnect the same session via the path
-        # below — which builds a REPLConnection WITHOUT a token — installing a
-        # tokenless duplicate. Every request on it then fails the gate's token
-        # check ("Authentication required"). So skip TCP adverts here entirely;
-        # the token-aware poll owns them. (The earlier `&& haskey(known_id_pids)`
-        # guard missed the window before the poll's connection was tracked.)
+        # successful connect_tcp!, the server writes a `mode=:tcp` advert into its
+        # own sock_dir (for reconnect-after-restart).
         session_mode = Symbol(get(meta, "mode", "ipc"))
         if session_mode == :tcp
             continue
