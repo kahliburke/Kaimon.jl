@@ -263,17 +263,36 @@ function create_collection(
 end
 
 """
-    delete_points(collection::String, point_ids::Vector{String}) -> Bool
+    _coerce_point_id(id)
 
-Delete specific points by their IDs.
+Normalize a point ID to Qdrant's accepted forms: an unsigned integer or a UUID
+string. Numeric values — and all-digit strings like `"1"` — become integers so
+they match points stored with integer IDs; UUID/other strings pass through
+unchanged. (Qdrant treats `1` and `"1"` as different IDs.)
+"""
+function _coerce_point_id(id)
+    id isa Integer && return id
+    id isa Real && return isinteger(id) ? Int(id) : id   # JSON numbers as Float64
+    if id isa AbstractString
+        n = tryparse(Int, id)
+        return n !== nothing ? n : String(id)
+    end
+    return id
+end
+
+"""
+    delete_points(collection::String, point_ids::AbstractVector) -> Bool
+
+Delete specific points by their IDs. IDs are normalized via `_coerce_point_id`
+so numeric IDs delete points stored with integer IDs.
 
 # Returns
 true on success, false on failure.
 """
-function delete_points(collection::String, point_ids::Vector{String})
+function delete_points(collection::String, point_ids::AbstractVector)
     isempty(point_ids) && return true
     try
-        body = Dict("points" => point_ids)
+        body = Dict("points" => map(_coerce_point_id, point_ids))
         response = HTTP.post(
             "$(QDRANT_URL[])/collections/$(collection)/points/delete",
             ["Content-Type" => "application/json"],

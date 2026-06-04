@@ -901,7 +901,7 @@ qdrant_delete_points_tool = @mcp_tool(
                 Dict("type" => "string", "description" => "Name of the collection"),
             "point_ids" => Dict(
                 "type" => "array",
-                "description" => "Array of point ID strings to delete",
+                "description" => "Array of point IDs to delete (numeric or UUID; numeric strings like \"1\" delete integer-id points)",
                 "items" => Dict("type" => "string"),
             ),
         ),
@@ -913,7 +913,10 @@ qdrant_delete_points_tool = @mcp_tool(
 
         collection = get(args, "collection", "")
         isempty(collection) && return "Error: collection name is required"
-        point_ids = Vector{String}(get(args, "point_ids", String[]))
+        # Don't force IDs to String — Qdrant IDs are integers or UUID strings,
+        # and the client normalizes each one (a numeric "1" must delete the
+        # point stored with integer id 1, not a string "1").
+        point_ids = collect(get(args, "point_ids", []))
         isempty(point_ids) && return "No point IDs to delete"
 
         ok = QdrantClient.delete_points(collection, point_ids)

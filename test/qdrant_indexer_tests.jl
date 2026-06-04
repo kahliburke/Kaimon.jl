@@ -143,3 +143,17 @@ end
         @test end_line == 4
     end
 end
+
+@testset "qdrant point ID coercion" begin
+    cp = Kaimon.QdrantClient._coerce_point_id
+    # Numeric IDs (and numeric strings) normalize to integers so they match
+    # points stored with integer IDs — regression for delete_points stringifying
+    # numeric IDs (which never matched, silently deleting nothing).
+    @test cp(1) === 1
+    @test cp("1") === 1
+    @test cp("42") === 42
+    @test cp(2.0) === 2          # JSON numbers may arrive as Float64
+    # UUID / non-numeric strings pass through unchanged
+    @test cp("a1b2-uuid") == "a1b2-uuid"
+    @test cp("abc") == "abc"
+end
