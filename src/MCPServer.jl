@@ -1580,26 +1580,14 @@ function start_mcp_server(
         security_config,
         port,
     )
-        req = http.message
+        req = HTTP.startread(http)
 
-        # CRITICAL: Read the request body FIRST before any response
-        # HTTP.jl requires reading the full request before writing responses.
-        # Use readavailable in a loop (chunk reads) to avoid Base.read(io::IO)
-        # which reads byte-by-byte and triggers HTTP.jl's inefficiency warning.
-        # The eof(http) call at loop termination is also required: HTTP.jl uses
-        # it to mark the request body as fully consumed. Skipping it (e.g. via
-        # read(http, n)) leaves the stream in an unconsumed state and causes
-        # HTTP.jl to RST the connection after sending response headers
-        # (manifests as ECONNRESET on the client while reading the response).
-        # Wrap in try/catch so IOError on early client disconnect doesn't escape
-        # to HTTP.jl's handle_connection and produce spurious error log entries.
+        # Read the full request body before writing any response (must be fully
+        # consumed or HTTP.jl RSTs the connection). On an HTTP 2.0 server Stream
+        # the body read is `read(stream, String)`; `readavailable` is client-only.
+        # IOError on early client disconnect is swallowed to avoid spurious logs.
         body = try
-            buf = IOBuffer()
-            while !eof(http)
-                chunk = readavailable(http)
-                isempty(chunk) || write(buf, chunk)
-            end
-            String(take!(buf))
+            read(http, String)
         catch e
             e isa Base.IOError && return nothing   # client disconnected before sending body
             rethrow()
@@ -1756,7 +1744,7 @@ function start_mcp_server(
                     HTTP.setstatus(http, 200)
                     HTTP.setheader(http, "Content-Type" => "text/markdown; charset=utf-8")
                     HTTP.startwrite(http)
-                    write(http, agents_content)
+                    isempty(agents_content) || write(http, agents_content)  # avoid empty chunked write
                     return nothing
                 else
                     HTTP.setstatus(http, 404)
@@ -2041,7 +2029,13 @@ function start_mcp_server(
                     HTTP.setheader(http, name => value)
                 end
                 HTTP.startwrite(http)
-                write(http, response.body)
+                # HTTP 2.0 Response.body is a BytesBody, not a Vector{UInt8} — the
+                # Stream `write` needs a String. Skip empty bodies: a zero-length
+                # chunked write emits a premature terminator, corrupting the next
+                # response on a kept-alive connection (e.g. 202 notification acks).
+                let body_str = String(response.body)
+                    isempty(body_str) || write(http, body_str)
+                end
             end
             return nothing
 
@@ -2079,22 +2073,25 @@ function start_mcp_server(
         end
     end
 
-    # Start server with stream=true to enable streaming responses
-    # Temporarily suppress HTTP.jl's "Listening on" info message
-    # In TUI mode, keep the TUILogger active (don't swap to ConsoleLogger
-    # which would write to raw stderr and corrupt the terminal)
+    # HTTP 2.0 drives the Stream handler via `listen!` (`serve!` is now the
+    # buffered Request->Response path). Binds to 127.0.0.1 (localhost-only).
+    # Suppress background HTTP.jl info logging during startup; in TUI mode keep
+    # the TUILogger so we don't write to raw stderr and corrupt the terminal.
     old_logger = global_logger()
     if !GATE_MODE[]
         global_logger(ConsoleLogger(stderr, Logging.Warn))
     end
 
-    server = HTTP.serve!(hybrid_handler, port; verbose = false, stream = true)
+    # port == 0 binds an OS-assigned ephemeral port (used by tests to avoid
+    # fixed-port collisions); HTTP.port() reports the actual bound port.
+    server = HTTP.listen!(hybrid_handler, port; listenany = (port == 0))
     if !GATE_MODE[]
         global_logger(old_logger)
     end
+    bound_port = HTTP.port(server)
 
     # Server started successfully (session is now managed per-request via STANDALONE_SESSIONS)
-    return MCPServer(session_uuid, port, server, tools_dict, name_to_id, nothing)
+    return MCPServer(session_uuid, bound_port, server, tools_dict, name_to_id, nothing)
 end
 
 function stop_mcp_server(server::MCPServer)

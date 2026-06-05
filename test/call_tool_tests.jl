@@ -27,8 +27,9 @@ _call_tool_saved_xdg = get(ENV, "XDG_CONFIG_HOME", nothing)
         ))
 
         @testset "call_tool with Symbol" begin
-            # Start server for testing
-            Kaimon.start!(; verbose = false, port = test_port)
+            # Start server for testing on an ephemeral port (call_tool runs
+            # in-process, so the port value doesn't matter — 0 avoids collisions).
+            Kaimon.start!(; verbose = false, port = 0)
 
             try
                 # Test symbol-based call
@@ -50,7 +51,7 @@ _call_tool_saved_xdg = get(ENV, "XDG_CONFIG_HOME", nothing)
         end
 
         @testset "call_tool Handler Signatures" begin
-            Kaimon.start!(; verbose = false, port = test_port + 1)
+            Kaimon.start!(; verbose = false, port = 0)
 
             try
                 # Test tool with args signature
@@ -70,7 +71,7 @@ _call_tool_saved_xdg = get(ENV, "XDG_CONFIG_HOME", nothing)
             # Test without server running
             @test_throws ErrorException Kaimon.call_tool(:ex, Dict())
 
-            Kaimon.start!(; verbose = false, port = test_port + 2)
+            Kaimon.start!(; verbose = false, port = 0)
 
             try
                 # Test missing required parameters

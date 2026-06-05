@@ -240,7 +240,7 @@ function _pull_embedding_model_async!(
                 "http://localhost:11434/api/pull",
                 ["Content-Type" => "application/json"],
                 JSON.json(Dict("name" => model, "stream" => false));
-                readtimeout = 600,  # models can be large
+                request_timeout = 600,  # models can be large
             )
             data = JSON.parse(String(response.body))
             status = get(data, "status", "unknown")

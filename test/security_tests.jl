@@ -80,7 +80,6 @@ using JSON
 
         @testset "Server Authentication" begin
             # Create security config
-            test_port = 13100
             api_key = Kaimon.generate_api_key()
             security_config =
                 Kaimon.SecurityConfig(:strict, [api_key], ["127.0.0.1", "::1"])
@@ -93,16 +92,15 @@ using JSON
                 args -> get(args, "message", "")
             )
 
-            # Start server with security
+            # Start server with security on an OS-assigned ephemeral port (0) to
+            # avoid fixed-port collisions across runs; read the actual port back.
             server = Kaimon.start_mcp_server(
                 [test_tool],
-                test_port;
+                0;
                 verbose = false,
                 security_config = security_config,
             )
-
-            # Give server plenty of time to start and stabilize
-            sleep(3.0)
+            test_port = server.port
 
             # Wait for server to be ready with robust retry logic
             # Use valid auth from the start to avoid connection resets
@@ -122,7 +120,7 @@ using JSON
                         ],
                         test_body;
                         status_exception = false,
-                        readtimeout = 5,
+                        request_timeout = 5,
                         retry = false,
                         connect_timeout = 5,
                     )
@@ -161,7 +159,7 @@ using JSON
                 ["Content-Type" => "application/json"],
                 request_body;
                 status_exception = false,
-                readtimeout = 10,
+                request_timeout = 10,
                 retry = false,
             )
 
@@ -178,7 +176,7 @@ using JSON
                 ],
                 request_body;
                 status_exception = false,
-                readtimeout = 10,
+                request_timeout = 10,
                 retry = false,
             )
 
@@ -195,7 +193,7 @@ using JSON
                 ],
                 request_body;
                 status_exception = false,
-                readtimeout = 10,
+                request_timeout = 10,
                 retry = false,
             )
 

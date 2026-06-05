@@ -87,7 +87,7 @@ function ping_ollama()
         response = HTTP.get(
             "http://localhost:11434/api/tags";
             connect_timeout = 2,
-            readtimeout = 3,
+            request_timeout = 3,
         )
         return response.status == 200
     catch
@@ -105,7 +105,7 @@ function check_ollama_model(model::String)
         response = HTTP.get(
             "http://localhost:11434/api/tags";
             connect_timeout = 2,
-            readtimeout = 3,
+            request_timeout = 3,
         )
         data = JSON.parse(String(response.body))
         models = get(data, "models", [])
@@ -134,7 +134,7 @@ function list_ollama_models()
         response = HTTP.get(
             "http://localhost:11434/api/tags";
             connect_timeout = 2,
-            readtimeout = 3,
+            request_timeout = 3,
         )
         data = JSON.parse(String(response.body))
         models = get(data, "models", [])

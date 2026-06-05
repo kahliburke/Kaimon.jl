@@ -124,7 +124,7 @@ function mcp_initialize(agent_id::Int)
             "clientInfo" => Dict("name" => "stress-agent-\$(agent_id)", "version" => "0.1"),
         ),
     ))
-    resp = HTTP.post(BASE_URL, make_headers(), body; status_exception=false, readtimeout=timeout)
+    resp = HTTP.post(BASE_URL, make_headers(), body; status_exception=false, request_timeout=timeout)
     if resp.status != 200
         println("ERROR agent=\$(agent_id) elapsed=0.0 message=init_failed_http_\$(resp.status)")
         return nothing
@@ -162,14 +162,14 @@ function call_tool(session_id::String, agent_id::Int)
     progress_count = 0
     t0 = time()
     ok = false
-    # HTTP.jl readtimeout is a TOTAL connection lifetime, not per-read.
-    # Set it generously: user timeout + 60s grace for result delivery.
-    # Dead-connection detection relies on the server's heartbeat (every 5s)
-    # and TCP keepalive rather than readtimeout.
+    # HTTP 2.0 request_timeout is the overall request deadline (whole-stream
+    # lifetime), not per-read. Set it generously: user timeout + 60s grace for
+    # result delivery. Dead-connection detection relies on the server's
+    # heartbeat (every 5s) and TCP keepalive rather than this deadline.
     read_timeout = timeout + 60
     try
         HTTP.open("POST", BASE_URL, make_headers(; session_id);
-                  status_exception=false, readtimeout=read_timeout) do io
+                  status_exception=false, request_timeout=read_timeout) do io
             write(io, body)
             HTTP.closewrite(io)
             resp = HTTP.startread(io)

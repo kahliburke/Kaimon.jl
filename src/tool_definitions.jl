@@ -505,7 +505,10 @@ Commands:
         session = get(args, "session", "")
         isempty(command) && return "Error: command is required"
 
-        conn, err = _resolve_gate_conn(session)
+        # allow_stalled so a stalled/dead session can still be restarted or
+        # force-evicted — otherwise _resolve_gate_conn rejects it and there's no
+        # way to clear it from the registry.
+        conn, err = _resolve_gate_conn(session; allow_stalled = true)
         err !== nothing && return err
         mgr = GATE_CONN_MGR[]
         mgr === nothing && return "Error: No ConnectionManager available"
@@ -557,9 +560,29 @@ Commands:
             mgr.on_sessions_changed = old_cb
             return "Restart sent to $key but timed out waiting for reconnection (60s). The session may still be starting — try again shortly."
         elseif command == "shutdown"
+            was_stalled = conn.status == :stalled
+            # Best-effort graceful shutdown; a stalled/dead gate may not answer.
             ok = send_shutdown!(conn)
             disconnect!(conn)
-            return ok ? "Session $key shut down." : "Error: Failed to reach session $key."
+            # Force-evict from the registry and clean up its files, so a stalled
+            # session (e.g. a localhost TCP worker whose process already died) can
+            # always be cleared without round-tripping to the dead gate.
+            lock(mgr.lock) do
+                idx = findfirst(c -> c === conn, mgr.connections)
+                if idx !== nothing
+                    _unregister_session_tools!(conn)
+                    deleteat!(mgr.connections, idx)
+                end
+            end
+            _remove_session_files(mgr.sock_dir, conn.session_id)
+            _fire_sessions_changed(mgr)
+            if ok
+                return "Session $key shut down."
+            elseif was_stalled
+                return "Session $key was stalled/unreachable — force-removed from the registry and cleaned up."
+            else
+                return "Session $key removed from the registry (gate did not acknowledge shutdown)."
+            end
         else
             return "Error: Invalid command '$command'"
         end

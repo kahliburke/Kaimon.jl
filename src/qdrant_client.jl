@@ -397,7 +397,7 @@ Check if Qdrant is reachable. Returns true if /healthz returns 200.
 """
 function ping()
     try
-        response = HTTP.get("$(QDRANT_URL[])/healthz"; connect_timeout = 2, readtimeout = 3)
+        response = HTTP.get("$(QDRANT_URL[])/healthz"; connect_timeout = 2, request_timeout = 3)
         return response.status == 200
     catch
         return false
@@ -411,11 +411,11 @@ Classify an exception into a user-friendly error message.
 """
 function _friendly_error(e)
     msg = string(e)
-    if e isa HTTP.Exceptions.ConnectError ||
+    if e isa HTTP.ConnectError ||
        contains(msg, "ConnectError") ||
        contains(msg, "connection refused")
         return "Qdrant is not reachable at $(QDRANT_URL[]). Is it running?"
-    elseif e isa HTTP.Exceptions.StatusError
+    elseif e isa HTTP.StatusError
         status = e.status
         if status == 404
             return "Collection not found (404)"

@@ -33,11 +33,11 @@ end
 server_tools = [time_tool, reverse_tool, calc_tool]
 
 @testset "Server Startup and Shutdown" begin
-    # Start server on test port (use port that shouldn't conflict)
-    test_port = 13001
-    server = Kaimon.start_mcp_server(server_tools, test_port)
+    # Start on an OS-assigned ephemeral port (0) to avoid fixed-port collisions.
+    server = Kaimon.start_mcp_server(server_tools, 0)
+    test_port = server.port
 
-    @test server.port == test_port
+    @test server.port > 0
     @test length(server.tools) == 3
     @test haskey(server.tools, :get_time)
     @test haskey(server.tools, :reverse_text)
@@ -55,8 +55,8 @@ end
 
 @testset "Invalid Requests" begin
     # Start server for invalid request tests
-    test_port = 13002
-    server = Kaimon.start_mcp_server(server_tools, test_port)
+    server = Kaimon.start_mcp_server(server_tools, 0)
+    test_port = server.port
 
     # Give server time to start
     sleep(0.1)
@@ -88,8 +88,8 @@ end
 
 @testset "Tool Listing" begin
     # Start server for tool listing tests
-    test_port = 13003
-    server = Kaimon.start_mcp_server(server_tools, test_port)
+    server = Kaimon.start_mcp_server(server_tools, 0)
+    test_port = server.port
 
     # Give server time to start
     sleep(0.1)
@@ -131,8 +131,8 @@ end
 
 @testset "Tool Execution" begin
     # Start server for tool execution tests
-    test_port = 13004
-    server = Kaimon.start_mcp_server(server_tools, test_port)
+    server = Kaimon.start_mcp_server(server_tools, 0)
+    test_port = server.port
 
     # Give server time to start
     sleep(0.1)
@@ -204,8 +204,8 @@ end
     # HTTP transport error: it MUST return HTTP 200 with a JSON-RPC error
     # payload. Returning 4xx makes MCP clients tear down the entire SSE session
     # (the connection-crash bug reported with type_info / qdrant / list_names).
-    test_port = 13005
-    server = Kaimon.start_mcp_server(server_tools, test_port)
+    server = Kaimon.start_mcp_server(server_tools, 0)
+    test_port = server.port
     sleep(0.1)
 
     try

@@ -431,6 +431,40 @@ function _is_pid_alive(pid::Int)
 end
 
 """
+    _is_local_host(host::AbstractString) -> Bool
+
+Whether `host` refers to the local machine — `127.0.0.1`, `::1`, `localhost`,
+or empty. Only for these does a PID-liveness check make sense; a genuinely
+remote TCP gate's PID belongs to another machine and must never be reaped here.
+"""
+function _is_local_host(host::AbstractString)
+    h = lowercase(strip(host))
+    return h == "" || h == "127.0.0.1" || h == "::1" || h == "localhost" ||
+           h == "0.0.0.0" || startswith(h, "127.")
+end
+
+"""
+    _endpoint_host(endpoint::AbstractString) -> String
+
+Extract the host from a `tcp://host:port` endpoint (returns "" if not parseable).
+Handles bracketed IPv6 (`tcp://[::1]:9100`).
+"""
+function _endpoint_host(endpoint::AbstractString)
+    m = match(r"^tcp://(\[[^\]]+\]|[^:/]+)", endpoint)
+    m === nothing && return ""
+    return strip(m.captures[1], ['[', ']'])
+end
+
+"""
+    _is_local_tcp(conn::REPLConnection) -> Bool
+
+True for a TCP gate whose endpoint resolves to the local machine. Localhost TCP
+gates are subject to PID-liveness reaping just like IPC sessions; remote ones
+are not (their PID is meaningless here).
+"""
+_is_local_tcp(conn::REPLConnection) = _is_tcp(conn) && _is_local_host(_endpoint_host(conn.endpoint))
+
+"""
     _update_session_metadata!(sock_dir, session_id; kwargs...)
 
 Update fields in an existing session metadata JSON file. Reads the file,
@@ -528,9 +562,14 @@ function cleanup_stale_sessions!(sock_dir::String)
             0
         end
 
-        # TCP sessions may run on remote machines — skip PID liveness check
+        # Reap dead-PID sessions: IPC always, and *localhost* TCP gates whose
+        # PID is known (>0) and dead. Genuinely remote TCP gates run on another
+        # machine, so their PID can't be checked here and is never reaped. The
+        # TCP meta `pid` is the gate's own getpid() once a pong has landed.
         session_mode = Symbol(get(meta, "mode", "ipc"))
-        if session_mode != :tcp && !_is_pid_alive(pid)
+        local_reapable = session_mode != :tcp ||
+            (_is_local_host(_endpoint_host(get(meta, "endpoint", ""))) && pid > 0)
+        if local_reapable && !_is_pid_alive(pid)
             @debug "Cleaning stale session" session_id pid
             _remove_session_files(sock_dir, session_id)
             delete!(json_sessions, session_id)
@@ -613,9 +652,12 @@ function discover_sessions(mgr::ConnectionManager)
             continue
         end
 
-        # Skip and clean up sessions whose PID is no longer alive.
-        # TCP sessions may run on remote machines — skip PID liveness check.
-        if session_mode != :tcp && !_is_pid_alive(pid)
+        # Skip and clean up sessions whose PID is no longer alive. IPC always;
+        # localhost TCP gates with a known (>0), dead PID too. Remote TCP gates
+        # run elsewhere, so their PID is unverifiable here and never reaped.
+        local_reapable = session_mode != :tcp ||
+            (_is_local_host(_endpoint_host(get(meta, "endpoint", ""))) && pid > 0)
+        if local_reapable && !_is_pid_alive(pid)
             _remove_session_files(mgr.sock_dir, session_id)
             continue
         end
@@ -1697,6 +1739,16 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
             _fire_sessions_changed(mgr)
         end
 
+        # Refresh the PID from the pong (the gate's own getpid() — authoritative).
+        # On TCP port reuse, a new process can rebind the same host:port and pings
+        # keep succeeding, so conn.pid must adopt the fresh PID rather than keep the
+        # dead predecessor's — both for display and for the dead-pid reaper below.
+        pong_pid = Int(get(result, :pid, 0))
+        if pong_pid > 0 && pong_pid != conn.pid
+            conn.pid = pong_pid
+            _fire_sessions_changed(mgr)
+        end
+
         # Record the gate's reported package version for display only. The gate
         # (KaimonGate) and this client (Kaimon) are now separate packages with
         # independent version numbers, so version equality is not a compat signal.
@@ -1823,7 +1875,16 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
         _update_session_metadata!(mgr.sock_dir, conn.session_id;
             failed_pongs = prev_fails + 1,
             last_failed_pong = Dates.format(now(), Dates.ISODateTimeFormat))
-        if _is_tcp(conn) || _is_pid_alive(conn.pid)
+        # Reap a session whose own process is provably dead: IPC, or a localhost
+        # TCP gate (getpid() checkable here). Remote TCP, a live local PID, or an
+        # unknown PID (≤0, not yet ponged) stays :stalled. Relies on conn.pid being
+        # the gate's own getpid() (refreshed above) so port-reuse reaps correctly.
+        local_pid_dead =
+            (!_is_tcp(conn) || _is_local_tcp(conn)) && conn.pid > 0 && !_is_pid_alive(conn.pid)
+        if local_pid_dead
+            disconnect!(conn)
+            push!(to_remove, conn)
+        else
             if !_is_tcp(conn)
                 conn.diagnostics = _probe_process(conn.pid)
             end
@@ -1831,9 +1892,6 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
                 conn.status = :stalled
                 _fire_sessions_changed(mgr)
             end
-        else
-            disconnect!(conn)
-            push!(to_remove, conn)
         end
     end
 end

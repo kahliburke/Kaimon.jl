@@ -1,0 +1,13 @@
+[deps]
+Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
+JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
+Supposition = "5a0628fe-1738-4658-9b6d-0b7605a9755b"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[compat]
+Aqua = "0.8"
+HTTP = "2"
+JET = "0.11"
+Supposition = "0.3.5"

@@ -7,7 +7,6 @@ description = "MCP (Model Context Protocol) server for Julia — gives AI agents
 
 [deps]
 CommonMark = "a80b9123-70ca-4bc0-993e-6e3bcb318db6"
-Coverage = "a2441757-f6aa-5fb2-8edb-039e3f45d037"
 DBInterface = "a10d1c49-ce27-4219-8d33-6db1a4562965"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
@@ -51,11 +50,10 @@ KaimonPDFIOExt = "PDFIO"
 [compat]
 Aqua = "0.8"
 CommonMark = "1.0.1"
-Coverage = "1.8.1"
 DBInterface = "2.6.1"
 DataFrames = "1.8.1"
 Dates = "1.10"
-HTTP = "1.10"
+HTTP = "2"
 InteractiveUtils = "1.10"
 JET = "0.11"
 JSON = "1"

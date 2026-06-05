@@ -359,3 +359,123 @@ const TEST_REQ_PORT = 39_876
     end
 
 end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stale TCP PID + localhost reaping (STALE_TCP_SESSION_ISSUES.md)
+# ─────────────────────────────────────────────────────────────────────────────
+
+"""Return a PID that is guaranteed dead (a short process we wait on, then reap)."""
+function _dead_pid()
+    proc = open(`sleep 0.01`)
+    pid = Int(getpid(proc))   # getpid returns Int32 on some platforms; pid field is Int
+    wait(proc)  # reap — process is now gone (not a zombie)
+    return pid
+end
+
+@testset "TCP PID refresh + localhost reaping" begin
+
+    @testset "host helpers" begin
+        @test Kaimon._is_local_host("127.0.0.1")
+        @test Kaimon._is_local_host("::1")
+        @test Kaimon._is_local_host("localhost")
+        @test Kaimon._is_local_host("")
+        @test Kaimon._is_local_host("127.0.1.1")        # whole 127/8 is loopback
+        @test !Kaimon._is_local_host("10.0.0.5")
+        @test !Kaimon._is_local_host("example.com")
+
+        @test Kaimon._endpoint_host("tcp://127.0.0.1:9100") == "127.0.0.1"
+        @test Kaimon._endpoint_host("tcp://[::1]:9100") == "::1"   # bracketed IPv6
+        @test Kaimon._endpoint_host("tcp://example.com:9100") == "example.com"
+        @test Kaimon._endpoint_host("ipc:///tmp/x.sock") == ""
+
+        local_tcp = Kaimon.REPLConnection(
+            session_id = "tcp-127.0.0.1-9100", endpoint = "tcp://127.0.0.1:9100", spawned_by = "user")
+        remote_tcp = Kaimon.REPLConnection(
+            session_id = "tcp-10.0.0.5-9100", endpoint = "tcp://10.0.0.5:9100", spawned_by = "user")
+        @test Kaimon._is_local_tcp(local_tcp)
+        @test !Kaimon._is_local_tcp(remote_tcp)
+    end
+
+    @testset "Bug 1: PID refreshed from pong (port reuse)" begin
+        mgr = Kaimon.ConnectionManager(sock_dir = mktempdir())
+        # conn carries a stale (dead predecessor's) PID; a fresh pong reports the
+        # live worker's getpid() — conn.pid must adopt it.
+        conn = Kaimon.REPLConnection(
+            session_id = "tcp-127.0.0.1-9100", endpoint = "tcp://127.0.0.1:9100",
+            spawned_by = "user", pid = 11111)
+        conn.status = :connected
+        pong = (
+            type = :pong, pid = getpid(), uptime = 1.0, julia_version = string(VERSION),
+            kaimon_version = "test", project_path = @__DIR__, tools = [], namespace = "",
+            stream_endpoint = "", allow_restart = false, allow_mirror = false, mirror_repl = false,
+        )
+        Kaimon._process_health_result!(mgr, conn, pong, Kaimon.REPLConnection[])
+        @test conn.pid == getpid()   # adopted the live PID, not the stale 11111
+    end
+
+    @testset "Bug 2: dead localhost TCP reaped; remote/unknown kept" begin
+        mgr = Kaimon.ConnectionManager(sock_dir = mktempdir())
+        dpid = _dead_pid()
+        @test !Kaimon._is_pid_alive(dpid)
+
+        # Localhost TCP with a known-dead PID → reaped (pushed to to_remove).
+        c_local = Kaimon.REPLConnection(
+            session_id = "tcp-127.0.0.1-9201", endpoint = "tcp://127.0.0.1:9201",
+            spawned_by = "user", pid = dpid)
+        c_local.status = :connected
+        to_remove = Kaimon.REPLConnection[]
+        Kaimon._process_health_result!(mgr, c_local, nothing, to_remove)
+        @test c_local in to_remove
+
+        # Remote TCP with the same dead PID → NOT reaped (its PID is on another
+        # machine); stays :stalled.
+        c_remote = Kaimon.REPLConnection(
+            session_id = "tcp-10.0.0.5-9202", endpoint = "tcp://10.0.0.5:9202",
+            spawned_by = "user", pid = dpid)
+        c_remote.status = :connected
+        to_remove2 = Kaimon.REPLConnection[]
+        Kaimon._process_health_result!(mgr, c_remote, nothing, to_remove2)
+        @test isempty(to_remove2)
+        @test c_remote.status == :stalled
+
+        # Localhost TCP with unknown PID (0, never ponged) → NOT reaped; can't
+        # verify liveness, so it must not be torn down.
+        c_unknown = Kaimon.REPLConnection(
+            session_id = "tcp-127.0.0.1-9203", endpoint = "tcp://127.0.0.1:9203",
+            spawned_by = "user", pid = 0)
+        c_unknown.status = :connected
+        to_remove3 = Kaimon.REPLConnection[]
+        Kaimon._process_health_result!(mgr, c_unknown, nothing, to_remove3)
+        @test isempty(to_remove3)
+        @test c_unknown.status == :stalled
+    end
+
+    @testset "_resolve_gate_conn allow_stalled" begin
+        # A stalled session is rejected by default but reachable with allow_stalled
+        # so manage_repl can force-evict it.
+        mgr = Kaimon.ConnectionManager(sock_dir = mktempdir())
+        conn = Kaimon.REPLConnection(
+            session_id = "tcp-127.0.0.1-9300", endpoint = "tcp://127.0.0.1:9300",
+            name = "stalledsess", spawned_by = "user", pid = 22222)
+        conn.status = :stalled
+        lock(mgr.lock) do
+            push!(mgr.connections, conn)
+        end
+        key = Kaimon.short_key(conn)
+        old_mgr = Kaimon.GATE_CONN_MGR[]
+        Kaimon.GATE_CONN_MGR[] = mgr
+        try
+            c1, err1 = Kaimon._resolve_gate_conn(key)
+            @test c1 === nothing            # default: stalled rejected
+            @test err1 !== nothing
+            @test occursin("stalled", err1)
+
+            c2, err2 = Kaimon._resolve_gate_conn(key; allow_stalled = true)
+            @test err2 === nothing          # allow_stalled: reachable
+            @test c2 === conn
+        finally
+            Kaimon.GATE_CONN_MGR[] = old_mgr
+        end
+    end
+
+end

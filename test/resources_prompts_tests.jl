@@ -13,8 +13,8 @@ resources_tools = [test_tool]
 
 @testset "Resources and Prompts Methods" begin
     @testset "MCPServer: resources/list" begin
-        test_port = 13100
-        server = Kaimon.start_mcp_server(resources_tools, test_port)
+        server = Kaimon.start_mcp_server(resources_tools, 0)
+        test_port = server.port
         sleep(0.1)
 
         try
@@ -49,8 +49,8 @@ resources_tools = [test_tool]
     end
 
     @testset "MCPServer: resources/templates/list" begin
-        test_port = 13101
-        server = Kaimon.start_mcp_server(resources_tools, test_port)
+        server = Kaimon.start_mcp_server(resources_tools, 0)
+        test_port = server.port
         sleep(0.1)
 
         try
@@ -86,8 +86,8 @@ resources_tools = [test_tool]
     end
 
     @testset "MCPServer: prompts/list" begin
-        test_port = 13102
-        server = Kaimon.start_mcp_server(resources_tools, test_port)
+        server = Kaimon.start_mcp_server(resources_tools, 0)
+        test_port = server.port
         sleep(0.1)
 
         try

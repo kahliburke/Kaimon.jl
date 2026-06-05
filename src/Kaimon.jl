@@ -9,7 +9,6 @@ using HTTP
 using Random
 using SHA
 using Dates
-using Coverage
 using ReTest
 using Pkg
 using Sockets
@@ -1400,7 +1399,7 @@ const _DEBUG_CONTINUE_RESPONSE = Ref{Any}(nothing)   # Channel{Symbol} — :appr
 Resolve a gate connection from the session key. Returns (conn, nothing) on success,
 or (nothing, error_message) on failure.
 """
-function _resolve_gate_conn(session::String)
+function _resolve_gate_conn(session::String; allow_stalled::Bool = false)
     mgr = GATE_CONN_MGR[]
     if mgr === nothing
         return (nothing, "ERROR: Gate mode active but no ConnectionManager configured")
@@ -1432,8 +1431,10 @@ function _resolve_gate_conn(session::String)
     # Track last used session for default collection resolution
     _LAST_SESSION_KEY[] = short_key(conn)
 
-    # Stalled sessions: return a status message instead of letting tools timeout
-    if conn.status == :stalled
+    # Stalled sessions: return a status message instead of letting tools timeout.
+    # Callers managing the session lifecycle (manage_repl) pass allow_stalled=true
+    # so they can restart or force-evict a stalled/dead session.
+    if conn.status == :stalled && !allow_stalled
         ago = round(Int, Dates.value(now() - conn.last_seen) / 1000)
         dname = isempty(conn.display_name) ? conn.name : conn.display_name
         diag_str = if conn.diagnostics !== nothing
@@ -2350,7 +2351,7 @@ function test_server(
                 "http://$host:$port/",
                 collect(headers),
                 body;
-                readtimeout = 5,
+                request_timeout = 5,
                 connect_timeout = 2,
             )
 
