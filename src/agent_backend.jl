@@ -7,6 +7,10 @@
 # agent_acp_types.jl and docs/src/agents.md).
 
 import JSON
+import PNGFiles
+import Base64
+using ColorTypes: RGBA, red, green, blue, alpha
+using FixedPointNumbers: N0f8
 
 # ── Interface ─────────────────────────────────────────────────────────────────
 # A backend is a spawn strategy + config. `backend_start` spawns the process and
@@ -329,21 +333,75 @@ function _map_claude_event(obj, session_id::Base.RefValue{String},
     out
 end
 
+# ── Image downscaling (tool-result PNGs) ──────────────────────────────────────
+# Vision tool-results (Makie plots, etc.) are the biggest Agent-SDK-credit burner.
+# Anthropic bills images ≈ (w×h)/750 tokens and auto-downscales anything over ~1568px
+# long edge / ~1.15 MP — so we cap the long edge to a configurable max (default 1568,
+# the model's own effective resolution: never ship more than it uses; lower it to trade
+# image quality for credit). Box-average downscale via PNGFiles — no heavy image stack.
+
+"""Max image long-edge (px) before tool-result PNGs are downsampled. Global config key
+`agent_image_max_long_edge` in `~/.config/kaimon/config.json`; default 1568."""
+function _agent_image_max_edge()
+    try
+        d = JSON.parsefile(get_global_config_path())
+        v = get(d, "agent_image_max_long_edge", 1568)
+        v isa Integer && return Int(v)
+        v isa Real && return round(Int, v)
+    catch
+    end
+    return 1568
+end
+
+"""Box-average downscale a base64 PNG so its long edge ≤ `max_edge`, returning the
+re-encoded base64. If already within bound, `max_edge ≤ 0`, or anything fails, returns
+the input unchanged — a resize hiccup must never drop a tool result."""
+function _downscale_png_b64(b64::AbstractString, max_edge::Integer)
+    max_edge > 0 || return String(b64)
+    try
+        img = PNGFiles.load(IOBuffer(Base64.base64decode(b64)))   # Matrix{<:Colorant}
+        h, w = size(img)
+        long = max(h, w)
+        long <= max_edge && return String(b64)
+        factor = cld(long, max_edge)                              # integer box factor → ≤ max_edge
+        oh, ow = cld(h, factor), cld(w, factor)
+        out = Matrix{RGBA{N0f8}}(undef, oh, ow)
+        @inbounds for oj in 1:ow, oi in 1:oh
+            i0 = (oi - 1) * factor + 1; i1 = min(i0 + factor - 1, h)
+            j0 = (oj - 1) * factor + 1; j1 = min(j0 + factor - 1, w)
+            ar = ag = ab = aa = 0.0f0; n = 0
+            for j in j0:j1, i in i0:i1
+                px = img[i, j]
+                ar += Float32(red(px)); ag += Float32(green(px))
+                ab += Float32(blue(px)); aa += Float32(alpha(px)); n += 1
+            end
+            out[oi, oj] = RGBA{N0f8}(clamp(ar / n, 0f0, 1f0), clamp(ag / n, 0f0, 1f0),
+                                     clamp(ab / n, 0f0, 1f0), clamp(aa / n, 0f0, 1f0))
+        end
+        io = IOBuffer(); PNGFiles.save(io, out)
+        return Base64.base64encode(take!(io))
+    catch
+        return String(b64)
+    end
+end
+
 # tool_result.content is either a string or an array of {type:text|image,...}
 function _tool_result_content(content)::Vector{ACP.ToolCallContent}
     out = ACP.ToolCallContent[]
     if content isa AbstractString
         push!(out, ACP.ContentToolContent(ACP.TextBlock(String(content))))
     elseif content isa AbstractVector
+        max_edge = _agent_image_max_edge()                # read config once per result
         for blk in content
             bt = _get(blk, "type")
             if bt == "text"
                 push!(out, ACP.ContentToolContent(ACP.TextBlock(String(something(_get(blk, "text"), "")))))
             elseif bt == "image"
                 src = _get(blk, "source")
-                push!(out, ACP.ContentToolContent(ACP.ImageBlock(
-                    String(something(_get(src, "data"), "")),
-                    String(something(_get(src, "media_type"), "image/png")))))
+                data = String(something(_get(src, "data"), ""))
+                mime = String(something(_get(src, "media_type"), "image/png"))
+                mime == "image/png" && (data = _downscale_png_b64(data, max_edge))
+                push!(out, ACP.ContentToolContent(ACP.ImageBlock(data, mime)))
             end
         end
     end

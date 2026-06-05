@@ -6,10 +6,13 @@ authors = ["Kahli Burke <kahli@kahliburke.com>"]
 description = "MCP (Model Context Protocol) server for Julia — gives AI agents full access to Julia's runtime for code execution, introspection, debugging, testing, and semantic code search"
 
 [deps]
+Base64 = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
+ColorTypes = "3da002f7-5984-5a60-b8a6-cbb66c0b333f"
 CommonMark = "a80b9123-70ca-4bc0-993e-6e3bcb318db6"
 DBInterface = "a10d1c49-ce27-4219-8d33-6db1a4562965"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+FixedPointNumbers = "53c48c17-4a7d-5ca2-90c5-79b7896eea93"
 HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
 InteractiveUtils = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
@@ -49,10 +52,13 @@ KaimonPDFIOExt = "PDFIO"
 
 [compat]
 Aqua = "0.8"
+Base64 = "1.11.0"
+ColorTypes = "0.12"
 CommonMark = "1.0.1"
 DBInterface = "2.6.1"
 DataFrames = "1.8.1"
 Dates = "1.10"
+FixedPointNumbers = "0.8"
 HTTP = "2"
 InteractiveUtils = "1.10"
 JET = "0.11"

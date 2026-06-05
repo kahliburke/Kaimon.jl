@@ -189,4 +189,32 @@ end
         # streaming is on by default
         @test "--include-partial-messages" in Kaimon._claude_args(Kaimon.ClaudeBackend(), ".")
     end
+
+    @testset "image downscale (tool-result PNG)" begin
+        PF = Kaimon.PNGFiles
+        B64 = Kaimon.Base64
+        C = Kaimon.RGBA{Kaimon.N0f8}
+        # a wide 80×2000 PNG (long edge 2000, over the default 1568 cap)
+        wide = [C(0.3, 0.6, 0.9, 1) for _ in 1:80, _ in 1:2000]
+        io = IOBuffer(); PF.save(io, wide); b64 = B64.base64encode(take!(io))
+
+        # default cap 1568 → box factor cld(2000,1568)=2 → long edge halved to 1000
+        out = Kaimon._downscale_png_b64(b64, 1568)
+        @test out != b64
+        dec = PF.load(IOBuffer(B64.base64decode(out)))
+        @test maximum(size(dec)) == 1000
+        @test maximum(size(dec)) <= 1568
+
+        # already within bound → byte-identical passthrough
+        small = [C(0.1, 0.1, 0.1, 1) for _ in 1:50, _ in 1:50]
+        io2 = IOBuffer(); PF.save(io2, small); sb64 = B64.base64encode(take!(io2))
+        @test Kaimon._downscale_png_b64(sb64, 1568) == sb64
+
+        # max_edge ≤ 0 disables; garbage never throws (returns input)
+        @test Kaimon._downscale_png_b64(b64, 0) == b64
+        @test Kaimon._downscale_png_b64("not-a-png", 100) == "not-a-png"
+
+        # config reader returns a positive default
+        @test Kaimon._agent_image_max_edge() isa Int && Kaimon._agent_image_max_edge() > 0
+    end
 end

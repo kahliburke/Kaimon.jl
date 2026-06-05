@@ -56,7 +56,11 @@ flowchart LR
     Agent usage draws against your Claude **Agent SDK monthly credit**, metered at
     API-list rates -- it is *not* free. Cost is tracked per session from each turn's
     `result` event and surfaced in `agent_status`. The default model is the cheaper
-    `claude-sonnet-4-6`. Images returned in tool results are the biggest credit burner.
+    `claude-sonnet-4-6`. Images returned in tool results are the biggest credit burner
+    (billed roughly `width × height / 750` tokens), so tool-result PNGs are
+    box-downsampled to a max long edge before they reach the agent --
+    `agent_image_max_long_edge` in `~/.config/kaimon/config.json` (default 1568 px, the
+    model's own effective cap; lower it to trade image quality for credit).
 
 ## Opening an Agent
 
