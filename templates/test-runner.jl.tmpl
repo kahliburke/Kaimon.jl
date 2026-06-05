@@ -11,44 +11,57 @@ println("TEST_RUNNER: START project=$(basename(project_path))")
 flush(stdout)
 
 # ── Activate test environment ─────────────────────────────────────────────
-# First, activate the main project so its deps are resolved into LOAD_PATH.
-Pkg.activate(project_path)
-
+# Build a throwaway temp env and `develop` the project under test into it, so its
+# FULL dependency tree resolves into the manifest — including path dependencies
+# and THEIR transitive deps. A bare `push!(LOAD_PATH, project_path)` only makes the
+# main package importable; it does NOT record a path-dep's deps in the active
+# manifest, so a path-dep that gains a new (e.g. stdlib) dependency fails to
+# precompile in the test subprocess. (Regression from git 996cd1c, which dropped
+# the `develop`; restored here without mutating the tracked test/Project.toml.)
+main_toml = TOML.parsefile(joinpath(project_path, "Project.toml"))
 test_project = joinpath(project_path, "test", "Project.toml")
 
-if isfile(test_project)
-    # Standard: test/ has its own Project.toml with all deps declared.
-    # Push main project onto LOAD_PATH before switching to test env.
-    push!(LOAD_PATH, project_path)
-    Pkg.activate(joinpath(project_path, "test"))
-    try
-        Pkg.instantiate(; io=devnull)
-    catch e
-        println("TEST_RUNNER: WARN instantiate failed: $(first(sprint(showerror, e), 120))")
-    end
-else
-    # Legacy layout: test deps live in [extras]/[targets] in the main Project.toml.
-    # Build a throwaway temp env with just those deps.
-    main_toml = TOML.parsefile(joinpath(project_path, "Project.toml"))
-    extras = get(main_toml, "extras", Dict())
-    test_names = get(get(main_toml, "targets", Dict()), "test", String[])
+Pkg.activate(mktempdir())
+try
+    Pkg.develop(Pkg.PackageSpec(path = project_path); io = devnull)
+catch e
+    println("TEST_RUNNER: WARN develop failed: $(first(sprint(showerror, e), 120))")
+end
 
-    push!(LOAD_PATH, project_path)
-    tmp = mktempdir()
-    Pkg.activate(tmp)
-    for name in test_names
-        uuid = get(extras, name, nothing)
-        try
-            if uuid !== nothing
-                Pkg.add(Pkg.PackageSpec(; name, uuid=Base.UUID(uuid)); io=devnull)
-            else
-                Pkg.add(name; io=devnull)
-            end
-        catch e
-            println("TEST_RUNNER: WARN could not add $name: $(first(sprint(showerror, e), 120))")
-        end
+# Test-only deps: prefer test/Project.toml [deps]; else the legacy
+# [extras]/[targets] layout in the main Project.toml.
+test_deps = Dict{String,Any}()
+if isfile(test_project)
+    merge!(test_deps, get(TOML.parsefile(test_project), "deps", Dict()))
+else
+    extras = get(main_toml, "extras", Dict())
+    for name in get(get(main_toml, "targets", Dict()), "test", String[])
+        test_deps[name] = get(extras, name, nothing)
     end
 end
+delete!(test_deps, get(main_toml, "name", ""))   # never re-add the project itself
+
+for (name, uuid) in test_deps
+    try
+        if uuid isa AbstractString
+            Pkg.add(Pkg.PackageSpec(; name, uuid = Base.UUID(uuid)); io = devnull)
+        else
+            Pkg.add(name; io = devnull)
+        end
+    catch e
+        println("TEST_RUNNER: WARN could not add $name: $(first(sprint(showerror, e), 120))")
+    end
+end
+
+try
+    Pkg.instantiate(; io = devnull)
+catch e
+    println("TEST_RUNNER: WARN instantiate failed: $(first(sprint(showerror, e), 120))")
+end
+
+# Keep the main project on LOAD_PATH so test files can `using` its own direct deps
+# (e.g. ReTest) that aren't declared in the test environment.
+push!(LOAD_PATH, project_path)
 
 flush(stdout)
 
