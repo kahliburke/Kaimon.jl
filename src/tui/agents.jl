@@ -6,7 +6,7 @@
 #
 # Read-only. Data comes from the in-process AgentSession registry (list_agents,
 # agent_recent) — the TUI runs in the same process as the manager. See
-# agent_session.jl / AGENT_SESSION_SERVICE_PLAN.md.
+# agent_session.jl / docs/src/agents.md.
 
 # Stable, newest-first-friendly ordering (by creation time).
 function _agents_sorted()

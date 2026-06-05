@@ -55,6 +55,7 @@ makedocs(;
             "Tool Catalog" => "tools.md",
             "The Gate" => "gate.md",
             "Sessions" => "sessions.md",
+            "AI Agents" => "agents.md",
             "Extensions" => "extensions.md",
             "Semantic Search" => "search.md",
             "Security" => "security.md",
