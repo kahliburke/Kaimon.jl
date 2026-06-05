@@ -20,5 +20,6 @@ include("test_output_parser_tests.jl")
 include("gate_async_tests.jl")
 include("tcp_stale_session_tests.jl")
 include("test_runner_tests.jl")
+include("agent_tests.jl")
 
 end # module

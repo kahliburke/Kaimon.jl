@@ -4,7 +4,7 @@
 # per-CLI. ClaudeBackend (native `claude -p` stream-JSON) is the first; an
 # ACPClientBackend / GeminiBackend slot in later by implementing the same handful of
 # methods. All backends emit ACP.AgentEvent — Kaimon's lingua franca (see
-# agent_acp_types.jl and AGENT_SESSION_SERVICE_PLAN.md).
+# agent_acp_types.jl and docs/src/agents.md).
 
 import JSON
 
@@ -50,6 +50,7 @@ Base.@kwdef struct ClaudeBackend <: AgentBackend
     strict_mcp::Bool = true
     system_prompt::Union{String,Nothing} = nothing    # --append-system-prompt: persistent instructions/context
     dangerously_skip::Bool = false                    # --dangerously-skip-permissions (bypass posture)
+    stream::Bool = true                               # --include-partial-messages: token-by-token deltas
 end
 
 function _find_claude()
@@ -76,15 +77,8 @@ backend_status(h::ClaudeHandle) =
 # ── Launch marker (orphan reaping, like KAIMON_EXTENSION) ──────────────────────
 const KAIMON_AGENT_MARKER = "KAIMON_AGENT_SESSION"
 
-"""
-    backend_start(b::ClaudeBackend; cwd, agent_id, parent_pid) -> ClaudeHandle
-
-Spawn `claude -p` in stream-JSON mode and start the stdout reader task.
-"""
-function backend_start(b::ClaudeBackend; cwd::String, agent_id::String,
-                       parent_pid::Integer = getpid())
-    isdir(cwd) || throw(ArgumentError("agent cwd does not exist: $cwd"))
-
+"Build the `claude` argv for a backend + cwd (pure; unit-testable without spawning)."
+function _claude_args(b::ClaudeBackend, cwd::AbstractString)
     args = String[b.claude_path, "-p",
         "--input-format", "stream-json",
         "--output-format", "stream-json",
@@ -92,6 +86,7 @@ function backend_start(b::ClaudeBackend; cwd::String, agent_id::String,
         "--model", b.model,
         "--permission-mode", b.permission_mode,
         "--add-dir", cwd]
+    b.stream && push!(args, "--include-partial-messages")   # token-by-token deltas
     if !isempty(b.allowed_tools)
         push!(args, "--allowedTools"); append!(args, b.allowed_tools)
     end
@@ -106,6 +101,19 @@ function backend_start(b::ClaudeBackend; cwd::String, agent_id::String,
     if b.system_prompt !== nothing && !isempty(b.system_prompt)
         push!(args, "--append-system-prompt", b.system_prompt)
     end
+    args
+end
+
+"""
+    backend_start(b::ClaudeBackend; cwd, agent_id, parent_pid) -> ClaudeHandle
+
+Spawn `claude -p` in stream-JSON mode and start the stdout reader task.
+"""
+function backend_start(b::ClaudeBackend; cwd::String, agent_id::String,
+                       parent_pid::Integer = getpid())
+    isdir(cwd) || throw(ArgumentError("agent cwd does not exist: $cwd"))
+
+    args = _claude_args(b, cwd)
 
     env = copy(ENV)
     env[KAIMON_AGENT_MARKER] = agent_id            # marks the process as Kaimon-owned
@@ -138,7 +146,7 @@ function _start_reader!(h::ClaudeHandle, log_io::IO)
                     put!(h.events, ACP.AgentError("stream-json parse error", line))
                     continue
                 end
-                for ev in _map_claude_event(obj, h)
+                for ev in _map_claude_event(obj, h.session_id)
                     put!(h.events, ev)
                 end
             end
@@ -225,13 +233,14 @@ end
 
 _get(d, k, default=nothing) = d isa AbstractDict ? get(d, k, default) : default
 
-"Map one stream-JSON object to zero or more ACP events."
-function _map_claude_event(obj, h::ClaudeHandle)::Vector{ACP.AgentEvent}
+"""Map one stream-JSON object to zero or more ACP events. Takes only the
+`session_id` Ref it needs from the handle (so it's unit-testable without a process)."""
+function _map_claude_event(obj, session_id::Base.RefValue{String})::Vector{ACP.AgentEvent}
     out = ACP.AgentEvent[]
     t = _get(obj, "type")
     if t == "system"
         sid = _get(obj, "session_id")
-        sid isa AbstractString && (h.session_id[] = sid)
+        sid isa AbstractString && (session_id[] = sid)
         # init = ready; no user-facing event needed
     elseif t == "assistant"
         msg = _get(obj, "message")
@@ -265,7 +274,22 @@ function _map_claude_event(obj, h::ClaudeHandle)::Vector{ACP.AgentEvent}
             end
         end
     elseif t == "stream_event"
-        # partial deltas — only emitted with --include-partial-messages (off in M1)
+        # Partial deltas (--include-partial-messages): stream assistant text/thinking
+        # token chunks for liveness. The final complete `assistant` message still arrives
+        # and is the authoritative copy (delta=false). See docs/src/agents.md.
+        sev = _get(obj, "event")
+        if _get(sev, "type") == "content_block_delta"
+            d = _get(sev, "delta")
+            dt = _get(d, "type")
+            if dt == "text_delta"
+                push!(out, ACP.AgentMessageChunk(ACP.TextBlock(String(something(_get(d, "text"), ""))), true))
+            elseif dt == "thinking_delta"
+                push!(out, ACP.AgentThoughtChunk(ACP.TextBlock(String(something(_get(d, "thinking"), ""))), true))
+            end
+            # input_json_delta (tool-input streaming) intentionally ignored for v1
+        end
+        # content_block_start/stop, message_*, signature_delta: ignored — the complete
+        # `assistant` message handles block boundaries and authoritative content.
     elseif t == "result"
         usage = _claude_usage(_get(obj, "usage"), _get(obj, "total_cost_usd"))
         sr = _get(obj, "stop_reason")

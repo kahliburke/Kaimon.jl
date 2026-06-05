@@ -8,7 +8,7 @@
 #
 # NOTE: we do NOT run the ACP wire protocol to Claude — Claude has no native ACP
 # agent (only a Node adapter). We adopt ACP's *data model* and feed it from Claude's
-# native `claude -p` stream-JSON. See AGENT_SESSION_SERVICE_PLAN.md.
+# native `claude -p` stream-JSON. See docs/src/agents.md.
 module ACP
 
 import JSON
@@ -172,10 +172,20 @@ _addcost(a, b) = a + b
 
 abstract type AgentEvent end
 
-"sessionUpdate=agent_message_chunk — streamed assistant text/content."
-struct AgentMessageChunk <: AgentEvent; content::ContentBlock; end
-"sessionUpdate=agent_thought_chunk — streamed reasoning."
-struct AgentThoughtChunk <: AgentEvent; content::ContentBlock; end
+"""sessionUpdate=agent_message_chunk — streamed assistant text/content. `delta=true`
+is an incremental token chunk to append; `delta=false` (the default) is a complete,
+authoritative block. See docs/src/agents.md (token streaming)."""
+struct AgentMessageChunk <: AgentEvent
+    content::ContentBlock
+    delta::Bool
+end
+AgentMessageChunk(content::ContentBlock) = AgentMessageChunk(content, false)
+"sessionUpdate=agent_thought_chunk — streamed reasoning. `delta` as in `AgentMessageChunk`."
+struct AgentThoughtChunk <: AgentEvent
+    content::ContentBlock
+    delta::Bool
+end
+AgentThoughtChunk(content::ContentBlock) = AgentThoughtChunk(content, false)
 "sessionUpdate=user_message_chunk — echo of the user's own input."
 struct UserMessageChunk <: AgentEvent; content::ContentBlock; end
 "sessionUpdate=tool_call — a new tool invocation."
@@ -264,8 +274,8 @@ to_dict(u::Usage) = Dict(
     "cacheReadTokens"=>u.cache_read_tokens, "cacheCreationTokens"=>u.cache_creation_tokens,
     "costUsd"=>u.cost_usd)
 
-event_payload(e::AgentMessageChunk) = Dict("content"=>to_dict(e.content))
-event_payload(e::AgentThoughtChunk) = Dict("content"=>to_dict(e.content))
+event_payload(e::AgentMessageChunk) = Dict("delta"=>e.delta, "content"=>to_dict(e.content))
+event_payload(e::AgentThoughtChunk) = Dict("delta"=>e.delta, "content"=>to_dict(e.content))
 event_payload(e::UserMessageChunk)  = Dict("content"=>to_dict(e.content))
 event_payload(e::ToolCallStarted)   = Dict("call"=>to_dict(e.call))
 event_payload(e::ToolCallUpdated)   = Dict("update"=>to_dict(e.update))

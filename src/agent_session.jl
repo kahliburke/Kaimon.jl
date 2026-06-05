@@ -2,7 +2,7 @@
 # Kaimon-owned AI agent sessions: spawn/own a `claude` process (via an AgentBackend),
 # relay its normalized ACP events onto the gate event bus on channel "agent:<id>",
 # and track lifecycle + per-session cost. The natural sibling of a gate REPL session
-# and a managed extension. See AGENT_SESSION_SERVICE_PLAN.md.
+# and a managed extension. See docs/src/agents.md.
 #
 # The manager lives in the main Kaimon process (beside the ConnectionManager). Events
 # are published on the ConnectionManager's global event PUB (kaimon-events.sock) — the
@@ -120,9 +120,14 @@ function _start_relay!(s::AgentSession)
                     _set_status!(s, :dead)
                 end
                 s.last_activity = time()
-                _push_recent!(s, ev)
+                # Streaming deltas (delta=true) ride the bus for liveness but are NOT
+                # persisted to the event log or pushed to the TUI ring buffer — the
+                # authoritative delta=false copy covers reload-replay and the monitor.
+                # Keeps both compact under thousands of token chunks. See docs/src/agents.md.
+                is_delta = (ev isa ACP.AgentMessageChunk || ev isa ACP.AgentThoughtChunk) && ev.delta
+                is_delta || _push_recent!(s, ev)
                 env = ACP.envelope(ev, current_turn(s.handle))
-                _log_event!(s.id, env)                       # Kaimon-owned JSONL (we control the schema)
+                is_delta || _log_event!(s.id, env)           # Kaimon-owned JSONL (we control the schema)
                 # publish the {kind,turn,data} envelope on the bus as a JSON string
                 mgr = GATE_CONN_MGR[]
                 mgr === nothing ||
