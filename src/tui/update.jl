@@ -484,6 +484,12 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
         return
     end
 
+    # When the agent event-history overlay is open, capture scroll + esc
+    if m.tab_bar.active == TAB_AGENTS && m.agentmon_history_open
+        _handle_agents_history_key!(m, evt)
+        return
+    end
+
     # When a debug consent modal is open, capture all input
     if m.debug_agent_continue_pending
         Base.invokelatest(_handle_debug_consent_key!, m, evt)
@@ -757,6 +763,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
 
         $TAB_DEBUG => Base.invokelatest(_handle_debug_key!, m, evt)
         $TAB_EXTENSIONS => _handle_extensions_key!(m, evt)
+        $TAB_AGENTS => _handle_agents_key!(m, evt)
         $TAB_ADVANCED => _handle_stress_key!(m, evt)
         _ => nothing
     end

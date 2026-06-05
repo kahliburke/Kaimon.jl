@@ -49,6 +49,7 @@ Base.@kwdef struct ClaudeBackend <: AgentBackend
     mcp_config::Union{String,Nothing} = nothing       # path to --mcp-config JSON (M3)
     strict_mcp::Bool = true
     system_prompt::Union{String,Nothing} = nothing    # --append-system-prompt: persistent instructions/context
+    dangerously_skip::Bool = false                    # --dangerously-skip-permissions (bypass posture)
 end
 
 function _find_claude()
@@ -97,6 +98,7 @@ function backend_start(b::ClaudeBackend; cwd::String, agent_id::String,
     if !isempty(b.disallowed_tools)
         push!(args, "--disallowedTools"); append!(args, b.disallowed_tools)
     end
+    b.dangerously_skip && push!(args, "--dangerously-skip-permissions")
     if b.mcp_config !== nothing
         push!(args, "--mcp-config", b.mcp_config)
         b.strict_mcp && push!(args, "--strict-mcp-config")

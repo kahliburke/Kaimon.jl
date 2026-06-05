@@ -45,9 +45,21 @@ _gen_agent_id() = bytes2hex(rand(UInt8, 4))
 Spawn and own a new agent. Returns the agent id. Events stream on the gate bus
 channel `agent:<id>`.
 """
+# High-level permission posture → (permission_mode, extra allowed tools, skip-flag).
+# Lets a consumer pick one word per spawn instead of assembling raw flags. The
+# recursion guard (disallowed agent_* tools) stays on regardless.
+function _permission_preset(p::AbstractString)
+    pl = lowercase(p)
+    pl == "lab"    ? ("acceptEdits", ["mcp__kaimon"], false) :      # drive the lab: slate.*/ex/...
+    pl == "auto"   ? ("auto", String[], false) :                   # model classifier self-governs
+    pl == "bypass" ? ("bypassPermissions", String[], true) :       # no checks (sandbox/trusted only)
+                     ("acceptEdits", String[], false)              # "default": edits only
+end
+
 function agent_open(; cwd::String,
                     model::String = "claude-sonnet-4-6",
-                    permission_mode::String = "acceptEdits",
+                    permission::String = "default",
+                    permission_mode::Union{String,Nothing} = nothing,
                     allowed_tools::Vector{String} = String[],
                     disallowed_tools::Vector{String} = copy(AGENT_SELF_TOOLS),
                     mcp_config::Union{String,Nothing} = nothing,
@@ -55,12 +67,22 @@ function agent_open(; cwd::String,
                     id::Union{String,Nothing} = nothing)
     aid = id === nothing ? _gen_agent_id() : id
     lock(AGENT_SESSIONS_LOCK) do
-        haskey(AGENT_SESSIONS, aid) && error("agent id already in use: $aid")
+        existing = get(AGENT_SESSIONS, aid, nothing)
+        if existing !== nothing
+            # A previously-closed/dead agent is retained for review; reopening the
+            # same id (e.g. a notebook reconnecting) replaces it. A live one is an error.
+            existing.status === :dead || error("agent id already in use: $aid")
+            delete!(AGENT_SESSIONS, aid)
+        end
     end
 
-    backend = ClaudeBackend(; model = model, permission_mode = permission_mode,
-                            allowed_tools = allowed_tools, disallowed_tools = disallowed_tools,
-                            mcp_config = mcp_config, system_prompt = system_prompt)
+    pmode, pallow, dangerous = _permission_preset(permission)
+    final_mode = permission_mode === nothing ? pmode : permission_mode  # explicit mode overrides preset
+    final_allowed = unique(vcat(allowed_tools, pallow))                  # preset composes with explicit allowlist
+    backend = ClaudeBackend(; model = model, permission_mode = final_mode,
+                            allowed_tools = final_allowed, disallowed_tools = disallowed_tools,
+                            mcp_config = mcp_config, system_prompt = system_prompt,
+                            dangerously_skip = dangerous)
     handle = backend_start(backend; cwd = cwd, agent_id = aid)
     _record_agent_pid!(aid, getpid(handle.proc))
     # Start a fresh Kaimon-owned event log for this agent instance.
@@ -111,6 +133,7 @@ function _start_relay!(s::AgentSession)
         finally
             _set_status!(s, :dead)
             _forget_agent_pid!(s.id)
+            _prune_dead_agents!()
         end
     end
 end
@@ -208,18 +231,40 @@ function agent_interrupt(id::String)
     backend_interrupt(s.handle)
 end
 
-"""Kill the agent process and free the registry slot."""
+"""Kill the agent process. The session is retained as `:dead` (greyed-out in the
+TUI) for review; it's pruned later or dismissed manually."""
 function agent_close(id::String)
     s = _get_agent(id)
     s === nothing && return false
     backend_close(s.handle)
     _set_status!(s, :dead)
     _forget_agent_pid!(id)
-    lock(AGENT_SESSIONS_LOCK) do
-        delete!(AGENT_SESSIONS, id)
-    end
+    _prune_dead_agents!()
     _push_log!(:info, "Agent '$id' closed")
     true
+end
+
+const MAX_DEAD_AGENTS = 10
+
+"""Cap retained dead/closed agents so the registry can't grow without bound
+(oldest dropped first). On-disk event logs persist regardless."""
+function _prune_dead_agents!()
+    lock(AGENT_SESSIONS_LOCK) do
+        dead = [(id, s.last_activity) for (id, s) in AGENT_SESSIONS if s.status === :dead]
+        length(dead) <= MAX_DEAD_AGENTS && return
+        sort!(dead, by = x -> x[2])
+        for (id, _) in dead[1:(length(dead) - MAX_DEAD_AGENTS)]
+            delete!(AGENT_SESSIONS, id)
+        end
+    end
+end
+
+"""Remove a dead agent from the registry (TUI dismiss). No-op if still alive."""
+function _dismiss_agent!(id::AbstractString)
+    lock(AGENT_SESSIONS_LOCK) do
+        s = get(AGENT_SESSIONS, id, nothing)
+        s !== nothing && s.status === :dead && delete!(AGENT_SESSIONS, id)
+    end
 end
 
 """Snapshot of an agent's state (status, model, cwd, activity, running cost)."""

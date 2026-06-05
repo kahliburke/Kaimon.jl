@@ -139,6 +139,10 @@ const TAB_ADVANCED   = 10
     agentmon_selected::Int = 1            # selected agent in the list
     agentmon_scroll::Int = 0              # scroll offset in the events detail pane
     agentmon_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(40), Fill()])
+    agentmon_history_open::Bool = false   # full-screen event-history overlay
+    agentmon_history_scroll::Int = 0
+    agentmon_history_id::String = ""
+    agentmon_history_lines::Vector{Any} = []  # cached (style, text) display lines
 
     # Session terminal (PTY console for agent-spawned sessions)
     session_terminal_open::Bool = false

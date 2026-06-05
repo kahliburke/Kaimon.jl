@@ -50,6 +50,10 @@ end
 # ── View ─────────────────────────────────────────────────────────────────────
 
 function view_agents(m::KaimonModel, area::Rect, buf::Buffer)
+    if m.agentmon_history_open
+        _view_agents_history(m, area, buf)
+        return
+    end
     panes = split_layout(m.agentmon_layout, area)
     length(panes) < 2 && return
     render_resize_handles!(buf, m.agentmon_layout)
@@ -97,7 +101,7 @@ function _view_agents_list(m::KaimonModel, area::Rect, buf::Buffer, ags)
     end
 
     hint_y = bottom(inner)
-    hint_y > y && set_string!(buf, inner.x + 1, hint_y, "[↑↓] select",
+    hint_y > y && set_string!(buf, inner.x + 1, hint_y, "[↑↓] select  [x] close/dismiss",
         tstyle(:text_dim); max_x = right(inner))
 end
 
@@ -176,7 +180,13 @@ end
 # ── Key handling ──────────────────────────────────────────────────────────────
 
 function _handle_agents_nav!(m::KaimonModel, evt::KeyEvent, fp::Int)
-    n = length(_agents_sorted())
+    ags = _agents_sorted()
+    n = length(ags)
+    if evt.key === :enter
+        (n == 0 || m.agentmon_selected < 1 || m.agentmon_selected > n) && return
+        _open_agent_history!(m, get(ags[m.agentmon_selected], "id", ""))
+        return
+    end
     if fp == 2
         @match evt.key begin
             :up       => (m.agentmon_scroll += 1)            # scroll back in history
@@ -191,5 +201,119 @@ function _handle_agents_nav!(m::KaimonModel, evt::KeyEvent, fp::Int)
             :down => (m.agentmon_selected = min(max(1, n), m.agentmon_selected + 1); m.agentmon_scroll = 0)
             _ => nothing
         end
+    end
+end
+
+# ── Full event-history overlay (Enter on the detail pane) ─────────────────────
+# Reads the complete Kaimon-owned event log from disk (not the 200-cap ring) so it
+# shows the entire history, scrollable; Esc closes.
+
+import JSON
+
+# extract a readable one-line (possibly multi-line) body from a log record's data
+function _log_record_text(kind::Symbol, data)
+    g(d, k, default = "") = d isa AbstractDict ? get(d, k, default) : default
+    if kind in (:assistant_text, :thought, :user_text)
+        return string(g(g(data, "content", Dict()), "text", ""))
+    elseif kind === :tool_use
+        call = g(data, "call", Dict())
+        return "▶ $(g(call, "title", "?")) ($(g(call, "kind", "?")))  in=$(JSON.json(g(call, "rawInput", nothing)))"
+    elseif kind === :tool_result
+        upd = g(data, "update", Dict())
+        return "↳ $(g(upd, "status", "?")) $(g(upd, "toolCallId", ""))"
+    elseif kind === :result
+        u = g(data, "usage", Dict())
+        return "stop=$(g(data, "stopReason", "?"))  cost=\$$(g(u, "costUsd", 0))"
+    elseif kind === :status
+        return string(g(data, "status", ""))
+    elseif kind === :plan
+        return "plan: $(length(g(data, "entries", [])))  step(s)"
+    end
+    ""
+end
+
+function _agent_history_lines(id::AbstractString)
+    out = Tuple{Any,String}[]
+    path = _event_log_path(id)
+    isfile(path) || return out
+    for ln in eachline(path)
+        isempty(strip(ln)) && continue
+        rec = try
+            JSON.parse(ln)
+        catch
+            continue
+        end
+        kind = Symbol(get(rec, "kind", "?"))
+        style = _agent_kind_style(kind)
+        body = _log_record_text(kind, get(rec, "data", Dict()))
+        bodylines = isempty(body) ? [""] : split(body, '\n')
+        push!(out, (style, rpad(string(kind), 14) * " " * bodylines[1]))
+        for i in 2:length(bodylines)
+            push!(out, (tstyle(:text), " "^15 * bodylines[i]))
+        end
+    end
+    out
+end
+
+function _open_agent_history!(m::KaimonModel, id::AbstractString)
+    isempty(id) && return
+    m.agentmon_history_id = String(id)
+    m.agentmon_history_lines = _agent_history_lines(id)
+    m.agentmon_history_scroll = 0
+    m.agentmon_history_open = true
+end
+
+function _handle_agents_history_key!(m::KaimonModel, evt::KeyEvent)
+    if evt.key === :escape
+        m.agentmon_history_open = false
+        return
+    end
+    n = length(m.agentmon_history_lines)
+    @match evt.key begin
+        :up       => (m.agentmon_history_scroll = max(0, m.agentmon_history_scroll - 1))
+        :down     => (m.agentmon_history_scroll = min(max(0, n - 1), m.agentmon_history_scroll + 1))
+        :pageup   => (m.agentmon_history_scroll = max(0, m.agentmon_history_scroll - 20))
+        :pagedown => (m.agentmon_history_scroll = min(max(0, n - 1), m.agentmon_history_scroll + 20))
+        _ => nothing
+    end
+end
+
+function _view_agents_history(m::KaimonModel, area::Rect, buf::Buffer)
+    n = length(m.agentmon_history_lines)
+    block = Block(
+        title = "Agent $(m.agentmon_history_id) — event history ($n)",
+        border_style = tstyle(:accent),
+        title_style = tstyle(:accent, bold = true),
+    )
+    inner = render(block, area, buf)
+    inner.width < 4 && return
+    foot = bottom(inner)
+    m.agentmon_history_scroll = clamp(m.agentmon_history_scroll, 0, max(0, n - 1))
+    y = inner.y
+    i = m.agentmon_history_scroll + 1
+    while i <= n && y < foot
+        (style, text) = m.agentmon_history_lines[i]
+        set_string!(buf, inner.x + 1, y, _oneline(text), style; max_x = right(inner))
+        y += 1
+        i += 1
+    end
+    set_string!(buf, inner.x + 1, foot, "[↑↓/PgUp/PgDn] scroll  [Esc] close",
+        tstyle(:text_dim); max_x = right(inner))
+end
+
+# Char keys: [x] closes a live agent (→ stays as :dead) or dismisses a dead one.
+function _handle_agents_key!(m::KaimonModel, evt::KeyEvent)
+    evt.key === :char || return
+    ags = _agents_sorted()
+    (isempty(ags) || m.agentmon_selected < 1 || m.agentmon_selected > length(ags)) && return
+    a = ags[m.agentmon_selected]
+    id = get(a, "id", "")
+    if evt.char == 'x'
+        if Symbol(get(a, "status", "")) === :dead
+            _dismiss_agent!(id)            # remove a finished agent from the list
+        else
+            agent_close(id)                # kill → becomes :dead, stays for review
+        end
+        m.agentmon_selected = max(1, m.agentmon_selected - 1)
     end
 end
