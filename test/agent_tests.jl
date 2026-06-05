@@ -5,9 +5,10 @@ using Kaimon
 # ACP event (mirrors what _start_reader! does line-by-line). Shares one session_id Ref.
 function _agent_map_seq(objs)
     sid = Ref("")
+    tool_blocks = Dict{Int,String}()
     evs = Kaimon.ACP.AgentEvent[]
     for o in objs
-        append!(evs, Kaimon._map_claude_event(o, sid))
+        append!(evs, Kaimon._map_claude_event(o, sid, tool_blocks))
     end
     evs
 end
@@ -123,7 +124,7 @@ end
         @test join(d.content.text for d in deltas) == finals[1].content.text == full
     end
 
-    @testset "map thinking deltas; ignore input_json_delta" begin
+    @testset "map thinking deltas" begin
         ACP = Kaimon.ACP
         ev = Kaimon._map_claude_event(Dict("type" => "stream_event",
                 "event" => Dict("type" => "content_block_delta", "index" => 0,
@@ -131,12 +132,53 @@ end
                                                 "thinking" => "because"))), Ref(""))
         @test length(ev) == 1
         @test ev[1] isa ACP.AgentThoughtChunk && ev[1].delta == true && ev[1].content.text == "because"
+    end
 
-        # tool-input streaming is ignored in v1
-        @test isempty(Kaimon._map_claude_event(Dict("type" => "stream_event",
-            "event" => Dict("type" => "content_block_delta", "index" => 1,
-                            "delta" => Dict("type" => "input_json_delta",
-                                            "partial_json" => "{\"a\":"))), Ref("")))
+    @testset "map tool-use input streaming" begin
+        ACP = Kaimon.ACP
+        # content_block_start(tool_use) → N input_json_delta → content_block_stop →
+        # complete assistant tool_use (the cell's code typing in live, then authoritative)
+        frags = ["{\"code\":\"", "plot(x)", "\"}"]
+        seq = Any[
+            Dict("type" => "stream_event",
+                 "event" => Dict("type" => "content_block_start", "index" => 1,
+                                 "content_block" => Dict("type" => "tool_use",
+                                     "id" => "toolu_1", "name" => "slate_add_cell"))),
+        ]
+        for f in frags
+            push!(seq, Dict("type" => "stream_event",
+                "event" => Dict("type" => "content_block_delta", "index" => 1,
+                                "delta" => Dict("type" => "input_json_delta", "partial_json" => f))))
+        end
+        push!(seq, Dict("type" => "stream_event",
+            "event" => Dict("type" => "content_block_stop", "index" => 1)))
+        push!(seq, Dict("type" => "assistant",
+            "message" => Dict("content" => [
+                Dict("type" => "tool_use", "id" => "toolu_1", "name" => "slate_add_cell",
+                     "input" => Dict("code" => "plot(x)"))])))
+
+        evs = _agent_map_seq(seq)
+        # 1) the call is announced up front, before its args finish
+        @test evs[1] isa ACP.ToolCallStarted
+        @test evs[1].call.tool_call_id == "toolu_1"
+        @test evs[1].call.status == :in_progress
+        @test evs[1].call.raw_input === nothing
+        # 2) input streams as ordered fragments addressed to the call
+        ideltas = [e for e in evs if e isa ACP.ToolInputDelta]
+        @test length(ideltas) == length(frags)
+        @test all(d -> d.tool_call_id == "toolu_1", ideltas)
+        @test [d.partial_json for d in ideltas] == frags
+        @test join(d.partial_json for d in ideltas) == "{\"code\":\"plot(x)\"}"
+        # 3) the final message attaches authoritative input as an UPDATE, not a 2nd start
+        @test evs[end] isa ACP.ToolCallUpdated
+        @test evs[end].update.tool_call_id == "toolu_1"
+        @test evs[end].update.raw_input == Dict("code" => "plot(x)")
+        @test count(e -> e isa ACP.ToolCallStarted, evs) == 1
+        # envelope shape
+        env = ACP.envelope(ideltas[1], 2)
+        @test env.kind == :tool_input_delta
+        @test env.data["toolCallId"] == "toolu_1"
+        @test env.data["partialJson"] == frags[1]
     end
 
     @testset "ClaudeBackend: stream flag toggles --include-partial-messages" begin

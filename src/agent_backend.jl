@@ -67,6 +67,7 @@ mutable struct ClaudeHandle <: AgentHandle
     reader::Task
     turn::Base.RefValue{Int}
     session_id::Base.RefValue{String}      # claude's own session id (for transcript path)
+    tool_blocks::Dict{Int,String}          # streamed content-block index → tool_call_id (input deltas)
     cwd::String
     log_file::String
 end
@@ -129,7 +130,7 @@ function backend_start(b::ClaudeBackend; cwd::String, agent_id::String,
 
     events = Channel{ACP.AgentEvent}(Inf)
     h = ClaudeHandle(b, proc, proc.in, proc.out, events, Task(() -> nothing),
-                     Ref(0), Ref(""), cwd, log_file)
+                     Ref(0), Ref(""), Dict{Int,String}(), cwd, log_file)
     h.reader = _start_reader!(h, log_io)
     h
 end
@@ -146,7 +147,7 @@ function _start_reader!(h::ClaudeHandle, log_io::IO)
                     put!(h.events, ACP.AgentError("stream-json parse error", line))
                     continue
                 end
-                for ev in _map_claude_event(obj, h.session_id)
+                for ev in _map_claude_event(obj, h.session_id, h.tool_blocks)
                     put!(h.events, ev)
                 end
             end
@@ -235,7 +236,8 @@ _get(d, k, default=nothing) = d isa AbstractDict ? get(d, k, default) : default
 
 """Map one stream-JSON object to zero or more ACP events. Takes only the
 `session_id` Ref it needs from the handle (so it's unit-testable without a process)."""
-function _map_claude_event(obj, session_id::Base.RefValue{String})::Vector{ACP.AgentEvent}
+function _map_claude_event(obj, session_id::Base.RefValue{String},
+                           tool_blocks::Dict{Int,String} = Dict{Int,String}())::Vector{ACP.AgentEvent}
     out = ACP.AgentEvent[]
     t = _get(obj, "type")
     if t == "system"
@@ -251,12 +253,20 @@ function _map_claude_event(obj, session_id::Base.RefValue{String})::Vector{ACP.A
             elseif bt == "thinking"
                 push!(out, ACP.AgentThoughtChunk(ACP.TextBlock(String(something(_get(blk, "thinking"), "")))))
             elseif bt == "tool_use"
-                push!(out, ACP.ToolCallStarted(ACP.ToolCall(
-                    tool_call_id = String(something(_get(blk, "id"), "")),
-                    title = String(something(_get(blk, "name"), "tool")),
-                    kind = _tool_kind(something(_get(blk, "name"), "")),
-                    status = :in_progress,
-                    raw_input = _get(blk, "input"))))
+                tid = String(something(_get(blk, "id"), ""))
+                if tid in values(tool_blocks)
+                    # already announced via content_block_start (streamed): attach the
+                    # authoritative, fully-parsed input as an update, not a duplicate start
+                    push!(out, ACP.ToolCallUpdated(ACP.ToolCallUpdate(
+                        tool_call_id = tid, status = :in_progress, raw_input = _get(blk, "input"))))
+                else
+                    push!(out, ACP.ToolCallStarted(ACP.ToolCall(
+                        tool_call_id = tid,
+                        title = String(something(_get(blk, "name"), "tool")),
+                        kind = _tool_kind(something(_get(blk, "name"), "")),
+                        status = :in_progress,
+                        raw_input = _get(blk, "input"))))
+                end
             end
         end
     elseif t == "user"
@@ -274,23 +284,42 @@ function _map_claude_event(obj, session_id::Base.RefValue{String})::Vector{ACP.A
             end
         end
     elseif t == "stream_event"
-        # Partial deltas (--include-partial-messages): stream assistant text/thinking
-        # token chunks for liveness. The final complete `assistant` message still arrives
-        # and is the authoritative copy (delta=false). See docs/src/agents.md.
+        # Partial deltas (--include-partial-messages): stream assistant text/thinking and
+        # tool-call input token chunks for liveness. The final complete `assistant` message
+        # still arrives and is authoritative (delta=false / a tool-call update). See agents.md.
         sev = _get(obj, "event")
-        if _get(sev, "type") == "content_block_delta"
+        et = _get(sev, "type")
+        if et == "content_block_start"
+            # A tool call begins: announce it immediately (the call appears before its args
+            # finish) and remember its block index so the input deltas below can address it.
+            cb = _get(sev, "content_block")
+            if _get(cb, "type") == "tool_use"
+                idx = Int(something(_get(sev, "index"), -1))
+                tid = String(something(_get(cb, "id"), ""))
+                tool_blocks[idx] = tid
+                push!(out, ACP.ToolCallStarted(ACP.ToolCall(
+                    tool_call_id = tid,
+                    title = String(something(_get(cb, "name"), "tool")),
+                    kind = _tool_kind(something(_get(cb, "name"), "")),
+                    status = :in_progress)))
+            end
+        elseif et == "content_block_delta"
             d = _get(sev, "delta")
             dt = _get(d, "type")
             if dt == "text_delta"
                 push!(out, ACP.AgentMessageChunk(ACP.TextBlock(String(something(_get(d, "text"), ""))), true))
             elseif dt == "thinking_delta"
                 push!(out, ACP.AgentThoughtChunk(ACP.TextBlock(String(something(_get(d, "thinking"), ""))), true))
+            elseif dt == "input_json_delta"
+                idx = Int(something(_get(sev, "index"), -1))
+                push!(out, ACP.ToolInputDelta(get(tool_blocks, idx, ""),
+                                              String(something(_get(d, "partial_json"), ""))))
             end
-            # input_json_delta (tool-input streaming) intentionally ignored for v1
         end
-        # content_block_start/stop, message_*, signature_delta: ignored — the complete
+        # content_block_stop, message_*, signature_delta: ignored — the complete
         # `assistant` message handles block boundaries and authoritative content.
     elseif t == "result"
+        empty!(tool_blocks)   # per-turn streaming state; ids are unique so this is just hygiene
         usage = _claude_usage(_get(obj, "usage"), _get(obj, "total_cost_usd"))
         sr = _get(obj, "stop_reason")
         stop = sr isa AbstractString ? ACP.as_enum(sr, ACP.STOP_REASONS, :end_turn) :

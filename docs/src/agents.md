@@ -165,7 +165,8 @@ envelope, JSON-encoded.
 | `assistant_text` | Assistant message content. Carries `delta` (see [Token streaming](#token-streaming)). |
 | `thought` | Reasoning. Carries `delta`, same as `assistant_text`. |
 | `user_text` | Echo of the user's own input. |
-| `tool_use` | A new tool invocation (status usually `in_progress`). |
+| `tool_use` | A new tool invocation (status usually `in_progress`). Under streaming it appears the instant the call begins, then gets an authoritative-input update (see below). |
+| `tool_input_delta` | A streamed fragment of a tool call's input JSON: `{toolCallId, partialJson}`. Fragments concatenate to the full input (not valid JSON until complete). Liveness only — see [Token streaming](#token-streaming). |
 | `tool_result` | A status/result delta for a call; `content` blocks may include base64 images. |
 | `plan` | The agent's execution plan (entries with priority + status). |
 | `usage` | A running token/cost usage update. |
@@ -192,10 +193,19 @@ A turn therefore emits, in order: `turn_started` → several
 `tool_use`/`tool_result` → `result`. Both copies are sent on purpose; don't treat
 the `delta:false` block as a duplicate.
 
+**Tool calls stream too.** When the agent invokes a tool, the call is announced the
+instant it begins (a `tool_use` with `status: in_progress` and no input yet), then its
+arguments stream as `tool_input_delta` fragments — so a `slate_add_cell` shows its code
+materializing live rather than appearing all at once. When the block finishes, a
+`tool_use` **update** carries the authoritative, fully-parsed input (correlate by
+`toolCallId`; it's an update to the already-announced call, not a second one). Append
+`partialJson` fragments for liveness, then replace with the update's input.
+
 Because deltas exist only for liveness, the **on-disk event log and the TUI monitor
-skip `delta:true` chunks** -- they record the authoritative `delta:false` blocks, so
-the log and replay stay compact under thousands of token chunks. Consumers that buffer
-envelopes for reload-replay should do the same.
+skip `delta:true` and `tool_input_delta` chunks** -- they record the authoritative
+blocks (`delta:false`, `tool_use`, the tool-call update), so the log and replay stay
+compact under thousands of token chunks. Consumers that buffer envelopes for
+reload-replay should do the same.
 
 !!! tip "Back-compatibility"
     `delta` is purely additive. A consumer that ignores it sees every complete block

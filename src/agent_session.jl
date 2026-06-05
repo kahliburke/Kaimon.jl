@@ -124,7 +124,8 @@ function _start_relay!(s::AgentSession)
                 # persisted to the event log or pushed to the TUI ring buffer — the
                 # authoritative delta=false copy covers reload-replay and the monitor.
                 # Keeps both compact under thousands of token chunks. See docs/src/agents.md.
-                is_delta = (ev isa ACP.AgentMessageChunk || ev isa ACP.AgentThoughtChunk) && ev.delta
+                is_delta = ev isa ACP.ToolInputDelta ||
+                           ((ev isa ACP.AgentMessageChunk || ev isa ACP.AgentThoughtChunk) && ev.delta)
                 is_delta || _push_recent!(s, ev)
                 env = ACP.envelope(ev, current_turn(s.handle))
                 is_delta || _log_event!(s.id, env)           # Kaimon-owned JSONL (we control the schema)

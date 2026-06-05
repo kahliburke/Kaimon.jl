@@ -192,6 +192,15 @@ struct UserMessageChunk <: AgentEvent; content::ContentBlock; end
 struct ToolCallStarted <: AgentEvent; call::ToolCall; end
 "sessionUpdate=tool_call_update — status/result delta for a call."
 struct ToolCallUpdated <: AgentEvent; update::ToolCallUpdate; end
+"""Kaimon extension (not an ACP sessionUpdate): a streamed fragment of a tool call's
+input JSON, emitted token-by-token for liveness while the model writes the call's
+arguments. `partial_json` chunks concatenate to the tool's full input (not valid JSON
+until complete); the authoritative input arrives as a later tool-call update. See
+docs/src/agents.md (tool-input streaming)."""
+struct ToolInputDelta <: AgentEvent
+    tool_call_id::String
+    partial_json::String
+end
 "sessionUpdate=plan / plan_update — the agent's execution plan."
 struct PlanUpdated <: AgentEvent; entries::Vector{PlanEntry}; end
 "sessionUpdate=usage_update — running token/cost usage."
@@ -229,6 +238,7 @@ event_kind(::AgentThoughtChunk)  = :thought
 event_kind(::UserMessageChunk)   = :user_text
 event_kind(::ToolCallStarted)    = :tool_use
 event_kind(::ToolCallUpdated)    = :tool_result
+event_kind(::ToolInputDelta)     = :tool_input_delta
 event_kind(::PlanUpdated)        = :plan
 event_kind(::UsageUpdated)       = :usage
 event_kind(::TurnStarted)        = :turn_started
@@ -279,6 +289,7 @@ event_payload(e::AgentThoughtChunk) = Dict("delta"=>e.delta, "content"=>to_dict(
 event_payload(e::UserMessageChunk)  = Dict("content"=>to_dict(e.content))
 event_payload(e::ToolCallStarted)   = Dict("call"=>to_dict(e.call))
 event_payload(e::ToolCallUpdated)   = Dict("update"=>to_dict(e.update))
+event_payload(e::ToolInputDelta)    = Dict("toolCallId"=>e.tool_call_id, "partialJson"=>e.partial_json)
 event_payload(e::PlanUpdated)       = Dict("entries"=>[to_dict(x) for x in e.entries])
 event_payload(e::UsageUpdated)      = Dict("usage"=>to_dict(e.usage))
 event_payload(::TurnStarted)        = Dict{String,Any}()
