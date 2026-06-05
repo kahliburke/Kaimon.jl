@@ -35,14 +35,14 @@ function _hsl_to_rgb(h::Float64, s::Float64, l::Float64)
     (r1 + m, g1 + m, b1 + m)
 end
 
-"""Generate 9 distinct tab colors by rotating hue from the theme's accent color."""
+"""Generate 10 distinct tab colors by rotating hue from the theme's accent color."""
 function _generate_tab_colors(th)
     accent = to_rgb(th.accent)
     r, g, b = Float64(accent.r) / 255, Float64(accent.g) / 255, Float64(accent.b) / 255
     h, s, l = _rgb_to_hsl(r, g, b)
-    # Keep saturation and lightness, rotate hue evenly across 9 tabs
+    # Keep saturation and lightness, rotate hue evenly across the tabs
     colors = Style[]
-    for i in 0:8
+    for i in 0:9
         hi = mod(h + i * 40.0, 360.0)  # 40° apart = good separation
         ri, gi, bi = _hsl_to_rgb(hi, s, clamp(l, 0.4, 0.7))
         push!(colors, Style(fg=ColorRGB(
@@ -361,6 +361,7 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         $TAB_CONFIG => view_config(m, content_area, buf)
         $TAB_DEBUG => Base.invokelatest(view_debug, m, content_area, buf)
         $TAB_EXTENSIONS => view_extensions(m, content_area, buf)
+        $TAB_AGENTS => view_agents(m, content_area, buf)
         $TAB_ADVANCED => view_advanced(m, content_area, buf)
         _ => nothing
     end

@@ -472,6 +472,10 @@ include("reflection_tools.jl")
 include("qdrant_tools.jl")
 include("qdrant_indexer.jl")
 include("service_endpoint.jl")
+include("agent_acp_types.jl")
+include("agent_backend.jl")
+include("agent_session.jl")
+include("agent_tools.jl")
 
 # ============================================================================
 # VS Code Response Storage for Bidirectional Communication
@@ -1959,6 +1963,12 @@ function collect_tools()::Vector{MCPTool}
         check_eval_tool,
         cancel_eval_tool,
         list_jobs_tool,
+        agent_open_tool,
+        agent_send_tool,
+        agent_interrupt_tool,
+        agent_close_tool,
+        agent_status_tool,
+        agent_list_tool,
         reflection_tools...,
         qdrant_tools...,
     ]
@@ -2193,6 +2203,13 @@ function _start_gate_services!()
     end
 
     start_extensions!()
+
+    # Reap leftover owned-agent processes from a prior Kaimon instance.
+    try
+        reap_orphan_agents!()
+    catch e
+        @warn "Failed to reap orphan agents" exception = e
+    end
     nothing
 end
 
@@ -2207,6 +2224,10 @@ function _stop_gate_services!()
 
     stop_all_sessions!()
     stop_all_extensions!()
+    try
+        stop_all_agents!()
+    catch
+    end
 
     mgr = GATE_CONN_MGR[]
     GATE_MODE[] = false

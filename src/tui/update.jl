@@ -569,11 +569,12 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
         # Ctrl-U: Revise reload
         (:ctrl, 'u') => (_revise_reload!(m); return)
 
-        # Tab switching: number keys
+        # Tab switching: number keys (0 = tab 10 / Advanced)
         (:char, c) where {'1' <= c <= '9'} => begin
             _switch_tab!(m, Int(c) - Int('0'))
             return
         end
+        (:char, '0') => (_switch_tab!(m, 10); return)
 
         # Tab switching: function keys
         (:f1, _) => (_switch_tab!(m, 1); return)
@@ -897,7 +898,9 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
 
         ($TAB_EXTENSIONS, _) => _handle_extensions_nav!(m, evt, fp)
 
-        (9, 1) => @match evt.key begin
+        ($TAB_AGENTS, _) => _handle_agents_nav!(m, evt, fp)
+
+        ($TAB_ADVANCED, 1) => @match evt.key begin
             :up => (m.stress_field_idx = max(1, m.stress_field_idx - 1))
             :down => (m.stress_field_idx = min(8, m.stress_field_idx + 1))
             :enter => _handle_stress_enter!(m)
@@ -906,7 +909,7 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
             :pagedown => (m.stress_horde_scroll += 5)
             _ => nothing
         end
-        (9, 2) => begin
+        ($TAB_ADVANCED, 2) => begin
             step = evt.key in (:pageup, :pagedown) ? 5 : 1
             @match evt.key begin
                 :up || :pageup =>
@@ -915,7 +918,7 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
                 _ => nothing
             end
         end
-        (9, 3) =>
+        ($TAB_ADVANCED, 3) =>
             (m.stress_scroll_pane !== nothing && handle_key!(m.stress_scroll_pane, evt))
 
         (6, 4) => @match evt.key begin

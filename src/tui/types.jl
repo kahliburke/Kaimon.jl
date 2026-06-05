@@ -94,7 +94,8 @@ const TAB_TESTS      = 5
 const TAB_CONFIG     = 6
 const TAB_DEBUG      = 7
 const TAB_EXTENSIONS = 8
-const TAB_ADVANCED   = 9
+const TAB_AGENTS     = 9
+const TAB_ADVANCED   = 10
 
 # ── Model ─────────────────────────────────────────────────────────────────────
 
@@ -116,7 +117,8 @@ const TAB_ADVANCED   = 9
             [Span("6", tstyle(:warning)), Span(" Config", tstyle(:text))],
             [Span("7", tstyle(:warning)), Span(" Debug", tstyle(:text))],
             [Span("8", tstyle(:warning)), Span(" Extensions", tstyle(:text))],
-            [Span("9", tstyle(:warning)), Span(" Advanced", tstyle(:text))],
+            [Span("9", tstyle(:warning)), Span(" Agents", tstyle(:text))],
+            [Span("0", tstyle(:warning)), Span(" Advanced", tstyle(:text))],
         ];
         tab_style = TabBarStyle(decoration = BoxTabs(box=BOX_ROUNDED)),
     )
@@ -132,6 +134,11 @@ const TAB_ADVANCED   = 9
     sessions_detail_scroll::Int = 0     # vertical scroll offset for the detail pane
     sessions_detail_max_scroll::Int = 0 # updated each frame by view_sessions
     _sessions_detail_area::Rect = Rect() # cached for mouse hit-testing
+
+    # Agents tab (tab 9): Kaimon-owned AI agent sessions monitor
+    agentmon_selected::Int = 1            # selected agent in the list
+    agentmon_scroll::Int = 0              # scroll offset in the events detail pane
+    agentmon_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(40), Fill()])
 
     # Session terminal (PTY console for agent-spawned sessions)
     session_terminal_open::Bool = false
@@ -473,7 +480,7 @@ end
 const _PANE_COUNTS = Dict(
     TAB_SERVER => 2, TAB_SESSIONS => 3, TAB_ACTIVITY => 2,
     TAB_SEARCH => 3, TAB_TESTS => 2, TAB_CONFIG => 5,
-    TAB_DEBUG => 2, TAB_EXTENSIONS => 2, TAB_ADVANCED => 3,
+    TAB_DEBUG => 2, TAB_EXTENSIONS => 2, TAB_AGENTS => 2, TAB_ADVANCED => 3,
 )
 
 """Return the border style for a pane — highlighted if focused."""
