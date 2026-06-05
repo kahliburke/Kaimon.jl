@@ -169,11 +169,12 @@ end
         @test all(d -> d.tool_call_id == "toolu_1", ideltas)
         @test [d.partial_json for d in ideltas] == frags
         @test join(d.partial_json for d in ideltas) == "{\"code\":\"plot(x)\"}"
-        # 3) the final message attaches authoritative input as an UPDATE, not a 2nd start
-        @test evs[end] isa ACP.ToolCallUpdated
-        @test evs[end].update.tool_call_id == "toolu_1"
-        @test evs[end].update.raw_input == Dict("code" => "plot(x)")
-        @test count(e -> e isa ACP.ToolCallStarted, evs) == 1
+        # 3) the final message re-emits the call as an authoritative tool_use carrying
+        #    the full parsed input — the second tool_use for the id (replace by id)
+        @test evs[end] isa ACP.ToolCallStarted
+        @test evs[end].call.tool_call_id == "toolu_1"
+        @test evs[end].call.raw_input == Dict("code" => "plot(x)")
+        @test count(e -> e isa ACP.ToolCallStarted, evs) == 2   # announce + authoritative
         # envelope shape
         env = ACP.envelope(ideltas[1], 2)
         @test env.kind == :tool_input_delta
@@ -216,5 +217,21 @@ end
 
         # config reader returns a positive default
         @test Kaimon._agent_image_max_edge() isa Int && Kaimon._agent_image_max_edge() > 0
+    end
+
+    @testset "control_response + cancel mapping (interrupt path)" begin
+        ACP = Kaimon.ACP
+        # an error ack is surfaced as an AgentError (so a rejected interrupt is visible)
+        e = Kaimon._map_claude_event(Dict("type" => "control_response",
+                "response" => Dict("subtype" => "error", "request_id" => "int-1",
+                                   "error" => "not interruptible")), Ref(""))
+        @test length(e) == 1
+        @test e[1] isa ACP.AgentError && occursin("not interruptible", e[1].message)
+        # a success ack needs no user-facing event
+        @test isempty(Kaimon._map_claude_event(Dict("type" => "control_response",
+            "response" => Dict("subtype" => "success", "request_id" => "int-2")), Ref("")))
+        # a cancelled turn surfaces as result{stopReason: cancelled}
+        r = Kaimon._map_claude_event(Dict("type" => "result", "stop_reason" => "cancelled"), Ref(""))
+        @test r[1] isa ACP.TurnEnded && r[1].stop_reason == :cancelled
     end
 end

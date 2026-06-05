@@ -169,7 +169,7 @@ envelope, JSON-encoded.
 | `assistant_text` | Assistant message content. Carries `delta` (see [Token streaming](#token-streaming)). |
 | `thought` | Reasoning. Carries `delta`, same as `assistant_text`. |
 | `user_text` | Echo of the user's own input. |
-| `tool_use` | A new tool invocation (status usually `in_progress`). Under streaming it appears the instant the call begins, then gets an authoritative-input update (see below). |
+| `tool_use` | A tool invocation (status usually `in_progress`). Under streaming it's emitted **twice** for one `toolCallId`: an empty announce when the call begins, then the authoritative copy with full `rawInput` when it finishes — replace by id (see below). |
 | `tool_input_delta` | A streamed fragment of a tool call's input JSON: `{toolCallId, partialJson}`. Fragments concatenate to the full input (not valid JSON until complete). Liveness only — see [Token streaming](#token-streaming). |
 | `tool_result` | A status/result delta for a call; `content` blocks may include base64 images. |
 | `plan` | The agent's execution plan (entries with priority + status). |
@@ -201,13 +201,14 @@ the `delta:false` block as a duplicate.
 instant it begins (a `tool_use` with `status: in_progress` and no input yet), then its
 arguments stream as `tool_input_delta` fragments — so a `slate_add_cell` shows its code
 materializing live rather than appearing all at once. When the block finishes, a
-`tool_use` **update** carries the authoritative, fully-parsed input (correlate by
-`toolCallId`; it's an update to the already-announced call, not a second one). Append
-`partialJson` fragments for liveness, then replace with the update's input.
+**second `tool_use`** for the same `toolCallId` carries the authoritative, fully-parsed
+input; the first announce had none, so replace the call by `toolCallId`. So: append
+`partialJson` fragments for liveness, then replace with the authoritative `tool_use`'s
+`rawInput`. The tool's actual output arrives separately, later, as a `tool_result`.
 
 Because deltas exist only for liveness, the **on-disk event log and the TUI monitor
 skip `delta:true` and `tool_input_delta` chunks** -- they record the authoritative
-blocks (`delta:false`, `tool_use`, the tool-call update), so the log and replay stay
+blocks (`delta:false`, both `tool_use`s, the `tool_result`), so the log and replay stay
 compact under thousands of token chunks. Consumers that buffer envelopes for
 reload-replay should do the same.
 

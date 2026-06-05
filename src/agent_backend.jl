@@ -74,6 +74,7 @@ mutable struct ClaudeHandle <: AgentHandle
     tool_blocks::Dict{Int,String}          # streamed content-block index → tool_call_id (input deltas)
     cwd::String
     log_file::String
+    ctrl_seq::Base.RefValue{Int}           # monotonic id for control requests (interrupts)
 end
 
 backend_status(h::ClaudeHandle) =
@@ -134,7 +135,7 @@ function backend_start(b::ClaudeBackend; cwd::String, agent_id::String,
 
     events = Channel{ACP.AgentEvent}(Inf)
     h = ClaudeHandle(b, proc, proc.in, proc.out, events, Task(() -> nothing),
-                     Ref(0), Ref(""), Dict{Int,String}(), cwd, log_file)
+                     Ref(0), Ref(""), Dict{Int,String}(), cwd, log_file, Ref(0))
     h.reader = _start_reader!(h, log_io)
     h
 end
@@ -193,7 +194,7 @@ the control request isn't accepted.)
 function backend_interrupt(h::ClaudeHandle)
     Base.process_running(h.proc) || return false
     ctrl = Dict("type" => "control_request",
-                "request_id" => "int-$(h.turn[])",
+                "request_id" => "int-$(h.ctrl_seq[] += 1)",   # unique per interrupt (no collisions)
                 "request" => Dict("subtype" => "interrupt"))
     try
         write(h.in, JSON.json(ctrl), "\n"); flush(h.in)
@@ -257,20 +258,15 @@ function _map_claude_event(obj, session_id::Base.RefValue{String},
             elseif bt == "thinking"
                 push!(out, ACP.AgentThoughtChunk(ACP.TextBlock(String(something(_get(blk, "thinking"), "")))))
             elseif bt == "tool_use"
-                tid = String(something(_get(blk, "id"), ""))
-                if tid in values(tool_blocks)
-                    # already announced via content_block_start (streamed): attach the
-                    # authoritative, fully-parsed input as an update, not a duplicate start
-                    push!(out, ACP.ToolCallUpdated(ACP.ToolCallUpdate(
-                        tool_call_id = tid, status = :in_progress, raw_input = _get(blk, "input"))))
-                else
-                    push!(out, ACP.ToolCallStarted(ACP.ToolCall(
-                        tool_call_id = tid,
-                        title = String(something(_get(blk, "name"), "tool")),
-                        kind = _tool_kind(something(_get(blk, "name"), "")),
-                        status = :in_progress,
-                        raw_input = _get(blk, "input"))))
-                end
+                # The authoritative call with full, parsed input. For a streamed call
+                # this is the *second* tool_use for the id — the one announced at
+                # content_block_start had no input yet; consumers replace by toolCallId.
+                push!(out, ACP.ToolCallStarted(ACP.ToolCall(
+                    tool_call_id = String(something(_get(blk, "id"), "")),
+                    title = String(something(_get(blk, "name"), "tool")),
+                    kind = _tool_kind(something(_get(blk, "name"), "")),
+                    status = :in_progress,
+                    raw_input = _get(blk, "input"))))
             end
         end
     elseif t == "user"
@@ -329,6 +325,16 @@ function _map_claude_event(obj, session_id::Base.RefValue{String},
         stop = sr isa AbstractString ? ACP.as_enum(sr, ACP.STOP_REASONS, :end_turn) :
                (something(_get(obj, "is_error"), false) === true ? :refusal : :end_turn)
         push!(out, ACP.TurnEnded(stop, usage))
+    elseif t == "control_response"
+        # Ack for a control request we sent (e.g. an interrupt). Surface failures as an
+        # AgentError so a dropped/ rejected interrupt is observable; a success needs no
+        # user-facing event (a real cancel also lands as result{stopReason: cancelled}).
+        resp = _get(obj, "response")
+        if _get(resp, "subtype") == "error"
+            push!(out, ACP.AgentError(
+                "control request failed: " * String(something(_get(resp, "error"), "unknown")),
+                Dict("request_id" => _get(resp, "request_id"))))
+        end
     end
     out
 end
