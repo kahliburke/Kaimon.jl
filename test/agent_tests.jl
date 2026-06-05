@@ -219,6 +219,69 @@ end
         @test Kaimon._agent_image_max_edge() isa Int && Kaimon._agent_image_max_edge() > 0
     end
 
+    @testset "MCP tool-result image content blocks" begin
+        PF = Kaimon.PNGFiles
+        B64 = Kaimon.Base64
+        C = Kaimon.RGBA{Kaimon.N0f8}
+        KG = Kaimon.KaimonGate
+        png(img) = (io = IOBuffer(); PF.save(io, img); take!(io))
+
+        # image_result builds a sentinel-tagged envelope; bytes round-trip
+        small = [C(0.2, 0.4, 0.8, 1) for _ in 1:40, _ in 1:60]   # 40×60, within any cap
+        sbytes = png(small)
+        env = KG.image_result(sbytes; text = "hello plot")
+        @test startswith(env, KG.MCP_CONTENT_SENTINEL)
+        # Kaimon.image_result delegates to the same envelope
+        @test Kaimon.image_result(sbytes; text = "hello plot") == env
+
+        # _build_tool_content: plain text stays a single text block, no error
+        c, e = Kaimon._build_tool_content("just text")
+        @test e == false
+        @test length(c) == 1 && c[1]["type"] == "text" && c[1]["text"] == "just text"
+
+        # envelope with text + image → ordered [text, image]; small image passes through
+        c, e = Kaimon._build_tool_content(env)
+        @test e == false
+        @test length(c) == 2
+        @test c[1]["type"] == "text" && c[1]["text"] == "hello plot"
+        @test c[2]["type"] == "image" && c[2]["mimeType"] == "image/png"
+        dec = PF.load(IOBuffer(B64.base64decode(c[2]["data"])))
+        @test size(dec) == (40, 60)   # within cap → not resized
+
+        # image-only envelope (no text) → single image block
+        c, e = Kaimon._build_tool_content(KG.image_result(sbytes))
+        @test length(c) == 1 && c[1]["type"] == "image"
+
+        # an oversized image is downscaled at egress (the cost lever): default cap 1024
+        wide = [C(0.3, 0.6, 0.9, 1) for _ in 1:80, _ in 1:2000]   # long edge 2000
+        c, e = Kaimon._build_tool_content(KG.image_result(png(wide)))
+        big = PF.load(IOBuffer(B64.base64decode(c[1]["data"])))
+        @test maximum(size(big)) <= Kaimon._tool_image_max_edge()
+        @test maximum(size(big)) == 1000   # cld(2000,1024)=2 → halved
+
+        # isError flag rides through the envelope
+        errenv = KG.MCP_CONTENT_SENTINEL *
+                 "{\"content\":[{\"type\":\"text\",\"text\":\"boom\"}],\"isError\":true}"
+        c, e = Kaimon._build_tool_content(errenv)
+        @test e == true && c[1]["text"] == "boom"
+
+        # malformed envelope never drops the result — falls back to text
+        bad = KG.MCP_CONTENT_SENTINEL * "not json{"
+        c, e = Kaimon._build_tool_content(bad)
+        @test e == false && length(c) == 1 && c[1]["type"] == "text" && c[1]["text"] == bad
+
+        # text with embedded quotes/newlines survives JSON escaping
+        c, _ = Kaimon._build_tool_content(KG.image_result(sbytes; text = "a\"b\nc"))
+        @test c[1]["text"] == "a\"b\nc"
+
+        # log-safe stand-in: envelopes collapse, plain text is untouched
+        @test startswith(Kaimon._tool_result_log_text(env), "[MCP rich content")
+        @test Kaimon._tool_result_log_text("plain") == "plain"
+
+        # config reader: positive Int default
+        @test Kaimon._tool_image_max_edge() isa Int && Kaimon._tool_image_max_edge() > 0
+    end
+
     @testset "control_response + cancel mapping (interrupt path)" begin
         ACP = Kaimon.ACP
         # an error ack is surfaced as an AgentError (so a rejected interrupt is visible)

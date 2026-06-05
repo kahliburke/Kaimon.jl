@@ -414,6 +414,72 @@ function _tool_result_content(content)::Vector{ACP.ToolCallContent}
     out
 end
 
+# ── Rich MCP tool results (images) ────────────────────────────────────────────
+# Tool handlers can return an image via `KaimonGate.image_result` (a sentinel-
+# tagged JSON envelope String). `_build_tool_content` unwraps it at tool-result
+# egress (MCPServer), downsamples image blocks *here* — before the result reaches
+# the agent — and emits real MCP content blocks. This is the cost lever for
+# tool-result images (unlike the stream-output downscaler above, which only
+# governs what we forward to the log/bus after the model already paid).
+
+"""Max long-edge (px) for images returned *in MCP tool results* — the resolution
+the agent actually consumes (and pays vision tokens for). Global config key
+`tool_image_max_long_edge` in `~/.config/kaimon/config.json`; default 1024.
+Distinct from `agent_image_max_long_edge`, which caps streamed-result images on the
+display/forwarding path."""
+function _tool_image_max_edge()
+    try
+        d = JSON.parsefile(get_global_config_path())
+        v = get(d, "tool_image_max_long_edge", 1024)
+        v isa Integer && return Int(v)
+        v isa Real && return round(Int, v)
+    catch
+    end
+    return 1024
+end
+
+"""
+    _build_tool_content(result_text) -> (content::Vector, is_error::Bool)
+
+Turn a tool handler's (stringified) return into the MCP `content` array. A plain
+string becomes a single text block — the overwhelming default, unchanged. A string
+carrying `KaimonGate.MCP_CONTENT_SENTINEL` is parsed into structured content;
+`image/png` blocks are downsampled to `_tool_image_max_edge()` before reaching the
+model. A malformed envelope falls back to a text block, so a result is never
+dropped."""
+function _build_tool_content(result_text::AbstractString)
+    sentinel = KaimonGate.MCP_CONTENT_SENTINEL
+    startswith(result_text, sentinel) ||
+        return (Any[Dict("type" => "text", "text" => result_text)], false)
+    try
+        env = JSON.parse(chop(result_text; head = length(sentinel), tail = 0))
+        max_edge = _tool_image_max_edge()
+        blocks = Any[]
+        for b in env["content"]
+            if get(b, "type", "") == "image" && get(b, "mimeType", "") == "image/png"
+                b = merge(b, Dict("data" => _downscale_png_b64(String(b["data"]), max_edge)))
+            end
+            push!(blocks, b)
+        end
+        return (blocks, get(env, "isError", false) === true)
+    catch
+        return (Any[Dict("type" => "text", "text" => result_text)], false)
+    end
+end
+
+"""Log-safe stand-in for a tool result on the TUI activity ring / SQLite: a rich
+content envelope is collapsed to a short note instead of dumping ~1 MB of base64."""
+function _tool_result_log_text(s::AbstractString)
+    startswith(s, KaimonGate.MCP_CONTENT_SENTINEL) || return s
+    return "[MCP rich content — $(round(Int, ncodeunits(s) / 1024)) KB envelope]"
+end
+
+"""Server-side mirror of `KaimonGate.image_result` for native (in-process) Kaimon
+tools — returns the same sentinel envelope so an in-server tool can return an
+image. `png` is raw image bytes (base64-encoded internally)."""
+image_result(png::AbstractVector{UInt8}; mime::AbstractString = "image/png",
+    text::AbstractString = "") = KaimonGate.image_result(png; mime, text)
+
 function _claude_usage(u, cost)::ACP.Usage
     u isa AbstractDict || return ACP.Usage(cost_usd = (cost isa Number ? Float64(cost) : nothing))
     ACP.Usage(

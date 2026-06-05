@@ -297,6 +297,78 @@ end
 
 const _SESSION_TOOLS = Ref{Vector{GateTool}}(GateTool[])
 
+# ── Rich tool results (images) ────────────────────────────────────────────────
+# MCP tool results are otherwise plain text. A handler that wants to return an
+# image returns this sentinel-tagged JSON envelope as its String result; the
+# Kaimon server detects the prefix at tool-result egress, parses the JSON,
+# downsamples any image blocks to its configured cap, and emits real MCP image
+# content blocks. The string carrier rides the (string-only) gate transport
+# untouched — see `image_result`.
+
+"""
+    KaimonGate.MCP_CONTENT_SENTINEL
+
+Versioned prefix marking a tool result String as a structured MCP content
+envelope (rich content / images) rather than plain text. Collision-proof: any
+result not starting with this is treated as plain text — no parsing.
+"""
+const MCP_CONTENT_SENTINEL = "KAIMON-MCP-CONTENT/v1\n"
+
+# Minimal JSON string encoder — avoids a JSON dependency in lightweight KaimonGate.
+# (base64 payloads are JSON-safe; only free-text `text`/`mime` need escaping.)
+function _json_str(s::AbstractString)
+    io = IOBuffer()
+    print(io, '"')
+    for c in s
+        if c == '"'
+            print(io, "\\\"")
+        elseif c == '\\'
+            print(io, "\\\\")
+        elseif c == '\n'
+            print(io, "\\n")
+        elseif c == '\r'
+            print(io, "\\r")
+        elseif c == '\t'
+            print(io, "\\t")
+        elseif c < ' '
+            print(io, "\\u", lpad(string(UInt16(c), base = 16), 4, '0'))
+        else
+            print(io, c)
+        end
+    end
+    print(io, '"')
+    String(take!(io))
+end
+
+"""
+    image_result(png; mime="image/png", text="") -> String
+
+Build a structured MCP tool-result envelope carrying an image, for return from a
+gate tool handler. `png` is raw image bytes (base64-encoded internally). The
+Kaimon server unwraps this at tool-result egress into a real MCP image content
+block, downsampling to its configured cap (`tool_image_max_long_edge`, default
+1024 px) *before* the image reaches the agent — that is the tool-result cost
+lever. An optional `text` block is included before the image.
+
+```julia
+GateTool("slate_view", a -> KaimonGate.image_result(render_png(a); text="Cell 3"))
+```
+"""
+function image_result(
+    png::AbstractVector{UInt8};
+    mime::AbstractString = "image/png",
+    text::AbstractString = "",
+)
+    b64 = Base64.base64encode(png)
+    blocks = String[]
+    isempty(text) || push!(blocks, "{\"type\":\"text\",\"text\":$(_json_str(text))}")
+    push!(
+        blocks,
+        "{\"type\":\"image\",\"data\":$(_json_str(b64)),\"mimeType\":$(_json_str(mime))}",
+    )
+    return MCP_CONTENT_SENTINEL * "{\"content\":[" * join(blocks, ",") * "]}"
+end
+
 # ── Type Reflection & Coercion ────────────────────────────────────────────────
 # Reflects on handler function signatures to build type metadata for MCP schema
 # generation, and reconstructs typed Julia args from incoming Dict values.

@@ -1238,20 +1238,20 @@ function create_handler(
 
                     # Push full tool result for TUI Activity inspection + update DB
                     if tui_mode
-                        rt = string(result_text)
+                        rt = _tool_result_log_text(string(result_text))
                         ok = tool_ok && !startswith(rt, "ERROR:")
                         tcr = ToolCallResult(now(), tool.name, args_json_ns, rt, time_str, ok, sk_ns)
                         _push_tool_result!(tcr)
                         _persist_tool_complete!(db_request_id_ns, tcr)
                     end
 
+                    content_blocks, is_err = _build_tool_content(string(result_text))
+                    result_obj = Dict{String,Any}("content" => content_blocks)
+                    is_err && (result_obj["isError"] = true)
                     response = Dict(
                         "jsonrpc" => "2.0",
                         "id" => request["id"],
-                        "result" => Dict(
-                            "content" =>
-                                [Dict("type" => "text", "text" => result_text)],
-                        ),
+                        "result" => result_obj,
                     )
                     return HTTP.Response(
                         200,
@@ -1512,7 +1512,7 @@ function _handle_gate_tool_sse(
         elapsed = time() - start_time
         time_str =
             elapsed < 1.0 ? @sprintf("%.0fms", elapsed * 1000) : @sprintf("%.1fs", elapsed)
-        rt = string(result_text)
+        rt = _tool_result_log_text(string(result_text))
         ok = tool_ok && !startswith(rt, "ERROR:")
         sk = string(get(args, "ses", get(args, "session", "")))
         tcr = ToolCallResult(now(), tool.name, args_json, rt, time_str, ok, sk, _sse_eval_id[])
@@ -1523,7 +1523,9 @@ function _handle_gate_tool_sse(
     end
 
     # Send final JSON-RPC result as last SSE event
-    result_dict = Dict{String,Any}("content" => [Dict("type" => "text", "text" => result_text)])
+    content_blocks, is_err = _build_tool_content(string(result_text))
+    result_dict = Dict{String,Any}("content" => content_blocks)
+    is_err && (result_dict["isError"] = true)
     if !isempty(_sse_eval_id[])
         result_dict["eval_id"] = _sse_eval_id[]
     end
