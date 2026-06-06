@@ -2766,69 +2766,44 @@ end
 # MCP tool. This is the reverse of the existing gate protocol: instead of
 # Kaimon calling into the gate, the gate calls back into Kaimon.
 
+# Legacy ref: per-call sockets are used now (below), but cleanup still nils this.
 const _SERVICE_SOCKET = Ref{Union{ZMQ.Socket,Nothing}}(nothing)
-const _SERVICE_LOCK = ReentrantLock()
 
-"""
-    _connect_service!() -> Bool
-
-Connect to the Kaimon service endpoint. Returns true on success.
-The service socket is a ZMQ REQ that connects to the Kaimon server's
-REP socket at `ipc://~/.cache/kaimon/sock/kaimon-service.sock`.
-"""
-function _connect_service!()
-    sock_path = joinpath(sock_dir(),"kaimon-service.sock")
-    ispath(sock_path) || return false
-    ctx = _GATE_CONTEXT[]
-    ctx === nothing && return false
-    sock = Socket(ctx, REQ)
-    # 610s: must exceed the slowest tool's own timeout (agent_run defaults to
-    # 600s and is caller-settable), else a long-but-healthy turn trips the recv
-    # timeout and wedges the REQ socket. Kept finite on purpose — an infinite
-    # timeout would block forever if the server dies mid-recv (e.g. /mcp reconnect);
-    # the finite timeout + reset-on-throw in _service_request is what lets a dead
-    # server be noticed and recovered from.
-    sock.rcvtimeo = 610_000
-    sock.sndtimeo = 5000   # 5s send timeout
-    sock.linger = 0
-    connect(sock, "ipc://$(sock_path)")
-    _SERVICE_SOCKET[] = sock
-    return true
-end
+# Per-call REQ recv timeout (ms). Must exceed the worst case admission-wait +
+# slowest-tool timeout (agent_run defaults to 600s and is caller-settable). Kept
+# finite on purpose — an infinite timeout blocks forever if the server dies
+# mid-recv (e.g. an /mcp reconnect); a finite one lets a dead server be noticed.
+# A per-call socket can't wedge, so on timeout we just fail that one call cleanly.
+const _SERVICE_RCV_TIMEOUT_MS = Ref{Int}(
+    something(tryparse(Int, get(ENV, "KAIMON_SERVICE_RCV_TIMEOUT_MS", "")), 660_000))
 
 """
     _service_request(request::NamedTuple) -> Any
 
 Send a request to the Kaimon service endpoint and return the response value.
-Handles connection, serialization, error handling, and socket reset on failure.
+
+Each call uses its OWN short-lived REQ socket (create → connect → send → recv →
+close). The server is a ROUTER, so concurrent `call_tool`s from one gate session
+run in parallel — no shared socket, no lock — and a per-call socket can never
+wedge: the strict REQ send/recv FSM starts fresh every call. Supersedes the old
+single shared REQ + lock (+ reset-on-throw) design.
 """
 function _service_request(request)
-    lock(_SERVICE_LOCK) do
-        sock = _SERVICE_SOCKET[]
-        if sock === nothing
-            _connect_service!() || error("Kaimon service endpoint not available. Is the Kaimon TUI running?")
-            sock = _SERVICE_SOCKET[]
-        end
+    sock_path = joinpath(sock_dir(), "kaimon-service.sock")
+    ispath(sock_path) || error("Kaimon service endpoint not available. Is the Kaimon TUI running?")
+    ctx = _GATE_CONTEXT[]
+    ctx === nothing && error("Kaimon service endpoint not available (no ZMQ context).")
 
-        # The send/recv pair must be guarded: ZMQ REQ enforces a strict
-        # send→recv→send alternation, so any throw between send and a completed
-        # recv (recv timeout, interrupt, bad bytes) leaves the socket mid-cycle.
-        # Re-using a wedged socket makes the next send throw EFSM ("operation
-        # cannot be accomplished in current state"). Drop it on any failure so
-        # the next call reconnects fresh via _connect_service!.
-        raw = try
-            io = IOBuffer()
-            serialize(io, request)
-            send(sock, take!(io))
-            _zmq_recv(sock)
-        catch
-            _SERVICE_SOCKET[] = nothing
-            try
-                close(sock)  # free the fd now + let the server see the disconnect
-            catch
-            end
-            rethrow()
-        end
+    sock = Socket(ctx, REQ)
+    sock.rcvtimeo = _SERVICE_RCV_TIMEOUT_MS[]
+    sock.sndtimeo = 5000   # 5s send timeout
+    sock.linger = 0
+    connect(sock, "ipc://$(sock_path)")
+    try
+        io = IOBuffer()
+        serialize(io, request)
+        send(sock, take!(io))
+        raw = _zmq_recv(sock)
         response = deserialize(IOBuffer(raw))
 
         status = if hasproperty(response, :status)
@@ -2847,12 +2822,12 @@ function _service_request(request)
             else
                 "unknown error"
             end
-            # Reset socket on error — ZMQ REQ/REP is strict about send/recv alternation
-            _SERVICE_SOCKET[] = nothing
             error("Kaimon service error: $msg")
         end
 
         return response.value
+    finally
+        close(sock)   # fresh socket per call — nothing to reset/wedge
     end
 end
 
