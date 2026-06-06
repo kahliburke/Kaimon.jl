@@ -1029,6 +1029,7 @@ function _req_send_recv(conn::REPLConnection, request; caller_timeout::Float64 =
             sock.rcvtimeo = min(round(Int, caller_timeout * 1000), 30000)
             sock.sndtimeo = 2000
             sock.linger = 0
+            _apply_curve_client!(sock, conn)   # per-request ephemeral REQ needs CURVE too
             connect(sock, endpoint)
             send(sock, request_bytes)
             raw = _zmq_recv(sock)
@@ -1896,6 +1897,7 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
                     sub.rcvtimeo = 0
                     sub.linger = 0
                     sub.rcvhwm = 0
+                    _apply_curve_client!(sub, conn)   # CURVE (no-op unless server_pubkey set)
                     subscribe(sub, "")
                     ZMQ.connect(sub, pong_stream)
                     conn.sub_socket = sub
