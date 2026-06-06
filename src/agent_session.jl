@@ -127,9 +127,27 @@ function _start_relay!(s::AgentSession)
                     _set_status!(s, :working)
                 elseif ev isa ACP.TurnEnded
                     ev.usage === nothing || (s.usage = s.usage + ev.usage)
+                    # Feed the turn's token total into the rate governor's tokens/min
+                    # budget (§5.5). Guarded — governor accounting must never break the relay.
+                    if ev.usage !== nothing
+                        try
+                            RateGovernor.record_turn_end!(ev.usage.input_tokens + ev.usage.output_tokens)
+                        catch
+                        end
+                    end
                     _set_status!(s, :idle)
                 elseif ev isa ACP.UsageUpdated
                     s.usage = s.usage + ev.usage
+                elseif ev isa ACP.AgentError
+                    # A 429/overloaded signal drives the governor's AIMD decrease + cooldown
+                    # (§5.2/§5.3). The error detail reaches us via _map_claude_event's result
+                    # branch (commit 33eb0b7).
+                    if RateGovernor.is_rate_limited(ev.message)
+                        try
+                            RateGovernor.note_rate_error!(RateGovernor.retry_after_seconds(ev.message))
+                        catch
+                        end
+                    end
                 elseif ev isa ACP.StatusChanged && ev.status === :dead
                     _set_status!(s, :dead)
                 end

@@ -471,6 +471,7 @@ include("vscode.jl")
 include("reflection_tools.jl")
 include("qdrant_tools.jl")
 include("qdrant_indexer.jl")
+include("rate_governor.jl")
 include("service_endpoint.jl")
 include("agent_acp_types.jl")
 include("agent_backend.jl")
@@ -1970,6 +1971,7 @@ function collect_tools()::Vector{MCPTool}
         agent_close_tool,
         agent_status_tool,
         agent_list_tool,
+        agent_governor_status_tool,
         reflection_tools...,
         qdrant_tools...,
     ]

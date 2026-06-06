@@ -103,3 +103,11 @@ const agent_list_tool = @mcp_tool :agent_list "List all open Kaimon-owned agents
         "Error listing agents: $(sprint(showerror, e))"
     end
 end
+
+const agent_governor_status_tool = @mcp_tool :agent_governor_status "Snapshot of the agent rate governor: in-flight turns vs concurrency cap, current request rate R, rolling tokens/min vs budget, throttled flag, cooldown remaining, and cumulative rate-error count. For watching API backpressure live." Dict("type" => "object", "properties" => Dict()) (args) -> begin
+    try
+        JSON.json(RateGovernor.status())
+    catch e
+        "Error reading governor status: $(sprint(showerror, e))"
+    end
+end

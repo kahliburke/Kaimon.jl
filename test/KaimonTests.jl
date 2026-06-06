@@ -21,5 +21,6 @@ include("gate_async_tests.jl")
 include("tcp_stale_session_tests.jl")
 include("test_runner_tests.jl")
 include("agent_tests.jl")
+include("rate_governor_tests.jl")
 
 end # module
