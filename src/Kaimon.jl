@@ -1965,6 +1965,7 @@ function collect_tools()::Vector{MCPTool}
         list_jobs_tool,
         agent_open_tool,
         agent_send_tool,
+        agent_run_tool,
         agent_interrupt_tool,
         agent_close_tool,
         agent_status_tool,

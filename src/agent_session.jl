@@ -35,6 +35,20 @@ end
 const AGENT_SESSIONS = Dict{String,AgentSession}()
 const AGENT_SESSIONS_LOCK = ReentrantLock()
 
+# ── Synchronous run waiters (agent_run) ───────────────────────────────────────
+# A run waiter taps the live relay for one in-flight turn: it accumulates the
+# authoritative (non-delta) assistant text and is signalled on TurnEnded. Keyed by
+# agent id (one synchronous run per agent at a time), so `agent_run` blocks for a
+# turn without a second consumer of the event stream and without an AgentSession
+# field. `done` carries the joined text on success, or `:timeout`/`:dead` as a signal.
+struct RunWaiter
+    buf::Vector{String}
+    done::Channel{Any}
+end
+const AGENT_RUN_WAITERS = Dict{String,RunWaiter}()
+const AGENT_RUN_LOCK = ReentrantLock()
+_run_waiter(id) = lock(AGENT_RUN_LOCK) do; get(AGENT_RUN_WAITERS, id, nothing); end
+
 _gen_agent_id() = bytes2hex(rand(UInt8, 4))
 
 # ── Open ──────────────────────────────────────────────────────────────────────
@@ -120,6 +134,19 @@ function _start_relay!(s::AgentSession)
                     _set_status!(s, :dead)
                 end
                 s.last_activity = time()
+                # Feed a synchronous agent_run() waiter for this agent, if one is
+                # parked: accumulate authoritative (non-delta) assistant text, and
+                # release the caller on TurnEnded with the joined result.
+                let w = _run_waiter(s.id)
+                    if w !== nothing
+                        if ev isa ACP.AgentMessageChunk && !ev.delta
+                            push!(w.buf, _txt(ev.content))
+                        elseif ev isa ACP.TurnEnded
+                            lock(AGENT_RUN_LOCK) do; delete!(AGENT_RUN_WAITERS, s.id); end
+                            try; put!(w.done, join(w.buf, "\n")); catch; end
+                        end
+                    end
+                end
                 # Streaming deltas (delta=true) ride the bus for liveness but are NOT
                 # persisted to the event log or pushed to the TUI ring buffer — the
                 # authoritative delta=false copy covers reload-replay and the monitor.
@@ -138,6 +165,14 @@ function _start_relay!(s::AgentSession)
             _push_log!(:warn, "Agent '$(s.id)' relay stopped: $(sprint(showerror, e))")
         finally
             _set_status!(s, :dead)
+            # Release any parked agent_run() waiter — the stream ended without a
+            # TurnEnded (agent died/closed), so signal :dead rather than hang to timeout.
+            let w = _run_waiter(s.id)
+                if w !== nothing
+                    lock(AGENT_RUN_LOCK) do; delete!(AGENT_RUN_WAITERS, s.id); end
+                    try; put!(w.done, :dead); catch; end
+                end
+            end
             _forget_agent_pid!(s.id)
             _prune_dead_agents!()
         end
@@ -158,11 +193,7 @@ _event_summary(e::ACP.ToolCallUpdated)   = "↳ $(something(e.update.status, :up
 _event_summary(e::ACP.PlanUpdated)       = "plan: $(length(e.entries)) step(s)"
 _event_summary(::ACP.UsageUpdated)       = "usage update"
 _event_summary(::ACP.TurnStarted)        = "— turn started —"
-function _event_summary(e::ACP.TurnEnded)
-    cost = (e.usage === nothing || e.usage.cost_usd === nothing) ? "" :
-           ", \$$(round(e.usage.cost_usd, digits = 4))"
-    "— turn ended ($(e.stop_reason)$cost) —"
-end
+_event_summary(e::ACP.TurnEnded)         = "— turn ended ($(e.stop_reason)) —"  # cost WIP/zeroed
 _event_summary(e::ACP.StatusChanged)     = "status: $(e.status)"
 _event_summary(e::ACP.AgentError)        = "error: $(e.message)"
 _event_summary(::ACP.PermissionRequested)= "permission requested"
@@ -228,6 +259,42 @@ function agent_send(id::String, text::AbstractString)
     s === nothing && error("no such agent: $id")
     s.status === :dead && error("agent '$id' is dead")
     backend_send(s.handle, text)
+end
+
+"""
+    agent_run(id, text; timeout=600.0) -> String
+
+Send a user turn and BLOCK until the turn ends, returning the agent's assistant
+text (authoritative, non-delta blocks joined). The synchronous sibling of
+`agent_send` — for callers that want a request/response shape (e.g. Seaworthy's
+`:agent` backend) rather than draining the `agent:<id>` event stream themselves.
+
+Events still stream on the bus as usual (this only taps the relay to collect the
+reply). Throws on timeout or if the agent dies mid-turn. One synchronous run per
+agent at a time.
+"""
+function agent_run(id::String, text::AbstractString; timeout::Real = 600.0)
+    s = _get_agent(id)
+    s === nothing && error("no such agent: $id")
+    s.status === :dead && error("agent '$id' is dead")
+    lock(AGENT_RUN_LOCK) do
+        haskey(AGENT_RUN_WAITERS, id) && error("agent '$id' already has a synchronous run in flight")
+    end
+    w = RunWaiter(String[], Channel{Any}(1))
+    lock(AGENT_RUN_LOCK) do; AGENT_RUN_WAITERS[id] = w; end
+    timer = nothing
+    try
+        backend_send(s.handle, text)                       # the relay tap collects the reply
+        timer = Timer(_ -> (try put!(w.done, :timeout); catch; end), float(timeout))
+        result = take!(w.done)
+        result === :timeout && error("agent '$id' run timed out after $(timeout)s")
+        result === :dead && error("agent '$id' died during the turn")
+        return String(result)
+    finally
+        timer === nothing || close(timer)
+        lock(AGENT_RUN_LOCK) do; delete!(AGENT_RUN_WAITERS, id); end
+        close(w.done)                                      # unblock any late relay put! (it catches)
+    end
 end
 
 """Cancel the in-flight turn (best effort)."""

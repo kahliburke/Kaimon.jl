@@ -41,6 +41,7 @@ chat (M1).
 # agent could recursively spawn/kill agents (fork-bomb). Blocked by default via
 # --disallowedTools; a caller can override `disallowed_tools` to allow nested agents.
 const AGENT_SELF_TOOLS = ["mcp__kaimon__agent_open", "mcp__kaimon__agent_send",
+    "mcp__kaimon__agent_run",
     "mcp__kaimon__agent_interrupt", "mcp__kaimon__agent_close",
     "mcp__kaimon__agent_status", "mcp__kaimon__agent_list"]
 
@@ -480,12 +481,17 @@ image. `png` is raw image bytes (base64-encoded internally)."""
 image_result(png::AbstractVector{UInt8}; mime::AbstractString = "image/png",
     text::AbstractString = "") = KaimonGate.image_result(png; mime, text)
 
+# WIP: cost is zeroed for now. claude's reported `total_cost_usd` is inaccurate /
+# misleading (especially on subscription plans), so we don't surface it. The
+# `cost_usd` field is kept in the schema (UsageUpdated/TurnEnded payloads,
+# agent_status) but always reads 0.0 until we compute a real figure — the `cost`
+# arg is intentionally ignored. TODO: replace with a real per-turn cost estimate.
 function _claude_usage(u, cost)::ACP.Usage
-    u isa AbstractDict || return ACP.Usage(cost_usd = (cost isa Number ? Float64(cost) : nothing))
+    u isa AbstractDict || return ACP.Usage(cost_usd = 0.0)
     ACP.Usage(
         input_tokens         = Int(something(_get(u, "input_tokens"), 0)),
         output_tokens        = Int(something(_get(u, "output_tokens"), 0)),
         cache_read_tokens    = Int(something(_get(u, "cache_read_input_tokens"), 0)),
         cache_creation_tokens= Int(something(_get(u, "cache_creation_input_tokens"), 0)),
-        cost_usd             = cost isa Number ? Float64(cost) : nothing)
+        cost_usd             = 0.0)
 end

@@ -51,6 +51,24 @@ const agent_send_tool = @mcp_tool :agent_send "Send a user turn to an agent. Eve
     end
 end
 
+const agent_run_tool = @mcp_tool :agent_run "Send a user turn and BLOCK until it ends, returning the agent's assistant text. Synchronous sibling of agent_send (events still stream on 'agent:<id>'). Throws on timeout / agent death." Dict(
+    "type" => "object",
+    "properties" => Dict(
+        "agent_id" => Dict("type" => "string", "description" => "Agent id from agent_open."),
+        "text" => Dict("type" => "string", "description" => "The user message for this turn."),
+        "timeout" => Dict("type" => "number", "description" => "Max seconds to await the turn (default 600)."),
+    ),
+    "required" => ["agent_id", "text"],
+) (args) -> begin
+    try
+        txt = agent_run(String(get(args, "agent_id", "")), String(get(args, "text", ""));
+                        timeout = Float64(get(args, "timeout", 600.0)))
+        JSON.json(Dict("text" => txt))
+    catch e
+        "Error running agent turn: $(sprint(showerror, e))"
+    end
+end
+
 const agent_interrupt_tool = @mcp_tool :agent_interrupt "Cancel an agent's in-flight turn (best effort)." text_parameter("agent_id", "Agent id from agent_open.") (args) -> begin
     try
         ok = agent_interrupt(String(get(args, "agent_id", "")))
