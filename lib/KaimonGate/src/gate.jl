@@ -687,7 +687,13 @@ function _reflect_tool(tool::GateTool)
         return Dict{String,Any}("name" => tool.name, "description" => "", "arguments" => [])
     end
 
-    m = first(ms)
+    # A function with optional positional args defines one method PER ARITY. Reflect the
+    # MOST complete signature for the full parameter list; `first(ms)` is unreliable —
+    # for closure handlers it can be the lowest-arity stub, silently dropping every
+    # optional param from the schema.
+    allms = collect(ms)
+    m = argmax(mm -> Int(mm.nargs), allms)
+    nmin = minimum(Int(mm.nargs) for mm in allms)   # fewest args ⇒ required positional count
 
     # Argument names (first is the function itself)
     arg_names_all = Base.method_argnames(m)
@@ -716,9 +722,9 @@ function _reflect_tool(tool::GateTool)
         )
     end
 
-    # Mark args beyond nargs-1 (the required positional count) as optional
-    # Julia's m.nargs includes the function itself, so required count = m.nargs - 1
-    nreq = m.nargs - 1
+    # Mark args beyond the MINIMUM arity (the required count) as optional — params that
+    # appear only in higher-arity methods carry defaults. (nargs counts the function.)
+    nreq = nmin - 1
     for i in eachindex(args_meta)
         if i > nreq
             args_meta[i]["required"] = false
