@@ -1467,12 +1467,13 @@ Connect to a TCP gate at `host:port` using the active ConnectionManager.
 Used by the REST API endpoint to allow browser-driven gate connections.
 Throws if no ConnectionManager is available or connection fails.
 """
-function connect_tcp_to_active_manager(host::String, port::Int; name::String = "remote")
+function connect_tcp_to_active_manager(host::String, port::Int; name::String = "remote",
+                                       server_key::String = "")
     mgr = GATE_CONN_MGR[]
     if mgr === nothing
         error("No ConnectionManager available — gate services not running")
     end
-    return connect_tcp!(mgr, host, port; name = name)
+    return connect_tcp!(mgr, host, port; name = name, server_key = server_key)
 end
 
 """

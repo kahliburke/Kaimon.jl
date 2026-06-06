@@ -282,7 +282,11 @@ struct TCPGateEntry
     enabled::Bool
     token::String     # auth token (empty = use env/config fallback)
     stream_port::Int  # PUB socket port override for tunneling (0 = discover from pong)
+    server_key::String # CURVE server public key to pin (empty = plain TCP)
 end
+# Back-compat: callers that predate CURVE omit server_key.
+TCPGateEntry(host, port, name, enabled, token, stream_port) =
+    TCPGateEntry(host, port, name, enabled, token, stream_port, "")
 
 function get_tcp_gates_config_path()
     joinpath(kaimon_config_dir(), "tcp_gates.json")
@@ -302,6 +306,7 @@ function load_tcp_gates_config()::Vector{TCPGateEntry}
                 Bool(get(g, "enabled", true)),
                 String(get(g, "token", "")),
                 Int(get(g, "stream_port", 0)),
+                String(get(g, "server_key", "")),
             ) for g in gates
         ]
     catch e
@@ -322,6 +327,7 @@ function save_tcp_gates_config(entries::Vector{TCPGateEntry})
                 "enabled" => e.enabled,
                 "token" => e.token,
                 "stream_port" => e.stream_port,
+                "server_key" => e.server_key,
             ) for e in entries
         ],
     )

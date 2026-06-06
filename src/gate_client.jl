@@ -72,6 +72,7 @@ mutable struct REPLConnection
     backtrace_sample::Union{String,Nothing}  # stack sample captured when stalled
     spawned_by::String           # "user" or "agent" — how this session was started
     auth_token::String           # TCP auth token (empty = no auth)
+    server_pubkey::String        # CURVE server public key to pin (empty = plain TCP/IPC)
 end
 
 function REPLConnection(;
@@ -90,6 +91,7 @@ function REPLConnection(;
     tools_hash::UInt64 = UInt64(0),
     spawned_by::String = "user",
     auth_token::String = "",
+    server_pubkey::String = "",
 )
     t = now()
     REPLConnection(
@@ -127,7 +129,17 @@ function REPLConnection(;
         nothing, # backtrace_sample
         spawned_by,
         auth_token,
+        server_pubkey,
     )
+end
+
+"""Apply CURVE client options to `sock` (before connect) when the connection pins
+a server public key. Uses this Kaimon instance's persistent client keypair."""
+function _apply_curve_client!(sock::ZMQ.Socket, conn::REPLConnection)
+    isempty(conn.server_pubkey) && return
+    cpub, csec = KaimonGate._load_or_create_client_keypair()
+    KaimonGate.make_curve_client!(sock, conn.server_pubkey, cpub, csec)
+    return nothing
 end
 
 """TCP sessions have no local socket file — identified by empty socket_path."""
@@ -728,7 +740,8 @@ resolved from the gate's pong response (supports ephemeral ports).
 Returns the connected `REPLConnection`, or throws on failure.
 """
 function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
-                      name::String = "", token::String = "", stream_port::Int = 0)
+                      name::String = "", token::String = "", stream_port::Int = 0,
+                      server_key::String = "")
     endpoint = "tcp://$(host):$(port)"
     stream_endpoint = stream_port > 0 ? "tcp://$(host):$(stream_port)" : ""
     sid = "tcp-$(host)-$(port)"
@@ -753,6 +766,17 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
         end
     end
 
+    # Resolve CURVE server key (for an encrypted gate): explicit > env > pinned
+    # (TOFU). CURVE has no in-band key exchange, so we must hold the key before
+    # connecting; without one we connect plain (and an encrypted gate won't answer).
+    if isempty(server_key)
+        server_key = get(ENV, "KAIMON_GATE_CURVE_SERVERKEY", "")
+    end
+    if isempty(server_key)
+        pinned = KaimonGate._pinned_server(host, port)
+        pinned === nothing || (server_key = pinned)
+    end
+
     display_name = isempty(name) ? "$(host):$(port)" : name
     conn = REPLConnection(
         session_id = sid,
@@ -766,6 +790,7 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
         pid = 0,
         spawned_by = "user",
         auth_token = token,
+        server_pubkey = server_key,
     )
 
     if !connect!(mgr, conn)
@@ -777,8 +802,13 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
     if pong === nothing
         # Gate not responding — clean up the socket and bail
         disconnect!(conn)
-        error("TCP gate at $endpoint is not responding")
+        msg = "TCP gate at $endpoint is not responding"
+        isempty(conn.server_pubkey) && (msg *= " (if it requires CURVE, pass server_key)")
+        error(msg)
     end
+    # TOFU: the successful CURVE handshake proves this server key — pin it for
+    # `host:port` so future connects can resolve it and detect key changes.
+    isempty(conn.server_pubkey) || KaimonGate.pin_server!(host, port, conn.server_pubkey)
 
     # Populate connection from pong
     # Prefer pre-set stream_endpoint (from stream_port config) over pong value
@@ -794,6 +824,7 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
             sub.rcvtimeo = 0
             sub.linger = 0
             sub.rcvhwm = 0
+            _apply_curve_client!(sub, conn)   # CURVE (no-op unless server_pubkey set)
             subscribe(sub, "")
             ZMQ.connect(sub, pong_stream)
             conn.sub_socket = sub
@@ -862,7 +893,7 @@ function _poll_tcp_gates!(mgr::ConnectionManager)
 
         # Try to connect
         try
-            connect_tcp!(mgr, entry.host, entry.port; name = entry.name, token = entry.token, stream_port = entry.stream_port)
+            connect_tcp!(mgr, entry.host, entry.port; name = entry.name, token = entry.token, stream_port = entry.stream_port, server_key = entry.server_key)
             delete!(_TCP_POLL_BACKOFF, backoff_key)
             _push_log!(:info, "TCP gate connected: $(entry.name) ($(entry.host):$(entry.port))")
         catch
@@ -882,6 +913,7 @@ function connect!(mgr::ConnectionManager, conn::REPLConnection)
         socket.rcvtimeo = 5000   # 5s timeout for responses
         socket.sndtimeo = 2000   # 2s timeout for sends
         socket.linger = 0        # don't block on close
+        _apply_curve_client!(socket, conn)   # CURVE (no-op unless server_pubkey set)
         connect(socket, conn.endpoint)
         conn.req_socket = socket
         conn.zmq_context = mgr.zmq_context  # shared context for ephemeral sockets
@@ -893,6 +925,7 @@ function connect!(mgr::ConnectionManager, conn::REPLConnection)
                 sub.rcvtimeo = 0  # non-blocking recv
                 sub.linger = 0    # don't block on close
                 sub.rcvhwm = 0    # unlimited receive buffer — never drop messages
+                _apply_curve_client!(sub, conn)   # CURVE (no-op unless server_pubkey set)
                 subscribe(sub, "")  # receive all messages
                 connect(sub, conn.stream_endpoint)
                 conn.sub_socket = sub
@@ -1436,6 +1469,16 @@ function drain_stream_messages!(mgr::ConnectionManager)
                     _zmq_recv(conn.sub_socket)
                 catch
                     break  # recv error — no more messages
+                end
+                # Observe-channel broadcasts (KaimonGate.publish) are 2-frame
+                # multipart [topic, payload]; the internal stream messages are a
+                # single blob. Detect the extra frame, drain it, and skip — the
+                # Kaimon TUI doesn't consume out-of-band observe streams.
+                if (try; conn.sub_socket.rcvmore; catch; false; end)
+                    while (try; conn.sub_socket.rcvmore; catch; false; end)
+                        try; _zmq_recv(conn.sub_socket); catch; break; end
+                    end
+                    continue
                 end
                 msg = try
                     deserialize(IOBuffer(raw))

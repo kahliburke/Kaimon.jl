@@ -619,6 +619,10 @@ a remote (or local) machine. The PUB stream endpoint is resolved from the gate's
                 "type" => "integer",
                 "description" => "Local port for the PUB stream socket (for SSH tunnels where the PUB port differs locally). 0 = auto-discover from pong.",
             ),
+            "server_key" => Dict(
+                "type" => "string",
+                "description" => "CURVE server public key (Z85) for an encrypted gate (serve(curve=true)). Falls back to KAIMON_GATE_CURVE_SERVERKEY or a previously pinned key. Required on first connect to a CURVE gate.",
+            ),
         ),
         "required" => ["host"],
     ),
@@ -631,12 +635,13 @@ a remote (or local) machine. The PUB stream endpoint is resolved from the gate's
         name = get(args, "name", "")
         token = get(args, "token", "")
         stream_port = Int(get(args, "stream_port", 0))
+        server_key = get(args, "server_key", "")
 
         mgr = GATE_CONN_MGR[]
         mgr === nothing && return "Error: No ConnectionManager available"
 
         conn = try
-            connect_tcp!(mgr, host, port; name, token, stream_port)
+            connect_tcp!(mgr, host, port; name, token, stream_port, server_key)
         catch e
             return "Error: $(sprint(showerror, e))"
         end

@@ -1804,6 +1804,7 @@ function start_mcp_server(
                     host = get(data, "host", nothing)
                     port = get(data, "port", nothing)
                     name = get(data, "name", "remote")
+                    server_key = string(get(data, "server_key", ""))
 
                     if host === nothing || port === nothing
                         HTTP.setstatus(http, 400)
@@ -1822,7 +1823,7 @@ function start_mcp_server(
                         return nothing
                     end
 
-                    conn = Kaimon.connect_tcp_to_active_manager(string(host), port_int; name=string(name))
+                    conn = Kaimon.connect_tcp_to_active_manager(string(host), port_int; name=string(name), server_key=server_key)
 
                     HTTP.setstatus(http, 200)
                     HTTP.setheader(http, "Content-Type" => "application/json")
