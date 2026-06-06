@@ -28,6 +28,8 @@ const _ZAP_DOMAIN   = "kaimon"
 # CURVE server state (set in serve() when curve=true) + ZAP handler handles.
 const _CURVE_SERVER_SECRET = Ref{String}("")
 const _CURVE_SERVER_PUBLIC = Ref{String}("")
+const _CURVE_ENABLED   = Ref{Bool}(false)   # remembered for restart replay
+const _CURVE_ALLOW_ANY = Ref{Bool}(false)   # remembered for restart replay
 const _ZAP_SOCKET = Ref{Union{ZMQ.Socket,Nothing}}(nothing)
 const _ZAP_TASK   = Ref{Union{Task,Nothing}}(nothing)
 
@@ -301,4 +303,36 @@ function _start_zap_handler!(ctx::ZMQ.Context; allow_any::Bool=false)
         end
     end
     return _ZAP_TASK[]
+end
+
+# ── Public subscriber helper (CURVE-aware) ─────────────────────────────────────
+
+"""
+    subscribe(endpoint; topic="", serverkey=nothing, clientkey=nothing, ctx=Context()) -> ZMQ.Socket
+
+Open a SUB socket connected to a gate PUB `endpoint` (`tcp://…` or `ipc://…`),
+filtering on `topic` (prefix-matched against the first frame). For a non-Kaimon
+consumer (e.g. a TachiRei ghost) to observe a `publish`ed stream.
+
+If `serverkey` (Z85 server public key) is given, the socket is CURVE-secured and
+pinned to that server, presenting `clientkey=(public, secret)` if supplied — a
+per-ghost key that must be enrolled in the server's allow-list — otherwise an
+ephemeral keypair (which only works under `allow_any`). The caller `recv`s framed
+messages (`publish` sends 2-frame `[topic, payload]`) and `close`s when done.
+"""
+function subscribe(endpoint::AbstractString; topic::AbstractString = "",
+                   serverkey::Union{AbstractString,Nothing} = nothing,
+                   clientkey::Union{Tuple,Nothing} = nothing,
+                   ctx::ZMQ.Context = ZMQ.Context())
+    sub = ZMQ.Socket(ctx, ZMQ.SUB)
+    sub.rcvhwm = 0
+    sub.linger = 0
+    if serverkey !== nothing
+        cpub, csec = clientkey === nothing ? curve_keypair() :
+                     (String(clientkey[1]), String(clientkey[2]))
+        make_curve_client!(sub, serverkey, cpub, csec)
+    end
+    ZMQ.subscribe(sub, topic)
+    ZMQ.connect(sub, endpoint)
+    return sub
 end

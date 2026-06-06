@@ -1217,6 +1217,36 @@ function _publish_stream(channel::String, data; request_id::String = "")
     end
 end
 
+"""
+    publish(topic, payload) -> nothing
+
+Broadcast `payload` on the gate's PUB socket under `topic` as a **2-frame
+multipart** message `[topic, serialize(payload)]`, so subscribers can prefix-
+filter server-side (e.g. `KaimonGate.subscribe(endpoint; topic="tui:")`). For
+out-of-band consumers such as TachiRei's `tui:<session>` observe stream. No-op if
+the gate isn't serving.
+
+This is distinct from the internal single-blob `_publish_stream` (stdout/stderr/
+eval lifecycle) that the Kaimon client consumes — the multipart framing lets that
+client recognize and skip observe broadcasts (it checks `rcvmore`). Subscribe
+with [`subscribe`](@ref).
+"""
+function publish(topic::AbstractString, payload)
+    pub = _STREAM_SOCKET[]
+    pub === nothing && return nothing
+    lock(_PUB_LOCK) do
+        try
+            io = IOBuffer()
+            serialize(io, payload)
+            send(pub, String(topic); more = true)
+            send(pub, take!(io); more = false)
+        catch e
+            @debug "publish failed" topic = topic exception = e
+        end
+    end
+    return nothing
+end
+
 function _start_revise_watcher()
     isdefined(Main, :Revise) || return
     isdefined(Main.Revise, :revision_event) || return
@@ -1577,7 +1607,12 @@ function _exec_restart(name::String, session_id::String, project_path::String)
             host = _TCP_HOST[]
             port = _TCP_PORT[]
             sp   = _TCP_STREAM_PORT[]
-            ", mode=:tcp, host=$(repr(host)), port=$port, stream_port=$sp"
+            base = ", mode=:tcp, host=$(repr(host)), port=$port, stream_port=$sp"
+            # CURVE: replay the flag; the server secret + allow-list persist on
+            # disk (curve/ dir) so the gate rebinds with the same identity.
+            curve_kw = _CURVE_ENABLED[] ?
+                ", curve=true" * (_CURVE_ALLOW_ANY[] ? ", allow_any=true" : "") : ""
+            base * curve_kw
         else
             ""
         end
@@ -1721,6 +1756,7 @@ function handle_message(request::NamedTuple)
             allow_mirror = _ALLOW_MIRROR[],
             mirror_repl = _MIRROR_REPL[],
             stream_endpoint = _STREAM_ENDPOINT[],
+            server_pubkey = _CURVE_SERVER_PUBLIC[],
         )
     elseif msg_type == :tool_call
         tool_name = string(get(request, :name, ""))
@@ -1970,6 +2006,10 @@ function serve(;
     host::Union{String,Nothing} = nothing,
     port::Union{Int,Nothing} = nothing,
     stream_port::Union{Int,Nothing} = nothing,
+    curve::Union{Bool,Nothing} = nothing,
+    server_secret::Union{String,Nothing} = nothing,
+    allow_any::Union{Bool,Nothing} = nothing,
+    allowed_clients::Union{Vector{String},Nothing} = nothing,
 )
     # Resolve defaults: explicit kwargs > env vars > kaimon.toml [gate] > defaults
     toml = _load_gate_config()
@@ -2007,6 +2047,22 @@ function serve(;
     if force === nothing
         force = Bool(get(toml, "force", false))
     end
+    # CURVE (opt-in TCP encryption + auth). server_secret defaults to nothing here
+    # and is resolved (env > persisted keypair) inside _resolve_server_keypair.
+    _truthy(s) = lowercase(strip(s)) in ("1", "true", "yes", "on")
+    if curve === nothing
+        env_curve = get(ENV, "KAIMON_GATE_CURVE", "")
+        curve = !isempty(env_curve) ? _truthy(env_curve) : Bool(get(toml, "curve", false))
+    end
+    if allow_any === nothing
+        env_aa = get(ENV, "KAIMON_GATE_CURVE_ALLOW_ANY", "")
+        allow_any = !isempty(env_aa) ? _truthy(env_aa) : Bool(get(toml, "curve_allow_any", false))
+    end
+    if allowed_clients === nothing
+        env_allow = get(ENV, "KAIMON_GATE_CURVE_ALLOW", "")
+        allowed_clients = isempty(env_allow) ? String[] :
+            String[String(strip(x)) for x in split(env_allow, ",") if !isempty(strip(x))]
+    end
 
     mode in (:ipc, :tcp) || throw(ArgumentError("mode must be :ipc or :tcp, got :$mode"))
     _serve(;
@@ -2024,6 +2080,10 @@ function serve(;
         host,
         port,
         stream_port,
+        curve,
+        server_secret,
+        allow_any,
+        allowed_clients,
     )
 end
 
@@ -2042,6 +2102,10 @@ function _serve(;
     host::String = "127.0.0.1",
     port::Int = 9876,
     stream_port::Int = 0,
+    curve::Bool = false,
+    server_secret::Union{String,Nothing} = nothing,
+    allow_any::Bool = false,
+    allowed_clients::Vector{String} = String[],
 )
     # Capture original argv for restart replay (once, on first call)
     _capture_original_argv()
@@ -2164,6 +2228,24 @@ function _serve(;
     socket.rcvtimeo = 1000
     socket.linger = 0
 
+    # CURVE (opt-in, TCP only): make the REP socket a CURVE server. Unless
+    # allow_any, also start a ZAP handler (one per context, covers PUB too) and
+    # set ZAP_DOMAIN so libzmq enforces the client allow-list (fail-closed: an
+    # empty authorized_clients list rejects everyone). Apply before bind.
+    if mode == :tcp && curve
+        spub, ssec = _resolve_server_keypair(server_secret)
+        _CURVE_SERVER_SECRET[] = ssec
+        _CURVE_SERVER_PUBLIC[] = spub
+        _CURVE_ENABLED[] = true
+        _CURVE_ALLOW_ANY[] = allow_any
+        for ck in allowed_clients
+            isempty(ck) || authorize_client!(ck)
+        end
+        allow_any || _start_zap_handler!(ctx; allow_any = false)
+        make_curve_server!(socket, ssec)
+        allow_any || _setsockopt_str(socket, _ZMQ_ZAP_DOMAIN, _ZAP_DOMAIN)
+    end
+
     # Bind endpoint — IPC (local socket file) or TCP (network port)
     # TCP mode supports port=0 for ephemeral port assignment (ZMQ picks a free port).
     if mode == :tcp
@@ -2185,6 +2267,11 @@ function _serve(;
     pub_socket = Socket(ctx, PUB)
     pub_socket.sndhwm = 0
     pub_socket.linger = 0
+    # CURVE: same server treatment as the REP socket (ZAP handler already running).
+    if mode == :tcp && curve
+        make_curve_server!(pub_socket, _CURVE_SERVER_SECRET[])
+        _CURVE_ALLOW_ANY[] || _setsockopt_str(pub_socket, _ZMQ_ZAP_DOMAIN, _ZAP_DOMAIN)
+    end
     if mode == :tcp
         bind(pub_socket, "tcp://$(host):$(stream_port)")
         stream_endpoint = rstrip(ZMQ._get_last_endpoint(pub_socket), '\0')
@@ -2320,6 +2407,14 @@ function _serve(;
             printstyled("  Auth: "; color = :light_black)
             printstyled("none (lax mode)\n"; color = :yellow)
         end
+        if _CURVE_ENABLED[]
+            printstyled("  🔒 CURVE: "; color = :light_black)
+            printstyled("on"; color = :green)
+            printstyled(_CURVE_ALLOW_ANY[] ? " (pin-only)" : " (allow-list)";
+                        color = :light_black)
+            printstyled("\n  Server key: "; color = :light_black)
+            printstyled("$(_CURVE_SERVER_PUBLIC[])\n"; color = :cyan)
+        end
     end
     if _MIRROR_REPL[]
         printstyled("  host REPL mirroring enabled\n"; color = :light_black)
@@ -2412,7 +2507,7 @@ function _cleanup()
     # this, restarting a TCP gate on the same port fails until GC runs. This is safe
     # because TCP stop is user-initiated (not atexit).
     if _MODE[] == :tcp
-        for sock in (_GATE_SOCKET, _STREAM_SOCKET, _SERVICE_SOCKET)
+        for sock in (_GATE_SOCKET, _STREAM_SOCKET, _SERVICE_SOCKET, _ZAP_SOCKET)
             s = sock[]
             if s !== nothing
                 try; close(s); catch; end
@@ -2423,6 +2518,12 @@ function _cleanup()
             try; close(ctx); catch; end
         end
     end
+    _ZAP_SOCKET[] = nothing
+    _ZAP_TASK[] = nothing
+    _CURVE_ENABLED[] = false
+    _CURVE_ALLOW_ANY[] = false
+    _CURVE_SERVER_SECRET[] = ""
+    _CURVE_SERVER_PUBLIC[] = ""
     _GATE_SOCKET[] = nothing
     _STREAM_SOCKET[] = nothing
     _STREAM_ENDPOINT[] = ""

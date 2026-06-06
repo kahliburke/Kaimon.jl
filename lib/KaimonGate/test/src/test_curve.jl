@@ -1,8 +1,17 @@
 using Test
 using KaimonGate
 using ZMQ
+using Serialization
 
 const KG = KaimonGate
+
+"""Serialize a request to a REQ socket and return the deserialized reply."""
+function _zmq_req(sock, msg)
+    buf = IOBuffer()
+    Serialization.serialize(buf, msg)
+    ZMQ.send(sock, ZMQ.Message(take!(buf)))
+    Serialization.deserialize(IOBuffer(ZMQ.recv(sock)))
+end
 
 # ── Pure helpers (no sockets) ──────────────────────────────────────────────────
 
@@ -172,6 +181,94 @@ end
                 ZMQ.close(ctx)
                 KG._RUNNING[] = prev_running
             end
+        end
+    end
+end
+
+@testset "serve(curve=true) + publish/subscribe (allow_any)" begin
+    Sys.iswindows() && (@test_skip true; return)
+    mktempdir() do dir
+        withenv("XDG_CACHE_HOME" => dir) do
+            sid = "test-curve-$(bytes2hex(rand(UInt8, 4)))"
+            KG._serve(name = "curve", session_id = sid, force = true, mode = :tcp,
+                      host = "127.0.0.1", port = 0, curve = true, allow_any = true)
+            sleep(0.25)
+            try
+                @test KG._RUNNING[]
+                @test KG._CURVE_ENABLED[]
+                spub = KG._CURVE_SERVER_PUBLIC[]
+                @test length(spub) == 40
+
+                rep_endpoint = rstrip(ZMQ._get_last_endpoint(KG._GATE_SOCKET[]), '\0')
+                pub_endpoint = KG._STREAM_ENDPOINT[]
+                ctx = ZMQ.Context()
+
+                # CURVE client (correct server key, ephemeral client key) → pong
+                cpub, csec = KG.curve_keypair()
+                req = ZMQ.Socket(ctx, ZMQ.REQ); req.rcvtimeo = 3000; req.linger = 0
+                KG.make_curve_client!(req, spub, cpub, csec)
+                ZMQ.connect(req, rep_endpoint)
+                resp = _zmq_req(req, (type = :ping,))
+                @test resp.type == :pong
+                @test resp.server_pubkey == spub
+                ZMQ.close(req)
+
+                # publish → subscribe over the encrypted PUB (2-frame [topic,payload])
+                sub = KG.subscribe(pub_endpoint; topic = "tui:", serverkey = spub, ctx = ctx)
+                sub.rcvtimeo = 3000
+                sleep(0.25)   # SUB handshake (slow joiner)
+                KG.publish("tui:demo", (frame = 1, txt = "hi"))
+                parts = ZMQ.recv_multipart(sub, Vector{UInt8})
+                @test String(parts[1]) == "tui:demo"
+                payload = Serialization.deserialize(IOBuffer(parts[2]))
+                @test payload.txt == "hi"
+                ZMQ.close(sub)
+                ZMQ.close(ctx)
+            finally
+                KG.stop(); sleep(0.2)
+            end
+        end
+    end
+end
+
+@testset "serve(curve=true) allow-list (fail-closed + enroll)" begin
+    Sys.iswindows() && (@test_skip true; return)
+    mktempdir() do dir
+        withenv("XDG_CACHE_HOME" => dir) do
+            cpub, csec = KG.curve_keypair()
+
+            # fail-closed: client not enrolled → ZAP denies → no pong
+            sid1 = "test-fc-$(bytes2hex(rand(UInt8, 4)))"
+            KG._serve(name = "fc", session_id = sid1, force = true, mode = :tcp,
+                      host = "127.0.0.1", port = 0, curve = true, allow_any = false)
+            sleep(0.25)
+            ep1 = rstrip(ZMQ._get_last_endpoint(KG._GATE_SOCKET[]), '\0')
+            spub = KG._CURVE_SERVER_PUBLIC[]
+            ctx = ZMQ.Context()
+            req = ZMQ.Socket(ctx, ZMQ.REQ); req.rcvtimeo = 1200; req.linger = 0
+            KG.make_curve_client!(req, spub, cpub, csec)
+            ZMQ.connect(req, ep1)
+            ZMQ.send(req, "x")
+            @test_throws ZMQ.TimeoutError ZMQ.recv(req, Vector{UInt8})
+            ZMQ.close(req)
+            KG.stop(); sleep(0.2)
+
+            # enrolled: same client key on the allow-list → pong
+            sid2 = "test-al-$(bytes2hex(rand(UInt8, 4)))"
+            KG._serve(name = "al", session_id = sid2, force = true, mode = :tcp,
+                      host = "127.0.0.1", port = 0, curve = true, allow_any = false,
+                      allowed_clients = [cpub])
+            sleep(0.25)
+            ep2 = rstrip(ZMQ._get_last_endpoint(KG._GATE_SOCKET[]), '\0')
+            spub2 = KG._CURVE_SERVER_PUBLIC[]
+            req2 = ZMQ.Socket(ctx, ZMQ.REQ); req2.rcvtimeo = 3000; req2.linger = 0
+            KG.make_curve_client!(req2, spub2, cpub, csec)
+            ZMQ.connect(req2, ep2)
+            resp = _zmq_req(req2, (type = :ping,))
+            @test resp.type == :pong
+            ZMQ.close(req2)
+            ZMQ.close(ctx)
+            KG.stop(); sleep(0.2)
         end
     end
 end

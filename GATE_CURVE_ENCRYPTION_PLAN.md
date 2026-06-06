@@ -254,9 +254,25 @@ remote ghosts see the live screen. The gate already owns the PUB socket +
 
 ## 12. Status
 
-- **Build step 1 — DONE & TESTED.** `lib/KaimonGate/src/gate_curve.jl` (keygen,
-  Z85, setsockopt helpers, keystore, TOFU pinning, allow-list, ZAP handler) +
-  `test/src/test_curve.jl` (25 tests: CURVE round-trip, server-auth rejection,
-  ZAP allow-list, persistence, TOFU). Full KaimonGate suite green (179/179, Aqua
-  included). Confirmed the shipped libzmq has CURVE/libsodium support.
-- Next: step 2 (server side in `serve()`), step 3 (client side), Part 2.
+- **Step 1 — DONE, COMMITTED, TESTED.** `gate_curve.jl` (keygen, Z85, setsockopt
+  helpers, keystore, TOFU pinning, allow-list, ZAP handler) + `test_curve.jl`.
+  Confirmed the shipped libzmq has CURVE/libsodium support. (commit `bffa77f`)
+- **Step 2 (server `serve()`) — DONE, auto-tested.** `serve(; curve, server_secret,
+  allow_any, allowed_clients)` (env/toml resolution); CURVE-server on REP+PUB
+  before bind; ZAP handler started unless `allow_any` (fail-closed); banner prints
+  the server pubkey; pong carries `server_pubkey`; restart-replay carries
+  `curve`/`allow_any`; `_cleanup` tears down ZAP + resets CURVE state.
+- **Step 3 (client `connect_tcp!`) — DONE, compiles/loads.** `REPLConnection`
+  gains `server_pubkey`; `connect_tcp!(; server_key)` resolves arg > env > pinned
+  (TOFU); CURVE applied to REQ + both SUB sites via `_apply_curve_client!`
+  (persistent client key); TOFU-pin after a successful pong. Plumbed through
+  `connect_tcp` tool, `/api/connect_tcp` REST, `connect_tcp_to_active_manager`,
+  and `tcp_gates.json` (`server_key` field).
+- **Part 2 (observe channel) — DONE, auto-tested.** `publish(topic, payload)`
+  (2-frame multipart) + CURVE-aware `subscribe(...)`; the Kaimon client's
+  `drain_stream_messages!` skips multipart observe broadcasts via `rcvmore`.
+- **Auto-test status:** KaimonGate suite 188/188 (incl. serve(curve=true) e2e,
+  fail-closed/enroll allow-list, publish/subscribe over encrypted PUB); main
+  Kaimon package compiles + loads clean.
+- **Remaining: manual end-to-end** — a real CURVE gate ↔ the Kaimon TUI client,
+  and a TachiRei ghost subscribing — before commit of steps 2/3/Part 2.

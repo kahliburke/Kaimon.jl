@@ -135,5 +135,7 @@ public set_version_provider!, set_mirror_pref_provider!, set_personality_provide
 public set_tachikoma!, set_restart_code_builder!, set_auth_token_provider!
 # CURVE transport (opt-in TCP encryption + auth)
 public curve_keypair, curve_public, pin_server!, authorize_client!
+# Observe channel (out-of-band PUB/SUB broadcast, e.g. TachiRei tui:<id>)
+public publish, subscribe
 
 end # module KaimonGate
