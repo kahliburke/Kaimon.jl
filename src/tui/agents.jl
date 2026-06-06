@@ -1,7 +1,7 @@
 # ── Agents Tab ────────────────────────────────────────────────────────────────
 #
 # Tab 9: Kaimon-owned AI agent sessions monitor. Two panes:
-#   Pane 1 (left):  agent list with status + running cost
+#   Pane 1 (left):  agent list with status
 #   Pane 2 (right): detail for the selected agent — fields + live event feed
 #
 # Read-only. Data comes from the in-process AgentSession registry (list_agents,
@@ -40,7 +40,6 @@ function _agent_kind_style(kind::Symbol)
     end
 end
 
-_agent_cost(a) = get(get(a, "usage", Dict{String,Any}()), "costUsd", nothing)
 _oneline(s) = replace(replace(string(s), '\n' => ' '), '\t' => ' ')
 function _ago(t::Real)
     d = max(0.0, time() - t)
@@ -90,13 +89,6 @@ function _view_agents_list(m::KaimonModel, area::Rect, buf::Buffer, ags)
 
         set_string!(buf, inner.x + 1, y, icon, istyle)
         set_string!(buf, inner.x + 3, y, get(a, "id", "?"), line_style)
-
-        cost = _agent_cost(a)
-        info = cost === nothing ? "" : "\$$(round(cost, digits = 3))"
-        if !isempty(info)
-            info_x = inner.x + inner.width - length(info) - 1
-            info_x > inner.x + 12 && set_string!(buf, info_x, y, info, tstyle(:secondary))
-        end
         y += 1
     end
 
@@ -140,10 +132,8 @@ function _view_agents_detail(m::KaimonModel, area::Rect, buf::Buffer, ags)
     _row!("Turn", string(get(a, "turn", 0)))
 
     usage = get(a, "usage", Dict{String,Any}())
-    cost = get(usage, "costUsd", nothing)
     toks = "$(get(usage, "inputTokens", 0))in / $(get(usage, "outputTokens", 0))out"
     _row!("Tokens", toks)
-    _row!("Cost", cost === nothing ? "—" : "\$$(round(cost, digits = 4))", tstyle(:secondary))
     _row!("Active", _ago(get(a, "last_activity", time())) * " ago")
 
     # ── Event feed (scrollable; newest at bottom) ──
@@ -222,8 +212,7 @@ function _log_record_text(kind::Symbol, data)
         upd = g(data, "update", Dict())
         return "↳ $(g(upd, "status", "?")) $(g(upd, "toolCallId", ""))"
     elseif kind === :result
-        u = g(data, "usage", Dict())
-        return "stop=$(g(data, "stopReason", "?"))  cost=\$$(g(u, "costUsd", 0))"
+        return "stop=$(g(data, "stopReason", "?"))"
     elseif kind === :status
         return string(g(data, "status", ""))
     elseif kind === :plan

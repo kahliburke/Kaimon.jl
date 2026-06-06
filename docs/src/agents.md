@@ -3,11 +3,11 @@
 Kaimon can spawn and own **AI agent sessions** -- a headless `claude` process that
 you talk to programmatically. Kaimon launches the agent, normalizes its output into
 a vendor-neutral event model, streams those events on the gate event bus, and tracks
-each agent's lifecycle and running cost. The natural sibling of a gate REPL session
+each agent's lifecycle and token usage. The natural sibling of a gate REPL session
 and a managed extension.
 
 An agent session is "an AI you can drive": open one in a directory, send it turns,
-and consume the streamed assistant text, reasoning, tool calls, and cost as it works.
+and consume the streamed assistant text, reasoning, and tool calls as it works.
 You drive it with six MCP tools and consume one event channel per agent.
 
 ## How It Works
@@ -53,9 +53,11 @@ flowchart LR
     keys are required.
 
 !!! warning "Cost"
-    Agent usage draws against your Claude **Agent SDK monthly credit**, metered at
-    API-list rates -- it is *not* free. Cost is tracked per session from each turn's
-    `result` event and surfaced in `agent_status`. The default model is the cheaper
+    Agent usage draws against your Claude **Agent SDK monthly credit** -- it is *not*
+    free. A per-session **dollar** figure is **work in progress**: claude's reported
+    `total_cost_usd` is unreliable (especially on subscription plans), so `costUsd` is
+    held at `0.0` for now rather than shown — token usage *is* tracked and surfaced in
+    `agent_status`. The default model is the cheaper
     `claude-sonnet-4-6`. Images returned in tool results are the biggest credit burner
     (billed roughly `width × height / 750` tokens), so tool-result PNGs are
     box-downsampled to a max long edge before they reach the agent --
@@ -149,9 +151,9 @@ envelope, JSON-encoded.
 // a tool result (status completed|failed) — content blocks incl. base64 images
 {"kind":"tool_result","turn":1,"data":{"update":{"toolCallId":"tu1","status":"completed",
   "content":[{"type":"content","content":{"type":"text","text":"ok"}}]}}}
-// end of turn — stop reason + usage/cost
+// end of turn — stop reason + usage (costUsd is WIP, held at 0.0)
 {"kind":"result","turn":1,"data":{"stopReason":"end_turn",
-  "usage":{"inputTokens":100,"outputTokens":50,"cacheReadTokens":10,"cacheCreationTokens":0,"costUsd":0.02}}}
+  "usage":{"inputTokens":100,"outputTokens":50,"cacheReadTokens":10,"cacheCreationTokens":0,"costUsd":0.0}}}
 // lifecycle / misc
 {"kind":"status","turn":1,"data":{"status":"working"}}   // starting|idle|working|dead
 {"kind":"turn_started","turn":1,"data":{}}
@@ -279,7 +281,7 @@ can read it instead of (or alongside) the live bus.
 ## TUI Monitor
 
 The **Agents** tab monitors every owned agent:
-status, model, running cost, and a live feed of recent events. In the list:
+status, model, token usage, and a live feed of recent events. In the list:
 
 - `[x]` closes a live agent / dismisses a dead one.
 - `Enter` on the detail pane opens a full-screen, scrollable event-history overlay

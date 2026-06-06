@@ -80,13 +80,14 @@ end
         @test length(uevs) == 1
         @test uevs[1] isa ACP.ToolCallUpdated && uevs[1].update.status == :completed
 
-        # result → TurnEnded with usage/cost
+        # result → TurnEnded with usage; cost is WIP/zeroed (claude's reported
+        # total_cost_usd is ignored for now — see _claude_usage)
         revs = Kaimon._map_claude_event(Dict(
                 "type" => "result", "stop_reason" => "end_turn", "total_cost_usd" => 0.02,
                 "usage" => Dict("input_tokens" => 100, "output_tokens" => 50)), sid)
         @test length(revs) == 1
         @test revs[1] isa ACP.TurnEnded && revs[1].stop_reason == :end_turn
-        @test revs[1].usage.cost_usd == 0.02
+        @test revs[1].usage.cost_usd == 0.0   # zeroed regardless of reported cost
         @test revs[1].usage.input_tokens == 100
     end
 
