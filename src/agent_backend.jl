@@ -323,8 +323,22 @@ function _map_claude_event(obj, session_id::Base.RefValue{String},
         empty!(tool_blocks)   # per-turn streaming state; ids are unique so this is just hygiene
         usage = _claude_usage(_get(obj, "usage"), _get(obj, "total_cost_usd"))
         sr = _get(obj, "stop_reason")
+        is_err = something(_get(obj, "is_error"), false) === true
+        # A failed turn (API 429/overloaded, max-turns, execution error) otherwise
+        # collapses to TurnEnded(:refusal) with no detail — the error text/subtype the
+        # CLI carries in the `result` event is dropped. Surface it as an AgentError so
+        # observers and the rate governor can classify it (e.g. is_rate_limited). The CLI
+        # retries transient 429s internally and only emits this once it has given up.
+        if is_err
+            subtype = _get(obj, "subtype")          # e.g. "error_during_execution", "error_max_turns"
+            rtext   = _get(obj, "result")           # error description / final text
+            msg = rtext isa AbstractString && !isempty(rtext) ? String(rtext) :
+                  subtype isa AbstractString ? String(subtype) : "agent turn failed"
+            push!(out, ACP.AgentError(msg, Dict("subtype" => subtype, "is_error" => true,
+                                                "result" => rtext)))
+        end
         stop = sr isa AbstractString ? ACP.as_enum(sr, ACP.STOP_REASONS, :end_turn) :
-               (something(_get(obj, "is_error"), false) === true ? :refusal : :end_turn)
+               (is_err ? :refusal : :end_turn)
         push!(out, ACP.TurnEnded(stop, usage))
     elseif t == "control_response"
         # Ack for a control request we sent (e.g. an interrupt). Surface failures as an

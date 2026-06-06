@@ -90,6 +90,32 @@ end
         @test revs[1].usage.input_tokens == 100
     end
 
+    @testset "failed result surfaces AgentError + :refusal" begin
+        ACP = Kaimon.ACP
+        sid = Ref("")
+        # An errored turn (e.g. API overloaded) must surface the CLI's error detail as an
+        # AgentError before the terminal TurnEnded, so observers/governor can classify it.
+        evs = Kaimon._map_claude_event(Dict(
+                "type" => "result", "is_error" => true,
+                "subtype" => "error_during_execution",
+                "result" => "API Error: 429 overloaded_error",
+                "usage" => Dict("input_tokens" => 10, "output_tokens" => 0)), sid)
+        @test length(evs) == 2
+        @test evs[1] isa ACP.AgentError
+        @test occursin("overloaded", evs[1].message)
+        @test evs[1].data["subtype"] == "error_during_execution"
+        @test evs[1].data["is_error"] === true
+        @test evs[2] isa ACP.TurnEnded && evs[2].stop_reason == :refusal
+        @test evs[2].usage.input_tokens == 10   # usage still captured on failure
+
+        # No error text → falls back to subtype for the message; clean turn → no AgentError.
+        ev2 = Kaimon._map_claude_event(Dict(
+                "type" => "result", "is_error" => true, "subtype" => "error_max_turns"), sid)
+        @test ev2[1] isa ACP.AgentError && occursin("error_max_turns", ev2[1].message)
+        ok = Kaimon._map_claude_event(Dict("type" => "result", "is_error" => false), sid)
+        @test length(ok) == 1 && ok[1] isa ACP.TurnEnded && ok[1].stop_reason == :end_turn
+    end
+
     @testset "map partial-message stream (token deltas)" begin
         ACP = Kaimon.ACP
         # Synthetic --include-partial-messages sequence:
