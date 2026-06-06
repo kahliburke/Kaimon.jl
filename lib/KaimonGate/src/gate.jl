@@ -2776,7 +2776,13 @@ function _connect_service!()
     ctx = _GATE_CONTEXT[]
     ctx === nothing && return false
     sock = Socket(ctx, REQ)
-    sock.rcvtimeo = 30000  # 30s timeout (some tools are slow)
+    # 610s: must exceed the slowest tool's own timeout (agent_run defaults to
+    # 600s and is caller-settable), else a long-but-healthy turn trips the recv
+    # timeout and wedges the REQ socket. Kept finite on purpose — an infinite
+    # timeout would block forever if the server dies mid-recv (e.g. /mcp reconnect);
+    # the finite timeout + reset-on-throw in _service_request is what lets a dead
+    # server be noticed and recovered from.
+    sock.rcvtimeo = 610_000
     sock.sndtimeo = 5000   # 5s send timeout
     sock.linger = 0
     connect(sock, "ipc://$(sock_path)")
@@ -2798,11 +2804,25 @@ function _service_request(request)
             sock = _SERVICE_SOCKET[]
         end
 
-        io = IOBuffer()
-        serialize(io, request)
-        send(sock, take!(io))
-
-        raw = _zmq_recv(sock)
+        # The send/recv pair must be guarded: ZMQ REQ enforces a strict
+        # send→recv→send alternation, so any throw between send and a completed
+        # recv (recv timeout, interrupt, bad bytes) leaves the socket mid-cycle.
+        # Re-using a wedged socket makes the next send throw EFSM ("operation
+        # cannot be accomplished in current state"). Drop it on any failure so
+        # the next call reconnects fresh via _connect_service!.
+        raw = try
+            io = IOBuffer()
+            serialize(io, request)
+            send(sock, take!(io))
+            _zmq_recv(sock)
+        catch
+            _SERVICE_SOCKET[] = nothing
+            try
+                close(sock)  # free the fd now + let the server see the disconnect
+            catch
+            end
+            rethrow()
+        end
         response = deserialize(IOBuffer(raw))
 
         status = if hasproperty(response, :status)
