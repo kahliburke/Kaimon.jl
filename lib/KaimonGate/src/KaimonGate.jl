@@ -101,6 +101,7 @@ set_auth_token_provider!(f)   = (_AUTH_TOKEN_PROVIDER[] = f)
 set_restart_code_builder!(f)  = (_RESTART_CODE_BUILDER[] = f)
 
 include("gate.jl")
+include("gate_curve.jl")
 
 """
     connect!()
@@ -132,5 +133,7 @@ public tty_path, tty_size, uninstall_infiltrator_hook!
 public PROTOCOL_VERSION
 public set_version_provider!, set_mirror_pref_provider!, set_personality_provider!
 public set_tachikoma!, set_restart_code_builder!, set_auth_token_provider!
+# CURVE transport (opt-in TCP encryption + auth)
+public curve_keypair, curve_public, pin_server!, authorize_client!
 
 end # module KaimonGate

@@ -6,3 +6,4 @@ using SafeTestsets
 @safetestset "Tool dispatch" include("src/test_dispatch.jl")
 @safetestset "Message handler" include("src/test_handle_message.jl")
 @safetestset "ZMQ integration" include("src/test_integration.jl")
+@safetestset "CURVE transport" include("src/test_curve.jl")
