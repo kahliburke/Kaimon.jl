@@ -817,10 +817,8 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
     if !isempty(pong_stream)
         conn.stream_endpoint = pong_stream
         try
-            # Use a dedicated context for TCP SUB sockets — shared contexts
-            # can have I/O thread contention with many REQ sockets.
-            sub_ctx = Context()
-            sub = Socket(sub_ctx, SUB)
+            # On the conn's own context (dedicated for TCP — see connect!).
+            sub = Socket(conn.zmq_context, SUB)
             sub.rcvtimeo = 0
             sub.linger = 0
             sub.rcvhwm = 0
@@ -909,23 +907,31 @@ end
 function connect!(mgr::ConnectionManager, conn::REPLConnection)
     conn.status = :connecting
     try
-        socket = Socket(mgr.zmq_context, REQ)
+        # TCP/CURVE sessions get a DEDICATED ZMQ context. The per-request
+        # ephemeral REQs in _req_send_recv (and this REQ) then don't share the
+        # one I/O thread of mgr.zmq_context that serves every IPC session — under
+        # load a CURVE handshake on the shared context can exceed the connect
+        # ping timeout. IPC sessions keep the shared context. All of a TCP conn's
+        # sockets live on this context and are torn down together in disconnect!.
+        ctx = _is_tcp(conn) ? Context() : mgr.zmq_context
+        conn.zmq_context = ctx
+
+        socket = Socket(ctx, REQ)
         socket.rcvtimeo = 5000   # 5s timeout for responses
         socket.sndtimeo = 2000   # 2s timeout for sends
         socket.linger = 0        # don't block on close
         _apply_curve_client!(socket, conn)   # CURVE (no-op unless server_pubkey set)
         connect(socket, conn.endpoint)
         conn.req_socket = socket
-        conn.zmq_context = mgr.zmq_context  # shared context for ephemeral sockets
 
-        # Connect SUB socket for streaming output (non-blocking)
-        if !isempty(conn.stream_endpoint)
+        # IPC: connect the stream SUB now. TCP: its PUB port may be ephemeral, so
+        # the SUB is created after the pong in connect_tcp! (on this same context).
+        if !_is_tcp(conn) && !isempty(conn.stream_endpoint)
             try
-                sub = Socket(mgr.zmq_context, SUB)
+                sub = Socket(ctx, SUB)
                 sub.rcvtimeo = 0  # non-blocking recv
                 sub.linger = 0    # don't block on close
                 sub.rcvhwm = 0    # unlimited receive buffer — never drop messages
-                _apply_curve_client!(sub, conn)   # CURVE (no-op unless server_pubkey set)
                 subscribe(sub, "")  # receive all messages
                 connect(sub, conn.stream_endpoint)
                 conn.sub_socket = sub
@@ -984,6 +990,17 @@ function disconnect!(conn::REPLConnection)
             catch
             end
         end
+    end
+
+    # TCP sessions own a dedicated context (see connect!) — terminate it so we
+    # don't leak an I/O thread per attach/detach. Its sockets are already closed
+    # above; IPC sessions share mgr.zmq_context and must NOT close it here.
+    if _is_tcp(conn) && conn.zmq_context !== nothing
+        try
+            close(conn.zmq_context)
+        catch
+        end
+        conn.zmq_context = nothing
     end
 end
 
