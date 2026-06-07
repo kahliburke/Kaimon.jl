@@ -59,6 +59,7 @@ makedocs(;
             "Extensions" => "extensions.md",
             "Semantic Search" => "search.md",
             "Security" => "security.md",
+            "Encrypted Transport (CURVE)" => "curve.md",
             "VS Code" => "vscode.md",
             "Configuration" => "configuration.md",
         ],

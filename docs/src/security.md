@@ -91,6 +91,18 @@ the MCP server's API keys:
     TCP mode. A `0.0.0.0` bind with no token exposes a remote code-execution
     endpoint to the network.
 
+## Encrypted Transport (CURVE)
+
+A bearer token proves *who may call* a TCP gate, but it travels in the clear and
+the traffic is unencrypted. For a gate exposed beyond `localhost`, enable
+**CURVE** — ZMQ's Curve25519 transport — for confidentiality, integrity, and
+**mutual** authentication on the wire. CURVE replaces the SSH tunnel as the
+security layer (server pinning + a client allow-list), and its **soy-free mode**
+SSH-bootstraps the server pin to close the TOFU first-use gap entirely.
+
+See **[Encrypted Transport (CURVE)](curve.md)** for the full trust model, key
+management (`[k]` in the TUI), soy-free verification, and stall diagnostics.
+
 ## Configuration
 
 Security settings are stored in a global JSON configuration file:

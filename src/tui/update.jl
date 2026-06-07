@@ -394,10 +394,10 @@ function Tachikoma.update!(m::KaimonModel, evt::TaskEvent)
         r = info.result
         hostport = info.hostport
         if r.status == :ok
-            m.curve_modal_msg = "✓ SSH-verified $hostport"
+            m.curve_modal_msg = "✓ Soy-free verified $hostport"
         elseif r.status == :pinned
             _refresh_curve_data!(m)
-            m.curve_modal_msg = "✓ Pinned $hostport via SSH"
+            m.curve_modal_msg = "✓ Soy-free pinned $hostport via SSH"
         elseif r.status == :error
             m.curve_modal_msg = "✗ SSH: $(r.message)"
         elseif r.status == :changed

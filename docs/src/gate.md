@@ -352,6 +352,44 @@ TCP mode supports token-based authentication.
 
 When a token is set, every request must include it. The token is displayed on startup and can be queried with `KaimonGate.status()`.
 
+### CURVE Encryption
+
+TCP gates can be **encrypted and mutually authenticated** with CURVE
+(Curve25519). This is the recommended way to expose a gate beyond `localhost` —
+it provides confidentiality, integrity, and authentication on the wire, so an SSH
+tunnel is no longer needed *for security* (only for reachability). See
+[Encrypted Transport (CURVE)](curve.md) for the trust model, key management, and
+the SSH-bootstrap ("soy-free") flow that closes the trust-on-first-use gap.
+
+```julia
+KaimonGate.serve(mode=:tcp, port=10005, curve=true)                  # strict allow-list
+KaimonGate.serve(mode=:tcp, port=10005, curve=true, allow_any=true)  # pin-only
+```
+
+The server's public key is printed on startup — share it (or fetch it over SSH —
+see soy-free mode) so clients can pin it:
+
+```
+⚡ Kaimon gate connected (myproject)
+  TCP mode: tcp://127.0.0.1:10005 (PUB: tcp://127.0.0.1:10007)
+  Auth: none (lax mode)
+  🔒 CURVE: on (allow-list)
+  Server key: d{+51R#s}UQq*2#3(ZMVmy+YzSAg9It=?qVhByF*
+```
+
+CURVE is also resolvable from env vars / `kaimon.toml` `[gate]`:
+
+| Env var | `kaimon.toml` `[gate]` | Description | Default |
+|---|---|---|---|
+| `KAIMON_GATE_CURVE` | `curve` | enable CURVE (`true`/`false`) | `false` |
+| `KAIMON_GATE_CURVE_ALLOW_ANY` | `curve_allow_any` | accept any client holding the key (skip the allow-list) | `false` |
+| `KAIMON_GATE_CURVE_SECRET` | — | explicit server secret key (otherwise the persisted host key) | (host key) |
+| `KAIMON_GATE_CURVE_ALLOW` | — | comma-separated client public keys to enroll at startup | (none) |
+
+Connecting clients resolve the server key to pin from
+`KAIMON_GATE_CURVE_SERVERKEY`, the `server_key` argument to `connect_tcp`, or a
+prior TOFU / soy-free pin in `known_servers`.
+
 ## Background Jobs
 
 When an `ex()` evaluation exceeds 30 seconds, it's automatically promoted to a background job. The agent receives the job ID immediately and can continue working.

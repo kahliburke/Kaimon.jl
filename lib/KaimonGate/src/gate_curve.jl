@@ -269,6 +269,10 @@ end
         remote_key_path="~/.cache/kaimon/curve/server.key", repin=false,
         fetch=_fetch_server_pubkey_ssh) -> NamedTuple
 
+**Soy-free mode** — the antidote to TOFU (Trust On First Use): instead of taking
+the first key you see on faith, you bring your own verified one over an already-
+authenticated channel. (You don't bring tofu to the BBQ; you bring the steak.)
+
 Reconcile a remote gate's authoritative CURVE server key (fetched out-of-band over
 SSH) with the local TOFU pin for `host:port`. This both **bootstraps** trust
 without a blind first-use and **detects key changes** — which CURVE cannot do

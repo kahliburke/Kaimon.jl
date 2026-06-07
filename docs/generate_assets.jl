@@ -1078,8 +1078,80 @@ const EVENTS_EXTENSIONS = EventScript(
     pause(1.0),
 )
 
+# ═══════════════════════════════════════════════════════════════════════
+# Demo: kaimon_curve — Sessions [k] CURVE key-management modal
+# ═══════════════════════════════════════════════════════════════════════
+
+function _build_curve_model()
+    KG = Kaimon.KaimonGate
+    # Valid Z85 keys (mock — generated fresh; the GIF never touches the real
+    # keystore or runs ssh, so it's deterministic in behaviour, not key values).
+    cpub, _ = KG.curve_keypair()
+    spub, _ = KG.curve_keypair()
+    a1, _ = KG.curve_keypair()
+    a2, _ = KG.curve_keypair()
+    p_other, _ = KG.curve_keypair()
+
+    conn = _mock_conn(;
+        session_id = "abcd1234efgh5678",
+        display_name = "remote-gpu",
+        project_path = "/home/user/dev/Trainer.jl",
+        pid = 41000,
+        tool_call_count = 23,
+    )
+    conn.endpoint = "tcp://10.0.0.7:10005"
+    conn.server_pubkey = spub          # CURVE link → 🔒 in the Sessions list
+
+    mgr = ConnectionManager()
+    push!(mgr.connections, conn)
+
+    m = _model(
+        _render_mode = true,
+        tab = 2,                       # Sessions
+        conn_mgr = mgr,
+        server_running = true,
+        server_started = true,
+        selected_connection = 1,
+    )
+    # Pre-open the key-management modal with mock trust data so the render is
+    # self-contained (pressing `k` would read the real keystore).
+    m.curve_client_pub = cpub
+    m.curve_server_pub = spub
+    m.curve_authorized = [a1, a2]
+    m.curve_pins = [("10.0.0.7:10005", spub), ("10.0.0.9:10005", p_other)]
+    m.curve_modal_section = 1
+    m.curve_modal_sel = 1
+    m.curve_modal = :main
+    return m
+end
+
+# Navigation only — no mutating confirmations are committed (every add/unpin is
+# cancelled), so the render never writes the keystore or runs ssh.
+const EVENTS_CURVE = EventScript(
+    pause(1.8),                              # identity + authorized clients + pins
+    rep(key(:down), 1; gap = 0.4),          # select 2nd client → footer shows full key
+    pause(1.2),
+    (0.0, key('a')),                        # open "Add client key" input
+    pause(0.6),
+    chars("rW4f8xQ2k=Lp9!mB3vN6cZ"; pace = 0.05),  # type a fake key (no enter)
+    pause(1.0),
+    (0.0, key(:escape)),                    # cancel add — no mutation
+    pause(0.6),
+    (0.0, key(:tab)),                       # → Pinned servers section
+    pause(0.8),
+    rep(key(:down), 1; gap = 0.4),          # select 2nd pin → footer shows full key
+    pause(1.0),
+    (0.0, key('u')),                        # unpin confirm prompt
+    pause(1.4),
+    (0.0, key('n')),                        # cancel — keep the pin
+    pause(0.8),
+    (0.0, key(:tab)),                       # back to Authorized clients
+    pause(1.4),
+)
+
 const DEMOS = [
     DemoSpec("kaimon_wizard",              _build_wizard_model,             EVENTS_WIZARD,              130, 34, 230, 15),
+    DemoSpec("kaimon_curve",               _build_curve_model,              EVENTS_CURVE,               130, 34, 200, 15),
     DemoSpec("kaimon_overview",            _build_overview_model,           EVENTS_OVERVIEW,            130, 34, 180, 15),
     DemoSpec("kaimon_sessions",            _build_sessions_model,           EVENTS_SESSIONS,            130, 34, 135, 15),
     DemoSpec("kaimon_activity",            _build_activity_model,           EVENTS_ACTIVITY,            130, 34, 150, 15),
