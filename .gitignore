@@ -28,6 +28,7 @@ crush.json
 **/coverage-lcov.info
 
 HANDOFF.md
+SESSION_HANDOFF.md
 coverage.info
 lcov.info
 .qdrant_index.json
