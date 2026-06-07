@@ -687,6 +687,21 @@ function discover_sessions(mgr::ConnectionManager)
         end
 
         ipc_sock = joinpath(mgr.sock_dir, "$(session_id).sock")
+        # CURVE: a reconnected TCP session must re-present the pinned server key —
+        # otherwise it connects PLAIN to an encrypted gate and stalls (no handshake,
+        # no health pong). Prefer a key stored in metadata, else the TOFU pin for
+        # this host:port (connect_tcp! pins it on first connect).
+        server_pubkey = string(get(meta, "server_pubkey", ""))
+        if isempty(server_pubkey) && session_mode == :tcp
+            mh = match(r"tcp://(\[[^\]]+\]|[^:/]+):(\d+)", get(meta, "endpoint", ""))
+            if mh !== nothing
+                p = tryparse(Int, mh.captures[2])
+                if p !== nothing
+                    pinned = KaimonGate._pinned_server(String(mh.captures[1]), p)
+                    pinned === nothing || (server_pubkey = pinned)
+                end
+            end
+        end
         conn = REPLConnection(
             session_id = session_id,
             name = name,
@@ -697,6 +712,7 @@ function discover_sessions(mgr::ConnectionManager)
             julia_version = get(meta, "julia_version", ""),
             pid = pid,
             spawned_by = get(meta, "spawned_by", "user"),
+            server_pubkey = server_pubkey,
         )
 
         # If this session_id was already known (PID changed = process restarted),
