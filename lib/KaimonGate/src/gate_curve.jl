@@ -203,6 +203,121 @@ function pin_server!(host::AbstractString, port::Integer, pubkey::AbstractString
     return :pinned
 end
 
+"""List every TOFU pin as `(host:port, pubkey)` tuples, in file order."""
+function known_servers()
+    f = joinpath(_curve_dir(), "known_servers")
+    out = Tuple{String,String}[]
+    isfile(f) || return out
+    for line in eachline(f)
+        s = strip(line)
+        (isempty(s) || startswith(s, "#")) && continue
+        parts = split(s)
+        length(parts) >= 2 && push!(out, (String(parts[1]), String(parts[2])))
+    end
+    return out
+end
+
+"""Remove the TOFU pin for `hostport` (the `host:port` key as listed by
+`known_servers`). Returns `:removed` or `:absent`. Comments/blank lines are
+preserved."""
+function unpin_server!(hostport::AbstractString)
+    f = joinpath(_curve_dir(), "known_servers")
+    isfile(f) || return :absent
+    kept = String[]
+    removed = false
+    for line in eachline(f)
+        s = strip(line)
+        if !isempty(s) && !startswith(s, "#")
+            parts = split(s)
+            if !isempty(parts) && String(parts[1]) == String(hostport)
+                removed = true
+                continue
+            end
+        end
+        push!(kept, line)
+    end
+    removed || return :absent
+    open(f, "w") do io
+        for l in kept
+            println(io, l)
+        end
+    end
+    return :removed
+end
+
+"""Fetch a remote gate's CURVE server *public* key over SSH (assumes passwordless
+SSH to `ssh_target`). Reads only the first line of the keypair file (`head -n1`),
+so the remote *secret* never crosses the wire. Returns the trimmed Z85 string, or
+throws on an SSH/IO error."""
+function _fetch_server_pubkey_ssh(ssh_target::AbstractString, remote_key_path::AbstractString)
+    cmd = `ssh -o BatchMode=yes -o ConnectTimeout=10 $ssh_target head -n1 $remote_key_path`
+    out = IOBuffer()
+    err = IOBuffer()
+    try
+        run(pipeline(cmd; stdout = out, stderr = err))
+    catch
+        # Surface ssh's own stderr (e.g. "Connection refused", "Permission
+        # denied (publickey)") rather than the opaque Process repr.
+        reason = strip(String(take!(err)))
+        error(isempty(reason) ? "ssh to $ssh_target failed" : reason)
+    end
+    return strip(String(take!(out)))
+end
+
+"""
+    verify_server_key_via_ssh(host, port; ssh_target=host,
+        remote_key_path="~/.cache/kaimon/curve/server.key", repin=false,
+        fetch=_fetch_server_pubkey_ssh) -> NamedTuple
+
+Reconcile a remote gate's authoritative CURVE server key (fetched out-of-band over
+SSH) with the local TOFU pin for `host:port`. This both **bootstraps** trust
+without a blind first-use and **detects key changes** — which CURVE cannot do
+in-band, since a wrong pinned key just fails the handshake silently.
+
+Because the CURVE server key is *server-authenticating* (the client must encrypt
+to it; there is no bearer secret handed over), bootstrapping the pin over the
+already-authenticated SSH channel collapses trust to "do you trust SSH to this
+host?" — closing the TOFU first-use MITM gap entirely.
+
+Returns `(; status, key, old_pin, ssh_target, message)` where `status` is:
+- `:pinned`  — no prior pin; the fetched key is now pinned (bootstrap)
+- `:ok`      — fetched key matches the existing pin (verified)
+- `:changed` — fetched key DIFFERS from the pin (rotation or MITM); the pin is
+               replaced only when `repin=true`
+- `:error`   — SSH/parse failure (see `message`); the pin is left untouched
+
+`fetch(ssh_target, remote_key_path) -> String` is injectable for testing.
+"""
+function verify_server_key_via_ssh(host::AbstractString, port::Integer;
+        ssh_target::AbstractString = String(host),
+        remote_key_path::AbstractString = "~/.cache/kaimon/curve/server.key",
+        repin::Bool = false,
+        fetch::Function = _fetch_server_pubkey_ssh)
+    old_pin = _pinned_server(host, port)
+    key = try
+        String(fetch(ssh_target, remote_key_path))
+    catch e
+        return (; status = :error, key = "", old_pin,
+                  ssh_target = String(ssh_target), message = sprint(showerror, e))
+    end
+    if length(key) != 40
+        return (; status = :error, key = "", old_pin, ssh_target = String(ssh_target),
+                  message = "expected a 40-char Z85 key, got $(length(key)) chars")
+    end
+    if old_pin === nothing
+        pin_server!(host, port, key)
+        return (; status = :pinned, key, old_pin, ssh_target = String(ssh_target), message = "")
+    elseif old_pin == key
+        return (; status = :ok, key, old_pin, ssh_target = String(ssh_target), message = "")
+    else
+        if repin
+            unpin_server!("$(host):$(port)")
+            pin_server!(host, port, key)
+        end
+        return (; status = :changed, key, old_pin, ssh_target = String(ssh_target), message = "")
+    end
+end
+
 # ── Client allow-list (server side) — SSH authorized_keys style ────────────────
 # File: <curve_dir>/authorized_clients, one Z85 client pubkey per line.
 
@@ -227,6 +342,33 @@ function authorize_client!(pubkey::AbstractString)
         println(io, pubkey)
     end
     return :added
+end
+
+"""Sorted list of authorized client public keys (Z85) on the allow-list."""
+authorized_clients() = sort!(collect(_authorized_clients()))
+
+"""Remove `pubkey` from the client allow-list. Returns `:removed` or `:absent`.
+Comments/blank lines are preserved."""
+function revoke_client!(pubkey::AbstractString)
+    f = joinpath(_curve_dir(), "authorized_clients")
+    isfile(f) || return :absent
+    kept = String[]
+    removed = false
+    for line in eachline(f)
+        t = strip(line)
+        if !isempty(t) && !startswith(t, "#") && String(first(split(t))) == String(pubkey)
+            removed = true
+            continue
+        end
+        push!(kept, line)
+    end
+    removed || return :absent
+    open(f, "w") do io
+        for l in kept
+            println(io, l)
+        end
+    end
+    return :removed
 end
 
 # ── ZAP authorization handler ──────────────────────────────────────────────────
@@ -271,6 +413,11 @@ gate stops. With `allow_any=true` every CURVE client is accepted (posture A —
 encryption + server pinning only); otherwise only clients whose pubkey is in the
 allow-list (`authorized_clients`) are accepted, empty list ⇒ fail-closed.
 
+The allow-list is re-read from disk on **every handshake** (handshakes are rare),
+so `authorize_client!`/`revoke_client!` take effect live — no gate restart. Note
+ZAP only gates *new* handshakes: a revoked client that is already connected stays
+connected until it (re)connects (ZMQ exposes no per-peer disconnect).
+
 Must be started BEFORE the CURVE-server sockets bind.
 """
 function _start_zap_handler!(ctx::ZMQ.Context; allow_any::Bool=false)
@@ -279,7 +426,6 @@ function _start_zap_handler!(ctx::ZMQ.Context; allow_any::Bool=false)
     zap.rcvtimeo = 250
     zap.linger = 0
     _ZAP_SOCKET[] = zap
-    allow = allow_any ? Set{String}() : _authorized_clients()
     _ZAP_TASK[] = Threads.@spawn :interactive begin
         try
             while _RUNNING[]
@@ -292,6 +438,9 @@ function _start_zap_handler!(ctx::ZMQ.Context; allow_any::Bool=false)
                     continue
                 end
                 try
+                    # Re-read the allow-list each handshake so authorize/revoke
+                    # apply without restarting the gate (handshakes are rare).
+                    allow = allow_any ? Set{String}() : _authorized_clients()
                     _handle_zap_request(zap, frames, allow, allow_any)
                 catch e
                     @debug "ZAP handler error" exception = e

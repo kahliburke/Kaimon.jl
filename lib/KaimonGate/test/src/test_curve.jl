@@ -66,6 +66,60 @@ end
             @test KG.pin_server!("h", 9000, pub) == :ok          # same key
             other, _ = KG.curve_keypair()
             @test KG.pin_server!("h", 9000, other) == :mismatch  # MITM signal
+
+            # known_servers lists every pin; unpin_server! removes by host:port
+            pub2, _ = KG.curve_keypair()
+            @test KG.pin_server!("h2", 9100, pub2) == :pinned
+            servers = Dict(KG.known_servers())
+            @test servers["h:9000"] == pub
+            @test servers["h2:9100"] == pub2
+            @test KG.unpin_server!("h:9000") == :removed
+            @test KG._pinned_server("h", 9000) === nothing
+            @test KG._pinned_server("h2", 9100) == pub2   # other pin untouched
+            @test KG.unpin_server!("h:9000") == :absent   # already gone
+        end
+    end
+end
+
+@testset "verify_server_key_via_ssh (reconcile via stub fetch)" begin
+    mktempdir() do dir
+        withenv("XDG_CACHE_HOME" => dir) do
+            good, _ = KG.curve_keypair()
+            other, _ = KG.curve_keypair()
+            getgood(_t, _p) = good
+            getother(_t, _p) = other
+
+            # no prior pin → :pinned (bootstrap)
+            r1 = KG.verify_server_key_via_ssh("h", 9000; fetch = getgood)
+            @test r1.status == :pinned
+            @test r1.old_pin === nothing
+            @test KG._pinned_server("h", 9000) == good
+
+            # same key → :ok (verified)
+            r2 = KG.verify_server_key_via_ssh("h", 9000; fetch = getgood)
+            @test r2.status == :ok
+
+            # different key, repin=false → :changed, pin untouched
+            r3 = KG.verify_server_key_via_ssh("h", 9000; fetch = getother)
+            @test r3.status == :changed
+            @test r3.old_pin == good
+            @test r3.key == other
+            @test KG._pinned_server("h", 9000) == good
+
+            # repin=true → adopts the new key
+            r4 = KG.verify_server_key_via_ssh("h", 9000; fetch = getother, repin = true)
+            @test r4.status == :changed
+            @test KG._pinned_server("h", 9000) == other
+
+            # malformed key → :error, pin untouched
+            r5 = KG.verify_server_key_via_ssh("h", 9000; fetch = (_t, _p) -> "tooshort")
+            @test r5.status == :error
+            @test KG._pinned_server("h", 9000) == other
+
+            # fetch throws (ssh failure) → :error
+            r6 = KG.verify_server_key_via_ssh("h", 9001; fetch = (_t, _p) -> error("ssh failed"))
+            @test r6.status == :error
+            @test KG._pinned_server("h", 9001) === nothing
         end
     end
 end
@@ -78,6 +132,16 @@ end
             @test KG.authorize_client!(pub) == :added
             @test pub in KG._authorized_clients()
             @test KG.authorize_client!(pub) == :already
+
+            # authorized_clients() lists (sorted); revoke_client! removes one
+            pub2, _ = KG.curve_keypair()
+            @test KG.authorize_client!(pub2) == :added
+            listed = KG.authorized_clients()
+            @test listed == sort([pub, pub2])
+            @test KG.revoke_client!(pub) == :removed
+            @test pub ∉ KG._authorized_clients()
+            @test pub2 in KG._authorized_clients()   # other key untouched
+            @test KG.revoke_client!(pub) == :absent  # already gone
         end
     end
 end
@@ -178,6 +242,57 @@ end
                 ZMQ.close(rep)
                 KG._RUNNING[] = false          # stop the ZAP handler loop
                 sleep(0.4)                     # let it close its socket
+                ZMQ.close(ctx)
+                KG._RUNNING[] = prev_running
+            end
+        end
+    end
+end
+
+@testset "ZAP live re-read (authorize/revoke without restart)" begin
+    spub, ssec = KG.curve_keypair()
+    cpub, csec = KG.curve_keypair()
+
+    mktempdir() do dir
+        withenv("XDG_CACHE_HOME" => dir) do
+            prev_running = KG._RUNNING[]
+            KG._RUNNING[] = true
+            ctx = ZMQ.Context()
+            KG._start_zap_handler!(ctx; allow_any = false)   # empty allow-list at start
+            rep = ZMQ.Socket(ctx, ZMQ.REP); rep.rcvtimeo = 1000; rep.linger = 0
+            KG.make_curve_server!(rep, ssec)
+            KG._setsockopt_str(rep, KG._ZMQ_ZAP_DOMAIN, KG._ZAP_DOMAIN)
+            ZMQ.bind(rep, "tcp://127.0.0.1:0")
+            endpoint = rstrip(ZMQ._get_last_endpoint(rep), '\0')
+            server = _echo_loop(rep)
+
+            try
+                # not yet authorized → denied
+                r1 = ZMQ.Socket(ctx, ZMQ.REQ); r1.rcvtimeo = 1200; r1.linger = 0
+                KG.make_curve_client!(r1, spub, cpub, csec)
+                ZMQ.connect(r1, endpoint); ZMQ.send(r1, "x")
+                @test_throws ZMQ.TimeoutError ZMQ.recv(r1, Vector{UInt8})
+                ZMQ.close(r1)
+
+                # authorize WITHOUT restarting the handler → next handshake allowed
+                @test KG.authorize_client!(cpub) == :added
+                r2 = ZMQ.Socket(ctx, ZMQ.REQ); r2.rcvtimeo = 3000; r2.linger = 0
+                KG.make_curve_client!(r2, spub, cpub, csec)
+                ZMQ.connect(r2, endpoint); ZMQ.send(r2, "ok")
+                @test String(ZMQ.recv(r2, Vector{UInt8})) == "ok"
+                ZMQ.close(r2)
+
+                # revoke WITHOUT restarting the handler → next handshake denied
+                @test KG.revoke_client!(cpub) == :removed
+                r3 = ZMQ.Socket(ctx, ZMQ.REQ); r3.rcvtimeo = 1200; r3.linger = 0
+                KG.make_curve_client!(r3, spub, cpub, csec)
+                ZMQ.connect(r3, endpoint); ZMQ.send(r3, "nope")
+                @test_throws ZMQ.TimeoutError ZMQ.recv(r3, Vector{UInt8})
+                ZMQ.close(r3)
+            finally
+                ZMQ.close(rep)
+                KG._RUNNING[] = false
+                sleep(0.4)
                 ZMQ.close(ctx)
                 KG._RUNNING[] = prev_running
             end
