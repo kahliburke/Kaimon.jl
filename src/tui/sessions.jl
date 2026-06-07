@@ -3,6 +3,10 @@
 const _EVAL_SPINNER = ("⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷")
 _eval_icon(tick::Int) = _EVAL_SPINNER[mod1(tick ÷ 4 + 1, length(_EVAL_SPINNER))]
 
+"""Short, display-friendly fingerprint of a CURVE key (40-char Z85): `head…tail`."""
+_key_fingerprint(k::AbstractString) =
+    length(k) > 12 ? string(k[1:6], "…", k[end-3:end]) : String(k)
+
 function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
     # Full-screen session terminal takes over entire tab
     if m.session_terminal_open && m.session_terminal !== nothing
@@ -109,6 +113,11 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
             ("Restart", restart_str),
             ("Session", startswith(conn.session_id, "tcp-") ? conn.session_id : conn.session_id[1:min(8, length(conn.session_id))] * "..."),
         ])
+        # CURVE transport: a non-empty pinned server key means the link is encrypted.
+        # Status only here — the key/fingerprint lives in Key Management (not on this page).
+        if !isempty(conn.server_pubkey)
+            push!(fields, ("Encryption", "🔒 CURVE"))
+        end
 
         for (label, value) in fields
             in_view(y_virtual) && begin
@@ -290,7 +299,8 @@ function _sync_sessions_table!(m::KaimonModel, connections::Vector{REPLConnectio
             conn.status == :connecting ? tstyle(:warning) : tstyle(:error)
         dname = isempty(conn.display_name) ? conn.name : conn.display_name
         agent_tag = conn.spawned_by == "agent" ? " $(m.personality_icon)" : ""
-        push!(col_names, Span("$icon $dname$agent_tag", style))
+        lock_tag = isempty(conn.server_pubkey) ? "" : " 🔒"   # CURVE-encrypted link
+        push!(col_names, Span("$icon $dname$agent_tag$lock_tag", style))
         push!(col_status, Span(string(conn.status), style))
         push!(col_pid, string(conn.pid))
         push!(row_styles, style)
