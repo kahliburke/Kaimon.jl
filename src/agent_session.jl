@@ -93,12 +93,21 @@ function agent_open(; cwd::String,
     pmode, pallow, dangerous = _permission_preset(permission)
     final_mode = permission_mode === nothing ? pmode : permission_mode  # explicit mode overrides preset
     final_allowed = unique(vcat(allowed_tools, pallow))                  # preset composes with explicit allowlist
-    backend = ClaudeBackend(; model = model, permission_mode = final_mode,
-                            allowed_tools = final_allowed, disallowed_tools = disallowed_tools,
-                            mcp_config = mcp_config, system_prompt = system_prompt,
-                            dangerously_skip = dangerous)
+    # Backend selection by model string — "ollama:<tag>" drives a local Ollama model
+    # in-process (no CLI, no MCP subprocess); anything else is the claude CLI.
+    backend = if startswith(model, OLLAMA_PREFIX)
+        OllamaBackend(; model = chop(model; head = length(OLLAMA_PREFIX), tail = 0),
+                      allowed_tools = final_allowed, disallowed_tools = disallowed_tools,
+                      system_prompt = system_prompt)
+    else
+        ClaudeBackend(; model = model, permission_mode = final_mode,
+                      allowed_tools = final_allowed, disallowed_tools = disallowed_tools,
+                      mcp_config = mcp_config, system_prompt = system_prompt,
+                      dangerously_skip = dangerous)
+    end
     handle = backend_start(backend; cwd = cwd, agent_id = aid)
-    _record_agent_pid!(aid, getpid(handle.proc))
+    apid = backend_pid(handle)                       # nothing for process-less backends
+    apid === nothing || _record_agent_pid!(aid, apid)
     # Start a fresh Kaimon-owned event log for this agent instance.
     try
         p = _event_log_path(aid)
@@ -114,7 +123,7 @@ function agent_open(; cwd::String,
         AGENT_SESSIONS[aid] = s
     end
     _set_status!(s, :idle)
-    _push_log!(:info, "Agent '$aid' opened (model=$model, cwd=$cwd, pid=$(getpid(handle.proc)))")
+    _push_log!(:info, "Agent '$aid' opened (model=$model, cwd=$cwd$(apid === nothing ? "" : ", pid=$apid"))")
     aid
 end
 
@@ -370,7 +379,7 @@ function agent_status(id::String)
         "turn" => current_turn(s.handle),
         "created_at" => s.created_at,
         "last_activity" => s.last_activity,
-        "session_id" => s.handle.session_id[],
+        "session_id" => backend_session_id(s.handle),
         "transcript" => _transcript_path(s),       # claude's own (vendor-specific) transcript
         "event_log" => _event_log_path(s.id),       # Kaimon-owned normalized JSONL
         "usage" => ACP.to_dict(s.usage),
@@ -385,7 +394,7 @@ end
 
 # claude writes ~/.claude/projects/<munged-cwd>/<sessionId>.jsonl
 function _transcript_path(s::AgentSession)
-    sid = s.handle.session_id[]
+    sid = backend_session_id(s.handle)
     isempty(sid) && return nothing
     # claude munges the *canonical* cwd (symlinks resolved, e.g. /tmp -> /private/tmp)
     canonical = try

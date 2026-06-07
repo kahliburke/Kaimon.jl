@@ -23,5 +23,6 @@ include("test_runner_tests.jl")
 include("agent_tests.jl")
 include("rate_governor_tests.jl")
 include("service_endpoint_tests.jl")
+include("ollama_backend_tests.jl")
 
 end # module

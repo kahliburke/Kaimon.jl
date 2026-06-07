@@ -23,6 +23,10 @@ abstract type AgentHandle end
 events(h::AgentHandle) = h.events
 "Current 1-based turn counter (incremented by `backend_send`)."
 current_turn(h::AgentHandle) = h.turn[]
+"OS pid of the backing process, or `nothing` for process-less backends (Ollama)."
+backend_pid(::AgentHandle) = nothing
+"Vendor session id for the transcript path; `\"\"` if the backend keeps no transcript."
+backend_session_id(::AgentHandle) = ""
 
 # Each backend implements: backend_start(::AgentBackend; cwd, kwargs...) -> AgentHandle,
 # backend_send(h, text), backend_interrupt(h), backend_close(h), backend_status(h).
@@ -80,6 +84,8 @@ end
 
 backend_status(h::ClaudeHandle) =
     Base.process_running(h.proc) ? :alive : :dead
+backend_pid(h::ClaudeHandle) = getpid(h.proc)
+backend_session_id(h::ClaudeHandle) = h.session_id[]
 
 # ── Launch marker (orphan reaping, like KAIMON_EXTENSION) ──────────────────────
 const KAIMON_AGENT_MARKER = "KAIMON_AGENT_SESSION"
