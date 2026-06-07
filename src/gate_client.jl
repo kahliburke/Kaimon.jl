@@ -819,7 +819,15 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
         # Gate not responding — clean up the socket and bail
         disconnect!(conn)
         msg = "TCP gate at $endpoint is not responding"
-        isempty(conn.server_pubkey) && (msg *= " (if it requires CURVE, pass server_key)")
+        if isempty(conn.server_pubkey)
+            msg *= " (if it requires CURVE, pass server_key)"
+        else
+            # A pinned CURVE link that goes silent is indistinguishable in-band
+            # from a changed key — the wrong key just fails the handshake. Say so.
+            msg *= " (CURVE: the gate may be down, or its server key may have CHANGED " *
+                   "since it was pinned — verify out-of-band, e.g. " *
+                   "KaimonGate.verify_server_key_via_ssh(\"$host\", $port), then re-pin)"
+        end
         error(msg)
     end
     # TOFU: the successful CURVE handshake proves this server key — pin it for

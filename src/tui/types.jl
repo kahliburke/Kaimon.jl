@@ -135,6 +135,20 @@ const TAB_ADVANCED   = 10
     sessions_detail_max_scroll::Int = 0 # updated each frame by view_sessions
     _sessions_detail_area::Rect = Rect() # cached for mouse hit-testing
 
+    # CURVE key-management modal (Sessions tab) — opened with [k]
+    curve_modal::Symbol = :none          # :none | :main | :add_client | :confirm
+    curve_modal_section::Int = 1         # 1=Authorized clients, 2=Pinned servers
+    curve_modal_sel::Int = 1             # selected row within the active section
+    curve_client_input::Any = nothing    # TextInput for a pubkey to authorize
+    curve_confirm_action::Symbol = :none # :revoke | :unpin | :repin — pending confirm
+    curve_confirm_arg::String = ""       # the key/host:port the confirm acts on
+    curve_confirm_key::String = ""       # new server key (for :repin after SSH verify)
+    curve_authorized::Vector{String} = String[]                       # cached allow-list
+    curve_pins::Vector{Tuple{String,String}} = Tuple{String,String}[] # cached pins
+    curve_client_pub::String = ""        # this instance's client pubkey (cached)
+    curve_server_pub::String = ""        # this instance's server pubkey (cached)
+    curve_modal_msg::String = ""         # transient status line
+
     # Agents tab (tab 9): Kaimon-owned AI agent sessions monitor
     agentmon_selected::Int = 1            # selected agent in the list
     agentmon_scroll::Int = 0              # scroll offset in the events detail pane

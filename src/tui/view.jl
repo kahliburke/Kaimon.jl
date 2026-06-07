@@ -434,6 +434,11 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         render(m.backtrace_modal, f.area, buf)
     end
 
+    # CURVE key-management modal (Sessions tab, [k])
+    if m.curve_modal != :none
+        _view_curve_modal(m, f.area, buf)
+    end
+
     # Quit confirmation modal
     if m.quit_confirm
         if m.quit_confirm_modal === nothing

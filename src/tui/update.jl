@@ -389,6 +389,31 @@ function Tachikoma.update!(m::KaimonModel, evt::TaskEvent)
                 panel.loading = false
             end
         end
+    elseif evt.id == :curve_ssh_verify
+        info = evt.value::NamedTuple
+        r = info.result
+        hostport = info.hostport
+        if r.status == :ok
+            m.curve_modal_msg = "✓ SSH-verified $hostport"
+        elseif r.status == :pinned
+            _refresh_curve_data!(m)
+            m.curve_modal_msg = "✓ Pinned $hostport via SSH"
+        elseif r.status == :error
+            m.curve_modal_msg = "✗ SSH: $(r.message)"
+        elseif r.status == :changed
+            oldfp = _key_fingerprint(something(r.old_pin, ""))
+            newfp = _key_fingerprint(r.key)
+            _push_log!(:warn,
+                "CURVE server key CHANGED for $hostport (pinned $oldfp → host has $newfp)")
+            if m.curve_modal != :none
+                m.curve_confirm_action = :repin
+                m.curve_confirm_arg = hostport
+                m.curve_confirm_key = r.key
+                m.curve_modal = :confirm
+            else
+                m.curve_modal_msg = "⚠ KEY CHANGED for $hostport — open [k] to review"
+            end
+        end
     end
 end
 
@@ -499,6 +524,12 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
     # When a stress modal is open, capture all input
     if m.tab_bar.active == TAB_ADVANCED && m.stress_modal != :none
         _handle_stress_modal_key!(m, evt)
+        return
+    end
+
+    # When the CURVE key-management modal is open, capture all input
+    if m.tab_bar.active == TAB_SESSIONS && m.curve_modal != :none
+        _handle_curve_modal_key!(m, evt)
         return
     end
 
@@ -721,6 +752,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
                     end
                 end
             end
+            'k' => _open_curve_modal!(m)
             _ => nothing
         end
 
