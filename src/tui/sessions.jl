@@ -7,6 +7,18 @@ _eval_icon(tick::Int) = _EVAL_SPINNER[mod1(tick ÷ 4 + 1, length(_EVAL_SPINNER))
 _key_fingerprint(k::AbstractString) =
     length(k) > 12 ? string(k[1:6], "…", k[end-3:end]) : String(k)
 
+"""Terse tag for a stall reason, shown after the session name (empty for :none)."""
+_stall_tag(r::Symbol) =
+    r === :offline ? "offline" :
+    r === :key_changed ? "key?" :
+    r === :unresponsive ? "no pong" : ""
+
+"""Full explanation of a stall reason, shown on the Details Status line."""
+_stall_detail(r::Symbol) =
+    r === :offline ? "gate offline (TCP refused)" :
+    r === :key_changed ? "reachable — CURVE handshake failing; server key may have changed (verify & re-pin)" :
+    r === :unresponsive ? "reachable — no pong; if CURVE, pin/verify its key" : ""
+
 function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
     # Full-screen session terminal takes over entire tab
     if m.session_terminal_open && m.session_terminal !== nothing
@@ -90,7 +102,8 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
         spawned_str = conn.spawned_by == "agent" ? "agent $(m.personality_icon)" : "user"
         fields = [
             ("Name", dname),
-            ("Status", string(conn.status)),
+            ("Status", (conn.status == :stalled && conn.stall_reason != :none) ?
+                "stalled — $(_stall_detail(conn.stall_reason))" : string(conn.status)),
             ("Path", _short_path(conn.project_path)),
             ("Julia", conn.julia_version),
             ("PID", string(conn.pid)),
@@ -300,7 +313,9 @@ function _sync_sessions_table!(m::KaimonModel, connections::Vector{REPLConnectio
         dname = isempty(conn.display_name) ? conn.name : conn.display_name
         agent_tag = conn.spawned_by == "agent" ? " $(m.personality_icon)" : ""
         lock_tag = isempty(conn.server_pubkey) ? "" : " 🔒"   # CURVE-encrypted link
-        push!(col_names, Span("$icon $dname$agent_tag$lock_tag", style))
+        stall_tag = (conn.status == :stalled && conn.stall_reason != :none) ?
+            " · $(_stall_tag(conn.stall_reason))" : ""
+        push!(col_names, Span("$icon $dname$agent_tag$lock_tag$stall_tag", style))
         push!(col_status, Span(string(conn.status), style))
         push!(col_pid, string(conn.pid))
         push!(row_styles, style)

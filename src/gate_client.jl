@@ -73,6 +73,7 @@ mutable struct REPLConnection
     spawned_by::String           # "user" or "agent" — how this session was started
     auth_token::String           # TCP auth token (empty = no auth)
     server_pubkey::String        # CURVE server public key to pin (empty = plain TCP/IPC)
+    stall_reason::Symbol         # why stalled (TCP): :none|:offline|:key_changed|:unresponsive
 end
 
 function REPLConnection(;
@@ -130,6 +131,7 @@ function REPLConnection(;
         spawned_by,
         auth_token,
         server_pubkey,
+        :none,  # stall_reason
     )
 end
 
@@ -144,6 +146,55 @@ end
 
 """TCP sessions have no local socket file — identified by empty socket_path."""
 _is_tcp(conn::REPLConnection) = isempty(conn.socket_path)
+
+"""Parse a `tcp://host:port` endpoint into `(host, port)`, or `nothing`."""
+function _endpoint_host_port(endpoint::AbstractString)
+    m = match(r"^tcp://(.+):(\d+)$", endpoint)
+    m === nothing && return nothing
+    return (String(m.captures[1]), parse(Int, m.captures[2]))
+end
+
+"""Best-effort: is `host:port` accepting TCP connections? Distinguishes a downed
+gate (connection refused) from one that's up but failing our ZMQ/CURVE handshake
+— a distinction that is invisible in-band (a wrong CURVE key just goes silent).
+Returns false on refusal, unreachability, or timeout."""
+function _tcp_port_open(host::AbstractString, port::Integer; timeout::Float64 = 1.5)
+    done = Ref(false)
+    ok = Ref(false)
+    @async begin
+        try
+            s = Sockets.connect(host, port)
+            close(s)
+            ok[] = true
+        catch
+            ok[] = false
+        finally
+            done[] = true
+        end
+    end
+    Base.timedwait(() -> done[], timeout; pollint = 0.05)
+    return ok[]
+end
+
+"""Classify why a session just went stalled. TCP only (IPC stays `:none`):
+- `:offline`      — TCP refused/unreachable: the gate process is down.
+- `:key_changed`  — reachable, no pong, and we hold a pinned CURVE key: the
+                    encrypted handshake is failing (key rotated, or MITM).
+- `:unresponsive` — reachable, no pong, no pinned key: gate hung, or a CURVE
+                    gate we connected to plain (needs a pin)."""
+function _classify_stall(conn::REPLConnection)
+    _is_tcp(conn) || return :none
+    hp = _endpoint_host_port(conn.endpoint)
+    hp === nothing && return :none
+    host, port = hp
+    if !_tcp_port_open(host, port)
+        return :offline
+    elseif !isempty(conn.server_pubkey)
+        return :key_changed
+    else
+        return :unresponsive
+    end
+end
 
 # ── Display Name Derivation ───────────────────────────────────────────────────
 
@@ -1820,6 +1871,7 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
         # Successful pong
         if conn.status != :connected
             conn.diagnostics = nothing
+            conn.stall_reason = :none
             conn.status = :connected
             _fire_sessions_changed(mgr)
         end
@@ -1975,6 +2027,7 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
                 conn.diagnostics = _probe_process(conn.pid)
             end
             if conn.status != :stalled
+                conn.stall_reason = _classify_stall(conn)
                 conn.status = :stalled
                 _fire_sessions_changed(mgr)
             end
