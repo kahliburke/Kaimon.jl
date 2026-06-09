@@ -465,6 +465,16 @@ end
 
 # ── Server Tab ────────────────────────────────────────────────────────────────
 
+"""This Kaimon package's version string (e.g. `v1.3.1`), or `""` if unavailable."""
+function _kaimon_version_str()
+    try
+        v = pkgversion(@__MODULE__)
+        v === nothing ? "" : "v$(v)"
+    catch
+        ""
+    end
+end
+
 function view_server(m::KaimonModel, area::Rect, f::Frame)
     buf = f.buffer
     rows = split_layout(m.server_layout, area)
@@ -490,10 +500,12 @@ function view_server(m::KaimonModel, area::Rect, f::Frame)
         status_style = m.server_running ? tstyle(:success) : tstyle(:error)
         n_conns = m.conn_mgr !== nothing ? count(c -> c.spawned_by != "extension", connected_sessions(m.conn_mgr)) : 0
 
-        # Row 1: status + port + uptime
+        kver = _kaimon_version_str()
+        # Row 1: name + version + status + port + uptime
         _write_spans!(buf, x, y, [
             (status_icon * " ", status_style),
-            ("MCP Server", txt),
+            ("Server", txt),
+            (isempty(kver) ? "" : " $kver", tstyle(:accent)),
             (sep, dim),
             (":", dim), (string(m.server_port), txt),
             (sep, dim),
