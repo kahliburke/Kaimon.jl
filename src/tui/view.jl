@@ -195,10 +195,14 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         end
     end
 
-    # Reap stale MCP agent sessions every ~30s.
-    # Sessions with no activity for 5 minutes are closed and removed.
+    # Reap stale MCP sessions every ~30s. Abandoned client sessions are closed after
+    # 5 min idle — but Kaimon-OWNED agents (agent_open) take serialized turns and sit
+    # idle between them, often far longer than 5 min in a multi-agent run. Reaping
+    # their MCP session mid-game makes their next tool call fail with "session
+    # expired". So while any owned agent is alive, use a long idle window (1 h) and
+    # fall back to the normal 5 min once no agents are running.
     if time() - m._last_reap_time > 30.0
-        _reap_stale_sessions!(300.0)  # 5 min threshold
+        _reap_stale_sessions!(_any_live_owned_agents() ? 3600.0 : 300.0)
         m._last_reap_time = time()
     end
 
@@ -878,6 +882,15 @@ function _time_ago(dt::DateTime)
 end
 
 # ── Session Reaping ───────────────────────────────────────────────────────────
+
+"""True if any Kaimon-owned agent (agent_open) is still alive. Used to hold off the
+idle-session reaper so an agent's MCP session isn't pulled out from under it while it
+waits (idle) for its next turn in a multi-agent session."""
+function _any_live_owned_agents()
+    lock(AGENT_SESSIONS_LOCK) do
+        any(s -> s.status !== :dead, values(AGENT_SESSIONS))
+    end
+end
 
 """Remove MCP agent sessions that have been idle longer than `max_idle_secs`."""
 function _reap_stale_sessions!(max_idle_secs::Float64)
