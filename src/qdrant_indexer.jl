@@ -1518,7 +1518,7 @@ function index_file(
     project_path::String=pwd(),
     verbose::Bool=true,
     silent::Bool=false,
-    embedding_model::String=DEFAULT_EMBEDDING_MODEL,
+    embedding_model::String=resolve_search_model(collection),
 )
     if !isfile(file_path)
         msg = "File not found: $file_path"
@@ -1670,7 +1670,7 @@ function reindex_file(
     project_path::String=pwd(),
     verbose::Bool=true,
     silent::Bool=false,
-    embedding_model::String=DEFAULT_EMBEDDING_MODEL,
+    embedding_model::String=resolve_search_model(collection),
 )
     collection = normalize_collection_name(collection)
     !silent && verbose && println("  Re-indexing: $(basename(file_path))")
@@ -1700,7 +1700,7 @@ function index_directory(
     exclude_dirs::Vector{String}=String[],
     verbose::Bool=true,
     silent::Bool=false,
-    embedding_model::String=DEFAULT_EMBEDDING_MODEL,
+    embedding_model::String=resolve_search_model(collection),
 )
     total_chunks = 0
     isdir(dir_path) || return total_chunks
@@ -1773,7 +1773,7 @@ function index_project(
     extra_dirs::Vector{String}=String[],
     extensions::Union{Vector{String},Nothing}=nothing,
     source::String="manual",
-    embedding_model::String=DEFAULT_EMBEDDING_MODEL,
+    embedding_model::String=_load_embedding_model(),
 )
     # Use project name as collection if not specified; always normalize
     col_name = collection === nothing ? get_project_collection_name(project_path) : normalize_collection_name(collection)

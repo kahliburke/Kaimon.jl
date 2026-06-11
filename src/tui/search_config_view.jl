@@ -40,9 +40,8 @@ function _view_search_config(m::KaimonModel, area::Rect, buf::Buffer)
     col_info = m.search_config_col_info
     has_col_info = !isempty(col_info) && !haskey(col_info, "error")
     col_info_h = has_col_info ? 4 : 1  # 4 lines with data, 1 for "loading..."
-    confirm_h = m.search_config_confirm ? 2 : 0
 
-    # Layout: header(1) + model list(Fill) + blank(1) + col_info + blank(1) + results(1) + blank(1) + hints(2) + confirm
+    # Layout: header(1) + model list(Fill) + blank(1) + col_info + blank(1) + results(1) + blank(1) + hints(2)
     regions = split_layout(
         Layout(Vertical, [
             Fixed(1),                    # "Embedding Model" header
@@ -53,7 +52,6 @@ function _view_search_config(m::KaimonModel, area::Rect, buf::Buffer)
             Fixed(1),                    # results per search
             Fixed(1),                    # blank
             Fixed(2),                    # key hints
-            Fixed(confirm_h),            # reindex confirmation (0 if hidden)
         ]),
         inner,
     )
@@ -160,25 +158,6 @@ function _view_search_config(m::KaimonModel, area::Rect, buf::Buffer)
         ("+/-", tstyle(:accent)), (" results  ", tstyle(:text_dim)),
         ("Esc", tstyle(:accent)), (" close", tstyle(:text_dim)),
     ])
-
-    # ── Section 9: Reindex confirmation ──
-    if m.search_config_confirm && confirm_h > 0
-        confirm_y = regions[9].y + 1
-        paths = m.search_config_reindex_paths
-        n = length(paths)
-        if n > 0
-            names = join([p.second for p in paths], ", ")
-            label = n == 1 ? "Reindex '$names'?" : "Reindex $n collections ($names)?"
-            max_w = inner.width - 8
-            if length(label) > max_w
-                label = first(label, max_w - 1) * "…"
-            end
-            _write_spans!(buf, x, confirm_y, [
-                (label * " ", tstyle(:warning, bold = true)),
-                ("(y/n)", tstyle(:accent)),
-            ])
-        end
-    end
 end
 
 """Render the collection detail overlay panel."""

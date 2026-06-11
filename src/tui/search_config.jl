@@ -280,7 +280,8 @@ function _index_project_async!(m::KaimonModel; recreate::Bool = false)
     _push_log!(:info, "$label project '$(basename(project_path))'...")
     spawn_task!(m._task_queue, :search_index_project) do
         try
-            result = index_project(project_path; silent = true, recreate = recreate)
+            result = index_project(project_path; silent = true, recreate = recreate,
+                                   embedding_model = model)
             col_name = get_project_collection_name(project_path)
             (
                 success = true,
@@ -304,7 +305,6 @@ end
 """Open the search config overlay panel and fire async info gathering."""
 function _open_search_config!(m::KaimonModel)
     m.search_config_open = true
-    m.search_config_confirm = false
 
     # Position cursor on the currently active model
     model_names = sort!(collect(keys(EMBEDDING_CONFIGS)))
@@ -359,20 +359,6 @@ end
 
 """Handle key input inside the search config panel."""
 function _handle_search_config_key!(m::KaimonModel, evt::KeyEvent)
-    # Reindex confirmation sub-state
-    if m.search_config_confirm
-        if evt.char == 'y'
-            m.search_config_confirm = false
-            m.search_config_open = false
-            _reindex_session_collections!(m)
-        elseif evt.char == 'n' || evt.key == :escape
-            m.search_config_confirm = false
-            m.search_config_open = false
-            _push_log!(:warn, "Collections may be stale — built with a different model")
-        end
-        return
-    end
-
     n_models = length(m.search_config_models)
 
     # Custom model editing mode
@@ -382,12 +368,7 @@ function _handle_search_config_key!(m::KaimonModel, evt::KeyEvent)
             if !isempty(custom_name)
                 m.search_embedding_model = custom_name
                 _save_embedding_model(custom_name)
-                m.search_config_reindex_paths = _collect_session_collections(m)
-                if !isempty(m.search_config_reindex_paths)
-                    m.search_config_confirm = true
-                else
-                    m.search_config_open = false
-                end
+                m.search_config_open = false
             end
             m.search_config_custom_editing = false
         elseif evt.key == :escape
@@ -426,16 +407,9 @@ function _handle_search_config_key!(m::KaimonModel, evt::KeyEvent)
                     m.search_embedding_model = new_model
                     _save_embedding_model(new_model)
                     m.search_model_available = m.search_config_models[sel].installed
-                    # Collect session collections that exist in Qdrant
-                    m.search_config_reindex_paths = _collect_session_collections(m)
-                    if !isempty(m.search_config_reindex_paths)
-                        m.search_config_confirm = true
-                    else
-                        m.search_config_open = false
-                    end
-                else
-                    m.search_config_open = false
+                    _push_log!(:info, "Embedding model set to '$new_model' — applies to new indexing; reindex a collection to switch it.")
                 end
+                m.search_config_open = false
             end
         end
         :char => begin
@@ -625,36 +599,6 @@ function _open_collection_detail!(m::KaimonModel)
             Dict()
         end
         (col_info = col_info, index_state = idx_state)
-    end
-end
-
-"""Reindex all session collections with the current embedding model."""
-function _reindex_session_collections!(m::KaimonModel)
-    paths = m.search_config_reindex_paths
-    isempty(paths) && return
-    n = length(paths)
-    names = join([p.second for p in paths], ", ")
-    _push_log!(:info, "Reindexing $n collection(s): $names")
-    for (proj_path, col_name) in paths
-        spawn_task!(m._task_queue, :search_index_project) do
-            try
-                result = index_project(proj_path; silent = true, recreate = true)
-                derived = get_project_collection_name(proj_path)
-                (
-                    success = true,
-                    collection = derived,
-                    project = basename(proj_path),
-                    error_msg = "",
-                )
-            catch e
-                (
-                    success = false,
-                    collection = col_name,
-                    project = basename(proj_path),
-                    error_msg = sprint(showerror, e),
-                )
-            end
-        end
     end
 end
 

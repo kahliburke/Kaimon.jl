@@ -357,7 +357,6 @@ const TAB_ADVANCED   = 10
 
     # ── Search config panel ──
     search_config_open::Bool = false
-    search_config_confirm::Bool = false                # reindex confirmation sub-state
     search_config_selected::Int = 1                    # cursor in model list
     search_config_models::Vector{
         @NamedTuple{name::String, dims::Int, ctx::Int, installed::Bool}
@@ -365,7 +364,6 @@ const TAB_ADVANCED   = 10
     search_config_custom_input::Any = nothing            # TextInput for custom model name
     search_config_custom_editing::Bool = false          # true when editing custom model field
     search_config_col_info::Dict = Dict()              # cached collection_info result
-    search_config_reindex_paths::Vector{Pair{String,String}} = Pair{String,String}[]  # project_path => collection pairs to reindex
     search_dimension_mismatch::Bool = false             # auto-detected dimension mismatch
     search_delete_confirm::Bool = false                 # delete confirmation state
     search_detail_open::Bool = false                    # collection detail overlay open
