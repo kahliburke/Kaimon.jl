@@ -14,6 +14,7 @@ const agent_open_tool = @mcp_tool :agent_open "Spawn a Kaimon-owned AI agent (he
         "disallowed_tools" => Dict("type" => "array", "items" => Dict("type" => "string"), "description" => "Tools the agent may NOT call. Defaults to the agent_* tools (recursion guard); pass [] to allow nested agents."),
         "mcp_config" => Dict("type" => "string", "description" => "Optional path to an --mcp-config JSON pointing the agent at the live Kaimon MCP (M3)."),
         "system_prompt" => Dict("type" => "string", "description" => "Optional instructions/context to initialize the agent with (appended to its system prompt; applies to every turn)."),
+        "effort" => Dict("type" => "string", "description" => "Optional claude --effort level (e.g. low|medium|high). Lower = less thinking = faster turns."),
         "id" => Dict("type" => "string", "description" => "Optional caller-supplied agent id (e.g. to key to a notebook)."),
     ),
     "required" => ["cwd"],
@@ -28,6 +29,7 @@ const agent_open_tool = @mcp_tool :agent_open "Spawn a Kaimon-owned AI agent (he
             disallowed_tools = String.(get(args, "disallowed_tools", AGENT_SELF_TOOLS)),
             mcp_config = get(args, "mcp_config", nothing),
             system_prompt = get(args, "system_prompt", nothing),
+            effort = get(args, "effort", nothing),
             id = get(args, "id", nothing))
         JSON.json(Dict("agent_id" => aid))
     catch e

@@ -78,6 +78,7 @@ function agent_open(; cwd::String,
                     disallowed_tools::Vector{String} = copy(AGENT_SELF_TOOLS),
                     mcp_config::Union{String,Nothing} = nothing,
                     system_prompt::Union{String,Nothing} = nothing,
+                    effort::Union{String,Nothing} = nothing,
                     id::Union{String,Nothing} = nothing)
     aid = id === nothing ? _gen_agent_id() : id
     lock(AGENT_SESSIONS_LOCK) do
@@ -103,7 +104,7 @@ function agent_open(; cwd::String,
         ClaudeBackend(; model = model, permission_mode = final_mode,
                       allowed_tools = final_allowed, disallowed_tools = disallowed_tools,
                       mcp_config = mcp_config, system_prompt = system_prompt,
-                      dangerously_skip = dangerous)
+                      effort = effort, dangerously_skip = dangerous)
     end
     handle = backend_start(backend; cwd = cwd, agent_id = aid)
     apid = backend_pid(handle)                       # nothing for process-less backends

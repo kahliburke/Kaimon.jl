@@ -60,6 +60,7 @@ Base.@kwdef struct ClaudeBackend <: AgentBackend
     system_prompt::Union{String,Nothing} = nothing    # --append-system-prompt: persistent instructions/context
     dangerously_skip::Bool = false                    # --dangerously-skip-permissions (bypass posture)
     stream::Bool = true                               # --include-partial-messages: token-by-token deltas
+    effort::Union{String,Nothing} = nothing           # --effort <level>: thinking/effort level (lower = faster turns)
 end
 
 function _find_claude()
@@ -100,6 +101,9 @@ function _claude_args(b::ClaudeBackend, cwd::AbstractString)
         "--permission-mode", b.permission_mode,
         "--add-dir", cwd]
     b.stream && push!(args, "--include-partial-messages")   # token-by-token deltas
+    if b.effort !== nothing && !isempty(b.effort)
+        push!(args, "--effort", b.effort)                   # less thinking → faster round-trips
+    end
     if !isempty(b.allowed_tools)
         push!(args, "--allowedTools"); append!(args, b.allowed_tools)
     end
