@@ -271,12 +271,10 @@ function _log_event!(id::AbstractString, env)
     end
 end
 
-"""Surface the user's prompt as a `:user_text` event — pushed to the TUI ring,
-the event log, and the bus — so the request that drove a turn shows inline next
-to the agent's work. Backends don't echo the user turn themselves, so we emit it
-here, mirroring the relay's non-delta path."""
-function _emit_user_turn!(s::AgentSession, text::AbstractString)
-    ev = ACP.UserMessageChunk(ACP.TextBlock(String(text)))
+"""Emit a synthetic agent event through the relay's non-delta path — the TUI ring,
+the event log, and the bus — for things the backend stream doesn't carry itself
+(the user's own prompt; an intentional-shutdown marker)."""
+function _emit_agent_event!(s::AgentSession, ev::ACP.AgentEvent)
     _push_recent!(s, ev)
     env = ACP.envelope(ev, current_turn(s.handle))
     _log_event!(s.id, env)
@@ -284,6 +282,11 @@ function _emit_user_turn!(s::AgentSession, text::AbstractString)
     mgr === nothing || _republish_event!(mgr, "agent:$(s.id)", JSON.json(env), "agent")
     return nothing
 end
+
+"""Surface the user's prompt as a `:user_text` event so the request that drove a
+turn shows inline next to the agent's work (backends don't echo it themselves)."""
+_emit_user_turn!(s::AgentSession, text::AbstractString) =
+    _emit_agent_event!(s, ACP.UserMessageChunk(ACP.TextBlock(String(text))))
 
 function _set_status!(s::AgentSession, status::Symbol)
     s.status === status && return
@@ -361,6 +364,11 @@ TUI) for review; it's pruned later or dismissed manually."""
 function agent_close(id::String)
     s = _get_agent(id)
     s === nothing && return false
+    # Mark the intentional shutdown in the agent's own log/feed (a `status: closed`
+    # line) before tearing down — so a normal close is distinguishable from a crash,
+    # which leaves no such line. Only for a still-live agent (dismissing an
+    # already-dead one shouldn't claim a clean shutdown). Status still goes :dead.
+    s.status === :dead || _emit_agent_event!(s, ACP.StatusChanged(:closed))
     backend_close(s.handle)
     _set_status!(s, :dead)
     _forget_agent_pid!(id)
