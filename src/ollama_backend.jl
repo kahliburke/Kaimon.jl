@@ -13,6 +13,10 @@
 import HTTP
 
 const OLLAMA_PREFIX = "ollama:"
+# vmlx (MLX inference server for Apple Silicon) speaks the Ollama /api/chat wire
+# protocol, so it reuses this backend — a distinct prefix + default host, not an
+# overload of `ollama:`. Default host is vmlx's own default port (no env needed).
+const VMLX_PREFIX = "vmlx:"
 
 # Unlike claude (which ships its own agent harness/system prompt), a local model
 # gets none — so a bare Ollama agent has no idea it's a tool-using agent. This
@@ -27,8 +31,9 @@ rather than describing what you would do. Tool names are bare (e.g. `ex`, `ping`
 After tool results return, give a concise answer grounded in them."""
 
 Base.@kwdef struct OllamaBackend <: AgentBackend
-    model::String = "qwen2.5-coder"                       # Ollama tag (after "ollama:")
+    model::String = "qwen2.5-coder"                       # model tag (after the prefix)
     host::String = get(ENV, "OLLAMA_HOST", "http://127.0.0.1:11434")
+    label::String = "ollama"                              # attribution/error label ("ollama"/"vmlx")
     allowed_tools::Vector{String} = String[]              # bare names; empty ⇒ all non-self tools
     disallowed_tools::Vector{String} = copy(AGENT_SELF_TOOLS)   # recursion guard (reuse!)
     system_prompt::Union{String,Nothing} = nothing
@@ -241,7 +246,7 @@ function _run_ollama_turn(h::OllamaHandle, turn::Int)
             try
                 _ollama_stream_chat(b.host, body, h, acc)
             catch e
-                put!(h.events, ACP.AgentError("ollama: $(sprint(showerror, e))"))
+                put!(h.events, ACP.AgentError("$(b.label): $(sprint(showerror, e))"))
                 put!(h.events, ACP.TurnEnded(:refusal, acc.usage)); return
             end
             h.cancel[] && (put!(h.events, ACP.TurnEnded(:cancelled, acc.usage)); return)
@@ -299,11 +304,11 @@ function _run_ollama_turn(h::OllamaHandle, turn::Int)
             # loop: next round feeds the tool results back to the model
         end
         # Ran out of rounds without a final answer.
-        put!(h.events, ACP.AgentError("ollama: hit max tool rounds ($(b.max_tool_rounds))"))
+        put!(h.events, ACP.AgentError("$(b.label): hit max tool rounds ($(b.max_tool_rounds))"))
         put!(h.events, ACP.TurnEnded(:refusal, usage))
     catch e
         e isa InvalidStateException && return   # events channel closed (backend_close)
-        put!(h.events, ACP.AgentError("ollama turn crashed: $(sprint(showerror, e))"))
+        put!(h.events, ACP.AgentError("$(b.label) turn crashed: $(sprint(showerror, e))"))
         try; put!(h.events, ACP.TurnEnded(:refusal, usage)); catch; end
     end
 end

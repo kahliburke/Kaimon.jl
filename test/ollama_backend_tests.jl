@@ -89,3 +89,33 @@ end
     end
     @test backend_status(h) == :dead
 end
+
+@testset "Backend routing: vmlx: vs ollama: prefix" begin
+    @test OllamaBackend(; model = "m").label == "ollama"   # default label
+
+    # Clear host env vars so the prefix defaults are deterministic.
+    withenv("VMLX_HOST" => nothing, "OLLAMA_HOST" => nothing) do
+        # vmlx:<tag> → Ollama-wire backend pointed at vmlx's default port, vmlx label
+        aid = Kaimon.agent_open(; cwd = mktempdir(), model = "vmlx:qwen3-4b")
+        try
+            b = Kaimon.AGENT_SESSIONS[aid].backend
+            @test b isa OllamaBackend
+            @test b.model == "qwen3-4b"                       # prefix stripped
+            @test b.host == "http://127.0.0.1:8000"           # vmlx default — no env hack
+            @test b.label == "vmlx"
+        finally
+            Kaimon.agent_close(aid)
+        end
+
+        # ollama:<tag> → real Ollama default port, ollama label
+        aid2 = Kaimon.agent_open(; cwd = mktempdir(), model = "ollama:qwen2.5-coder")
+        try
+            b2 = Kaimon.AGENT_SESSIONS[aid2].backend
+            @test b2 isa OllamaBackend
+            @test b2.host == "http://127.0.0.1:11434"
+            @test b2.label == "ollama"
+        finally
+            Kaimon.agent_close(aid2)
+        end
+    end
+end

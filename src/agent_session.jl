@@ -94,9 +94,17 @@ function agent_open(; cwd::String,
     pmode, pallow, dangerous = _permission_preset(permission)
     final_mode = permission_mode === nothing ? pmode : permission_mode  # explicit mode overrides preset
     final_allowed = unique(vcat(allowed_tools, pallow))                  # preset composes with explicit allowlist
-    # Backend selection by model string — "ollama:<tag>" drives a local Ollama model
-    # in-process (no CLI, no MCP subprocess); anything else is the claude CLI.
-    backend = if startswith(model, OLLAMA_PREFIX)
+    # Backend selection by model string — "ollama:<tag>" and "vmlx:<tag>" drive a
+    # local model in-process (no CLI, no MCP subprocess) over the Ollama /api/chat
+    # wire protocol; vmlx is Ollama-compatible and defaults to its own port (:8000),
+    # so no OLLAMA_HOST env hack. Anything else is the claude CLI.
+    backend = if startswith(model, VMLX_PREFIX)
+        OllamaBackend(; model = chop(model; head = length(VMLX_PREFIX), tail = 0),
+                      host = get(ENV, "VMLX_HOST", "http://127.0.0.1:8000"),
+                      label = "vmlx",
+                      allowed_tools = final_allowed, disallowed_tools = disallowed_tools,
+                      system_prompt = system_prompt)
+    elseif startswith(model, OLLAMA_PREFIX)
         OllamaBackend(; model = chop(model; head = length(OLLAMA_PREFIX), tail = 0),
                       allowed_tools = final_allowed, disallowed_tools = disallowed_tools,
                       system_prompt = system_prompt)
