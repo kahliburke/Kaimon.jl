@@ -373,9 +373,12 @@ qdrant_search_code_tool = @mcp_tool(
         "required" => ["query"],
     ),
     function (args)
-        embedding_model = get(args, "embedding_model", DEFAULT_EMBEDDING_MODEL)
-        err = _require_services(need_ollama = true, model = embedding_model)
-        err !== nothing && return err
+        # Defer the model choice until the collection is known: search must use the
+        # model the collection was indexed with, not a fixed default (an explicit
+        # arg still overrides).
+        explicit_model = let v = get(args, "embedding_model", nothing)
+            (v isa AbstractString && !isempty(v)) ? String(v) : nothing
+        end
 
         query = get(args, "query", "")
         limit = Int(get(args, "limit", 5))
@@ -418,6 +421,12 @@ qdrant_search_code_tool = @mcp_tool(
             end
             col
         end
+
+        # Now that the collection is resolved, pick the model it was indexed with
+        # (explicit arg wins, else the collection's recorded model, else default).
+        embedding_model = something(explicit_model, resolve_search_model(collection))
+        svc_err = _require_services(need_ollama = true, model = embedding_model)
+        svc_err !== nothing && return svc_err
 
         # Get embedding for query
         embedding = get_ollama_embedding(query; model = embedding_model)

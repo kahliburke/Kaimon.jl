@@ -101,7 +101,10 @@ function _execute_search!(m::KaimonModel)
     )]
     chunk_type = m.search_chunk_type
     limit = m.search_result_count
-    model = m.search_embedding_model
+    # Query with the model the COLLECTION was indexed with — not the configured
+    # one. Vectors from different models are incompatible (even at equal dims),
+    # so the [o] selection only governs (re)indexing; search follows the data.
+    model = resolve_search_model(collection)
 
     # Clear results and show "Searching..."
     m.search_results = [
@@ -172,15 +175,23 @@ function _execute_search!(m::KaimonModel)
             )
         end
 
-        results = QdrantClient.search(collection, embedding; limit = limit, filter = filter)
+        results = try
+            QdrantClient.search(collection, embedding; limit = limit, filter = filter)
+        catch e
+            # A thrown HTTP error (e.g. a 400 dimension/model mismatch) used to
+            # escape to the server log with no user-facing message — normalize it
+            # into the error-result shape the block below already handles.
+            Dict[Dict("error" => sprint(showerror, e))]
+        end
 
-        # Check for error results
+        # Check for error results (returned by QdrantClient OR caught above)
         if length(results) == 1 && haskey(first(results), "error")
             err_text = first(results)["error"]
             is_dim_mismatch = _is_dimension_mismatch(err_text)
             if is_dim_mismatch
-                err_text *= "\n\nThe collection was indexed with a different embedding model. Press [o] → select model → Enter to reindex."
+                err_text *= "\n\nCollection '$collection' was indexed with the '$(resolve_search_model(collection))' model. Press [o] → select that model → Enter to reindex (or reindex from the Collection Manager)."
             end
+            _push_log!(:error, "Search failed on '$collection' (model=$model): $(first(results)["error"])")
             return Dict[Dict(
                 "payload" => Dict(
                     "name" => "Error",

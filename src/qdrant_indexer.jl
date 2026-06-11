@@ -322,6 +322,38 @@ function save_search_config(config::AbstractDict)
     end
 end
 
+# ── Per-collection embedding model (search.json `collection_models` map) ───────
+# Vectors from different embedding models are incompatible — and NOT just at
+# different dimensions: two 1024-dim models (e.g. qwen3-embedding:0.6b vs
+# snowflake-arctic) live in different spaces, so a wrong-model query returns
+# silent garbage with no error. So we record the model a collection was built
+# with and always query with that same model.
+
+"""Record the embedding model `collection` was indexed with."""
+function set_collection_model!(collection::String, model::String)
+    cfg = load_search_config()
+    models = get!(() -> Dict{String,Any}(), cfg, "collection_models")
+    models[collection] = model
+    save_search_config(cfg)
+    return nothing
+end
+
+"""The embedding model `collection` was indexed with, or `nothing` if unrecorded
+(legacy collections predating model-stamping)."""
+function get_collection_model(collection::String)
+    models = get(load_search_config(), "collection_models", nothing)
+    models isa AbstractDict || return nothing
+    m = get(models, collection, nothing)
+    m === nothing ? nothing : String(m)
+end
+
+"""Resolve which embedding model to query `collection` with: the model it was
+indexed with if recorded, else `DEFAULT_EMBEDDING_MODEL` (the long-standing
+default that legacy/unstamped collections were almost certainly built with —
+backwards-compatible, and avoids querying with a mismatched model)."""
+resolve_search_model(collection::String) =
+    something(get_collection_model(collection), DEFAULT_EMBEDDING_MODEL)
+
 # ── Index Cache (regenerable state) ──────────────────────────────────────────
 # ~/.cache/kaimon/projects.json holds only per-file index state (mtimes, chunk
 # counts). Cleared safely without losing user preferences.
@@ -1804,6 +1836,19 @@ function index_project(
         end
     end
 
+    # Resolve the effective model. A recreate (or a brand-new collection) uses the
+    # requested model; indexing INTO an existing collection keeps the model it was
+    # built with (recorded, else DEFAULT for legacy) so we never mix vector spaces.
+    existing_collections = QdrantClient.list_collections()
+    col_exists = col_name in existing_collections
+    if !recreate && col_exists
+        eff_model = resolve_search_model(col_name)
+        if eff_model != embedding_model
+            !silent && @warn "Indexing into an existing collection with its own model (vectors from different models don't mix)" collection = col_name effective = eff_model requested = embedding_model
+        end
+        embedding_model = eff_model
+    end
+
     # Get vector size for the embedding model
     embedding_config = get_embedding_config(embedding_model)
     vector_size = embedding_config.dims
@@ -1822,15 +1867,15 @@ function index_project(
                 ))
             end
         catch; end
-    else
-        # Check if collection exists; create if it doesn't
-        existing_collections = QdrantClient.list_collections()
-        if !(col_name in existing_collections)
-            !silent && println("Creating collection '$col_name' (model: $embedding_model, dims: $vector_size)...")
-            with_index_logger(() -> @info "Creating collection" collection = col_name model = embedding_model vector_size = vector_size)
-            QdrantClient.create_collection(col_name; vector_size=vector_size)
-        end
+    elseif !col_exists
+        !silent && println("Creating collection '$col_name' (model: $embedding_model, dims: $vector_size)...")
+        with_index_logger(() -> @info "Creating collection" collection = col_name model = embedding_model vector_size = vector_size)
+        QdrantClient.create_collection(col_name; vector_size=vector_size)
     end
+
+    # Stamp the model so searches query with the right one and future incremental
+    # indexing stays consistent.
+    set_collection_model!(col_name, embedding_model)
 
     !silent && println("Indexing $(length(dirs_to_index)) director$(length(dirs_to_index) == 1 ? "y" : "ies") into collection '$col_name'...")
     with_index_logger(() -> @info "Indexing project" collection = col_name dirs = dirs_to_index extensions = actual_extensions)
