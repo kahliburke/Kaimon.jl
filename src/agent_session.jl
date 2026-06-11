@@ -262,6 +262,20 @@ function _log_event!(id::AbstractString, env)
     end
 end
 
+"""Surface the user's prompt as a `:user_text` event — pushed to the TUI ring,
+the event log, and the bus — so the request that drove a turn shows inline next
+to the agent's work. Backends don't echo the user turn themselves, so we emit it
+here, mirroring the relay's non-delta path."""
+function _emit_user_turn!(s::AgentSession, text::AbstractString)
+    ev = ACP.UserMessageChunk(ACP.TextBlock(String(text)))
+    _push_recent!(s, ev)
+    env = ACP.envelope(ev, current_turn(s.handle))
+    _log_event!(s.id, env)
+    mgr = GATE_CONN_MGR[]
+    mgr === nothing || _republish_event!(mgr, "agent:$(s.id)", JSON.json(env), "agent")
+    return nothing
+end
+
 function _set_status!(s::AgentSession, status::Symbol)
     s.status === status && return
     s.status = status
@@ -285,6 +299,7 @@ function agent_send(id::String, text::AbstractString)
     s = _get_agent(id)
     s === nothing && error("no such agent: $id")
     s.status === :dead && error("agent '$id' is dead")
+    _emit_user_turn!(s, text)
     backend_send(s.handle, text)
 end
 
@@ -311,6 +326,7 @@ function agent_run(id::String, text::AbstractString; timeout::Real = 600.0)
     lock(AGENT_RUN_LOCK) do; AGENT_RUN_WAITERS[id] = w; end
     timer = nothing
     try
+        _emit_user_turn!(s, text)
         backend_send(s.handle, text)                       # the relay tap collects the reply
         timer = Timer(_ -> (try put!(w.done, :timeout); catch; end), float(timeout))
         result = take!(w.done)
