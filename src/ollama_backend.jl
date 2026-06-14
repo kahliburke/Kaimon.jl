@@ -163,6 +163,7 @@ Base.@kwdef mutable struct _OllamaTurnAcc
     toolcalls::Vector{Any} = Any[]
     usage::ACP.Usage = ACP.Usage(cost_usd = 0.0)
     done::Bool = false
+    frames::Int = 0        # NDJSON lines actually received this attempt (0 ⇒ dead connection)
 end
 
 """Process one parsed `/api/chat` NDJSON object, updating `acc` and returning the
@@ -318,7 +319,14 @@ end
 function _ollama_stream_chat(host::AbstractString, body, h::OllamaHandle, acc::_OllamaTurnAcc)
     url = rstrip(host, '/') * "/api/chat"
     payload = JSON.json(body)
-    HTTP.open("POST", url, ["Content-Type" => "application/json"]) do io
+    # vmlx/Ollama serve /api/chat from uvicorn, whose keep-alive idle timeout (~5s) closes a
+    # pooled connection between turns. HTTP's connection pool would then hand that already-dead
+    # socket to the next turn → an immediate reset, or a graceful EOF with no body (a SILENT
+    # empty turn). `Connection: close` keeps the socket out of the pool so every turn dials a
+    # fresh connection; the retry below recovers the one stale connection that an earlier
+    # (non-close) request may already have left pooled.
+    headers = ["Content-Type" => "application/json", "Connection" => "close"]
+    attempt() = HTTP.open("POST", url, headers) do io
         write(io, payload)
         HTTP.closewrite(io)
         HTTP.startread(io)
@@ -332,12 +340,27 @@ function _ollama_stream_chat(host::AbstractString, body, h::OllamaHandle, acc::_
             catch
                 continue
             end
+            acc.frames += 1
             for ev in _map_ollama_chunk(obj, acc)
                 put!(h.events, ev)
             end
             acc.done && break
         end
         try; HTTP.closeread(io); catch; end
+    end
+    # Retry ONCE on a fresh connection, but only while nothing has streamed yet (acc.frames==0):
+    # a stale connection dies before the first frame, so this recovers it without duplicating
+    # output, whereas a genuine mid-stream failure (frames>0) surfaces to the caller as-is.
+    try
+        attempt()
+    catch
+        (acc.frames == 0 && !h.cancel[]) || rethrow()
+        attempt(); return nothing
+    end
+    # A server-side graceful close throws nothing — it just looks like a clean EOF with no
+    # frames and no `done`. Same stale-connection signature, same single retry.
+    if acc.frames == 0 && !acc.done && !h.cancel[]
+        attempt()
     end
     return nothing
 end
