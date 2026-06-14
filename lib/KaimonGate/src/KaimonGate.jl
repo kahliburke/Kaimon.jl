@@ -68,10 +68,27 @@ const PROTOCOL_VERSION = 1
 # package loads KaimonGate it installs richer providers via the setters, so the
 # gate can report Kaimon's version, read user preferences, apply personality,
 # drive Tachikoma, and respawn the right module on restart.
+#
+# The standalone defaults also honor `KAIMON_GATE_*` env overrides, so a host
+# that spawns a *lightweight* gate (KaimonGate without Kaimon) can still convey
+# its identity — REPL-mirror preference, personality, version — via the env
+# instead of loading itself into the session. Explicit setters still win.
 
-const _VERSION_PROVIDER     = Ref{Function}(() -> string(something(pkgversion(@__MODULE__), "unknown")))
-const _MIRROR_PREF_PROVIDER = Ref{Function}(() -> false)
-const _PERSONALITY_PROVIDER = Ref{Function}(() -> "⚡")
+# Standalone default providers — honor KAIMON_GATE_* env overrides so a host can
+# convey its identity to a lightweight gate without loading itself into it.
+_default_version_provider() = begin
+    v = get(ENV, "KAIMON_GATE_VERSION", "")
+    isempty(v) ? string(something(pkgversion(@__MODULE__), "unknown")) : v
+end
+_default_mirror_pref_provider() = get(ENV, "KAIMON_GATE_MIRROR_REPL", "") == "1"
+_default_personality_provider() = begin
+    p = get(ENV, "KAIMON_GATE_PERSONALITY", "")
+    isempty(p) ? "⚡" : p
+end
+
+const _VERSION_PROVIDER     = Ref{Function}(_default_version_provider)
+const _MIRROR_PREF_PROVIDER = Ref{Function}(_default_mirror_pref_provider)
+const _PERSONALITY_PROVIDER = Ref{Function}(_default_personality_provider)
 const _TACHIKOMA            = Ref{Union{Module,Nothing}}(nothing)
 # TCP auth token for the gate when KAIMON_GATE_TOKEN is unset. Standalone there's
 # no token (open, same as :lax); the host (Kaimon) injects a provider that derives

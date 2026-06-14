@@ -54,17 +54,67 @@ Generate the Julia `-e` script that boots a session subprocess.
 function _build_session_script(project_path::String;
                                name::String = "",
                                allow_restart::Bool = true)
-    # The subprocess is launched with --project=<path>, so the project and its
-    # deps are available immediately.  Kaimon is added to LOAD_PATH so it
-    # doesn't need to be in the user's global environment.
-    kaimon_dir = pkgdir(Kaimon)
+    # The subprocess is launched with --project=<target>, so the target project
+    # and its deps are the active environment. It boots only the lightweight
+    # `KaimonGate` (ZMQ + stdlib) — NOT the heavyweight Kaimon — so a session
+    # never has to recompile Kaimon against the target's manifest (issue #47).
+    # KaimonGate is made resolvable, and the host's identity (mirror preference,
+    # personality, version) conveyed, via `_build_session_env`. The TUI enriches
+    # the gate over the wire, so loading Kaimon here buys nothing.
     return """
     try; using Revise; catch; end
-    insert!(LOAD_PATH, 1, $(repr(kaimon_dir)))
-    using Kaimon
+    using KaimonGate
     import Pkg; Pkg.instantiate(; io=devnull)
-    @async Kaimon.KaimonGate.serve(force=true, allow_mirror=true, allow_restart=$(allow_restart), spawned_by="agent")
+    @async KaimonGate.serve(force=true, allow_mirror=true, allow_restart=$(allow_restart), spawned_by="agent")
     """
+end
+
+"""
+    _build_session_env() -> Dict{String,String}
+
+Build the environment-variable overlay for a spawned session subprocess.
+
+`JULIA_LOAD_PATH` is the shell-default stack (`@:@v#.#:@stdlib`) so that
+`--project=<target>` controls the active environment as usual, with KaimonGate's
+own env (`pkgdir(KaimonGate)`, which carries a `Manifest.toml` pinning ZMQ)
+appended so the lightweight gate is resolvable — and recompilable from source —
+without requiring a global install, regardless of the target's manifest (#47).
+`JULIA_PROJECT` is cleared so `--project` is the sole authority on the active env.
+
+The `KAIMON_GATE_*` vars convey the host's identity to the standalone gate (which
+doesn't load Kaimon): the user's REPL-mirror preference (so a joined session
+console shows agent eval activity by default), personality emoji, and the Kaimon
+version reported in the session's pong. KaimonGate's default providers read these.
+"""
+function _build_session_env()
+    base = "@:@v#.#:@stdlib"
+    gate_env = pkgdir(KaimonGate)
+    load_path = gate_env === nothing ? base : "$base:$gate_env"
+
+    mirror = try
+        get_gate_mirror_repl_preference()
+    catch
+        true
+    end
+    personality = try
+        load_personality()
+    catch
+        ""
+    end
+    version = try
+        string(PACKAGE_VERSION)
+    catch
+        ""
+    end
+
+    env = Dict{String,String}(
+        "JULIA_LOAD_PATH" => load_path,
+        "JULIA_PROJECT" => "",
+        "KAIMON_GATE_MIRROR_REPL" => mirror ? "1" : "0",
+    )
+    isempty(personality) || (env["KAIMON_GATE_PERSONALITY"] = personality)
+    isempty(version) || (env["KAIMON_GATE_VERSION"] = version)
+    return env
 end
 
 """
@@ -136,14 +186,12 @@ function spawn_session!(ms::ManagedSession)
     try
         lc = _resolve_launch_config(ms.project_path)
         cmd = _build_julia_cmd(lc, script; project = ms.project_path)
-        # Override JULIA_LOAD_PATH to restore the default ["@", "@v#.#", "@stdlib"]
-        # and clear JULIA_PROJECT so --project controls the active environment,
-        # matching the behavior of running `julia --project=<path>` from the shell.
+        # Build the env overlay: --project=<target> controls the active
+        # environment, KaimonGate's own env is appended to JULIA_LOAD_PATH so the
+        # lightweight gate stays resolvable for a from-source recompile (#47), and
+        # KAIMON_GATE_* carry the host's identity to the standalone gate.
         # (pty_spawn merges env into the parent ENV, so we set explicit values.)
-        env = Dict{String,String}(
-            "JULIA_LOAD_PATH" => "@:@v#.#:@stdlib",
-            "JULIA_PROJECT" => "",
-        )
+        env = _build_session_env()
         pty = Tachikoma.pty_spawn(cmd; rows = 24, cols = 80, env)
         ms.pty = pty
         ms.process = nothing
