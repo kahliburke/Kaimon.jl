@@ -102,7 +102,6 @@ function get_kaimon_test_args(func_name::Symbol)
         # Core functions
         :start! => (),
         :stop! => (),
-        :test_server => (3000,),
         :find_free_port => (),
         :version_info => (),
 
