@@ -2803,6 +2803,10 @@ end
 include("precompile.jl")
 
 function __init__()
+    # Stamp the real process start for uptime reporting (the const is a
+    # precompile-baked placeholder; see tui/io.jl).
+    _SERVER_START_TIME[] = Dates.now()
+
     # Wire Kaimon's host integrations into KaimonGate. Standalone, the gate uses
     # safe defaults; here we give it Kaimon's version, personality, REPL-mirror
     # preference, Tachikoma (for TTY hand-off on restart), and a restart preamble
