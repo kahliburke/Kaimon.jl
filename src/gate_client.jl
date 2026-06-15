@@ -313,6 +313,7 @@ mutable struct ConnectionManager
     eval_history::Vector{EvalRecord}       # ring buffer, capped at 64 entries
     eval_history_lock::ReentrantLock
     event_pub_socket::Union{ZMQ.Socket,Nothing}  # global PUB for extension events
+    event_pub_lock::ReentrantLock                # serializes ALL event_pub_socket access — ZMQ sockets are not thread-safe and the TUI thread + agent relay tasks all publish (#51)
     task_queue::Any  # Tachikoma.TaskQueue (or nothing if headless)
 end
 
@@ -330,6 +331,7 @@ function ConnectionManager(; sock_dir::String = joinpath(kaimon_cache_dir(), "so
         EvalRecord[],
         ReentrantLock(),
         nothing,
+        ReentrantLock(),
         task_queue,
     )
 end
@@ -381,10 +383,14 @@ end
 
 """Stop the global event PUB socket."""
 function _stop_event_pub!(mgr::ConnectionManager)
-    pub = mgr.event_pub_socket
-    if pub !== nothing
-        try; close(pub); catch; end
-        mgr.event_pub_socket = nothing
+    # Close under the same lock _republish_event! uses, so a concurrent publish
+    # can't send on a socket we're closing/freeing (#51).
+    lock(mgr.event_pub_lock) do
+        pub = mgr.event_pub_socket
+        if pub !== nothing
+            try; close(pub); catch; end
+            mgr.event_pub_socket = nothing
+        end
     end
     sock_path = joinpath(mgr.sock_dir, "kaimon-events.sock")
     ispath(sock_path) && try; rm(sock_path); catch; end
@@ -392,14 +398,23 @@ end
 
 """Re-publish a gate event on the global PUB socket (2-frame: topic + payload)."""
 function _republish_event!(mgr::ConnectionManager, channel::String, data::String, session_name::String)
-    pub = mgr.event_pub_socket
-    pub === nothing && return
-    try
-        io = IOBuffer()
-        Serialization.serialize(io, (channel=channel, data=data, session_name=session_name))
-        send(pub, channel, more=true)    # frame 1: topic for ZMQ filtering
-        send(pub, take!(io))             # frame 2: serialized payload
-    catch
+    mgr.event_pub_socket === nothing && return
+    io = IOBuffer()
+    Serialization.serialize(io, (channel=channel, data=data, session_name=session_name))
+    payload = take!(io)
+    # ZMQ sockets are NOT thread-safe. The TUI render thread (drain_stream_messages!)
+    # and every agent relay task (agent_session.jl) both publish here, so concurrent
+    # sends on the shared PUB corrupt its internal state — surfacing as an
+    # intermittent SIGSEGV in the GC (gc_sweep_pool_page) hours later (#51). Serialize
+    # both frames under one lock so neither the socket nor the framing interleaves.
+    lock(mgr.event_pub_lock) do
+        pub = mgr.event_pub_socket
+        pub === nothing && return
+        try
+            send(pub, channel, more=true)    # frame 1: topic for ZMQ filtering
+            send(pub, payload)               # frame 2: serialized payload
+        catch
+        end
     end
 end
 
