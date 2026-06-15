@@ -2161,10 +2161,11 @@ function start!(;
     # Restore original logger
     global_logger(old_logger)
 
-    # Green checkmark, dark blue text, yellow dragon, muted cyan port number
+    # Green checkmark, dark blue text, the user's personality emoji, muted cyan port
     gate_info = gate ? ", gate" : ""
+    pers = try; load_personality(); catch; "🐉"; end
     print(
-        "\r\033[K\033[1;32m✓\033[0m \033[38;5;24mKaimon server started\033[0m \033[33m🐉\033[0m \033[90m(port $actual_port$gate_info)\033[0m\n",
+        "\r\033[K\033[1;32m✓\033[0m \033[38;5;24mKaimon server started\033[0m \033[33m$pers\033[0m \033[90m(port $actual_port$gate_info)\033[0m\n",
     )
     flush(stdout)
 
@@ -2309,6 +2310,58 @@ function stop!()
         end
     else
         println("No server running to stop.")
+    end
+end
+
+"""
+    _headless_wait_and_shutdown(port)
+
+Block the headless server's main task until the operator presses Ctrl-Q (or
+Ctrl-C), then tear down cleanly via `stop!()` and exit. Without this the process
+only `wait(Condition())`s, so a Ctrl-C kills it without running teardown —
+leaving gate/extension subprocesses and socket files behind.
+"""
+function _headless_wait_and_shutdown(port)
+    printstyled("\n⏻ Headless server on port $port — press Ctrl-Q (or Ctrl-C) to shut down.\n";
+                color = :light_black)
+    flush(stdout)
+    _wait_for_quit_key()
+    printstyled("\nShutting down…\n"; color = :light_black)
+    flush(stdout)
+    try
+        stop!()
+    catch e
+        @warn "Error during shutdown" exception = e
+    end
+    exit(0)
+end
+
+"""
+    _wait_for_quit_key()
+
+Block until the operator presses Ctrl-Q (0x11) or Ctrl-C (0x03). The terminal is
+put in raw mode so both arrive as bytes (ISIG off) — that's what lets Ctrl-C run
+our clean shutdown instead of killing the process. With no interactive TTY
+(backgrounded/piped) there are no keys to read, so just wait for a signal.
+"""
+function _wait_for_quit_key()
+    if !(stdin isa Base.TTY)
+        try; wait(Condition()); catch; end
+        return
+    end
+    term = REPL.Terminals.TTYTerminal(get(ENV, "TERM", "dumb"), stdin, stdout, stderr)
+    REPL.Terminals.raw!(term, true)
+    try
+        while true
+            b = try
+                read(stdin, UInt8)
+            catch e
+                e isa EOFError ? break : rethrow()
+            end
+            (b == 0x11 || b == 0x03) && break   # Ctrl-Q or Ctrl-C
+        end
+    finally
+        try; REPL.Terminals.raw!(term, false); catch; end
     end
 end
 
@@ -2774,7 +2827,12 @@ function (@main)(ARGS)
 
     if headless
         start!(; port = port)
-        Base.JLOptions().isinteractive == 0 && wait(Condition())
+        # Non-interactive: block on a quit key (Ctrl-Q / Ctrl-C) and shut down
+        # cleanly via stop!() instead of being killed mid-flight. With `-i` we
+        # fall through to the REPL and the user can call Kaimon.stop!() manually.
+        if Base.JLOptions().isinteractive == 0
+            _headless_wait_and_shutdown(port)
+        end
     else
         # Offer a one-time, versioned setup update if the user's gate setup is
         # behind GATE_SETUP_VERSION (e.g. a legacy full-Kaimon global install or
