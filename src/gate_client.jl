@@ -1051,6 +1051,44 @@ function connect!(mgr::ConnectionManager, conn::REPLConnection)
     end
 end
 
+# ── Deferred ZMQ context termination ─────────────────────────────────────────
+# A TCP/CURVE session owns a dedicated ZMQ context (an OS I/O thread). It can't
+# be terminated the instant the session disconnects: ephemeral REQ workers
+# (_req_send_recv) may still hold live sockets on it, and terminating a context
+# with live sockets corrupts memory. Workers are bounded (rcvtimeo ≤ 30s +
+# sndtimeo 2s), so park the dead context and terminate it one+ health cycle
+# later, by which point any in-flight worker has certainly finished (#51).
+const _CONTEXT_REAP_GRACE = 35.0  # seconds; > the ~32s worst-case ephemeral worker
+const _PENDING_CONTEXTS = Tuple{ZMQ.Context,Float64}[]   # (context, parked_at_seconds)
+const _PENDING_CONTEXTS_LOCK = ReentrantLock()
+
+"""Park a dead session's dedicated ZMQ context for deferred termination (#51)."""
+function _park_context!(ctx::ZMQ.Context)
+    lock(_PENDING_CONTEXTS_LOCK) do
+        push!(_PENDING_CONTEXTS, (ctx, time()))
+    end
+    return nothing
+end
+
+"""Terminate parked contexts whose grace has elapsed (no live sockets remain)."""
+function _reap_parked_contexts!()
+    lock(_PENDING_CONTEXTS_LOCK) do
+        isempty(_PENDING_CONTEXTS) && return
+        now_t = time()
+        keep = Tuple{ZMQ.Context,Float64}[]
+        for (ctx, parked) in _PENDING_CONTEXTS
+            if now_t - parked >= _CONTEXT_REAP_GRACE
+                try; close(ctx); catch; end   # close ≡ zmq_ctx_term; safe now
+            else
+                push!(keep, (ctx, parked))
+            end
+        end
+        empty!(_PENDING_CONTEXTS)
+        append!(_PENDING_CONTEXTS, keep)
+    end
+    return nothing
+end
+
 function disconnect!(conn::REPLConnection)
     lock(conn.req_lock) do
         if conn.req_socket !== nothing
@@ -1082,14 +1120,13 @@ function disconnect!(conn::REPLConnection)
         end
     end
 
-    # TCP sessions own a dedicated context (see connect!) — terminate it so we
-    # don't leak an I/O thread per attach/detach. Its sockets are already closed
-    # above; IPC sessions share mgr.zmq_context and must NOT close it here.
+    # TCP sessions own a dedicated context (see connect!) — reclaim it so we don't
+    # leak an I/O thread per attach/detach. But ephemeral REQ workers may still
+    # hold live sockets on it, so DON'T terminate now: park it and let the health
+    # loop terminate it after the grace window (#51). IPC sessions share
+    # mgr.zmq_context and must NOT touch it here.
     if _is_tcp(conn) && conn.zmq_context !== nothing
-        try
-            close(conn.zmq_context)
-        catch
-        end
+        _park_context!(conn.zmq_context)
         conn.zmq_context = nothing
     end
 end
@@ -1566,28 +1603,40 @@ function drain_stream_messages!(mgr::ConnectionManager)
             n_drained = 0
             while n_drained < 500
                 n_drained += 1
-                # Check for pending data before recv to avoid the costly
-                # throw→backtrace path when no messages are available.
-                try
-                    (conn.sub_socket.events & ZMQ.POLLIN) == 0 && break
-                catch
-                    break  # socket error — skip this connection
-                end
-                raw = try
-                    _zmq_recv(conn.sub_socket)
-                catch
-                    break  # recv error — no more messages
-                end
-                # Observe-channel broadcasts (KaimonGate.publish) are 2-frame
-                # multipart [topic, payload]; the internal stream messages are a
-                # single blob. Detect the extra frame, drain it, and skip — the
-                # Kaimon TUI doesn't consume out-of-band observe streams.
-                if (try; conn.sub_socket.rcvmore; catch; false; end)
-                    while (try; conn.sub_socket.rcvmore; catch; false; end)
-                        try; _zmq_recv(conn.sub_socket); catch; break; end
+                # SUB socket ops run under conn.req_lock so the health task can't
+                # close/recreate this socket mid-recv — ZMQ sockets aren't
+                # thread-safe and a concurrent close+recv corrupts the heap (#51).
+                # Scope the lock to the socket only; message processing below is
+                # lock-free, so req_lock never nests with the eval/history locks.
+                # Returns: nothing ⇒ no more data, :skip ⇒ observe multipart frame.
+                raw = lock(conn.req_lock) do
+                    conn.sub_socket === nothing && return nothing
+                    # Check for pending data before recv to avoid the costly
+                    # throw→backtrace path when no messages are available.
+                    try
+                        (conn.sub_socket.events & ZMQ.POLLIN) == 0 && return nothing
+                    catch
+                        return nothing  # socket error — skip this connection
                     end
-                    continue
+                    r = try
+                        _zmq_recv(conn.sub_socket)
+                    catch
+                        return nothing  # recv error — no more messages
+                    end
+                    # Observe-channel broadcasts (KaimonGate.publish) are 2-frame
+                    # multipart [topic, payload]; the internal stream messages are a
+                    # single blob. Detect the extra frame, drain it, and skip — the
+                    # Kaimon TUI doesn't consume out-of-band observe streams.
+                    if (try; conn.sub_socket.rcvmore; catch; false; end)
+                        while (try; conn.sub_socket.rcvmore; catch; false; end)
+                            try; _zmq_recv(conn.sub_socket); catch; break; end
+                        end
+                        return :skip
+                    end
+                    return r
                 end
+                raw === nothing && break
+                raw === :skip && continue
                 msg = try
                     deserialize(IOBuffer(raw))
                 catch
@@ -1784,6 +1833,8 @@ function start!(mgr::ConnectionManager)
                 conns = lock(mgr.lock) do
                     copy(mgr.connections)
                 end
+
+                _reap_parked_contexts!()   # terminate dead TCP contexts past grace (#51)
 
                 to_remove = REPLConnection[]
 
@@ -1993,8 +2044,12 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
             if !needs_sub && pong_stream != conn.stream_endpoint
                 # Gate restarted — PUB port changed. Close the stale SUB socket.
                 _push_log!(:info, "TCP stream endpoint changed: $(conn.stream_endpoint) → $pong_stream ($(conn.display_name))")
-                try; close(conn.sub_socket); catch; end
-                conn.sub_socket = nothing
+                # Serialize with the drain (which recvs sub_socket under req_lock)
+                # so we never close it mid-recv (#51).
+                lock(conn.req_lock) do
+                    try; close(conn.sub_socket); catch; end
+                    conn.sub_socket = nothing
+                end
                 needs_sub = true
             end
             if needs_sub
@@ -2008,7 +2063,11 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
                     _apply_curve_client!(sub, conn)   # CURVE (no-op unless server_pubkey set)
                     subscribe(sub, "")
                     ZMQ.connect(sub, pong_stream)
-                    conn.sub_socket = sub
+                    # Publish the new socket under req_lock so a concurrent drain
+                    # sees a consistent socket, never a torn swap (#51).
+                    lock(conn.req_lock) do
+                        conn.sub_socket = sub
+                    end
                     _push_log!(:info, "TCP stream connected: $pong_stream ($(conn.display_name))")
                 catch e
                     _push_log!(:warn, "TCP stream connect failed: $pong_stream — $(sprint(showerror, e))")

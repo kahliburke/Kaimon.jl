@@ -169,7 +169,7 @@ ping_tool = @mcp_tool(
 
         if extended
             # Server uptime
-            uptime_ms = Dates.value(Dates.now() - _SERVER_START_TIME)
+            uptime_ms = Dates.value(Dates.now() - _SERVER_START_TIME[])
             uptime_str = let h = uptime_ms ÷ 3_600_000,
                 m = (uptime_ms % 3_600_000) ÷ 60_000,
                 s = (uptime_ms % 60_000) ÷ 1000
@@ -177,7 +177,7 @@ ping_tool = @mcp_tool(
                 h > 0 ? "$(h)h $(m)m $(s)s" : m > 0 ? "$(m)m $(s)s" : "$(s)s"
             end
             status *= "\n\nServer uptime: $uptime_str"
-            status *= "\nStarted: $(Dates.format(_SERVER_START_TIME, "yyyy-mm-dd HH:MM:SS"))"
+            status *= "\nStarted: $(Dates.format(_SERVER_START_TIME[], "yyyy-mm-dd HH:MM:SS"))"
             status *= "\nJulia v$(VERSION)  PID: $(getpid())  Threads: $(Threads.nthreads())"
 
             # Memory

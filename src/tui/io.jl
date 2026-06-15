@@ -8,8 +8,13 @@ const _TUI_LOG_BUFFER = ServerLogEntry[]   # drained into model each frame
 const _TUI_LOG_RING = ServerLogEntry[]     # persistent ring for tool reads (never drained)
 const _TUI_LOG_LOCK = ReentrantLock()      # protects both buffers
 
-# Track when this Kaimon server process started (used for uptime reporting)
-const _SERVER_START_TIME = Dates.now()
+# Track when this Kaimon server process started (used for uptime reporting).
+# Stamped at runtime in `Kaimon.__init__` — NOT baked. A top-level
+# `const = Dates.now()` is evaluated at precompile time and frozen into the .ji,
+# so every process loading that cache reports the precompile time as its start
+# (bogus uptime that survives restarts). The Ref initializer is just a
+# placeholder; __init__ overwrites it with the real process start.
+const _SERVER_START_TIME = Ref(Dates.now())
 const _TUI_OLD_LOGGER = Ref{Any}(nothing)
 const _TUI_LOG_FILE = Ref{Union{IOStream,Nothing}}(nothing)
 
