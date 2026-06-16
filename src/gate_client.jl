@@ -13,6 +13,21 @@ function _zmq_recv(sock::ZMQ.Socket)::Vector{UInt8}
     return recv(sock, Vector{UInt8})
 end
 
+# Thread-safe socket *construction*. ZMQ.jl appends every new Socket to its
+# Context's `sockets::Vector{WeakRef}` with an UNLOCKED `push!` (ZMQ.jl
+# socket.jl). Kaimon creates sockets on the shared `mgr.zmq_context` from many
+# threads at once — ephemeral REQ workers (`_req_send_recv`), parallel health
+# pings, per-connection SUBs, the event PUB — so those `push!`es race. A racing
+# push! reallocates the backing Memory and frees the old buffer while GC is
+# concurrently scanning that WeakRef array → use-after-free surfacing as an
+# intermittent heap corruption in `gc_sweep_pool` ("memory corruption of free
+# block"). One process-wide lock around construction closes the window; the
+# socket I/O afterward is unaffected (and still guarded per-socket elsewhere).
+const _ZMQ_SOCKET_LOCK = ReentrantLock()
+_zmq_socket(ctx::ZMQ.Context, typ) = lock(_ZMQ_SOCKET_LOCK) do
+    Socket(ctx, typ)
+end
+
 # ── Types ─────────────────────────────────────────────────────────────────────
 
 @enum EvalState EVAL_IDLE EVAL_SENDING EVAL_STREAMING
@@ -374,7 +389,7 @@ end
 function _start_event_pub!(mgr::ConnectionManager)
     sock_path = joinpath(mgr.sock_dir, "kaimon-events.sock")
     ispath(sock_path) && rm(sock_path)
-    pub = Socket(mgr.zmq_context, PUB)
+    pub = _zmq_socket(mgr.zmq_context, PUB)
     pub.sndhwm = 10000  # drop events if extensions can't keep up
     pub.linger = 0
     bind(pub, "ipc://$sock_path")
@@ -908,7 +923,7 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
         conn.stream_endpoint = pong_stream
         try
             # On the conn's own context (dedicated for TCP — see connect!).
-            sub = Socket(conn.zmq_context, SUB)
+            sub = _zmq_socket(conn.zmq_context, SUB)
             sub.rcvtimeo = 0
             sub.linger = 0
             sub.rcvhwm = 0
@@ -1006,7 +1021,7 @@ function connect!(mgr::ConnectionManager, conn::REPLConnection)
         ctx = _is_tcp(conn) ? Context() : mgr.zmq_context
         conn.zmq_context = ctx
 
-        socket = Socket(ctx, REQ)
+        socket = _zmq_socket(ctx, REQ)
         socket.rcvtimeo = 5000   # 5s timeout for responses
         socket.sndtimeo = 2000   # 2s timeout for sends
         socket.linger = 0        # don't block on close
@@ -1018,7 +1033,7 @@ function connect!(mgr::ConnectionManager, conn::REPLConnection)
         # the SUB is created after the pong in connect_tcp! (on this same context).
         if !_is_tcp(conn) && !isempty(conn.stream_endpoint)
             try
-                sub = Socket(ctx, SUB)
+                sub = _zmq_socket(ctx, SUB)
                 sub.rcvtimeo = 0  # non-blocking recv
                 sub.linger = 0    # don't block on close
                 sub.rcvhwm = 0    # unlimited receive buffer — never drop messages
@@ -1169,7 +1184,7 @@ function _req_send_recv(conn::REPLConnection, request; caller_timeout::Float64 =
     Threads.@spawn begin
         local sock = nothing
         try
-            sock = Socket(ctx, REQ)
+            sock = _zmq_socket(ctx, REQ)
             sock.rcvtimeo = min(round(Int, caller_timeout * 1000), 30000)
             sock.sndtimeo = 2000
             sock.linger = 0
@@ -2056,7 +2071,7 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
                 conn.stream_endpoint = pong_stream
                 try
                     sub_ctx = Context()
-                    sub = Socket(sub_ctx, SUB)
+                    sub = _zmq_socket(sub_ctx, SUB)
                     sub.rcvtimeo = 0
                     sub.linger = 0
                     sub.rcvhwm = 0

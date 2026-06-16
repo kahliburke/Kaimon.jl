@@ -425,7 +425,7 @@ connected until it (re)connects (ZMQ exposes no per-peer disconnect).
 Must be started BEFORE the CURVE-server sockets bind.
 """
 function _start_zap_handler!(ctx::ZMQ.Context; allow_any::Bool=false)
-    zap = ZMQ.Socket(ctx, ZMQ.REP)
+    zap = _zmq_socket(ctx, ZMQ.REP)
     ZMQ.bind(zap, _ZAP_ENDPOINT)
     zap.rcvtimeo = 250
     zap.linger = 0
@@ -477,7 +477,7 @@ function subscribe(endpoint::AbstractString; topic::AbstractString = "",
                    serverkey::Union{AbstractString,Nothing} = nothing,
                    clientkey::Union{Tuple,Nothing} = nothing,
                    ctx::ZMQ.Context = ZMQ.Context())
-    sub = ZMQ.Socket(ctx, ZMQ.SUB)
+    sub = _zmq_socket(ctx, ZMQ.SUB)
     sub.rcvhwm = 0
     sub.linger = 0
     if serverkey !== nothing

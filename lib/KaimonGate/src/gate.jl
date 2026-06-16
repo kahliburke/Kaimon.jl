@@ -26,6 +26,17 @@ function _zmq_recv(sock::ZMQ.Socket)::Vector{UInt8}
     return recv(sock, Vector{UInt8})
 end
 
+# Thread-safe socket *construction*. ZMQ.jl appends every new Socket to its
+# Context's `sockets::Vector{WeakRef}` with an UNLOCKED `push!`. The gate creates
+# an ephemeral REQ per `_service_request`, so concurrent extension tool calls
+# race that push! → a resize frees the backing Memory under a concurrent GC scan
+# of the WeakRef array → intermittent heap corruption in `gc_sweep_pool`. One
+# lock around construction closes the window (the I/O afterward is unaffected).
+const _ZMQ_SOCKET_LOCK = ReentrantLock()
+_zmq_socket(ctx::ZMQ.Context, typ) = lock(_ZMQ_SOCKET_LOCK) do
+    ZMQ.Socket(ctx, typ)
+end
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 # Cache + socket directories MUST be resolved at runtime (functions), not as
@@ -2197,7 +2208,7 @@ function _serve(;
 
     # Create ZMQ context and sockets
     ctx = Context()
-    socket = Socket(ctx, REP)
+    socket = _zmq_socket(ctx, REP)
     _GATE_CONTEXT[] = ctx
     _GATE_SOCKET[] = socket
     _MODE[] = mode
@@ -2264,7 +2275,7 @@ function _serve(;
     # Create PUB socket for streaming stdout/stderr to TUI.
     # sndhwm=0: unlimited send buffer — never drop messages under load.
     # linger=0: close() returns immediately.
-    pub_socket = Socket(ctx, PUB)
+    pub_socket = _zmq_socket(ctx, PUB)
     pub_socket.sndhwm = 0
     pub_socket.linger = 0
     # CURVE: same server treatment as the REP socket (ZAP handler already running).
@@ -2895,7 +2906,7 @@ function _service_request(request)
     ctx = _GATE_CONTEXT[]
     ctx === nothing && error("Kaimon service endpoint not available (no ZMQ context).")
 
-    sock = Socket(ctx, REQ)
+    sock = _zmq_socket(ctx, REQ)
     sock.rcvtimeo = _SERVICE_RCV_TIMEOUT_MS[]
     sock.sndtimeo = 5000   # 5s send timeout
     sock.linger = 0

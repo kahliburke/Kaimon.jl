@@ -99,7 +99,7 @@ function start_service_endpoint!()
     RateGovernor.init!()   # admission control for agent turns
 
     ctx = ZMQ.Context()
-    sock = Socket(ctx, ROUTER)
+    sock = _zmq_socket(ctx, ROUTER)
     sock.rcvtimeo = 200    # poll cadence so the loop can drain the outbox + check _RUNNING
     sock.sndtimeo = 5000
     sock.linger = 0
