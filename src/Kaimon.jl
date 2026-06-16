@@ -474,7 +474,14 @@ macro mcp_tool(id, description, params, handler)
 end
 
 include("security.jl")
-include("setup_wizard_tui.jl")
+# First-run setup wizard, split from the former monolithic setup_wizard_tui.jl.
+# Order follows the original (art → model/enums → update → views → companion).
+include("setup_wizard_art.jl")
+include("setup_wizard_model.jl")
+include("setup_wizard_update.jl")
+include("setup_wizard_view.jl")
+include("setup_wizard_steps.jl")
+include("setup_wizard_companion.jl")
 include("repl_status.jl")
 # MCP tool definitions, split from the former monolithic tool_definitions.jl.
 # All are independent top-level `*_tool = @mcp_tool(...)` bindings (collected by
