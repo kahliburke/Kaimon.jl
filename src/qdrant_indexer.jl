@@ -206,7 +206,6 @@ end
 # Logging and error tracking for background indexing
 const INDEX_LOGGER = Ref{Union{LoggingExtras.TeeLogger,Nothing}}(nothing)
 const INDEX_ERROR_COUNT = Ref{Int}(0)
-const INDEX_LAST_ERROR_TIME = Ref{Float64}(0.0)
 const INDEX_USER_NOTIFIED = Ref{Bool}(false)
 const INDEX_FAILED_FILES = Ref{Dict{String,Int}}(Dict{String,Int}())  # file -> consecutive fail count
 
@@ -2086,9 +2085,7 @@ function setup_revise_hook(
     end
 end
 
-# Global refs for the scheduler
-const INDEX_SYNC_TASK = Ref{Union{Task,Nothing}}(nothing)
-const INDEX_SYNC_STOP = Ref{Bool}(false)
+# Global refs for the Revise event watcher
 const REVISE_EVENT_TASK = Ref{Union{Task,Nothing}}(nothing)
 const REVISE_EVENT_STOP = Ref{Bool}(false)
 const REVISE_EVENT_CHANGES = Ref{Int}(0)
@@ -2187,133 +2184,7 @@ function stop_revise_event_watcher(; silent::Bool=false)
     return true
 end
 
-"""
-    start_index_sync_scheduler(; project_path::String=pwd(), collection::Union{String,Nothing}=nothing, interval_seconds::Int=300, initial_delay::Int=10, silent::Bool=false)
-
-Start a background task that periodically syncs the Qdrant index with file changes.
-Default interval is 5 minutes (300 seconds), initial delay is 10 seconds.
-
-Implements intelligent error handling:
-- Exponential backoff on errors: 1min → 5min → 15min → 30min (max)
-- Resets to normal interval on success
-- Notifies user after 5+ consecutive failures
-- Tracks and skips persistently problematic files
-
-Returns the Task, or nothing if already running.
-Set silent=true to suppress all output (logs to file only).
-"""
-function start_index_sync_scheduler(;
-    project_path::String=pwd(),
-    collection::Union{String,Nothing}=nothing,
-    interval_seconds::Int=300,
-    initial_delay::Int=10,
-    silent::Bool=false,
-)
-    # Check if already running
-    if INDEX_SYNC_TASK[] !== nothing && !istaskdone(INDEX_SYNC_TASK[])
-        msg = "Index sync scheduler already running"
-        !silent && @warn msg
-        with_index_logger(() -> @warn msg)
-        return nothing
-    end
-
-    col_name = String(
-        collection === nothing ? get_project_collection_name(project_path) : collection,
-    )
-
-    INDEX_SYNC_STOP[] = false
-    INDEX_ERROR_COUNT[] = 0
-    INDEX_USER_NOTIFIED[] = false
-
-    msg = "Starting index sync scheduler"
-    !silent && @info msg collection = col_name interval_seconds = interval_seconds initial_delay = initial_delay
-    with_index_logger(() -> @info msg collection = col_name interval_seconds = interval_seconds)
-
-    task = @async begin
-        # Initial delay before first sync
-        for _ = 1:initial_delay
-            INDEX_SYNC_STOP[] && break
-            sleep(1)
-        end
-
-        current_interval = interval_seconds
-
-        while !INDEX_SYNC_STOP[]
-            try
-                # Sleep in small increments to check stop flag
-                for _ = 1:current_interval
-                    INDEX_SYNC_STOP[] && break
-                    sleep(1)
-                end
-                INDEX_SYNC_STOP[] && break
-
-                # Run sync (always silent in background)
-                result = sync_index(project_path; collection=col_name, verbose=false, silent=true)
-
-                # Success - reset error tracking
-                if INDEX_ERROR_COUNT[] > 0
-                    INDEX_ERROR_COUNT[] = 0
-                    INDEX_USER_NOTIFIED[] = false
-                    current_interval = interval_seconds  # Reset to normal interval
-                    with_index_logger(() -> @info "Index sync recovered" interval_reset_to = interval_seconds)
-                end
-
-                if result.reindexed > 0 || result.deleted > 0
-                    with_index_logger(() -> @info "Index sync completed" reindexed = result.reindexed deleted = result.deleted chunks = result.chunks)
-                end
-            catch e
-                if !INDEX_SYNC_STOP[]
-                    INDEX_ERROR_COUNT[] += 1
-                    INDEX_LAST_ERROR_TIME[] = time()
-
-                    # Exponential backoff: 60s → 300s → 900s → 1800s (max)
-                    backoff_intervals = [60, 300, 900, 1800]
-                    current_interval = backoff_intervals[min(INDEX_ERROR_COUNT[], length(backoff_intervals))]
-
-                    with_index_logger(() -> @error "Index sync scheduler error" error_count = INDEX_ERROR_COUNT[] next_retry_seconds = current_interval exception = (e, catch_backtrace()))
-
-                    # Check if we should notify user
-                    check_and_notify_index_errors()
-                end
-            end
-        end
-
-        with_index_logger(() -> @info "Index sync scheduler stopped")
-    end
-
-    INDEX_SYNC_TASK[] = task
-    return task
-end
-
-"""
-    stop_index_sync_scheduler()
-
-Stop the background index sync scheduler if running.
-"""
-function stop_index_sync_scheduler()
-    if INDEX_SYNC_TASK[] === nothing || istaskdone(INDEX_SYNC_TASK[])
-        @info "Index sync scheduler not running"
-        return false
-    end
-
-    INDEX_SYNC_STOP[] = true
-    @info "Stopping index sync scheduler (will stop within 1 second)..."
-    return true
-end
-
-"""
-    index_sync_status() -> NamedTuple
-
-Get the current status of the index sync scheduler.
-"""
-function index_sync_status()
-    task = INDEX_SYNC_TASK[]
-    if task === nothing
-        return (running = false, state = :not_started)
-    end
-    if istaskdone(task)
-        return (running = false, state = :finished, failed = istaskfailed(task))
-    end
-    current_state = task.state
-    return (running = true, state = current_state)
-end
+# (The old single-project periodic index-sync scheduler was removed — it was
+# never started anywhere. Indexing is now driven event-wise by
+# auto-index-on-connect and file-change reindex, plus a shared multi-project
+# periodic sync (`_sync_all_enabled_projects!`) run by headless housekeeping.)

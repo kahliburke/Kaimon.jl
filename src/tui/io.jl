@@ -28,6 +28,9 @@ const _TUI_LOG_PATH = joinpath(kaimon_cache_dir(), "server.log")
 const _LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
 
 function _open_log_file!()
+    # Idempotent: a handle may already be open (e.g. headless start!() opened it
+    # before tui() takes over). Don't leak the existing one.
+    _TUI_LOG_FILE[] === nothing || return
     try
         mkpath(dirname(_TUI_LOG_PATH))
         # Rotate if too large

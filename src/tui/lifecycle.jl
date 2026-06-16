@@ -276,6 +276,12 @@ function Tachikoma.cleanup!(m::KaimonModel)
     # Skip teardown on restart — we're coming right back
     m._restart_requested && return
 
+    # Stop the headless housekeeping loop if start!() started it before tui().
+    try
+        _stop_housekeeping!()
+    catch
+    end
+
     # Stop service endpoint (gate → Kaimon reverse channel)
     try
         stop_service_endpoint!()
@@ -319,6 +325,10 @@ function Tachikoma.cleanup!(m::KaimonModel)
 
     # Close log file
     _close_log_file!()
+
+    # Clear the TUI model handle so a later headless start!() in this same
+    # process doesn't see a stale TUI and permanently disable housekeeping.
+    TUI_MODEL[] = nothing
 end
 
 Tachikoma.should_quit(m::KaimonModel) = m.quit || m._restart_requested

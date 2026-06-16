@@ -2146,6 +2146,17 @@ function start!(;
         end
     end
 
+    # Initialize the analytics/job SQLite database. The TUI does this on its
+    # first render tick; the headless/REPL path needs it too, otherwise every
+    # DB op (tool-call analytics, background-job persistence) silently no-ops
+    # because `Database.DB[]` stays `nothing` — which breaks the list_jobs /
+    # cancel_eval tools headless. Idempotent (CREATE TABLE IF NOT EXISTS).
+    try
+        Database.init_db!(joinpath(kaimon_cache_dir(), "kaimon.db"))
+    catch e
+        @warn "Failed to initialize analytics database" exception = e
+    end
+
     # Update status for server launch
     status_msg[] = "Starting Kaimon (launching server on port $actual_port)..."
     SERVER[] = start_mcp_server(
@@ -2224,12 +2235,17 @@ function _start_gate_services!()
     catch e
         @warn "Failed to reap orphan agents" exception = e
     end
+
+    # Periodic maintenance the TUI render loop would otherwise drive.
+    _start_housekeeping!()
     nothing
 end
 
 """Stop gate services started by `_start_gate_services!`."""
 function _stop_gate_services!()
     GATE_MODE[] || return
+
+    _stop_housekeeping!()
 
     try
         stop_service_endpoint!()
@@ -2253,6 +2269,133 @@ function _stop_gate_services!()
         catch
         end
     end
+    nothing
+end
+
+# ── Headless housekeeping ─────────────────────────────────────────────────────
+# The TUI render loop performs periodic maintenance every frame: reaping idle
+# MCP sessions, monitoring/restarting crashed extensions + managed gate
+# sessions, and re-syncing project indexes. Headless has no render loop, so this
+# background task is the substitute. It self-disables whenever a TUI is driving
+# (`TUI_MODEL[]` set) to avoid doing the same work twice.
+
+const HOUSEKEEPING_INTERVAL_SECONDS = 10
+const HOUSEKEEPING_TASK = Ref{Union{Task,Nothing}}(nothing)
+const HOUSEKEEPING_STOP = Ref{Bool}(false)
+
+"""
+    _headless_sync_interval_seconds() -> Int
+
+Seconds between periodic full index syncs (0 disables). `KAIMON_HEADLESS_SYNC_INTERVAL`
+env var overrides; default is 600 (10 min).
+"""
+function _headless_sync_interval_seconds()
+    v = get(ENV, "KAIMON_HEADLESS_SYNC_INTERVAL", "")
+    if !isempty(v)
+        n = tryparse(Int, v)
+        n !== nothing && return max(0, n)
+    end
+    return 600
+end
+
+"""
+    _sync_all_enabled_projects!()
+
+Re-sync (or first-index) every enabled approved project and every connected
+gate project's Qdrant collection. Shared by headless housekeeping and the TUI
+startup path. Each project goes through `_auto_index_project!`, which guards
+against concurrent runs and skips when search services are down.
+"""
+function _sync_all_enabled_projects!()
+    seen = Set{String}()
+    for entry in load_projects_config()
+        entry.enabled || continue
+        isdir(entry.project_path) || continue
+        entry.project_path in seen && continue
+        push!(seen, entry.project_path)
+        _auto_index_project!(entry.project_path)
+    end
+    mgr = GATE_CONN_MGR[]
+    if mgr !== nothing
+        for conn in connected_sessions(mgr)
+            p = conn.project_path
+            (isempty(p) || p in seen) && continue
+            isfile(joinpath(p, "Project.toml")) || continue
+            push!(seen, p)
+            _auto_index_project!(p)
+        end
+    end
+    nothing
+end
+
+"""Start the headless housekeeping loop (idempotent; no-op if already running)."""
+function _start_housekeeping!()
+    if HOUSEKEEPING_TASK[] !== nothing && !istaskdone(HOUSEKEEPING_TASK[])
+        return
+    end
+    # Persist housekeeping/index logs to the shared log file (idempotent — the
+    # TUI opens this too). Without it, background logs vanish headless.
+    _open_log_file!()
+
+    HOUSEKEEPING_STOP[] = false
+    sync_interval = _headless_sync_interval_seconds()
+
+    HOUSEKEEPING_TASK[] = Threads.@spawn begin
+        # Give gate sessions time to connect before the first index sync.
+        for _ in 1:15
+            HOUSEKEEPING_STOP[] && break
+            sleep(1)
+        end
+        last_sync = time()
+        if !HOUSEKEEPING_STOP[] && sync_interval > 0 && TUI_MODEL[] === nothing
+            try
+                _sync_all_enabled_projects!()
+            catch e
+                @debug "Housekeeping initial sync failed" exception = e
+            end
+        end
+
+        while !HOUSEKEEPING_STOP[]
+            for _ in 1:HOUSEKEEPING_INTERVAL_SECONDS
+                HOUSEKEEPING_STOP[] && break
+                sleep(1)
+            end
+            HOUSEKEEPING_STOP[] && break
+
+            # A TUI render loop is driving — it does this work itself.
+            TUI_MODEL[] === nothing || continue
+            mgr = GATE_CONN_MGR[]
+            mgr === nothing && continue
+
+            try
+                _reap_stale_sessions!(_any_live_owned_agents() ? 3600.0 : 300.0)
+            catch e
+                @debug "Housekeeping reap failed" exception = e
+            end
+            try
+                _monitor_extensions!(mgr)
+                _monitor_managed_sessions!(mgr)
+            catch e
+                @debug "Housekeeping monitor failed" exception = e
+            end
+
+            if sync_interval > 0 && time() - last_sync >= sync_interval
+                last_sync = time()
+                try
+                    _sync_all_enabled_projects!()
+                catch e
+                    @debug "Housekeeping sync failed" exception = e
+                end
+            end
+        end
+    end
+    nothing
+end
+
+"""Stop the headless housekeeping loop."""
+function _stop_housekeeping!()
+    HOUSEKEEPING_STOP[] = true
+    HOUSEKEEPING_TASK[] = nothing
     nothing
 end
 
@@ -2296,13 +2439,6 @@ end
 function stop!()
     if SERVER[] !== nothing
         println("Stop existing server...")
-
-        # Stop background indexing scheduler
-        try
-            stop_index_sync_scheduler()
-        catch e
-            @debug "Failed to stop index sync scheduler" exception = e
-        end
 
         # Stop gate services if running headless
         _stop_gate_services!()

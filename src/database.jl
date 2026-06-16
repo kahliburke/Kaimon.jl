@@ -36,7 +36,11 @@ const DB = Ref{Union{SQLite.DB,Nothing}}(nothing)
 Get the default database path in the user's cache directory.
 """
 function get_default_db_path()
-    return joinpath(kaimon_cache_dir(), "kaimon.db")
+    # `kaimon_cache_dir` lives in the parent Kaimon module, not in this submodule.
+    # Resolve it at call time via the parent so the default works regardless of
+    # caller scope (the TUI passes an explicit path; headless start!() relied on
+    # this default and hit an UndefVarError before this).
+    return joinpath(parentmodule(@__MODULE__).kaimon_cache_dir(), "kaimon.db")
 end
 
 """
