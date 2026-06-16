@@ -98,7 +98,6 @@ function _install_peek_report_override(session_id::String)
     end
 end
 const GATE_LOCK = ReentrantLock()
-const _PUB_LOCK = ReentrantLock()
 
 # Global state for the running gate
 const _GATE_TASK = Ref{Union{Task,Nothing}}(nothing)
@@ -154,6 +153,31 @@ const _GATE_OUTBOX =
 const _GATE_INFLIGHT = Threads.Atomic{Int}(0)
 const _GATE_MAX_WORKERS = Ref{Int}(
     something(tryparse(Int, get(ENV, "KAIMON_GATE_MAX_WORKERS", "")), 16))
+
+# ── Stream broadcaster (XPUB) + subscriber presence ──────────────────────────
+# The stream socket is an XPUB (drop-in for SUB clients) owned by ONE task: the
+# broadcaster. It interleaves draining _STREAM_OUTBOX (publish work, the hot
+# stdout path) with recv'ing XPUB subscription frames — so the same task that
+# sends also reads subscription events, satisfying ZMQ's single-owner rule (no
+# more _PUB_LOCK multi-writer send). Publishers just enqueue frames.
+#
+# XPUB_VERBOSER delivers every sub/unsub; we tally per topic in _STREAM_SUBS and
+# fire callbacks on 0->1 / 1->0 transitions. TCP keepalive (set on the socket)
+# makes libzmq emit a dead viewer's unsubscribe so counts self-correct.
+const _STREAM_OUTBOX = Channel{Vector{Vector{UInt8}}}(Inf)  # each entry = one msg's frames
+const _STREAM_TASK = Ref{Union{Task,Nothing}}(nothing)
+const _STREAM_SUBS = Dict{String,Int}()                     # topic => live subscriber count
+const _STREAM_SUBS_LOCK = ReentrantLock()                   # guards _STREAM_SUBS + callbacks
+const _ON_STREAM_SUBSCRIBE = Any[]                          # f(topic::String) on 0->1
+const _ON_STREAM_UNSUBSCRIBE = Any[]                        # f(topic::String) on 1->0
+const _STREAM_RECONCILE_EVERY = 5.0                         # seconds between hygiene passes
+
+# libzmq socket-option ids (stable ZMTP ABI; see gate_curve.jl for the pattern).
+const _ZMQ_TCP_KEEPALIVE       = 34
+const _ZMQ_TCP_KEEPALIVE_CNT   = 35
+const _ZMQ_TCP_KEEPALIVE_IDLE  = 36
+const _ZMQ_TCP_KEEPALIVE_INTVL = 37
+const _ZMQ_XPUB_VERBOSER       = 78
 
 # ── Debug Breakpoint State ───────────────────────────────────────────────────
 # Programmatic breakpoint system for agent-assisted debugging.
@@ -1247,52 +1271,202 @@ function restore_tty!()
     _unpark_remote_shell!()
 end
 
-function _publish_stream(channel::String, data; request_id::String = "")
-    pub = _STREAM_SOCKET[]
-    pub === nothing && return
-    lock(_PUB_LOCK) do
-        try
-            io = IOBuffer()
-            msg =
-                isempty(request_id) ? (channel = channel, data = data) :
-                (channel = channel, data = data, request_id = request_id)
-            serialize(io, msg)
-            send(pub, take!(io))
-        catch e
-            # Log failures for eval lifecycle messages — the caller hangs if these are lost
-            if channel in ("eval_complete", "eval_error", "tool_complete", "tool_error")
-                @error "Failed to publish $channel (request_id=$request_id)" exception = e
-            end
+# ── Stream broadcaster: the XPUB's single owning task ────────────────────────
+
+# Apply a 0->1 / 1->0 transition for a topic and fire the right callbacks.
+# Parses one XPUB subscription frame: first byte 0x01=subscribe / 0x00=
+# unsubscribe, remaining bytes = the subscription topic (e.g. "tui:bounce", or
+# "" for a subscribe-all client like the Kaimon TUI).
+function _handle_subscription_frame(frame::Vector{UInt8})
+    isempty(frame) && return nothing
+    is_sub = frame[1] == 0x01
+    topic = String(@view frame[2:end])
+    transition = lock(_STREAM_SUBS_LOCK) do
+        n = get(_STREAM_SUBS, topic, 0)
+        if is_sub
+            _STREAM_SUBS[topic] = n + 1
+            return n == 0 ? :join : :none
+        else
+            m = max(n - 1, 0)
+            m == 0 ? delete!(_STREAM_SUBS, topic) : (_STREAM_SUBS[topic] = m)
+            return (n > 0 && m == 0) ? :leave : :none
         end
     end
+    transition === :join && _fire_stream_callbacks(_ON_STREAM_SUBSCRIBE, topic)
+    transition === :leave && _fire_stream_callbacks(_ON_STREAM_UNSUBSCRIBE, topic)
+    return nothing
+end
+
+# Invoke presence callbacks on the broadcaster's owning thread. Snapshot under
+# the lock, call outside it. Keep callbacks cheap (or hand off to a channel).
+function _fire_stream_callbacks(cbs::Vector{Any}, topic::String)
+    fns = lock(_STREAM_SUBS_LOCK) do
+        copy(cbs)
+    end
+    for f in fns
+        try
+            Base.invokelatest(f, topic)
+        catch e
+            @debug "stream presence callback error" topic = topic exception = e
+        end
+    end
+    return nothing
+end
+
+# Hygiene pass: prune non-positive topics. XPUB can't re-derive the live set, so
+# correctness of leaves rests on clean closes + TCP keepalive; this is just
+# cleanup + a place to surface anomalies.
+function _reconcile_stream_subs()
+    lock(_STREAM_SUBS_LOCK) do
+        for (t, n) in collect(_STREAM_SUBS)
+            n <= 0 && delete!(_STREAM_SUBS, t)
+        end
+    end
+    return nothing
+end
+
+# Send one message's frames as a multipart on the owner-only socket.
+function _stream_send(sock::ZMQ.Socket, frames::Vector{Vector{UInt8}})
+    n = length(frames)
+    for (i, f) in enumerate(frames)
+        send(sock, f; more = (i < n))
+    end
+    return nothing
+end
+
+# The XPUB's single owner. Interleaves draining publish work (the hot stdout
+# path — prioritized) with polling for subscription events. Polls `events &
+# POLLIN` before recv to avoid the costly throw path when idle (mirrors the
+# client SUB drain).
+function _stream_broadcaster(sock::ZMQ.Socket)
+    last_reconcile = time()
+    while _RUNNING[]
+        work = false
+        # 1. drain all queued publishes first (owner-only send).
+        while isready(_STREAM_OUTBOX)
+            frames = take!(_STREAM_OUTBOX)
+            try
+                _stream_send(sock, frames)
+            catch e
+                @debug "stream publish failed" exception = e
+            end
+            work = true
+        end
+        # 2. poll one subscription event (non-blocking; rcvtimeo=0 as a backstop).
+        if (try (sock.events & ZMQ.POLLIN) != 0 catch; false end)
+            frame = try
+                _zmq_recv(sock)
+            catch e
+                e isa ZMQ.StateError && !_RUNNING[] && break
+                UInt8[]
+            end
+            if !isempty(frame)
+                _handle_subscription_frame(frame)
+                work = true
+            end
+        end
+        # 3. periodic hygiene.
+        if time() - last_reconcile >= _STREAM_RECONCILE_EVERY
+            _reconcile_stream_subs()
+            last_reconcile = time()
+        end
+        work || sleep(0.005)   # idle backoff; keeps event latency ~<=5ms
+    end
+    # Final bounded drain so late lifecycle messages (eval_complete) flush.
+    deadline = time() + 1.0
+    while isready(_STREAM_OUTBOX) && time() < deadline
+        try
+            _stream_send(sock, take!(_STREAM_OUTBOX))
+        catch
+            break
+        end
+    end
+    return nothing
+end
+
+# ── Stream presence API (for out-of-band consumers, e.g. TachiRei) ───────────
+
+"""
+    on_stream_subscribe(f) -> nothing
+
+Register `f(topic::String)` to be called when a topic gains its FIRST subscriber
+(0->1). Invoked on the broadcaster's owning thread, so keep `f` cheap (or hand
+off to a channel). Use to e.g. publish a keyframe the moment a viewer attaches.
+"""
+on_stream_subscribe(f) = (lock(_STREAM_SUBS_LOCK) do; push!(_ON_STREAM_SUBSCRIBE, f); end; nothing)
+
+"""
+    on_stream_unsubscribe(f) -> nothing
+
+Register `f(topic::String)` to be called when a topic loses its LAST subscriber
+(1->0). Invoked on the broadcaster's owning thread; keep `f` cheap.
+"""
+on_stream_unsubscribe(f) = (lock(_STREAM_SUBS_LOCK) do; push!(_ON_STREAM_UNSUBSCRIBE, f); end; nothing)
+
+"""    stream_subscribed(topic) -> Bool
+
+True if at least one subscriber is currently attached to `topic`."""
+stream_subscribed(topic::AbstractString) =
+    lock(_STREAM_SUBS_LOCK) do; get(_STREAM_SUBS, String(topic), 0) > 0 end
+
+"""    stream_subscriber_count(topic) -> Int
+
+Current subscriber count for `topic` (via XPUB_VERBOSER). Reliable on clean
+closes/IPC; on hard TCP-viewer disconnects the count self-corrects once libzmq's
+keepalive detects the dead peer."""
+stream_subscriber_count(topic::AbstractString) =
+    lock(_STREAM_SUBS_LOCK) do; get(_STREAM_SUBS, String(topic), 0) end
+
+"""    stream_topics() -> Vector{String}
+
+All topics with at least one subscriber, sorted."""
+stream_topics() = lock(_STREAM_SUBS_LOCK) do; sort!(collect(keys(_STREAM_SUBS))) end
+
+# ── Publishing (enqueue-only; the broadcaster owns the socket) ───────────────
+
+function _publish_stream(channel::String, data; request_id::String = "")
+    _STREAM_SOCKET[] === nothing && return
+    io = IOBuffer()
+    msg =
+        isempty(request_id) ? (channel = channel, data = data) :
+        (channel = channel, data = data, request_id = request_id)
+    serialize(io, msg)
+    try
+        put!(_STREAM_OUTBOX, Vector{UInt8}[take!(io)])
+    catch e
+        # The caller hangs if eval-lifecycle messages are lost.
+        if channel in ("eval_complete", "eval_error", "tool_complete", "tool_error")
+            @error "Failed to enqueue $channel (request_id=$request_id)" exception = e
+        end
+    end
+    return
 end
 
 """
     publish(topic, payload) -> nothing
 
-Broadcast `payload` on the gate's PUB socket under `topic` as a **2-frame
+Broadcast `payload` on the gate's stream socket under `topic` as a **2-frame
 multipart** message `[topic, serialize(payload)]`, so subscribers can prefix-
 filter server-side (e.g. `KaimonGate.subscribe(endpoint; topic="tui:")`). For
 out-of-band consumers such as TachiRei's `tui:<session>` observe stream. No-op if
 the gate isn't serving.
 
-This is distinct from the internal single-blob `_publish_stream` (stdout/stderr/
-eval lifecycle) that the Kaimon client consumes — the multipart framing lets that
-client recognize and skip observe broadcasts (it checks `rcvmore`). Subscribe
-with [`subscribe`](@ref).
+Enqueues to the broadcaster (the XPUB's single owner); the actual send happens on
+that task. This is distinct from the internal single-blob `_publish_stream`
+(stdout/stderr/eval lifecycle) that the Kaimon client consumes — the multipart
+framing lets that client recognize and skip observe broadcasts (it checks
+`rcvmore`). Subscribe with [`subscribe`](@ref); observe presence with
+[`stream_subscribed`](@ref) / [`on_stream_subscribe`](@ref).
 """
 function publish(topic::AbstractString, payload)
-    pub = _STREAM_SOCKET[]
-    pub === nothing && return nothing
-    lock(_PUB_LOCK) do
-        try
-            io = IOBuffer()
-            serialize(io, payload)
-            send(pub, String(topic); more = true)
-            send(pub, take!(io); more = false)
-        catch e
-            @debug "publish failed" topic = topic exception = e
-        end
+    _STREAM_SOCKET[] === nothing && return nothing
+    io = IOBuffer()
+    serialize(io, payload)
+    frames = Vector{UInt8}[Vector{UInt8}(codeunits(String(topic))), take!(io)]
+    try
+        put!(_STREAM_OUTBOX, frames)
+    catch e
+        @debug "publish enqueue failed" topic = topic exception = e
     end
     return nothing
 end
@@ -2387,12 +2561,27 @@ function _serve(;
         bind(socket, endpoint)
     end
 
-    # Create PUB socket for streaming stdout/stderr to TUI.
+    # Create XPUB socket for streaming stdout/stderr to TUI. XPUB is wire-
+    # compatible with SUB clients but also delivers subscription events, which the
+    # broadcaster turns into per-topic presence (see _stream_broadcaster).
     # sndhwm=0: unlimited send buffer — never drop messages under load.
     # linger=0: close() returns immediately.
-    pub_socket = _zmq_socket(ctx, PUB)
+    # rcvtimeo=0: non-blocking subscription recv (the owner polls events first).
+    pub_socket = _zmq_socket(ctx, XPUB)
     pub_socket.sndhwm = 0
     pub_socket.linger = 0
+    pub_socket.rcvtimeo = 0
+    # XPUB_VERBOSER: deliver EVERY subscribe/unsubscribe (not just 0->1/1->0) so
+    # we can count subscribers per topic.
+    _setsockopt_int(pub_socket, _ZMQ_XPUB_VERBOSER, 1)
+    # TCP keepalive: detect dead viewers so libzmq emits their unsubscribe and the
+    # count self-corrects on ungraceful disconnects (IPC detects peer-close already).
+    if mode == :tcp
+        _setsockopt_int(pub_socket, _ZMQ_TCP_KEEPALIVE, 1)
+        _setsockopt_int(pub_socket, _ZMQ_TCP_KEEPALIVE_IDLE, 30)
+        _setsockopt_int(pub_socket, _ZMQ_TCP_KEEPALIVE_INTVL, 5)
+        _setsockopt_int(pub_socket, _ZMQ_TCP_KEEPALIVE_CNT, 3)
+    end
     # CURVE: same server treatment as the REP socket (ZAP handler already running).
     if mode == :tcp && curve
         make_curve_server!(pub_socket, _CURVE_SERVER_SECRET[])
@@ -2425,6 +2614,15 @@ function _serve(;
     # on the default thread pool, keeping this interactive thread free to
     # answer pings during CPU-intensive operations.
     _RUNNING[] = true
+    # Broadcaster owns the XPUB stream socket (send + subscription recv). Runs on
+    # :interactive so it stays scheduled alongside the message loop.
+    _STREAM_TASK[] = Threads.@spawn :interactive begin
+        try
+            _stream_broadcaster(pub_socket)
+        catch e
+            @debug "Stream broadcaster exited" exception = e
+        end
+    end
     local this_task
     this_task = _GATE_TASK[] = Threads.@spawn :interactive begin
         try
@@ -2632,6 +2830,15 @@ function _cleanup()
     end
     _REVISE_WATCHER_TASK[] = nothing
 
+    # Stop the stream broadcaster and wait for it to release the XPUB BEFORE any
+    # socket close below — a concurrent close+recv corrupts the heap (#51 class).
+    # It exits once _RUNNING is false (set by every caller before _cleanup).
+    stask = _STREAM_TASK[]
+    if stask !== nothing && !istaskdone(stask)
+        try; wait(stask); catch; end
+    end
+    _STREAM_TASK[] = nothing
+
     # IPC mode: don't explicitly close ZMQ sockets/context — GC finalizers handle
     # it. Explicit close during atexit was causing intermittent segfaults in LLVM's
     # JIT compiler on Julia 1.12.5.
@@ -2656,6 +2863,17 @@ function _cleanup()
         try; take!(_GATE_OUTBOX); catch; break; end
     end
     Threads.atomic_xchg!(_GATE_INFLIGHT, 0)
+
+    # Drain leftover stream publishes and clear presence state (the broadcaster
+    # has already stopped above) so a same-process restart starts clean.
+    while isready(_STREAM_OUTBOX)
+        try; take!(_STREAM_OUTBOX); catch; break; end
+    end
+    lock(_STREAM_SUBS_LOCK) do
+        empty!(_STREAM_SUBS)
+        empty!(_ON_STREAM_SUBSCRIBE)
+        empty!(_ON_STREAM_UNSUBSCRIBE)
+    end
 
     _ZAP_SOCKET[] = nothing
     _ZAP_TASK[] = nothing

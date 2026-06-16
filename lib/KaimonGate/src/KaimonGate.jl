@@ -160,5 +160,7 @@ public known_servers, unpin_server!, authorized_clients, revoke_client!
 public verify_server_key_via_ssh
 # Observe channel (out-of-band PUB/SUB broadcast, e.g. TachiRei tui:<id>)
 public publish, subscribe
+public on_stream_subscribe, on_stream_unsubscribe
+public stream_subscribed, stream_subscriber_count, stream_topics
 
 end # module KaimonGate
