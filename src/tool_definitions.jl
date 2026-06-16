@@ -714,7 +714,7 @@ Call with no `project_path` to list allowed projects and their status.""",
 
         # Check allowed list
         if !is_project_allowed(path)
-            return "Error: Project not in allowed list. Add it via the TUI Config tab [p] or manually to ~/.config/kaimon/projects.json"
+            return "Error: Project not in allowed list. Add it via the TUI Config tab [p] or manually to ~/.config/kaimon/projects.json, or set \"allow_any_project\": true there to disable the allow-list (intended for isolated container/VM environments)."
         end
 
         # Check for existing running session for the same project

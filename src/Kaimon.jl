@@ -2121,6 +2121,13 @@ function start!(;
         println()
     end
 
+    # Surface the unrestricted-project opt-in — it lets sessions start in ANY
+    # directory with a Project.toml, bypassing the allow-list (#46). Safe in an
+    # isolated container/VM, risky on a shared host, so never silent.
+    if projects_allow_any()
+        @warn "Project allow-list disabled (allow_any_project=true in projects.json) — sessions may start in any directory with a Project.toml"
+    end
+
     all_tools = collect_tools()
     Kaimon.ALL_TOOLS[] = all_tools
 

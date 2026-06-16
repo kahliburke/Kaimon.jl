@@ -26,5 +26,6 @@ include("rate_governor_tests.jl")
 include("service_endpoint_tests.jl")
 include("ollama_backend_tests.jl")
 include("zmq_socket_concurrency_tests.jl")
+include("projects_config_tests.jl")
 
 end # module

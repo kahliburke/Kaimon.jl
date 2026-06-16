@@ -261,7 +261,28 @@ end
 
 # ── Project Allow-List ────────────────────────────────────────────────────────
 
+"""
+    projects_allow_any() -> Bool
+
+Whether the project allow-list is disabled via the top-level `allow_any_project`
+flag in projects.json. Intended for isolated, per-session environments (e.g. a
+container/VM that is itself the security boundary), where maintaining an explicit
+allow-list each session is pointless friction. Defaults to `false`. (#46)
+"""
+function projects_allow_any()::Bool
+    path = get_projects_config_path()
+    isfile(path) || return false
+    try
+        data = JSON.parsefile(path)
+        return Bool(get(data, "allow_any_project", false))
+    catch
+        return false
+    end
+end
+
 function is_project_allowed(path::String)
+    # An explicit opt-in disables the allow-list entirely (container workflows).
+    projects_allow_any() && return true
     entries = load_projects_config()
     norm_path = normalize_path(path)
     for entry in entries
