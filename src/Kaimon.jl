@@ -119,7 +119,17 @@ include("qdrant_client.jl")
 include("tools.jl")
 include("Generate.jl")
 include("gate_prefs.jl")
-include("gate_client.jl")
+# Gate client (TUI-side connection manager), split from the former monolithic
+# gate_client.jl. Order matters: channel (RequestChannel) and types
+# (REPLConnection) before the manager/discovery/request layers that use them.
+include("gate_client_channel.jl")
+include("gate_client_types.jl")
+include("gate_client_manager.jl")
+include("gate_client_discovery.jl")
+include("gate_client_request.jl")
+include("gate_client_debug.jl")
+include("gate_client_tasks.jl")
+include("gate_client_tools.jl")
 include("extensions.jl")
 include("extension_manager.jl")
 include("projects_config.jl")
