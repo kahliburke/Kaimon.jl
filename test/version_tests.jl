@@ -117,8 +117,15 @@ using TOML
     end
 
     @testset "MCP server uses PACKAGE_VERSION" begin
-        # Verify MCPServer.jl uses PACKAGE_VERSION instead of hardcoded version
-        mcp_src = read(joinpath(pkgdir(Kaimon), "src", "MCPServer.jl"), String)
+        # Verify the MCP server uses PACKAGE_VERSION instead of a hardcoded version.
+        # The server is split across MCPServer.jl + mcp_*.jl (the initialize handler
+        # that stamps the version now lives in mcp_rpc_methods.jl).
+        srcdir = joinpath(pkgdir(Kaimon), "src")
+        mcp_src = join(
+            (read(joinpath(srcdir, f), String)
+             for f in readdir(srcdir) if startswith(f, "mcp") || f == "MCPServer.jl"),
+            "\n",
+        )
         @test occursin("PACKAGE_VERSION", mcp_src)
         @test !occursin("\"0.4.0\"", mcp_src)
     end
