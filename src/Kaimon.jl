@@ -497,7 +497,15 @@ include("MCPServer.jl")
 include("vscode.jl")
 include("reflection_tools.jl")
 include("qdrant_tools.jl")
-include("qdrant_indexer.jl")
+# Qdrant indexer, split from the former monolithic qdrant_indexer.jl. Order
+# follows the original (config/consts first, then cache, discovery, chunking,
+# indexing, revise hook).
+include("qdrant_indexer_config.jl")
+include("qdrant_indexer_cache.jl")
+include("qdrant_indexer_discovery.jl")
+include("qdrant_indexer_chunk.jl")
+include("qdrant_indexer_index.jl")
+include("qdrant_indexer_revise.jl")
 include("rate_governor.jl")
 include("service_endpoint.jl")
 include("agent_acp_types.jl")
