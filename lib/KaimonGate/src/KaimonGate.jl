@@ -121,7 +121,18 @@ set_auth_token_provider!(f)   = (_AUTH_TOKEN_PROVIDER[] = f)
 """Install the host's restart-code builder — `(serve_args::String) -> code::String`."""
 set_restart_code_builder!(f)  = (_RESTART_CODE_BUILDER[] = f)
 
-include("gate.jl")
+# The gate server, split from the former monolithic gate.jl. Order matters:
+# gate_state.jl (constants/state) must load first; the rest are functions that
+# forward-reference freely. gate_curve.jl (CURVE/ZAP) loads last, as before.
+include("gate_state.jl")
+include("gate_debug.jl")
+include("gate_tools.jl")
+include("gate_eval.jl")
+include("gate_stream.jl")
+include("gate_protocol.jl")
+include("gate_serve.jl")
+include("gate_jobs.jl")
+include("gate_service.jl")
 include("gate_curve.jl")
 
 """
