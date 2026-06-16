@@ -56,12 +56,16 @@ See `serve`, `stop`, `restart`, `status`.
 Wire-protocol version reported in the gate's pong. The gate and the Kaimon
 client exchange Serialization-encoded messages over ZMQ; this constant gates
 wire compatibility **independently of the package version** — it is bumped only
-on a wire-breaking change to the REQ/REP or PUB/SUB message format. The client
-compares this against the range it speaks rather than comparing package
+on a wire-breaking change to the request/response or PUB/SUB message format. The
+client compares this against the range it speaks rather than comparing package
 versions, so a `KaimonGate` session and a `Kaimon` CLI on different releases
 interoperate as long as their protocol versions match.
+
+Version 2: the request channel moved from per-request ephemeral REQ → a single
+persistent DEALER (client) multiplexed by correlation id onto a ROUTER (gate).
+Framing is now `[corr_id (8-byte UInt64), payload]`; v1 REP gates are incompatible.
 """
-const PROTOCOL_VERSION = 1
+const PROTOCOL_VERSION = 2
 
 # ── Host-integration hooks ───────────────────────────────────────────────────
 # KaimonGate runs standalone with the safe defaults below. When the full Kaimon

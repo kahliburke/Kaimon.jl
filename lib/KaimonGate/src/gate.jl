@@ -137,6 +137,24 @@ const _RESTARTING = Ref{Bool}(false)
 const _SHUTTING_DOWN = Ref{Bool}(false)
 const _ON_SHUTDOWN = Ref{Any}(nothing)
 
+# ── ROUTER request channel (protocol v2) ─────────────────────────────────────
+# The gate's request socket is a ROUTER. A single owner task (the message loop)
+# is the ONLY thing that touches it — it interleaves recv (new requests) with
+# draining replies that worker tasks hand back via _GATE_OUTBOX, routed to the
+# right client by ROUTER identity. Workers never touch the socket, so a slow
+# handler (a multi-second sync eval, or a blocked debug_eval) can't stall intake.
+# Each outbox entry is (identity, corr_id, reply-bytes); the corr_id is echoed
+# back so the client DEALER can demultiplex concurrent in-flight requests.
+const _GATE_OUTBOX =
+    Channel{Tuple{Vector{UInt8},Vector{UInt8},Vector{UInt8}}}(Inf)
+# Backstop on concurrent worker tasks so a request storm can't spawn unbounded
+# tasks. At the cap the owner stops accepting new requests; pending requests
+# stay queued in the ROUTER (client DEALER blocks in its own recv) until a slot
+# frees. Env-overridable.
+const _GATE_INFLIGHT = Threads.Atomic{Int}(0)
+const _GATE_MAX_WORKERS = Ref{Int}(
+    something(tryparse(Int, get(ENV, "KAIMON_GATE_MAX_WORKERS", "")), 16))
+
 # ── Debug Breakpoint State ───────────────────────────────────────────────────
 # Programmatic breakpoint system for agent-assisted debugging.
 # _breakpoint_hook() blocks the calling thread and communicates with the
@@ -203,7 +221,15 @@ function _breakpoint_hook(locals::Dict{Symbol,Any}; file::String = "unknown", li
         end
     end
 
-    take!(resume_ch)
+    try
+        take!(resume_ch)
+    catch e
+        # Let the user break out of a paused breakpoint locally (Ctrl-C) instead
+        # of being stuck until an agent resumes it (#34). Any failure to wait
+        # (interrupt or a closed channel during shutdown) just resumes execution.
+        e isa InterruptException || e isa InvalidStateException || rethrow()
+        @info "Breakpoint released locally"
+    end
     close(eval_ch)
     _DEBUG_PAUSED[] = nothing
     _DEBUG_RESUME_CH[] = nothing
@@ -246,12 +272,25 @@ function _install_infiltrator_hook!()
     if _INFILTRATOR_ORIG_PROMPT[] === nothing
         _INFILTRATOR_ORIG_PROMPT[] = Infiltrator.start_prompt
     end
-    # Override start_prompt to route through our breakpoint system
+    # (Re)enable routing — a prior stop()/uninstall_infiltrator_hook! set the
+    # disabled flag, so a fresh serve() in the same process must clear it.
+    _INFILTRATOR_DISABLED[] = false
+    # Override start_prompt to route through our breakpoint system. Falls back to
+    # the original prompt when the gate is stopped or the hook was disabled, so a
+    # breakpoint hit after Gate.stop() opens the normal Infiltrator REPL instead
+    # of hanging on a dead gate (#34).
     @eval function ($Infiltrator).start_prompt(
         mod, locals::Dict{Symbol,Any}, file, fileline, ex = nothing, bt = nothing;
         terminal = nothing, repl = nothing, nostack = false,
     )
-        $(@__MODULE__)._breakpoint_hook(locals; file = string(file), line = Int(fileline))
+        M = $(@__MODULE__)
+        if M._INFILTRATOR_DISABLED[] || !M._RUNNING[]
+            orig = M._INFILTRATOR_ORIG_PROMPT[]
+            return orig === nothing ? nothing :
+                   orig(mod, locals, file, fileline, ex, bt;
+                        terminal = terminal, repl = repl, nostack = nostack)
+        end
+        M._breakpoint_hook(locals; file = string(file), line = Int(fileline))
     end
     _INFILTRATOR_HOOKED[] = true
     @info "Infiltrator.jl integration active — @infiltrate routes through gate debug protocol"
@@ -1912,27 +1951,94 @@ function handle_message(request::NamedTuple)
     end
 end
 
+# ── Multipart framing (ZMQ.jl 1.5 has no multipart helper) ────────────────────
+# A DEALER→ROUTER message arrives as [identity, corr_id, payload]; the reply is
+# sent with the same identity envelope and corr_id echoed back. recv the first
+# frame (bounded by rcvtimeo), then the rest atomically while `rcvmore`.
+function _recv_multipart(sock::ZMQ.Socket)
+    parts = Vector{UInt8}[_zmq_recv(sock)]   # may throw ZMQ.TimeoutError
+    while sock.rcvmore
+        push!(parts, _zmq_recv(sock))
+    end
+    return parts
+end
+
+function _send_multipart(sock::ZMQ.Socket, parts::Vector{Vector{UInt8}})
+    n = length(parts)
+    for (i, p) in enumerate(parts)
+        send(sock, p; more = (i < n))
+    end
+end
+
+# Drain whatever replies are ready onto the ROUTER (owner-only socket access).
+function _drain_gate_outbox!(socket::ZMQ.Socket)
+    while isready(_GATE_OUTBOX)
+        (identity, corr_id, reply) = take!(_GATE_OUTBOX)
+        try
+            _send_multipart(socket, Vector{UInt8}[identity, corr_id, reply])
+        catch
+            # ROUTER drops replies to vanished peers (timed-out/gone clients) —
+            # expected; nothing else can be done with this reply.
+            _RUNNING[] || break
+        end
+    end
+end
+
+# Run one request to completion on its own task and hand the reply to the outbox.
+# Never touches the socket. invokelatest so handle_message (and the session tools
+# it calls) runs in the latest world age — required for tools whose types were
+# defined after the gate loop started.
+function _serve_request(identity::Vector{UInt8}, corr_id::Vector{UInt8}, request)
+    reply = try
+        Base.invokelatest(handle_message, request)
+    catch e
+        (type = :error, message = sprint(showerror, e))
+    end
+    io = IOBuffer()
+    serialize(io, reply)
+    put!(_GATE_OUTBOX, (identity, corr_id, take!(io)))
+    Threads.atomic_sub!(_GATE_INFLIGHT, 1)
+    return nothing
+end
+
 function message_loop(socket::ZMQ.Socket)
     while _RUNNING[]
         try
-            # recv with timeout — throws TimeoutError on timeout
-            raw = _zmq_recv(socket)
-            request = deserialize(IOBuffer(raw))
+            # 1. flush any ready worker replies first (owner-only socket access)
+            _drain_gate_outbox!(socket)
 
-            # invokelatest so handle_message (and everything it calls) runs
-            # in the latest world age — required for session tools whose
-            # types/methods were defined after the gate loop started.
-            response = Base.invokelatest(handle_message, request)
+            # 2. backpressure: at the worker cap, let the outbox drain before
+            #    accepting more. Pending requests stay queued in the ROUTER.
+            if _GATE_INFLIGHT[] >= _GATE_MAX_WORKERS[]
+                sleep(0.005)
+                continue
+            end
 
-            # Serialize and send response
-            io = IOBuffer()
-            serialize(io, response)
-            send(socket, take!(io))
+            # 3. recv one request — [identity, corr_id, payload] (bounded by rcvtimeo)
+            parts = _recv_multipart(socket)
+            length(parts) >= 3 || continue
+            identity = parts[1]
+            corr_id = parts[2]
+            payload = parts[end]
+
+            request = try
+                deserialize(IOBuffer(payload))
+            catch
+                io = IOBuffer()
+                serialize(io, (type = :error, message = "malformed request"))
+                put!(_GATE_OUTBOX, (identity, corr_id, take!(io)))
+                continue
+            end
+
+            # 4. hand off to a worker — DO NOT run inline (a slow sync eval or a
+            #    blocked debug_eval must not stall intake / pings).
+            Threads.atomic_add!(_GATE_INFLIGHT, 1)
+            Threads.@spawn _serve_request(identity, corr_id, request)
         catch e
             if !_RUNNING[]
                 break  # Clean shutdown
             end
-            # Timeout is expected — just loop to check _RUNNING
+            # Timeout is expected — just loop to check _RUNNING and drain outbox.
             if e isa ZMQ.TimeoutError
                 continue
             end
@@ -1940,15 +2046,20 @@ function message_loop(socket::ZMQ.Socket)
                 break
             end
             @debug "Gate message loop error" exception = e
-            # Try to send error response
-            try
-                io = IOBuffer()
-                serialize(io, (type = :error, message = sprint(showerror, e)))
-                send(socket, take!(io))
-            catch
-                # If we can't even send the error, just continue
-            end
         end
+    end
+
+    # Final bounded drain so in-flight replies (notably the :shutdown / :restart
+    # :ok that the client is still waiting on) get flushed before teardown. The
+    # :restart handler then sleeps 0.3s before execvp, so the reply lands.
+    deadline = time() + 1.0
+    while (isready(_GATE_OUTBOX) || _GATE_INFLIGHT[] > 0) && time() < deadline
+        try
+            _drain_gate_outbox!(socket)
+        catch
+            break
+        end
+        sleep(0.005)
     end
 end
 
@@ -2206,9 +2317,12 @@ function _serve(;
         false
     end
 
-    # Create ZMQ context and sockets
+    # Create ZMQ context and sockets. The request socket is a ROUTER (protocol
+    # v2): a single client DEALER multiplexes concurrent requests onto it, demuxed
+    # by correlation id. Replaces the old REP, which forced strict request/reply
+    # alternation and drove per-request ephemeral REQ churn on the client.
     ctx = Context()
-    socket = _zmq_socket(ctx, REP)
+    socket = _zmq_socket(ctx, ROUTER)
     _GATE_CONTEXT[] = ctx
     _GATE_SOCKET[] = socket
     _MODE[] = mode
@@ -2234,9 +2348,10 @@ function _serve(;
         end
     end
 
-    # 1s receive timeout so message loop can check _RUNNING periodically.
+    # Short receive timeout so the owner loop cycles back to drain _GATE_OUTBOX
+    # (worker replies) and re-check _RUNNING promptly.
     # linger=0: close() returns immediately without blocking to drain.
-    socket.rcvtimeo = 1000
+    socket.rcvtimeo = 200
     socket.linger = 0
 
     # CURVE (opt-in, TCP only): make the REP socket a CURVE server. Unless
@@ -2456,6 +2571,12 @@ function stop()
     end
 
     _cleanup()
+    # Restore Infiltrator's normal prompt so @infiltrate works locally after
+    # stop() instead of routing to the now-dead gate and hanging (#34).
+    try
+        uninstall_infiltrator_hook!()
+    catch
+    end
     printstyled("  Kaimon gate "; color = :yellow, bold = true)
     printstyled("disconnected\n"; color = :yellow)
 end
@@ -2529,6 +2650,13 @@ function _cleanup()
             try; close(ctx); catch; end
         end
     end
+    # Drain any undelivered worker replies and reset the worker counter so a
+    # restart (same process, fresh serve()) starts with an empty channel.
+    while isready(_GATE_OUTBOX)
+        try; take!(_GATE_OUTBOX); catch; break; end
+    end
+    Threads.atomic_xchg!(_GATE_INFLIGHT, 0)
+
     _ZAP_SOCKET[] = nothing
     _ZAP_TASK[] = nothing
     _CURVE_ENABLED[] = false
@@ -2577,7 +2705,7 @@ function status()
         println("  Namespace: $(_SESSION_NAMESPACE[])")
         println("  Uptime:    $(mins)m")
         println("  PID:       $(getpid())")
-        println("  REP:       $rep_ep")
+        println("  ROUTER:    $rep_ep")
         println("  PUB:       $(_STREAM_ENDPOINT[])")
         println("  Mirror:    $(_MIRROR_REPL[])")
         println("  Tools:     $(length(_SESSION_TOOLS[]))")

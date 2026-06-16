@@ -18,12 +18,15 @@ using Dates
 using Kaimon
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Mock gate — a minimal REP + PUB server that responds to :ping and :eval_async
+# Mock gate — a minimal ROUTER + PUB server that responds to :ping and
+# :eval_async, speaking protocol v2: requests arrive as [identity, corr_id,
+# payload]; replies echo [identity, corr_id, payload] so the client DEALER can
+# demultiplex (mirrors KaimonGate's real ROUTER loop).
 # ─────────────────────────────────────────────────────────────────────────────
 
 mutable struct MockGate
     ctx::ZMQ.Context
-    rep::ZMQ.Socket      # REP socket (like the gate's main socket)
+    router::ZMQ.Socket   # ROUTER socket (like the gate's main socket)
     pub::ZMQ.Socket      # PUB socket (like the gate's stream socket)
     rep_port::Int
     pub_port::Int
@@ -35,11 +38,11 @@ end
 """Start a mock gate on fixed REQ port, ephemeral PUB port."""
 function start_mock_gate(req_port::Int; pub_port::Int=0)
     ctx = Context()
-    rep = Socket(ctx, REP)
-    rep.rcvtimeo = 1000
-    rep.sndtimeo = 1000
-    rep.linger = 0
-    bind(rep, "tcp://127.0.0.1:$req_port")
+    router = Socket(ctx, ROUTER)
+    router.rcvtimeo = 1000
+    router.sndtimeo = 1000
+    router.linger = 0
+    bind(router, "tcp://127.0.0.1:$req_port")
 
     pub = Socket(ctx, PUB)
     pub.sndhwm = 0
@@ -49,28 +52,49 @@ function start_mock_gate(req_port::Int; pub_port::Int=0)
     m = match(r":(\d+)$", pub_endpoint)
     actual_pub_port = parse(Int, m.captures[1])
 
-    gate = MockGate(ctx, rep, pub, req_port, actual_pub_port, true, nothing,
+    gate = MockGate(ctx, router, pub, req_port, actual_pub_port, true, nothing,
                     string(Base.UUID(rand(UInt128))))
 
     gate.task = Threads.@spawn _run_mock_gate(gate)
     return gate
 end
 
+# recv a full multipart message [identity, corr_id, payload] (rcvtimeo-bounded).
+function _mock_recv_parts(sock::ZMQ.Socket)
+    parts = Vector{UInt8}[recv(sock, Vector{UInt8})]
+    while sock.rcvmore
+        push!(parts, recv(sock, Vector{UInt8}))
+    end
+    return parts
+end
+
 function _run_mock_gate(gate::MockGate)
     while gate.running
-        raw = try
-            recv(gate.rep, Vector{UInt8})
+        parts = try
+            _mock_recv_parts(gate.router)
         catch
             continue
         end
+        length(parts) >= 3 || continue
+        identity = parts[1]
+        corr_id = parts[2]
+        payload = parts[end]
+
+        send_reply = resp -> begin
+            io = IOBuffer()
+            Serialization.serialize(io, resp)
+            try
+                send(gate.router, identity; more = true)
+                send(gate.router, corr_id; more = true)
+                send(gate.router, take!(io))
+            catch
+            end
+        end
 
         msg = try
-            Serialization.deserialize(IOBuffer(raw))
+            Serialization.deserialize(IOBuffer(payload))
         catch
-            # Send error response
-            io = IOBuffer()
-            Serialization.serialize(io, (type = :error, message = "deserialize failed"))
-            send(gate.rep, take!(io))
+            send_reply((type = :error, message = "deserialize failed"))
             continue
         end
 
@@ -102,12 +126,7 @@ function _run_mock_gate(gate::MockGate)
             (type = :error, message = "unknown request type: $(get(msg, :type, nothing))")
         end
 
-        io = IOBuffer()
-        Serialization.serialize(io, resp)
-        try
-            send(gate.rep, take!(io))
-        catch
-        end
+        send_reply(resp)
     end
 end
 
@@ -132,7 +151,7 @@ function stop_mock_gate!(gate::MockGate)
     if gate.task !== nothing
         try; wait(gate.task); catch; end
     end
-    try; close(gate.rep); catch; end
+    try; close(gate.router); catch; end
     try; close(gate.pub); catch; end
     try; close(gate.ctx); catch; end
 end
@@ -173,17 +192,12 @@ const TEST_REQ_PORT = 39_876
                 pong = Kaimon.ping(conn)
                 # REQ socket needs reconnection after gate restart
                 if pong === nothing
-                    # Reconnect REQ socket (gate2 is on the same port)
+                    # Rebuild the DEALER request channel (gate2 is on the same port)
                     lock(conn.req_lock) do
-                        if conn.req_socket !== nothing
-                            try; close(conn.req_socket); catch; end
+                        if conn.req_channel !== nothing
+                            Kaimon._close_request_channel!(conn.req_channel)
                         end
-                        sock = Socket(mgr.zmq_context, REQ)
-                        sock.rcvtimeo = 5000
-                        sock.sndtimeo = 2000
-                        sock.linger = 0
-                        connect(sock, conn.endpoint)
-                        conn.req_socket = sock
+                        conn.req_channel = Kaimon.RequestChannel(conn.zmq_context, conn.endpoint)
                     end
                     conn.status = :connected
                     pong = Kaimon.ping(conn)
@@ -296,17 +310,12 @@ const TEST_REQ_PORT = 39_876
             sleep(0.3)
 
             try
-                # Reconnect REQ socket to gate2
+                # Rebuild the DEALER request channel to gate2
                 lock(conn.req_lock) do
-                    if conn.req_socket !== nothing
-                        try; close(conn.req_socket); catch; end
+                    if conn.req_channel !== nothing
+                        Kaimon._close_request_channel!(conn.req_channel)
                     end
-                    sock = Socket(mgr.zmq_context, REQ)
-                    sock.rcvtimeo = 5000
-                    sock.sndtimeo = 2000
-                    sock.linger = 0
-                    connect(sock, conn.endpoint)
-                    conn.req_socket = sock
+                    conn.req_channel = Kaimon.RequestChannel(conn.zmq_context, conn.endpoint)
                 end
                 conn.status = :connected
 

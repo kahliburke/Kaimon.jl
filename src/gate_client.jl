@@ -15,17 +15,189 @@ end
 
 # Thread-safe socket *construction*. ZMQ.jl appends every new Socket to its
 # Context's `sockets::Vector{WeakRef}` with an UNLOCKED `push!` (ZMQ.jl
-# socket.jl). Kaimon creates sockets on the shared `mgr.zmq_context` from many
-# threads at once — ephemeral REQ workers (`_req_send_recv`), parallel health
-# pings, per-connection SUBs, the event PUB — so those `push!`es race. A racing
-# push! reallocates the backing Memory and frees the old buffer while GC is
-# concurrently scanning that WeakRef array → use-after-free surfacing as an
-# intermittent heap corruption in `gc_sweep_pool` ("memory corruption of free
-# block"). One process-wide lock around construction closes the window; the
-# socket I/O afterward is unaffected (and still guarded per-socket elsewhere).
+# socket.jl). Kaimon still constructs sockets on the shared `mgr.zmq_context`
+# from several threads at once — parallel connects (DEALER + SUB per connection),
+# health pings, the event PUB — so those `push!`es can still race. A racing push!
+# reallocates the backing Memory and frees the old buffer while GC scans that
+# WeakRef array → use-after-free surfacing as `gc_sweep_pool` heap corruption.
+# One process-wide lock around construction closes the window. (Protocol v2
+# retired the per-request ephemeral REQ that drove this at request rate; the
+# remaining per-connection construction is rare but still guarded here.)
 const _ZMQ_SOCKET_LOCK = ReentrantLock()
 _zmq_socket(ctx::ZMQ.Context, typ) = lock(_ZMQ_SOCKET_LOCK) do
     Socket(ctx, typ)
+end
+
+# ── Request channel (protocol v2: persistent DEALER, correlation-id muxed) ──────
+# One DEALER per connection replaces the old per-request ephemeral REQ. Creating
+# a fresh REQ for every request grew ZMQ's per-Context `sockets::Vector{WeakRef}`
+# without bound (ZMQ.jl never removes a socket's weakref on close) and raced
+# socket construction across threads — the source of the intermittent
+# `gc_sweep_pool` heap corruption. The DEALER is created ONCE in connect!; all
+# requests multiplex over it, demuxed by an 8-byte correlation id the gate echoes
+# back. Strict ownership: exactly one task (the sender) `send`s and one task (the
+# reader) `recv`s the socket — no other code touches it.
+#
+# Wire framing — client→gate: [corr_id (8 bytes), payload]; gate→client (ROUTER
+# strips its identity frame): [corr_id, reply].
+mutable struct RequestChannel
+    dealer::ZMQ.Socket
+    endpoint::String
+    send_q::Channel{Tuple{UInt64,Vector{UInt8}}}  # (corr_id, payload) → sender task
+    pending::Dict{UInt64,Channel{Any}}            # corr_id → reply inbox
+    pending_lock::ReentrantLock
+    counter::Threads.Atomic{UInt64}               # corr_id minting
+    reader::Union{Task,Nothing}
+    sender::Union{Task,Nothing}
+    alive::Ref{Bool}
+end
+
+# corr_id ↔ 8 bytes (little-endian, explicit so it's arch-independent on the
+# wire — though the gate treats the id as opaque bytes and only echoes it back).
+function _corr_bytes(id::UInt64)
+    b = Vector{UInt8}(undef, 8)
+    @inbounds for i in 1:8
+        b[i] = (id >> (8 * (i - 1))) % UInt8
+    end
+    return b
+end
+function _corr_from_bytes(b::AbstractVector{UInt8})
+    id = UInt64(0)
+    @inbounds for i in 1:8
+        id |= UInt64(b[i]) << (8 * (i - 1))
+    end
+    return id
+end
+
+# Deliver a reply to its waiting caller; drop replies for unknown/timed-out
+# correlation ids (the caller already gave up and unregistered).
+function _rc_route_reply!(rc::RequestChannel, corr_id::UInt64, payload::Vector{UInt8})
+    inbox = lock(rc.pending_lock) do
+        get(rc.pending, corr_id, nothing)
+    end
+    inbox === nothing && return
+    try
+        put!(inbox, payload)
+    catch
+        # inbox closed (caller timed out / disconnected) — drop
+    end
+    return nothing
+end
+
+# Sole writer of the DEALER. Drains the send queue until it's closed.
+function _rc_sender(rc::RequestChannel)
+    try
+        for (corr_id, payload) in rc.send_q
+            rc.alive[] || break
+            try
+                send(rc.dealer, _corr_bytes(corr_id); more = true)
+                send(rc.dealer, payload)
+            catch e
+                # Send failed — fail this caller fast instead of leaving it to
+                # time out; the rest of the queue continues.
+                _rc_route_reply!(rc, corr_id, UInt8[])  # empty → caller sees deser error
+                @debug "RequestChannel send failed" exception = e
+            end
+        end
+    catch
+        # send_q closed during shutdown — exit
+    end
+end
+
+# Sole reader of the DEALER. Owns the socket's close so no other task closes it
+# out from under an in-flight recv (the classic ZMQ use-after-free).
+function _rc_reader(rc::RequestChannel)
+    sock = rc.dealer
+    try
+        while rc.alive[]
+            local corr_b
+            try
+                corr_b = _zmq_recv(sock)          # corr_id frame (rcvtimeo-bounded)
+            catch e
+                e isa ZMQ.TimeoutError && continue
+                rc.alive[] || break
+                (e isa ZMQ.StateError || e isa EOFError) && break
+                sleep(0.01)
+                continue
+            end
+            payload = UInt8[]
+            try
+                if sock.rcvmore
+                    payload = _zmq_recv(sock)
+                    while sock.rcvmore                # drain any unexpected extra frames
+                        _zmq_recv(sock)
+                    end
+                end
+            catch
+                continue
+            end
+            length(corr_b) == 8 || continue
+            _rc_route_reply!(rc, _corr_from_bytes(corr_b), payload)
+        end
+    finally
+        # The owning task closes the socket — never disconnect!/another task.
+        try
+            close(sock)
+        catch
+        end
+    end
+end
+
+"""Build a DEALER request channel on `ctx`, connected to `endpoint`, and start
+its reader+sender tasks. `curve!` applies CURVE to the socket once before connect
+(a no-op for plain IPC/TCP)."""
+function RequestChannel(ctx::ZMQ.Context, endpoint::String; curve!::Function = identity)
+    dealer = _zmq_socket(ctx, DEALER)
+    dealer.linger = 0       # don't block close; drop unsent on a dead peer
+    dealer.rcvtimeo = 200   # reader poll cadence so it can notice alive=false
+    dealer.sndtimeo = 2000  # bound a send on a full buffer
+    dealer.sndhwm = 1000    # cap queued-to-dead-peer growth
+    curve!(dealer)          # CURVE applied ONCE per connection (not per request)
+    connect(dealer, endpoint)
+    rc = RequestChannel(
+        dealer,
+        endpoint,
+        Channel{Tuple{UInt64,Vector{UInt8}}}(Inf),
+        Dict{UInt64,Channel{Any}}(),
+        ReentrantLock(),
+        Threads.Atomic{UInt64}(0),
+        nothing,
+        nothing,
+        Ref(true),
+    )
+    rc.sender = Threads.@spawn _rc_sender(rc)
+    rc.reader = Threads.@spawn _rc_reader(rc)
+    return rc
+end
+
+"""Tear down a request channel: stop the reader/sender, fail every pending caller
+so they return immediately instead of waiting out their timeout, and let the
+reader close the DEALER. Safe to call more than once."""
+function _close_request_channel!(rc::RequestChannel)
+    rc.alive[] = false
+    try
+        close(rc.send_q)   # unblocks the sender's `for … in send_q`
+    catch
+    end
+    lock(rc.pending_lock) do
+        for (_, inbox) in rc.pending
+            try
+                close(inbox)
+            catch
+            end
+        end
+        empty!(rc.pending)
+    end
+    # Wait briefly for the reader to notice (rcvtimeo ~200ms) and close the
+    # DEALER itself — its owning task must be the one to close it.
+    rd = rc.reader
+    if rd !== nothing
+        deadline = time() + 1.0
+        while !istaskdone(rd) && time() < deadline
+            sleep(0.02)
+        end
+    end
+    return nothing
 end
 
 # ── Types ─────────────────────────────────────────────────────────────────────
@@ -59,7 +231,7 @@ mutable struct REPLConnection
     socket_path::String          # filesystem path to .sock
     endpoint::String             # ipc:// endpoint
     stream_endpoint::String      # ipc:// endpoint for PUB/SUB streaming
-    req_socket::Union{ZMQ.Socket,Nothing}
+    req_channel::Union{RequestChannel,Nothing}  # persistent DEALER (protocol v2)
     sub_socket::Union{ZMQ.Socket,Nothing}   # SUB for streaming stdout/stderr
     zmq_context::Union{ZMQ.Context,Nothing} # shared context for socket recreation
     req_lock::ReentrantLock      # protects REQ socket access (connect/disconnect)
@@ -1012,22 +1184,19 @@ end
 function connect!(mgr::ConnectionManager, conn::REPLConnection)
     conn.status = :connecting
     try
-        # TCP/CURVE sessions get a DEDICATED ZMQ context. The per-request
-        # ephemeral REQs in _req_send_recv (and this REQ) then don't share the
-        # one I/O thread of mgr.zmq_context that serves every IPC session — under
-        # load a CURVE handshake on the shared context can exceed the connect
-        # ping timeout. IPC sessions keep the shared context. All of a TCP conn's
-        # sockets live on this context and are torn down together in disconnect!.
+        # TCP/CURVE sessions get a DEDICATED ZMQ context so their CURVE handshake
+        # doesn't contend for the one I/O thread of mgr.zmq_context that serves
+        # every IPC session (under load that could exceed the connect ping
+        # timeout); the whole context is parked + closed in disconnect!. IPC
+        # sessions share mgr.zmq_context. Each connection now creates just ONE
+        # DEALER (+ one SUB), created once — no per-request socket churn.
         ctx = _is_tcp(conn) ? Context() : mgr.zmq_context
         conn.zmq_context = ctx
 
-        socket = _zmq_socket(ctx, REQ)
-        socket.rcvtimeo = 5000   # 5s timeout for responses
-        socket.sndtimeo = 2000   # 2s timeout for sends
-        socket.linger = 0        # don't block on close
-        _apply_curve_client!(socket, conn)   # CURVE (no-op unless server_pubkey set)
-        connect(socket, conn.endpoint)
-        conn.req_socket = socket
+        # Persistent DEALER for this connection (protocol v2) — created once, CURVE
+        # applied once. All requests multiplex over it (see RequestChannel).
+        conn.req_channel = RequestChannel(ctx, conn.endpoint;
+            curve! = sock -> _apply_curve_client!(sock, conn))
 
         # IPC: connect the stream SUB now. TCP: its PUB port may be ephemeral, so
         # the SUB is created after the pong in connect_tcp! (on this same context).
@@ -1061,19 +1230,21 @@ function connect!(mgr::ConnectionManager, conn::REPLConnection)
     catch e
         @debug "Failed to connect to gate" session_id = conn.session_id exception = e
         conn.status = :disconnected
-        conn.req_socket = nothing
+        rc = conn.req_channel
+        rc === nothing || _close_request_channel!(rc)
+        conn.req_channel = nothing
         return false
     end
 end
 
 # ── Deferred ZMQ context termination ─────────────────────────────────────────
 # A TCP/CURVE session owns a dedicated ZMQ context (an OS I/O thread). It can't
-# be terminated the instant the session disconnects: ephemeral REQ workers
-# (_req_send_recv) may still hold live sockets on it, and terminating a context
-# with live sockets corrupts memory. Workers are bounded (rcvtimeo ≤ 30s +
-# sndtimeo 2s), so park the dead context and terminate it one+ health cycle
-# later, by which point any in-flight worker has certainly finished (#51).
-const _CONTEXT_REAP_GRACE = 35.0  # seconds; > the ~32s worst-case ephemeral worker
+# be terminated the instant the session disconnects: terminating a context with
+# live sockets corrupts memory. disconnect! now closes the DEALER (its reader
+# task closes the socket within ~rcvtimeo) and the SUB before parking, but park
+# the context for a grace window anyway so a slow reader can't race
+# zmq_ctx_term (#51). Defense-in-depth, no longer load-bearing.
+const _CONTEXT_REAP_GRACE = 35.0  # seconds; generous margin over the reader's exit
 const _PENDING_CONTEXTS = Tuple{ZMQ.Context,Float64}[]   # (context, parked_at_seconds)
 const _PENDING_CONTEXTS_LOCK = ReentrantLock()
 
@@ -1105,14 +1276,11 @@ function _reap_parked_contexts!()
 end
 
 function disconnect!(conn::REPLConnection)
-    lock(conn.req_lock) do
-        if conn.req_socket !== nothing
-            try
-                close(conn.req_socket)
-            catch
-            end
-            conn.req_socket = nothing
-        end
+    # Detach the request channel under the lock, then tear it down outside it so
+    # the bounded reader-join wait doesn't hold req_lock.
+    rc = lock(conn.req_lock) do
+        rc = conn.req_channel
+        conn.req_channel = nothing
         if conn.sub_socket !== nothing
             try
                 close(conn.sub_socket)
@@ -1121,7 +1289,9 @@ function disconnect!(conn::REPLConnection)
             conn.sub_socket = nothing
         end
         conn.status = :disconnected
+        return rc
     end
+    rc === nothing || _close_request_channel!(rc)  # fails all pending callers fast
 
     # Wake any pending eval callers so they fail immediately instead of
     # blocking until the hard timeout.  Closing a Channel causes `take!`
@@ -1146,30 +1316,28 @@ function disconnect!(conn::REPLConnection)
     end
 end
 
-# ── Async REQ Send/Recv ──────────────────────────────────────────────────────
-# Each request spawns its own async task with an ephemeral REQ socket. This
-# means a stalled or timed-out request on one socket cannot block any other
-# requests — they're fully independent. The ZMQ context is shared (thread-safe)
-# and multiple REQ sockets can connect to the same REP endpoint simultaneously.
+# ── Request Send/Recv ─────────────────────────────────────────────────────────
+# Requests multiplex over the connection's single persistent DEALER
+# (RequestChannel). Each call mints a correlation id, registers a one-shot inbox,
+# enqueues the framed request, and waits for the gate's reply (routed back by the
+# reader task). A stalled/timed-out request can't starve others — they're
+# independent inboxes — and no socket is created per request (the heap-corruption
+# fix). The calling task never touches ZMQ directly.
 
 """
     _req_send_recv(conn, request; caller_timeout=10.0) -> NamedTuple
 
-Send a request to the gate asynchronously and wait up to `caller_timeout`
-seconds for the response. Returns `(ok=true, response=...)` on success, or
-`(ok=false, error="...")` on failure/timeout.
-
-Internally spawns an async task with an ephemeral REQ socket, so the calling
-task never blocks on ZMQ. Multiple concurrent calls are fully independent —
-a stalled request cannot starve others.
+Send a request to the gate over its persistent DEALER and wait up to
+`caller_timeout` seconds for the correlated response. Returns
+`(ok=true, response=...)` on success, or `(ok=false, error="...")` on
+failure/timeout. Multiple concurrent calls are fully independent.
 """
 function _req_send_recv(conn::REPLConnection, request; caller_timeout::Float64 = 10.0)
-    ctx = conn.zmq_context
-    if ctx === nothing || conn.status ∉ (:connected, :evaluating, :stalled)
+    rc = conn.req_channel
+    if rc === nothing || !rc.alive[] || conn.status ∉ (:connected, :evaluating, :stalled)
         return (ok = false, error = "Gate not connected (status=$(conn.status))")
     end
 
-    endpoint = conn.endpoint
     # Inject auth token for TCP connections
     if !isempty(conn.auth_token) && request isa NamedTuple
         request = merge(request, (token = conn.auth_token,))
@@ -1178,60 +1346,48 @@ function _req_send_recv(conn::REPLConnection, request; caller_timeout::Float64 =
     serialize(io, request)
     request_bytes = take!(io)
 
-    # Response channel — the async task puts its result here
-    response_ch = Channel{Any}(1)
+    corr_id = Threads.atomic_add!(rc.counter, UInt64(1))  # returns prior value; unique
+    inbox = Channel{Any}(1)
+    lock(rc.pending_lock) do
+        rc.pending[corr_id] = inbox
+    end
 
-    Threads.@spawn begin
-        local sock = nothing
+    try
         try
-            sock = _zmq_socket(ctx, REQ)
-            sock.rcvtimeo = min(round(Int, caller_timeout * 1000), 30000)
-            sock.sndtimeo = 2000
-            sock.linger = 0
-            _apply_curve_client!(sock, conn)   # per-request ephemeral REQ needs CURVE too
-            connect(sock, endpoint)
-            send(sock, request_bytes)
-            raw = _zmq_recv(sock)
-            response = deserialize(IOBuffer(raw))
-            conn.last_seen = now()
-            put!(response_ch, (ok = true, response = response))
-        catch e
-            err_msg = if e isa ZMQ.TimeoutError
-                "Gate request timed out"
-            else
-                "Connection error: $(sprint(showerror, e))"
-            end
-            try
-                put!(response_ch, (ok = false, error = err_msg))
-            catch
-            end
-        finally
-            if sock !== nothing
-                try
-                    close(sock)
-                catch
+            put!(rc.send_q, (corr_id, request_bytes))
+        catch
+            return (ok = false, error = "Request channel closed")
+        end
+
+        # Wait for the correlated reply (polling the inbox, not ZMQ).
+        deadline = time() + caller_timeout
+        while time() < deadline
+            if isready(inbox)
+                raw = take!(inbox)
+                isempty(raw) && return (ok = false, error = "Gate request failed (send error)")
+                response = try
+                    deserialize(IOBuffer(raw))
+                catch e
+                    return (ok = false, error = "Malformed response: $(sprint(showerror, e))")
                 end
+                conn.last_seen = now()
+                return (ok = true, response = response)
             end
+            rc.alive[] || return (ok = false, error = "Gate disconnected")
+            sleep(0.005)
+        end
+        return (ok = false, error = "Caller timeout after $(caller_timeout)s")
+    finally
+        # Always unregister so the pending map can't grow without bound and a late
+        # reply is dropped by the reader.
+        lock(rc.pending_lock) do
+            delete!(rc.pending, corr_id)
+        end
+        try
+            close(inbox)
+        catch
         end
     end
-
-    # Wait for result with timeout (polling Julia Channel, not ZMQ)
-    deadline = time() + caller_timeout
-    while time() < deadline
-        if isready(response_ch)
-            result = try
-                take!(response_ch)
-            catch
-                return (ok = false, error = "Response channel error")
-            end
-            return result
-        end
-        sleep(0.05)
-    end
-
-    # Timed out — the async task may still complete later, but we don't care
-    close(response_ch)
-    return (ok = false, error = "Caller timeout after $(caller_timeout)s")
 end
 
 # ── Eval / Communication ─────────────────────────────────────────────────────
@@ -1249,7 +1405,7 @@ function eval_remote(
         exception = "Gate not connected (session=$(conn.session_id), status=$(conn.status))",
         backtrace = nothing,
     )
-    if conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing
+    if conn.status ∉ (:connected, :evaluating) || conn.req_channel === nothing
         return _no_conn
     end
 
@@ -1293,7 +1449,7 @@ function eval_remote_async(
     request_id::String = "",  # caller-supplied ID (used for eval tracking)
     main_thread::Bool = false,  # route through REPL backend (thread 1) for GLMakie/GLFW
 )
-    if conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing
+    if conn.status ∉ (:connected, :evaluating) || conn.req_channel === nothing
         return (
             stdout = "",
             stderr = "",
@@ -1509,7 +1665,7 @@ function eval_remote_async(
 end
 
 function get_remote_options(conn::REPLConnection)
-    if conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing
+    if conn.status ∉ (:connected, :evaluating) || conn.req_channel === nothing
         return nothing
     end
     result = _req_send_recv(conn, (type = :get_options,); caller_timeout = 10.0)
@@ -1517,7 +1673,7 @@ function get_remote_options(conn::REPLConnection)
 end
 
 function set_mirror_repl!(conn::REPLConnection, enabled::Bool)
-    if conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing
+    if conn.status ∉ (:connected, :evaluating) || conn.req_channel === nothing
         return false
     end
     result = _req_send_recv(conn, (type = :set_option, key = "mirror_repl", value = enabled); caller_timeout = 10.0)
@@ -1532,13 +1688,13 @@ remote shell via SIGSTOP, and disabling echo. Returns `true` on success.
 Call `restore_tty!()` after the TUI exits to resume the shell and restore echo.
 """
 function set_tty!(conn::REPLConnection, path::String)
-    conn.status in (:connected, :evaluating) && conn.req_socket !== nothing || return false
+    conn.status in (:connected, :evaluating) && conn.req_channel !== nothing || return false
     result = _req_send_recv(conn, (type = :set_tty, path = path); caller_timeout = 10.0)
     return result.ok && get(result.response, :type, :error) == :ok
 end
 
 function ping(conn::REPLConnection)
-    if conn.status ∉ (:connected, :stalled) || conn.req_socket === nothing
+    if conn.status ∉ (:connected, :stalled) || conn.req_channel === nothing
         return nothing
     end
 
@@ -1563,7 +1719,7 @@ Send a `:restart` command to the gate. Returns `true` if the gate acknowledged.
 The gate will exec a fresh Julia process after replying.
 """
 function send_restart!(conn::REPLConnection)
-    (conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing) && return false
+    (conn.status ∉ (:connected, :evaluating) || conn.req_channel === nothing) && return false
     result = _req_send_recv(conn, (type = :restart, name = conn.name); caller_timeout = 10.0)
     return result.ok && get(result.response, :type, :error) == :ok
 end
@@ -1575,7 +1731,7 @@ Send a `:shutdown` command to the gate. Returns `true` if the gate acknowledged.
 The gate will stop its event loop and the Julia process will exit.
 """
 function send_shutdown!(conn::REPLConnection)
-    (conn.status ∉ (:connected, :evaluating, :stalled) || conn.req_socket === nothing) && return false
+    (conn.status ∉ (:connected, :evaluating, :stalled) || conn.req_channel === nothing) && return false
     result = _req_send_recv(conn, (type = :shutdown, name = conn.name); caller_timeout = 10.0)
     return result.ok && get(result.response, :type, :error) == :ok
 end
@@ -1589,7 +1745,7 @@ Send a request to the gate and wait for a response. Lightweight wrapper for
 non-eval protocol messages (debug_status, debug_eval, debug_continue).
 """
 function _gate_send_recv(conn::REPLConnection, request::NamedTuple)
-    if conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing
+    if conn.status ∉ (:connected, :evaluating) || conn.req_channel === nothing
         return (type = :error, message = "Gate not connected (status=$(conn.status))")
     end
     result = _req_send_recv(conn, request; caller_timeout = 10.0)
@@ -2313,7 +2469,7 @@ Send a `:tool_call` message through the gate's ZMQ REQ socket and return
 the result as a string.
 """
 function _call_session_tool(conn::REPLConnection, tool_name::String, args::Dict)
-    if conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing
+    if conn.status ∉ (:connected, :evaluating) || conn.req_channel === nothing
         return "Error: Gate not connected (session=$(conn.session_id))"
     end
 
@@ -2357,7 +2513,7 @@ function _call_session_tool_async(
     timeout_ms::Int = 300_000,
     on_progress::Union{Function,Nothing} = nothing,
 )
-    if conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing
+    if conn.status ∉ (:connected, :evaluating) || conn.req_channel === nothing
         return "Error: Gate not connected (session=$(conn.session_id))"
     end
 
