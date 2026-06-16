@@ -56,15 +56,16 @@ Respects `XDG_CACHE_HOME` on Unix; uses `LOCALAPPDATA` on Windows.
 Defaults to `~/.cache/kaimon`.
 """
 function kaimon_cache_dir()
-    dir = get(ENV, "XDG_CACHE_HOME") do
-        if Sys.iswindows()
-            joinpath(
-                get(ENV, "LOCALAPPDATA", joinpath(homedir(), "AppData", "Local")),
-                "Kaimon",
-            )
-        else
-            joinpath(homedir(), ".cache", "kaimon")
-        end
+    # Append "kaimon" under XDG_CACHE_HOME rather than using it verbatim, so we
+    # get our own subdir instead of scattering kaimon.db/sock/sessions.json into
+    # the shared cache root. Mirrors kaimon_config_dir's (correct) handling. (#42)
+    dir = if Sys.iswindows()
+        joinpath(
+            get(ENV, "LOCALAPPDATA", joinpath(homedir(), "AppData", "Local")),
+            "Kaimon",
+        )
+    else
+        joinpath(get(ENV, "XDG_CACHE_HOME", joinpath(homedir(), ".cache")), "kaimon")
     end
     mkpath(dir)
     return dir
