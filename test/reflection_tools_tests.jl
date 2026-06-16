@@ -90,8 +90,8 @@ Base.sort([3,1,2])
         tools = Kaimon.create_reflection_tools()
         doc_syms = filter(t -> t.id == :document_symbols, tools)[1]
 
-        # Run against the project's own tool_definitions.jl
-        file_path = joinpath(dirname(@__DIR__), "src", "tool_definitions.jl")
+        # Run against one of the project's own tool-definition files
+        file_path = joinpath(dirname(@__DIR__), "src", "tool_definitions_core.jl")
         if isfile(file_path)
             result = doc_syms.handler(Dict("file_path" => file_path))
             @test contains(result, "symbol(s)")

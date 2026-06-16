@@ -476,7 +476,16 @@ end
 include("security.jl")
 include("setup_wizard_tui.jl")
 include("repl_status.jl")
-include("tool_definitions.jl")
+# MCP tool definitions, split from the former monolithic tool_definitions.jl.
+# All are independent top-level `*_tool = @mcp_tool(...)` bindings (collected by
+# name into the registration list below); order is immaterial, but core loads
+# first as it holds the shared helpers.
+include("tool_definitions_core.jl")
+include("tool_definitions_editor.jl")
+include("tool_definitions_introspect.jl")
+include("tool_definitions_navdebug.jl")
+include("tool_definitions_pkg.jl")
+include("tool_definitions_jobs.jl")
 include("MCPServer.jl")
 include("vscode.jl")
 include("reflection_tools.jl")
