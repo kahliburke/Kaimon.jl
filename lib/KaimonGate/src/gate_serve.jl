@@ -287,10 +287,12 @@ function _serve(;
         end
     end
 
-    # Short receive timeout so the owner loop cycles back to drain _GATE_OUTBOX
-    # (worker replies) and re-check _RUNNING promptly.
+    # Initial receive timeout so the owner loop cycles back to drain _GATE_OUTBOX
+    # (worker replies) and re-check _RUNNING. message_loop then adapts this per
+    # iteration (short while replies are in flight, long when idle) — see
+    # _GATE_RCVTIMEO_BUSY/_IDLE; the flat 200ms here was the input drag-lag.
     # linger=0: close() returns immediately without blocking to drain.
-    socket.rcvtimeo = 200
+    socket.rcvtimeo = _GATE_RCVTIMEO_IDLE[]
     socket.linger = 0
 
     # CURVE (opt-in, TCP only): make the REP socket a CURVE server. Unless

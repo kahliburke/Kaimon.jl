@@ -155,6 +155,20 @@ const _GATE_INFLIGHT = Threads.Atomic{Int}(0)
 const _GATE_MAX_WORKERS = Ref{Int}(
     something(tryparse(Int, get(ENV, "KAIMON_GATE_MAX_WORKERS", "")), 16))
 
+# Adaptive owner-loop recv timeout (ms). The owner blocks in recv, so worker
+# replies queued in _GATE_OUTBOX only flush when the recv returns. A flat 200ms
+# meant every reply waited up to a full timeout before going out — ~5 req/s,
+# which capped all input (key/click/drag/resize each round-trips a tool call)
+# and was the drag-lag root cause. Instead the loop polls fast (BUSY) while a
+# reply may be pending — a worker is in-flight or one is already queued — and
+# waits long (IDLE) when there's nothing outstanding, so an idle gate stays
+# cheap. Intake latency is unaffected either way (recv returns as soon as a
+# request arrives); only reply latency is bounded, now to ~BUSY ms. Env-overridable.
+const _GATE_RCVTIMEO_BUSY = Ref{Int}(
+    something(tryparse(Int, get(ENV, "KAIMON_GATE_RCVTIMEO_BUSY", "")), 5))
+const _GATE_RCVTIMEO_IDLE = Ref{Int}(
+    something(tryparse(Int, get(ENV, "KAIMON_GATE_RCVTIMEO_IDLE", "")), 200))
+
 # ── Stream broadcaster (XPUB) + subscriber presence ──────────────────────────
 # The stream socket is an XPUB (drop-in for SUB clients) owned by ONE task: the
 # broadcaster. It interleaves draining _STREAM_OUTBOX (publish work, the hot

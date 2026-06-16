@@ -557,6 +557,11 @@ function _serve_request(identity::Vector{UInt8}, corr_id::Vector{UInt8}, request
 end
 
 function message_loop(socket::ZMQ.Socket)
+    # Adaptive recv timeout: short while a worker reply may be pending (so it
+    # flushes within a few ms), long when idle (so the gate doesn't busy-poll).
+    # Tracked so we only call setsockopt on an actual transition. -1 forces the
+    # first apply. See _GATE_RCVTIMEO_BUSY/_IDLE for why (the 200ms drag-lag fix).
+    cur_rcvtimeo = -1
     while _RUNNING[]
         try
             # 1. flush any ready worker replies first (owner-only socket access)
@@ -567,6 +572,16 @@ function message_loop(socket::ZMQ.Socket)
             if _GATE_INFLIGHT[] >= _GATE_MAX_WORKERS[]
                 sleep(0.005)
                 continue
+            end
+
+            # 2b. pick recv timeout: poll fast while a reply may be in flight (a
+            #     worker running, or one already queued between drain and now),
+            #     else wait long. Owner-only socket access, so setsockopt is safe.
+            want_rcvtimeo = (_GATE_INFLIGHT[] > 0 || isready(_GATE_OUTBOX)) ?
+                            _GATE_RCVTIMEO_BUSY[] : _GATE_RCVTIMEO_IDLE[]
+            if want_rcvtimeo != cur_rcvtimeo
+                socket.rcvtimeo = want_rcvtimeo
+                cur_rcvtimeo = want_rcvtimeo
             end
 
             # 3. recv one request — [identity, corr_id, payload] (bounded by rcvtimeo)

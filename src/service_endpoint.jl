@@ -32,6 +32,18 @@ const _INFLIGHT = Threads.Atomic{Int}(0)
 const _MAX_WORKERS = Ref{Int}(
     something(tryparse(Int, get(ENV, "KAIMON_SERVICE_MAX_WORKERS", "")), 16))
 
+# Adaptive owner-loop recv timeout (ms) — same rationale as KaimonGate's gate
+# message loop: the owner blocks in recv, so a worker reply queued in _OUTBOX
+# only flushes when the recv returns. A flat 200ms made every reverse tool call
+# (extensions / agent turns / qdrant / embeddings) wait up to a full timeout for
+# its reply. Poll fast (BUSY) while a reply may be pending, wait long (IDLE) when
+# there's nothing outstanding. Intake is unaffected (recv returns on a new
+# request); only reply latency is bounded, now to ~BUSY ms. Env-overridable.
+const _RCVTIMEO_BUSY = Ref{Int}(
+    something(tryparse(Int, get(ENV, "KAIMON_SERVICE_RCVTIMEO_BUSY", "")), 5))
+const _RCVTIMEO_IDLE = Ref{Int}(
+    something(tryparse(Int, get(ENV, "KAIMON_SERVICE_RCVTIMEO_IDLE", "")), 200))
+
 # ── Multipart framing (ZMQ.jl 1.5 has no multipart helper) ────────────────────
 # A REQ→ROUTER message arrives as [identity, empty-delimiter, payload]; the reply
 # must be sent with the same envelope. recv the first frame (bounded by rcvtimeo),
@@ -100,7 +112,7 @@ function start_service_endpoint!()
 
     ctx = ZMQ.Context()
     sock = _zmq_socket(ctx, ROUTER)
-    sock.rcvtimeo = 200    # poll cadence so the loop can drain the outbox + check _RUNNING
+    sock.rcvtimeo = _RCVTIMEO_IDLE[]   # initial; the owner loop adapts it per iteration
     sock.sndtimeo = 5000
     sock.linger = 0
     bind(sock, endpoint)
@@ -111,6 +123,7 @@ function start_service_endpoint!()
     _SERVICE_RUNNING[] = true
 
     _SERVICE_TASK[] = @async begin
+        cur_rcvtimeo = -1   # tracked so setsockopt only fires on a transition
         while _SERVICE_RUNNING[]
             # 1. drain any ready worker replies (non-blocking) — owner-only socket access
             while isready(_OUTBOX)
@@ -128,6 +141,15 @@ function start_service_endpoint!()
             if _INFLIGHT[] >= _MAX_WORKERS[]
                 sleep(0.005)
                 continue
+            end
+            # 2b. adaptive recv timeout: poll fast while a reply may be in flight (a
+            #     worker running, or one already queued) so it flushes within a few
+            #     ms; wait long when idle. Owner-only socket access → setsockopt safe.
+            want_rcvtimeo = (_INFLIGHT[] > 0 || isready(_OUTBOX)) ?
+                            _RCVTIMEO_BUSY[] : _RCVTIMEO_IDLE[]
+            if want_rcvtimeo != cur_rcvtimeo
+                sock.rcvtimeo = want_rcvtimeo
+                cur_rcvtimeo = want_rcvtimeo
             end
             # 3. try to receive one request (bounded by rcvtimeo)
             parts = try
