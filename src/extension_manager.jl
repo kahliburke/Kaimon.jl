@@ -432,13 +432,6 @@ function _monitor_extensions!(conn_mgr)
                             :info,
                             "Extension '$ns' ready — $n_tools tools, session=$(ext.session_key), started in $(elapsed)s",
                         )
-                        # Register event listener if extension declares event_topics
-                        # (async to avoid blocking the monitor lock with socket wait)
-                        if !isempty(ext.config.manifest.event_topics)
-                            let ext=ext, conn_mgr=conn_mgr
-                                Threads.@spawn _maybe_register_event_listener!(conn_mgr, ext)
-                            end
-                        end
                         break
                     end
                 end

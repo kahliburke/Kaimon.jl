@@ -1167,9 +1167,6 @@ end
 # Signal numbers (platform-specific)
 const _SIGSTOP = @static Sys.isapple() ? Cint(17) : Cint(19)
 const _SIGCONT = @static Sys.isapple() ? Cint(19) : Cint(18)
-# TIOCGPGRP: get foreground process group of a TTY
-const _TIOCGPGRP =
-    @static (Sys.isapple() || Sys.isbsd()) ? Culong(0x40047477) : Culong(0x540F)
 
 """
 Park the foreground shell of `path` by sending SIGSTOP to its process group,

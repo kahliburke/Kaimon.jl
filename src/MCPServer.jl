@@ -265,11 +265,6 @@ function _take_notifications!()::Vector{Dict{String,Any}}
     end
 end
 
-function _has_pending_notifications()::Bool
-    lock(_PENDING_NOTIFICATIONS_LOCK) do
-        !isempty(_PENDING_NOTIFICATIONS)
-    end
-end
 
 """Drop all pending notifications. Called on server start/stop so the queue is
 bound to a server's lifecycle — a freshly-started server must not flush

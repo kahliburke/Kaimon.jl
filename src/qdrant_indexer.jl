@@ -13,13 +13,13 @@ Uses Ollama for embeddings (qwen3-embedding model).
 const _QDRANT_COLLECTION_PREFIX = Ref{String}("")
 
 """
-    set_collection_prefix!(prefix::String)
+    set_collection_prefix!(prefix::AbstractString)
 
 Set a prefix for all Qdrant collection names. Useful when multiple users
 share a single Qdrant instance. Set to "" to disable.
 """
-function set_collection_prefix!(prefix::String)
-    _QDRANT_COLLECTION_PREFIX[] = prefix
+function set_collection_prefix!(prefix::AbstractString)
+    _QDRANT_COLLECTION_PREFIX[] = String(prefix)
 end
 
 """
@@ -145,13 +145,6 @@ function _prefixed(name::String)
     isempty(prefix) ? name : "$(prefix)_$(name)"
 end
 
-"""Strip the collection prefix from a name for display."""
-function _unprefixed(name::String)
-    prefix = _QDRANT_COLLECTION_PREFIX[]
-    isempty(prefix) && return name
-    full_prefix = "$(prefix)_"
-    startswith(name, full_prefix) ? name[length(full_prefix)+1:end] : name
-end
 
 # Extensible PDF text extraction — implemented by KaimonPDFIOExt when PDFIO is loaded.
 function _extract_pdf_text end
@@ -276,7 +269,6 @@ _search_config_path() = joinpath(kaimon_config_dir(), "search.json")
 """Path to the index cache JSON file (regenerable state)."""
 _project_registry_path() = joinpath(kaimon_cache_dir(), "projects.json")
 
-const _CONFIG_FIELDS = ("collection", "dirs", "extensions", "auto_index", "source")
 
 """
     load_search_config() -> Dict

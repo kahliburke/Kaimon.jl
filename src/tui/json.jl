@@ -58,18 +58,6 @@ function _write_json(io::IO, arr::AbstractVector, level::Int, indent::Int)
     write(io, ']')
 end
 
-function _parse_json_simple(s::AbstractString)
-    # Minimal recursive-descent JSON parser for settings files.
-    # Handles objects, strings, booleans, null. No arrays needed for config files.
-    s = strip(s)
-    isempty(s) && return Dict{String,Any}()
-    try
-        val, _ = _json_parse_value(s, 1)
-        return val isa Dict ? val : Dict{String,Any}()
-    catch
-        return Dict{String,Any}()
-    end
-end
 
 function _json_skip_ws(s, i)
     while i <= length(s) && s[i] in (' ', '\t', '\n', '\r')

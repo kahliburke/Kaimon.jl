@@ -1,7 +1,7 @@
 """Save embedding model choice to search.json."""
-function _save_embedding_model(model::String)
+function _save_embedding_model(model::AbstractString)
     config = load_search_config()
-    config["embedding_model"] = model
+    config["embedding_model"] = String(model)
     save_search_config(config)
 end
 
@@ -262,43 +262,6 @@ function _pull_embedding_model_async!(
     end
 end
 
-"""Index the current project into Qdrant in the background."""
-function _index_project_async!(m::KaimonModel; recreate::Bool = false)
-    # Need both services + model
-    if !(m.search_qdrant_up && m.search_ollama_up && m.search_model_available)
-        _set_search_status!("Cannot index: services not ready")
-        _push_log!(
-            :warn,
-            "Cannot index: Qdrant=$(m.search_qdrant_up) Ollama=$(m.search_ollama_up) Model=$(m.search_model_available)",
-        )
-        return
-    end
-    project_path = pwd()
-    model = m.search_embedding_model
-    label = recreate ? "Reindexing" : "Indexing"
-    _set_search_status!("$label '$(basename(project_path))'...")
-    _push_log!(:info, "$label project '$(basename(project_path))'...")
-    spawn_task!(m._task_queue, :search_index_project) do
-        try
-            result = index_project(project_path; silent = true, recreate = recreate,
-                                   embedding_model = model)
-            col_name = get_project_collection_name(project_path)
-            (
-                success = true,
-                collection = col_name,
-                project = basename(project_path),
-                error_msg = "",
-            )
-        catch e
-            (
-                success = false,
-                collection = "",
-                project = basename(project_path),
-                error_msg = sprint(showerror, e),
-            )
-        end
-    end
-end
 
 # ── Search config panel ──────────────────────────────────────────────────────
 
@@ -425,180 +388,8 @@ end
 
 """Collect (project_path => collection_name) pairs for all connected sessions whose
 collections already exist in Qdrant."""
-function _collect_session_collections(m::KaimonModel)
-    existing = Set(m.search_collections)
-    pairs = Pair{String,String}[]
-    # From connected sessions
-    if m.conn_mgr !== nothing
-        conns = lock(m.conn_mgr.lock) do
-            copy(m.conn_mgr.connections)
-        end
-        for conn in conns
-            conn.status in (:connected, :evaluating) || continue
-            isempty(conn.project_path) && continue
-            col = get_project_collection_name(conn.project_path)
-            if col in existing && !any(p -> p.second == col, pairs)
-                push!(pairs, conn.project_path => col)
-            end
-        end
-    end
-    # Also include the current working directory if it has a collection
-    cwd = pwd()
-    cwd_col = get_project_collection_name(cwd)
-    if cwd_col in existing && !any(p -> p.second == cwd_col, pairs)
-        push!(pairs, cwd => cwd_col)
-    end
-    return pairs
-end
 
-"""Resolve the project path for a given collection name by checking connected sessions and pwd."""
-function _resolve_project_for_collection(m::KaimonModel, col_name::String)
-    if m.conn_mgr !== nothing
-        conns = lock(m.conn_mgr.lock) do
-            copy(m.conn_mgr.connections)
-        end
-        for conn in conns
-            conn.status in (:connected, :evaluating) || continue
-            isempty(conn.project_path) && continue
-            if get_project_collection_name(conn.project_path) == col_name
-                return conn.project_path
-            end
-        end
-    end
-    if get_project_collection_name(pwd()) == col_name
-        return pwd()
-    end
-    return ""
-end
 
-"""Sync the currently selected collection (incremental — only changed/deleted files)."""
-function _sync_current_collection!(m::KaimonModel)
-    if !(m.search_qdrant_up && m.search_ollama_up && m.search_model_available)
-        _set_search_status!("Cannot sync: services not ready")
-        _push_log!(
-            :warn,
-            "Cannot sync: Qdrant=$(m.search_qdrant_up) Ollama=$(m.search_ollama_up) Model=$(m.search_model_available)",
-        )
-        return
-    end
-    isempty(m.search_collections) && return
-    sel = clamp(m.search_selected_collection, 1, length(m.search_collections))
-    col_name = m.search_collections[sel]
-    project_path = _resolve_project_for_collection(m, col_name)
-    if isempty(project_path)
-        _set_search_status!("Cannot sync '$col_name': no project found")
-        _push_log!(:warn, "Cannot sync '$col_name': no matching project found")
-        return
-    end
-    _set_search_status!("Syncing '$col_name'...")
-    _push_log!(:info, "Syncing collection '$col_name'...")
-    spawn_task!(m._task_queue, :search_sync_collection) do
-        try
-            result = sync_index(
-                project_path;
-                collection = col_name,
-                silent = true,
-                verbose = false,
-            )
-            (
-                success = true,
-                collection = col_name,
-                project = basename(project_path),
-                reindexed = result.reindexed,
-                deleted = result.deleted,
-                chunks = result.chunks,
-            )
-        catch e
-            (
-                success = false,
-                collection = col_name,
-                project = basename(project_path),
-                reindexed = 0,
-                deleted = 0,
-                chunks = 0,
-                error_msg = sprint(showerror, e),
-            )
-        end
-    end
-end
 
-"""Sync all connected session collections (incremental)."""
-function _sync_all_session_collections!(m::KaimonModel)
-    if !(m.search_qdrant_up && m.search_ollama_up && m.search_model_available)
-        _set_search_status!("Cannot sync: services not ready")
-        _push_log!(
-            :warn,
-            "Cannot sync: Qdrant=$(m.search_qdrant_up) Ollama=$(m.search_ollama_up) Model=$(m.search_model_available)",
-        )
-        return
-    end
-    pairs = _collect_session_collections(m)
-    if isempty(pairs)
-        _set_search_status!("No session collections to sync")
-        _push_log!(:warn, "No session collections to sync")
-        return
-    end
-    n = length(pairs)
-    _set_search_status!("Syncing $n collection(s)...")
-    _push_log!(:info, "Syncing $n session collection(s)...")
-    for (proj_path, col_name) in pairs
-        spawn_task!(m._task_queue, :search_sync_collection) do
-            try
-                result = sync_index(
-                    proj_path;
-                    collection = col_name,
-                    silent = true,
-                    verbose = false,
-                )
-                (
-                    success = true,
-                    collection = col_name,
-                    project = basename(proj_path),
-                    reindexed = result.reindexed,
-                    deleted = result.deleted,
-                    chunks = result.chunks,
-                )
-            catch e
-                (
-                    success = false,
-                    collection = col_name,
-                    project = basename(proj_path),
-                    reindexed = 0,
-                    deleted = 0,
-                    chunks = 0,
-                    error_msg = sprint(showerror, e),
-                )
-            end
-        end
-    end
-end
 
-"""Open collection detail overlay for the currently selected collection."""
-function _open_collection_detail!(m::KaimonModel)
-    isempty(m.search_collections) && return
-    sel = clamp(m.search_selected_collection, 1, length(m.search_collections))
-    col_name = m.search_collections[sel]
-    project_path = _resolve_project_for_collection(m, col_name)
-    m.search_detail_open = true
-    m.search_detail_info = Dict()
-    m.search_detail_index_state = Dict()
-    m.search_detail_project_path = project_path
-    spawn_task!(m._task_queue, :search_detail_info) do
-        col_info = try
-            QdrantClient.get_collection_info(col_name)
-        catch
-            Dict()
-        end
-        idx_state = if !isempty(project_path)
-            try
-                load_index_state(project_path)
-            catch
-                Dict()
-            end
-        else
-            Dict()
-        end
-        (col_info = col_info, index_state = idx_state)
-    end
-end
 

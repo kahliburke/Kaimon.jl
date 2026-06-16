@@ -532,16 +532,6 @@ function _handle_search_manage_configure!(m::KaimonModel, evt::KeyEvent)
     end
 end
 
-"""Simple inline string editing for configure flow fields."""
-function _edit_string(s::String, evt::KeyEvent)
-    if evt.key == :backspace
-        isempty(s) ? s : s[1:prevind(s, lastindex(s))]
-    elseif evt.key == :char && evt.char != '\0'
-        s * evt.char
-    else
-        s
-    end
-end
 
 """Refresh Collection Manager info (re-run the async info gather)."""
 function _refresh_search_manage!(m::KaimonModel)

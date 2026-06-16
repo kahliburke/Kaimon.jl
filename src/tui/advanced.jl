@@ -439,10 +439,6 @@ function _handle_stress_enter!(m::KaimonModel)
     end
 end
 
-"""Handle left/right arrow keys on the Advanced tab (not in edit mode)."""
-function _handle_stress_arrow!(m::KaimonModel, evt::KeyEvent)
-    # Left/right do nothing outside of edit mode
-end
 
 """Delete the last character from a string."""
 function _stress_backspace(s::String)::String
