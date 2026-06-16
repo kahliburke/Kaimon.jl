@@ -25,10 +25,14 @@ Semantic search requires two external services running locally:
 Start Qdrant using Docker:
 
 ```bash
-docker run -p 6333:6333 qdrant/qdrant
+docker run -d --name qdrant -p 6333:6333 \
+  -v qdrant_storage:/qdrant/storage \
+  qdrant/qdrant
 ```
 
-This runs Qdrant on the default port (`6333`). Kaimon connects to it automatically.
+This runs Qdrant on the default port (`6333`). Kaimon connects to it
+automatically. The `-v qdrant_storage:/qdrant/storage` volume persists your
+index across container restarts and reboots.
 
 ### Setting Up Ollama
 
