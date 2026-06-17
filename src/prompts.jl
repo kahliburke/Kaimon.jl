@@ -29,7 +29,7 @@ function get_prompt(name::String)
 # Kaimon Quick Tips
 
 - **`ex(e="code")`** is your REPL. Default `q=true` suppresses return values (saves tokens). Use `q=false` only when you need the result.
-- **`qdrant_search_code(query="...")`** finds Julia code by meaning, not keywords. Prefer it over grep for exploring unfamiliar codebases.
+- **`search_code(query="...")`** finds code by meaning *and* exact symbol/identifier (hybrid). Prefer it over grep/find — it finds exact names too.
 - **`usage_instructions()`** for the full workflow guide.
 """
     elseif name == "gate-tools"

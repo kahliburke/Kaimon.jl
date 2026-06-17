@@ -348,47 +348,60 @@ qdrant_collection_info_tool = @mcp_tool(
     end
 )
 
+# Shared JSON schema for the code-search tool (used by the `search_code` primary
+# and the deprecated `qdrant_search_code` alias).
+const _SEARCH_CODE_PARAMS = Dict(
+    "type" => "object",
+    "properties" => Dict(
+        "query" => Dict(
+            "type" => "string",
+            "description" => "Search query — natural language ('function that handles HTTP routing') or an exact symbol/string ('_eval_with_capture').",
+        ),
+        "collection" => Dict(
+            "type" => "string",
+            "description" => "Collection name to search (optional, defaults to last-used session's project)",
+        ),
+        "cross_project" => Dict(
+            "type" => "boolean",
+            "description" => "Search across ALL indexed projects at once (default: false). Ignores 'collection' when true.",
+        ),
+        "limit" => Dict(
+            "type" => "integer",
+            "description" => "Maximum number of results (default: 5)",
+        ),
+        "chunk_type" => Dict(
+            "type" => "string",
+            "description" => "Filter by chunk type: 'definitions' (functions/structs only), 'windows' (sliding window chunks only), or 'all' (default: all)",
+            "enum" => ["all", "definitions", "windows"],
+        ),
+        "embedding_model" => Dict(
+            "type" => "string",
+            "description" => "Ollama model for embeddings (default: $DEFAULT_EMBEDDING_MODEL)",
+        ),
+        "mode" => Dict(
+            "type" => "string",
+            "description" => "Search mode: 'hybrid' (default — semantic + keyword), 'semantic' (vector only), or 'lexical' (exact keyword/identifier only; works even when embeddings are unavailable).",
+            "enum" => ["hybrid", "semantic", "lexical"],
+        ),
+    ),
+    "required" => ["query"],
+)
+
+# Primary, backend-agnostic name. Implementation lives in qdrant_hybrid.jl
+# (`_qdrant_search_code`) so the semantic + lexical fusion stays readable/testable.
+search_code_tool = @mcp_tool(
+    :search_code,
+    "Search indexed code — the primary way to find code; prefer it over grep/find. Combines semantic (meaning-based) vector search with exact keyword/identifier matching, fused and ranked together. Use it to locate code by concept ('function that handles HTTP routing') OR by exact symbol/string ('_eval_with_capture') — it finds exact identifiers too, so you don't need grep for that. Works even when embeddings are unavailable (lexical fallback). Defaults to the last-used session's project; set cross_project=true to search all. Supports FTS syntax in the keyword half (phrases, AND/OR/NOT, prefix term*).",
+    _SEARCH_CODE_PARAMS,
+    args -> _qdrant_search_code(args),
+)
+
+# Deprecated alias kept for back-compat (CLAUDE.md / configs / clients that still
+# reference the old name). Same arguments + handler. Remove in a future release.
 qdrant_search_code_tool = @mcp_tool(
     :qdrant_search_code,
-    "Hybrid code search: combines semantic (meaning-based) vector search with exact keyword/identifier matching, fused and ranked together. Great for both natural-language queries ('function that handles HTTP routing') and exact symbols/strings ('_eval_with_capture'). Defaults to the last-used session's project collection. Supports FTS query syntax in the keyword half (phrases, AND/OR/NOT, prefix term*).",
-    Dict(
-        "type" => "object",
-        "properties" => Dict(
-            "query" => Dict(
-                "type" => "string",
-                "description" => "Natural language search query (e.g., 'function that handles HTTP routing')",
-            ),
-            "collection" => Dict(
-                "type" => "string",
-                "description" => "Collection name to search (optional, defaults to last-used session's project)",
-            ),
-            "cross_project" => Dict(
-                "type" => "boolean",
-                "description" => "Search across ALL indexed projects at once (default: false). Ignores 'collection' when true.",
-            ),
-            "limit" => Dict(
-                "type" => "integer",
-                "description" => "Maximum number of results (default: 5)",
-            ),
-            "chunk_type" => Dict(
-                "type" => "string",
-                "description" => "Filter by chunk type: 'definitions' (functions/structs only), 'windows' (sliding window chunks only), or 'all' (default: all)",
-                "enum" => ["all", "definitions", "windows"],
-            ),
-            "embedding_model" => Dict(
-                "type" => "string",
-                "description" => "Ollama model for embeddings (default: $DEFAULT_EMBEDDING_MODEL)",
-            ),
-            "mode" => Dict(
-                "type" => "string",
-                "description" => "Search mode: 'hybrid' (default — semantic + keyword), 'semantic' (vector only), or 'lexical' (exact keyword/identifier only; works even when embeddings are unavailable).",
-                "enum" => ["hybrid", "semantic", "lexical"],
-            ),
-        ),
-        "required" => ["query"],
-    ),
-    # Implementation lives in qdrant_hybrid.jl (`_qdrant_search_code`) so the
-    # semantic + lexical fusion stays readable and unit-testable.
+    "DEPRECATED alias of `search_code` (same arguments) — use search_code. Hybrid semantic + lexical code search.",
+    _SEARCH_CODE_PARAMS,
     args -> _qdrant_search_code(args),
 )
 
@@ -861,7 +874,8 @@ function create_qdrant_tools()
     return [
         qdrant_list_collections_tool,
         qdrant_collection_info_tool,
-        qdrant_search_code_tool,
+        search_code_tool,
+        qdrant_search_code_tool,   # deprecated alias of search_code
         qdrant_browse_collection_tool,
         qdrant_index_project_tool,
         qdrant_sync_index_tool,
