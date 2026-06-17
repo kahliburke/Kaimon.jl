@@ -22,6 +22,7 @@ end
 
 const _RRF_K = 60          # standard RRF constant
 const _NAME_BOOST = 0.02   # ≈ a couple of ranks; floats exact-symbol matches up
+const _CONTENT_BOOST = 0.02 # hit text contains every query token (what FTS matched)
 
 # Dedup key: same Qdrant point, else same file+span (a chunk found by several
 # methods collapses to one hit whose sources union and whose RRF scores sum).
@@ -80,13 +81,22 @@ function _lexical_hits(hits::Vector{FtsIndex.FtsHit})::Vector{HybridHit}
     return out
 end
 
-# Exact-symbol precision: if a hit's (≥4-char) name appears verbatim in the query,
-# nudge it up. Cheap and high-value for "just find `_eval_with_capture`".
-function _apply_name_boost!(hits::Vector{HybridHit}, query::AbstractString)
+# Exactness boosts: reward hits whose name/content literally matches the query, so
+# a chunk that *contains what you typed* beats a semantic look-alike that doesn't
+# — even when the vector half ranked the look-alike higher. `_NAME_BOOST` fires
+# when a hit's (≥4-char) name appears in the query ("just find `_eval_with_capture`");
+# `_CONTENT_BOOST` fires when the chunk text contains every significant (≥3-char)
+# query token, which is what FTS matched on, and what semantic look-alikes lack.
+function _apply_boosts!(hits::Vector{HybridHit}, query::AbstractString)
     ql = lowercase(query)
+    toks = [t for t in split(ql, r"[^a-z0-9_]+"; keepempty = false) if length(t) >= 3]
     for h in hits
         n = lowercase(h.name)
         length(n) >= 4 && occursin(n, ql) && (h.rrf += _NAME_BOOST)
+        if !isempty(toks)
+            txt = lowercase(h.text)
+            all(t -> occursin(t, txt), toks) && (h.rrf += _CONTENT_BOOST)
+        end
     end
     return hits
 end
@@ -125,9 +135,15 @@ function _format_hybrid(query, where_label, hits::Vector{HybridHit},
     end
     out *= "\n"
 
+    # Relevance score normalized to the top hit (0–100). Relative within this
+    # result set only — it shows how far each hit trails #1, not an absolute match
+    # quality (semantic cosine and lexical BM25 aren't on one scale).
+    maxrrf = maximum(h -> h.rrf, hits)
+
     for (i, h) in enumerate(hits)
         payload = h.payload
         file = h.file
+        rel = maxrrf > 0 ? round(Int, 100 * h.rrf / maxrrf) : 0
         sig = string(get(payload, "signature", ""))
         parent_type = string(get(payload, "parent_type", ""))
         type_params = get(payload, "type_params", [])
@@ -144,7 +160,7 @@ function _format_hybrid(query, where_label, hits::Vector{HybridHit},
         end
         proj_label = (cross_project && !isempty(proj_path)) ? basename(proj_path) : ""
 
-        out *= "[$i $(_source_glyph(h.sources))] "
+        out *= "[$i $(_source_glyph(h.sources)) $rel] "
         if !isempty(sig)
             out *= "$sig @ "
         elseif !isempty(h.name)
@@ -275,7 +291,7 @@ function _qdrant_search_code(args)
     _rrf_accumulate!(acc, _lexical_hits(word); weight = 1.0)
     _rrf_accumulate!(acc, _lexical_hits(tri); weight = 0.9)
     hits = collect(values(acc))
-    _apply_name_boost!(hits, query)
+    _apply_boosts!(hits, query)
     sort!(hits; by = h -> -h.rrf)
     isempty(hits) && return "No results found for query: \"$query\""
     hits = hits[1:min(limit, length(hits))]

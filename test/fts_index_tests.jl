@@ -99,14 +99,29 @@ end
         @test length(hits) == 4                              # a,b,c,d deduped
     end
 
-    @testset "exact-symbol name boost" begin
-        h = Kaimon.HybridHit("x", "f", "_eval_with_capture", "function", 1, 2, "t",
+    @testset "exact-symbol + content boosts" begin
+        # name appears verbatim in the query → name boost
+        h = Kaimon.HybridHit("x", "f", "_eval_with_capture", "function", 1, 2, "fn body",
                              Dict(), "", Set([:lexical]), 0.01)
-        Kaimon._apply_name_boost!([h], "where is _eval_with_capture defined")
+        Kaimon._apply_boosts!([h], "where is _eval_with_capture defined")
         @test h.rrf > 0.01
-        # short / common names are not boosted
+
+        # content boost: text contains every query token even though the name
+        # doesn't match (the ast_transforms-in-a-window case)
+        hc = Kaimon.HybridHit("c", "f", "kaimon_eval.jl:1-9", "window", 1, 9,
+                              "apply REPL ast_transforms here", Dict(), "", Set([:lexical]), 0.01)
+        Kaimon._apply_boosts!([hc], "ast transforms")
+        @test hc.rrf == 0.01 + Kaimon._CONTENT_BOOST
+
+        # a semantic look-alike lacking the tokens is NOT boosted
+        hs = Kaimon.HybridHit("s", "f", "_rand_transition_duration", "function", 1, 2,
+                              "rand(6:18)", Dict(), "", Set([:semantic]), 0.01)
+        Kaimon._apply_boosts!([hs], "ast transforms")
+        @test hs.rrf == 0.01
+
+        # short / common names alone are not boosted
         h2 = Kaimon.HybridHit("y", "f", "f", "function", 1, 2, "t", Dict(), "", Set([:lexical]), 0.01)
-        Kaimon._apply_name_boost!([h2], "where is f")
+        Kaimon._apply_boosts!([h2], "xx")
         @test h2.rrf == 0.01
     end
 end
