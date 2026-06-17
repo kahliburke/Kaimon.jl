@@ -299,20 +299,25 @@ function _eval_with_capture(expr)
         catch
             redirect_stderr(devnull)
         end
-        # Close pipes and wait for drain tasks asynchronously.
-        # Blocking here would delay the eval response, and with @async
-        # drain tasks on the same thread the close→EOF→drain exit path
-        # needs the event loop to run (which it can't if we're blocking).
-        @async begin
-            try; close(stdout_write); catch; end
-            try; close(stderr_write); catch; end
-            try; wait(stdout_task); catch; end
-            try; wait(stderr_task); catch; end
-            try; close(stdout_read); catch; end
-            try; close(stderr_read); catch; end
-        end
-        # Yield to let drain tasks collect any final buffered output
-        yield()
+        # Close the write ends so the drain tasks hit EOF, then wait (bounded)
+        # for them to flush the final — possibly unterminated — line into
+        # stdout_content/stderr_content before join() reads them below.
+        #
+        # The previous version closed + drained in an @async block followed by a
+        # single yield(). That dropped any output not ending in a newline:
+        # `readline` blocks until EOF, EOF only arrived after the @async close
+        # ran, and join() executed first. timedwait polls via the scheduler (so
+        # the @async drain tasks get to run through EOF) but caps the wait, so a
+        # genuinely stuck stream still can't hang the eval response.
+        try; close(stdout_write); catch; end
+        try; close(stderr_write); catch; end
+        timedwait(
+            () -> istaskdone(stdout_task) && istaskdone(stderr_task),
+            2.0;
+            pollint = 0.001,
+        )
+        try; close(stdout_read); catch; end
+        try; close(stderr_read); catch; end
     end
 
     # Format value representation.
