@@ -34,7 +34,27 @@ end
 # of the WeakRef array → intermittent heap corruption in `gc_sweep_pool`. One
 # lock around construction closes the window (the I/O afterward is unaffected).
 const _ZMQ_SOCKET_LOCK = ReentrantLock()
+
+# ZMQ.jl never removes a socket's WeakRef from `ctx.sockets` on close, so the
+# array grows unbounded under churn (it's only consulted by close(ctx) before
+# zmq_ctx_term). While holding the construction lock — which serializes every
+# push! onto this context — drop the already-dead (GC-collected) entries so it
+# stays ~live-socket-sized. Only `value === nothing` weakrefs are removed, never
+# a live one. Guarded: reaches one ZMQ.jl internal (`getfield(ctx, :sockets)`).
+function _prune_dead_ctx_sockets!(ctx::ZMQ.Context)
+    sk = try
+        getfield(ctx, :sockets)
+    catch
+        return nothing
+    end
+    sk isa AbstractVector || return nothing
+    length(sk) < 64 && return nothing
+    filter!(w -> (w isa WeakRef ? w.value !== nothing : true), sk)
+    return nothing
+end
+
 _zmq_socket(ctx::ZMQ.Context, typ) = lock(_ZMQ_SOCKET_LOCK) do
+    _prune_dead_ctx_sockets!(ctx)
     ZMQ.Socket(ctx, typ)
 end
 

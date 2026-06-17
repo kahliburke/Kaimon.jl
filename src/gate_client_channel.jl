@@ -25,7 +25,32 @@ end
 # retired the per-request ephemeral REQ that drove this at request rate; the
 # remaining per-connection construction is rare but still guarded here.)
 const _ZMQ_SOCKET_LOCK = ReentrantLock()
+
+# ZMQ.jl appends a WeakRef to `ctx.sockets` on every Socket construction and NEVER
+# removes it on close, so under connection churn that array grows without bound
+# (it exists only so close(ctx) can shut live sockets before zmq_ctx_term). While
+# we hold the construction lock — which serializes every push! onto this context,
+# since all construction here goes through `_zmq_socket` — compact away the
+# already-dead (GC-collected) entries so the array stays ~live-socket-sized.
+# Only `value === nothing` weakrefs are dropped, so no live socket is ever
+# removed and close(ctx) still sees every live one. Best-effort + guarded: it
+# reaches one ZMQ.jl internal (`getfield(ctx, :sockets)`), and only runs while
+# the lock is held (so it can't race a concurrent push!; close(ctx) on a context
+# only happens at shutdown/reap, when no construction is in flight on it).
+function _prune_dead_ctx_sockets!(ctx::ZMQ.Context)
+    sk = try
+        getfield(ctx, :sockets)
+    catch
+        return nothing
+    end
+    sk isa AbstractVector || return nothing
+    length(sk) < 64 && return nothing      # only pay the O(n) pass once it's grown
+    filter!(w -> (w isa WeakRef ? w.value !== nothing : true), sk)
+    return nothing
+end
+
 _zmq_socket(ctx::ZMQ.Context, typ) = lock(_ZMQ_SOCKET_LOCK) do
+    _prune_dead_ctx_sockets!(ctx)
     Socket(ctx, typ)
 end
 

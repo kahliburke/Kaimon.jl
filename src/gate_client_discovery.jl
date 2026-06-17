@@ -561,6 +561,22 @@ function connect!(mgr::ConnectionManager, conn::REPLConnection)
         rc = conn.req_channel
         rc === nothing || _close_request_channel!(rc)
         conn.req_channel = nothing
+        # Clean up the SUB socket if it was created before we threw.
+        if conn.sub_socket !== nothing
+            try; close(conn.sub_socket); catch; end
+            conn.sub_socket = nothing
+        end
+        # A TCP/CURVE connect owns a DEDICATED Context (created above). If we threw
+        # after creating it, park it for deferred termination instead of leaving it
+        # dangling on conn.zmq_context — otherwise the next reconnect overwrites that
+        # field (line ~521), orphaning the Context so GC runs its finalizer
+        # (close → iterate sockets → zmq_ctx_term) on a GC thread, racing libzmq:
+        # a heap-corruption hazard. Mirrors disconnect!. IPC shares mgr.zmq_context
+        # and must NOT be touched here.
+        if _is_tcp(conn) && conn.zmq_context !== nothing
+            _park_context!(conn.zmq_context)
+            conn.zmq_context = nothing
+        end
         return false
     end
 end
