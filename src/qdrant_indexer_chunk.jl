@@ -87,13 +87,17 @@ function extract_from_expr!(
             macro_name = string(expr.args[1])
             if occursin("mcp_tool", macro_name)
                 extract_definition!(chunks, expr, lines, file_path, "tool")
-            elseif occursin("@doc", macro_name)
-                # Handle docstring: @doc "docstring" definition
-                # The function/struct is typically the last argument
+            else
+                # Any other macro that wraps a definition — a docstring (`@doc`,
+                # i.e. `"""..."""  <def>`) on a module/struct/function/const,
+                # `Base.@kwdef struct`, etc. Recurse into the macrocall's Expr
+                # arguments so the wrapped definition is found via normal dispatch.
+                # NB: a file-leading docstring makes the WHOLE file
+                # `@doc "..." module X ... end`; the old `@doc` branch only
+                # descended into function/struct/=, so it skipped the module and
+                # hid every symbol in the file.
                 for arg in expr.args
-                    if arg isa Expr && arg.head in (:function, :macro, :struct, :(=))
-                        extract_from_expr!(chunks, arg, lines, file_path)
-                    end
+                    arg isa Expr && extract_from_expr!(chunks, arg, lines, file_path)
                 end
             end
         end
@@ -401,6 +405,17 @@ function get_expr_lines(expr::Expr, lines::Vector{<:AbstractString})
             name = string(first_arg.args[1])
             for (i, line) in enumerate(lines)
                 if occursin(Regex("^\\s*$name\\s*\\(.*\\)\\s*="), line)
+                    return (i, i)
+                end
+            end
+        end
+    elseif expr.head == :const
+        # `const NAME = ...` — locate the declaring line (consts had no line
+        # lookup, so they were silently dropped from results entirely).
+        name = get_definition_name(expr)
+        if name !== nothing
+            for (i, line) in enumerate(lines)
+                if occursin(Regex("^\\s*const\\s+$name\\b"), line)
                     return (i, i)
                 end
             end

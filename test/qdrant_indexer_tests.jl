@@ -87,6 +87,18 @@ using Kaimon
         @test any(c -> c["name"] == "inner_func", func_chunks)
     end
 
+    @testset "extract_definitions - docstring'd module (regression)" begin
+        # A file-leading docstring makes the WHOLE file `@doc "..." module X ...`.
+        # The old @doc handler only descended into function/struct/=, so it
+        # skipped the module and found ZERO symbols — which is exactly why
+        # document_symbols came back empty on idiomatic package files.
+        code = "\"\"\"\nMyMod docs.\n\"\"\"\nmodule MyMod\n    struct Widget\n        x::Int\n    end\n    function inner_func(x)\n        x * 2\n    end\n    const K = 42\nend"
+        chunks = Kaimon.extract_definitions(code, "test.jl")
+        @test any(c -> c["name"] == "inner_func", chunks)
+        @test any(c -> c["name"] == "Widget", chunks)
+        @test any(c -> c["name"] == "K", chunks)
+    end
+
     @testset "create_window_chunks" begin
         code = "line1\nline2\nline3\nline4\nline5"
         chunks = Kaimon.create_window_chunks(code, "small.jl")
