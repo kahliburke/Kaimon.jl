@@ -476,9 +476,33 @@ qdrant_browse_collection_tool = @mcp_tool(
     end
 )
 
+# Run an indexing operation as a tracked background job: register it in the
+# background_jobs table, spawn the work, and return the job id immediately so the
+# MCP call never blocks (full-project indexing can take minutes and would
+# otherwise time out the request). Poll via list_jobs / check_eval — mirrors how
+# slow evals are promoted to background jobs.
+function _run_index_as_job(description::AbstractString, work::Function)
+    job_id = bytes2hex(rand(UInt8, 4))   # 8 hex chars, eval_id-style
+    now = time()
+    Database.persist_job!(job_id, "indexer", String(description), now, now)
+    Threads.@spawn begin
+        try
+            summary = work()
+            Database.update_job!(job_id; status = "completed", result = summary,
+                result_preview = summary, finished_at = time())
+        catch e
+            msg = "Indexing failed: " * sprint(showerror, e)
+            Database.update_job!(job_id; status = "failed", result = msg,
+                result_preview = msg, finished_at = time())
+            @debug "Background index job failed" job_id exception = (e, catch_backtrace())
+        end
+    end
+    return job_id
+end
+
 qdrant_index_project_tool = @mcp_tool(
     :qdrant_index_project,
-    "Index a Julia project into Qdrant. Creates or recreates the collection and indexes project source files.",
+    "Index a Julia project into Qdrant. Runs in the BACKGROUND and returns a job id immediately (full-project indexing can take minutes) — poll with list_jobs() or check_eval(eval_id). Pass wait=true to block and return the chunk count inline (small projects). Creates or recreates the collection and indexes project source files.",
     Dict(
         "type" => "object",
         "properties" => Dict(
@@ -504,6 +528,10 @@ qdrant_index_project_tool = @mcp_tool(
                 "items" => Dict("type" => "string"),
                 "description" => "File extensions to index (default: [\".jl\", \".ts\", \".tsx\", \".jsx\", \".md\"])",
             ),
+            "wait" => Dict(
+                "type" => "boolean",
+                "description" => "Block until indexing finishes and return the chunk count (default: false — runs in the background and returns a job id).",
+            ),
         ),
         "required" => [],
     ),
@@ -513,7 +541,8 @@ qdrant_index_project_tool = @mcp_tool(
 
         project_path = get(args, "project_path", pwd())
         collection = get(args, "collection", nothing)
-        recreate = get(args, "recreate", false)
+        recreate = let v = get(args, "recreate", false); v isa Bool ? v : v == "true"; end
+        wait_flag = let v = get(args, "wait", false); v isa Bool ? v : v == "true"; end
 
         # Convert to Vector{String} (args from JSON may be Vector{Any})
         extra_dirs = Vector{String}(get(args, "extra_dirs", String[]))
@@ -528,16 +557,23 @@ qdrant_index_project_tool = @mcp_tool(
             collection === nothing ? get_project_collection_name(project_path) :
             normalize_collection_name(collection)
 
-        chunks = index_project(
-            project_path;
-            collection = collection,
-            recreate = recreate,
-            silent = true,
-            extra_dirs = extra_dirs,
-            extensions = extensions,
-        )
+        work = function ()
+            chunks = index_project(
+                project_path;
+                collection = collection,
+                recreate = recreate,
+                silent = true,
+                extra_dirs = extra_dirs,
+                extensions = extensions,
+            )
+            "✓ Indexed $chunks chunks into '$col_name' from $(1 + length(extra_dirs)) director$(length(extra_dirs) == 0 ? "y" : "ies")."
+        end
 
-        return "✓ Indexed $chunks chunks into '$col_name' from $(1 + length(extra_dirs)) director$(length(extra_dirs) == 0 ? "y" : "ies")."
+        wait_flag && return work()
+
+        job_id = _run_index_as_job("index_project $col_name (recreate=$recreate)", work)
+        return "🔄 Indexing '$col_name' started in the background (job `$job_id`) — returns immediately so the request won't time out.\n" *
+               "Poll: list_jobs() or check_eval(eval_id=\"$job_id\"). Watch growth: qdrant_collection_info(collection=\"$col_name\")."
     end
 )
 
