@@ -43,8 +43,10 @@ end
             # second call returns the SAME persisted keypair
             pub2, sec2 = KG._load_or_create_server_keypair()
             @test (pub1, sec1) == (pub2, sec2)
-            # the key file exists and is owner-only
-            keyfile = joinpath(dir, "curve", "server.key")
+            # the key file exists and is owner-only. _gate_cache_dir appends
+            # "kaimon" under XDG_CACHE_HOME (consistent with the Kaimon server),
+            # so the curve store lives at $XDG/kaimon/curve. (#42/#45)
+            keyfile = joinpath(dir, "kaimon", "curve", "server.key")
             @test isfile(keyfile)
             if !Sys.iswindows()
                 @test (stat(keyfile).mode & 0o777) == 0o600

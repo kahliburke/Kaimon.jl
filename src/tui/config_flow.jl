@@ -648,16 +648,6 @@ function _remove_server_from_json!(path::String, servers_key::String)
     write(path, _to_json(data))
 end
 
-"""Set or update `key=value` in `~/.codex/.env`, preserving other lines."""
-function _codex_env_set!(key::String, value::String)
-    env_file = joinpath(homedir(), ".codex", ".env")
-    lines = isfile(env_file) ? readlines(env_file) : String[]
-    # Remove any existing line for this key
-    filter!(l -> !startswith(l, "$key="), lines)
-    push!(lines, "$key=$value")
-    write(env_file, join(lines, "\n") * "\n")
-end
-
 """Remove `key` from `~/.codex/.env`, preserving other lines."""
 function _codex_env_remove!(key::String)
     env_file = joinpath(homedir(), ".codex", ".env")
@@ -794,15 +784,17 @@ function _install_codex(m::KaimonModel, port::Int, api_key)
         read(pipeline(`codex mcp remove kaimon`; stderr = devnull), String)
     catch
     end
+    # Current Codex CLI expects `codex mcp add <NAME> [COMMAND]...`, not
+    # `--url`. Kaimon's HTTP MCP endpoint is bridged to Codex via the mcp-remote
+    # stdio command; the API key is passed through as an env var the header
+    # interpolates. (#38)
+    header = "Authorization:Bearer \${MCPREPL_API_KEY}"
     args = if api_key !== nothing
-        `codex mcp add --url $url --bearer-token-env-var MCPREPL_API_KEY kaimon`
+        `codex mcp add --env MCPREPL_API_KEY=$api_key kaimon npx -y mcp-remote $url --allow-http --header $header --silent`
     else
-        `codex mcp add --url $url kaimon`
+        `codex mcp add kaimon npx -y mcp-remote $url --allow-http --silent`
     end
     read(pipeline(args; stderr = devnull), String)
-    if api_key !== nothing
-        _codex_env_set!("MCPREPL_API_KEY", api_key)
-    end
     m.flow_message = "Added kaimon to Codex CLI\n(~/.codex/config.toml)"
     m.flow_success = true
 end

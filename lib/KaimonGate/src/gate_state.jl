@@ -66,12 +66,21 @@ end
 # second kaimon server, or a gate meant to register in an alternate cache dir).
 # Mirrors the server-side Kaimon.kaimon_cache_dir().
 function _gate_cache_dir()
-    d = get(ENV, "XDG_CACHE_HOME") do
-        Sys.iswindows() ?
+    # Append "kaimon" under XDG_CACHE_HOME rather than using it verbatim, so the
+    # gate's sockets + session metadata land in the SAME directory the Kaimon
+    # server scans for discovery (Kaimon.kaimon_cache_dir also appends "kaimon").
+    # Using XDG_CACHE_HOME verbatim here put gate sockets in $XDG/sock while the
+    # server's ConnectionManager looked in $XDG/kaimon/sock, silently breaking IPC
+    # gate auto-discovery whenever XDG_CACHE_HOME is set. Mirrors the #42 server
+    # fix (1cf20a5) on the gate side — the half PR #45 patched in gate.jl that the
+    # KaimonGate split didn't carry over. (#42, #45)
+    d = if Sys.iswindows()
         joinpath(
             get(ENV, "LOCALAPPDATA", joinpath(homedir(), "AppData", "Local")),
             "Kaimon",
-        ) : joinpath(homedir(), ".cache", "kaimon")
+        )
+    else
+        joinpath(get(ENV, "XDG_CACHE_HOME", joinpath(homedir(), ".cache")), "kaimon")
     end
     mkpath(d)
     return d
