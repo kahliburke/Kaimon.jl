@@ -213,97 +213,35 @@ function cancel_test_run!(run::TestRun)
     end
 end
 
-"""Persist a completed test run to the database."""
+"""Persist a completed test run to the database (delegates the atomic write to
+`Database.record_test_run!`; this just maps the `TestRun` into plain row data)."""
 function _persist_test_run!(run::TestRun)
-    Database.with_db_lock() do
-    db = Database.DB[]
-    db === nothing && return
+    fmt(t) = Dates.format(t, dateformat"yyyy-mm-dd HH:MM:SS")
+    duration_ms = run.finished_at !== nothing ?
+        Float64(Dates.value(run.finished_at - run.started_at)) : 0.0
+    status_str =
+        run.status == RUN_PASSED ? "passed" :
+        run.status == RUN_FAILED ? "failed" :
+        run.status == RUN_ERROR ? "error" :
+        run.status == RUN_CANCELLED ? "cancelled" : "running"
+    summary = format_test_summary(run)
+    summary_short = length(summary) > 500 ? summary[1:500] : summary
+
     try
-        duration_ms = if run.finished_at !== nothing
-            Float64(Dates.value(run.finished_at - run.started_at))
-        else
-            0.0
-        end
-
-        status_str = if run.status == RUN_PASSED
-            "passed"
-        elseif run.status == RUN_FAILED
-            "failed"
-        elseif run.status == RUN_ERROR
-            "error"
-        elseif run.status == RUN_CANCELLED
-            "cancelled"
-        else
-            "running"
-        end
-
-        summary = format_test_summary(run)
-        summary_short = length(summary) > 500 ? summary[1:500] : summary
-
-        Database.DBInterface.execute(
-            db,
-            """
-            INSERT INTO test_runs (
-                project_path, started_at, finished_at, status,
-                pattern, total_pass, total_fail, total_error,
-                total_tests, duration_ms, summary
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                run.project_path,
-                Dates.format(run.started_at, dateformat"yyyy-mm-dd HH:MM:SS"),
-                run.finished_at !== nothing ?
-                Dates.format(run.finished_at, dateformat"yyyy-mm-dd HH:MM:SS") : nothing,
-                status_str,
-                run.pattern,
-                run.total_pass,
-                run.total_fail,
-                run.total_error,
-                run.total_tests,
-                duration_ms,
-                summary_short,
-            ),
+        Database.record_test_run!(
+            (project_path = run.project_path,
+             started_at = fmt(run.started_at),
+             finished_at = run.finished_at !== nothing ? fmt(run.finished_at) : nothing,
+             status = status_str, pattern = run.pattern,
+             total_pass = run.total_pass, total_fail = run.total_fail,
+             total_error = run.total_error, total_tests = run.total_tests,
+             duration_ms = duration_ms, summary = summary_short),
+            [(name = r.name, depth = r.depth, pass_count = r.pass_count, fail_count = r.fail_count,
+              error_count = r.error_count, total_count = r.total_count) for r in run.results],
+            [(file = f.file, line = f.line, expression = f.expression, evaluated = f.evaluated,
+              testset = f.testset, backtrace = f.backtrace) for f in run.failures],
         )
-
-        # Get the auto-generated row ID
-        result =
-            Database.DBInterface.execute(db, "SELECT last_insert_rowid()") |>
-            Database.DataFrame
-        db_id = result[1, 1]
-
-        # Persist individual test results
-        for r in run.results
-            Database.DBInterface.execute(
-                db,
-                """
-                INSERT INTO test_results (run_id, testset_name, depth, pass_count, fail_count, error_count, total_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    db_id,
-                    r.name,
-                    r.depth,
-                    r.pass_count,
-                    r.fail_count,
-                    r.error_count,
-                    r.total_count,
-                ),
-            )
-        end
-
-        # Persist failures
-        for f in run.failures
-            Database.DBInterface.execute(
-                db,
-                """
-                INSERT INTO test_failures (run_id, file, line, expression, evaluated, testset_name, backtrace)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (db_id, f.file, f.line, f.expression, f.evaluated, f.testset, f.backtrace),
-            )
-        end
     catch e
         @debug "Failed to persist test run" exception = (e, catch_backtrace())
-    end
     end
 end

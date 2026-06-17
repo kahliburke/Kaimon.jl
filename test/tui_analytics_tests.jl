@@ -197,11 +197,11 @@ end
             end
 
             @testset "Graceful when DB is nothing" begin
-                saved = Database.DB[]
-                Database.DB[] = nothing
+                saved = Database._DB[]
+                Database._DB[] = nothing
                 r = Kaimon.ToolCallResult(now(), "no_db", "{}", "ok", "1ms", true, "")
                 persist_tool_call!(r)  # should not throw
-                Database.DB[] = saved
+                Database._DB[] = saved
             end
         finally
             Database.close_db!()
@@ -476,10 +476,10 @@ end
             end
 
             @testset "Graceful when DB is nothing" begin
-                saved = Database.DB[]
-                Database.DB[] = nothing
+                saved = Database._DB[]
+                Database._DB[] = nothing
                 Kaimon._refresh_analytics!(m; force = true)
-                Database.DB[] = saved
+                Database._DB[] = saved
             end
         finally
             Database.close_db!()
@@ -518,11 +518,11 @@ end
             end
 
             @testset "Shows placeholder when no DB" begin
-                saved = Database.DB[]
-                Database.DB[] = nothing
+                saved = Database._DB[]
+                Database._DB[] = nothing
                 m.analytics_cache = nothing
                 @test occursin("No analytics data yet", render_text(m))
-                Database.DB[] = saved
+                Database._DB[] = saved
             end
 
             @testset "Renders at various terminal sizes" begin
