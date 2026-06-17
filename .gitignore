@@ -4,6 +4,9 @@
 *.jl.mem
 deps/deps.jl
 
+# Claude Code local session/settings
+.claude/
+
 # Example project (for local testing)
 example-project/
 
