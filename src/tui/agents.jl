@@ -80,20 +80,21 @@ function _view_agents_list(m::KaimonModel, area::Rect, buf::Buffer, ags)
         return
     end
 
-    y = inner.y
-    for (i, a) in enumerate(ags)
-        y > bottom(inner) && break
+    # Reserve the bottom inner row for the key hint; the list fills the rest via a
+    # SelectableList (widget-managed clipping, auto-scroll-to-selection, scrollbar).
+    foot = bottom(inner)
+    body = Rect(inner.x, inner.y, inner.width, max(1, inner.height - 1))
+
+    items = ListItem[]
+    for a in ags
         icon, istyle = _agent_status_display(Symbol(get(a, "status", "?")))
-        selected = i == m.agentmon_selected
-        line_style = selected ? tstyle(:accent, bold = true) : tstyle(:text)
-
-        set_string!(buf, inner.x + 1, y, icon, istyle)
-        set_string!(buf, inner.x + 3, y, get(a, "id", "?"), line_style)
-        y += 1
+        push!(items, ListItem("$icon  $(get(a, "id", "?"))", istyle))
     end
+    lst = SelectableList(items; selected = m.agentmon_selected, tick = m.tick)
+    render(lst, body, buf)
+    m.agentmon_selected = lst.selected   # widget clamps selection to a valid row
 
-    hint_y = bottom(inner)
-    hint_y > y && set_string!(buf, inner.x + 1, hint_y, "[↑↓] select  [x] close/dismiss",
+    set_string!(buf, inner.x + 1, foot, "[↑↓] select  [x] close/dismiss",
         tstyle(:text_dim); max_x = right(inner))
 end
 
@@ -149,22 +150,24 @@ function _view_agents_detail(m::KaimonModel, area::Rect, buf::Buffer, ags)
         set_string!(buf, inner.x + 1, feed_top, "(no events yet)", tstyle(:text_dim))
         return
     end
-    m.agentmon_scroll = clamp(m.agentmon_scroll, 0, max(0, n - 1))
-    last_idx = n - m.agentmon_scroll
-    first_idx = max(1, last_idx - avail + 1)
 
-    yy = feed_top
-    for i in first_idx:last_idx
-        ev = recent[i]
-        age = rpad(_ago(ev.t), 4)
-        kindstr = rpad(string(ev.kind), 14)
-        set_string!(buf, inner.x + 1, yy, age, tstyle(:text_dim))
-        set_string!(buf, inner.x + 6, yy, kindstr, _agent_kind_style(ev.kind))
-        sx = inner.x + 6 + length(kindstr) + 1
-        sx < right(inner) &&
-            set_string!(buf, sx, yy, _oneline(ev.summary), tstyle(:text); max_x = right(inner))
-        yy += 1
+    # Render the feed via a Paragraph (widget-managed clipping + scrollbar). Each
+    # event is one line built from three inline spans (age / kind / summary), kept
+    # newest-at-bottom: anchor the scroll to the end, then `agentmon_scroll` walks
+    # back through history.
+    spans = Span[]
+    for ev in recent
+        push!(spans, Span(rpad(_ago(ev.t), 4) * " ", tstyle(:text_dim)))
+        push!(spans, Span(rpad(string(ev.kind), 14) * " ", _agent_kind_style(ev.kind)))
+        push!(spans, Span(_oneline(ev.summary) * "\n", tstyle(:text)))
     end
+
+    feed = Rect(inner.x + 1, feed_top, max(1, inner.width - 2), avail)
+    p = Paragraph(spans; wrap = no_wrap, show_scrollbar = true)
+    base = max(0, paragraph_line_count(p, feed.width) - avail)  # offset anchoring newest at bottom
+    m.agentmon_scroll = clamp(m.agentmon_scroll, 0, base)
+    p.scroll_offset = base - m.agentmon_scroll
+    render(p, feed, buf)
 end
 
 # ── Key handling ──────────────────────────────────────────────────────────────
@@ -257,12 +260,13 @@ function _handle_agents_history_key!(m::KaimonModel, evt::KeyEvent)
         m.agentmon_history_open = false
         return
     end
-    n = length(m.agentmon_history_lines)
+    # Upper bound is enforced by the view against the wrapped line count
+    # (word-wrap can yield more visual lines than raw entries); clamp only ≥ 0 here.
     @match evt.key begin
         :up       => (m.agentmon_history_scroll = max(0, m.agentmon_history_scroll - 1))
-        :down     => (m.agentmon_history_scroll = min(max(0, n - 1), m.agentmon_history_scroll + 1))
+        :down     => (m.agentmon_history_scroll += 1)
         :pageup   => (m.agentmon_history_scroll = max(0, m.agentmon_history_scroll - 20))
-        :pagedown => (m.agentmon_history_scroll = min(max(0, n - 1), m.agentmon_history_scroll + 20))
+        :pagedown => (m.agentmon_history_scroll += 20)
         _ => nothing
     end
 end
@@ -276,16 +280,27 @@ function _view_agents_history(m::KaimonModel, area::Rect, buf::Buffer)
     )
     inner = render(block, area, buf)
     inner.width < 4 && return
+
+    # Reserve the bottom inner row for the footer hint; the rest is a scrollable,
+    # word-wrapping Paragraph (same widget the Activity/Config detail panes use).
     foot = bottom(inner)
-    m.agentmon_history_scroll = clamp(m.agentmon_history_scroll, 0, max(0, n - 1))
-    y = inner.y
-    i = m.agentmon_history_scroll + 1
-    while i <= n && y < foot
-        (style, text) = m.agentmon_history_lines[i]
-        set_string!(buf, inner.x + 1, y, _oneline(text), style; max_x = right(inner))
-        y += 1
-        i += 1
+    body = Rect(inner.x, inner.y, inner.width, max(0, inner.height - 1))
+
+    spans = Span[]
+    for (style, text) in m.agentmon_history_lines
+        push!(spans, Span(_oneline(text) * "\n", style))
     end
+    isempty(spans) && push!(spans, Span("(no events)\n", tstyle(:text_dim)))
+
+    p = Paragraph(spans; wrap = word_wrap, show_scrollbar = true)
+    # Clamp the model's scroll against the *wrapped* line count (the scrollbar
+    # reduces text width by 1), then drive the Paragraph from it.
+    text_w = body.width > 1 ? body.width - 1 : body.width
+    total = paragraph_line_count(p, text_w)
+    m.agentmon_history_scroll = clamp(m.agentmon_history_scroll, 0, max(0, total - body.height))
+    p.scroll_offset = m.agentmon_history_scroll
+    render(p, body, buf)
+
     set_string!(buf, inner.x + 1, foot, "[↑↓/PgUp/PgDn] scroll  [Esc] close",
         tstyle(:text_dim); max_x = right(inner))
 end
