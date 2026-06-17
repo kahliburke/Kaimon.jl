@@ -25,10 +25,22 @@ export init_db!,
     get_job_stats,
     get_test_failures,
     cleanup_old_data!,
-    close_db!
+    close_db!,
+    with_db_lock,
+    record_tool_start!,
+    record_tool_complete!,
+    is_ready
 
 # Global database connection
 const DB = Ref{Union{SQLite.DB,Nothing}}(nothing)
+
+# SQLite.jl is NOT thread-safe for concurrent use of a single connection (the
+# Julia-level prepared-statement cache + finalizers race → heap corruption). EVERY
+# access to this connection must hold this lock — both the functions in this file
+# AND the raw `Database.DB[]` accessors in tui/io.jl, test_runner.jl, tui/activity.jl.
+# Reentrant so wrapped ops can nest. Usage: `with_db_lock() do … end`.
+const DB_LOCK = ReentrantLock()
+with_db_lock(f) = lock(f, DB_LOCK)
 
 """
     get_default_db_path() -> String
@@ -271,6 +283,7 @@ Get summary statistics of tool usage.
 Returns aggregated counts and metrics per tool.
 """
 function get_tool_summary()
+    return with_db_lock() do
     db = DB[]
     db === nothing && return Dict[]
 
@@ -295,6 +308,7 @@ function get_tool_summary()
         ) |> DataFrame
 
     return dataframe_to_array(result)
+    end
 end
 
 """
@@ -303,6 +317,7 @@ end
 Get tool execution analytics from the last N days.
 """
 function get_tool_executions(; days::Int = 7)
+    return with_db_lock() do
     db = DB[]
     db === nothing && return Dict[]
 
@@ -326,6 +341,7 @@ function get_tool_executions(; days::Int = 7)
         ) |> DataFrame
 
     return dataframe_to_array(result)
+    end
 end
 
 """
@@ -334,6 +350,7 @@ end
 Get most frequent error-producing tools.
 """
 function get_error_hotspots()
+    return with_db_lock() do
     db = DB[]
     db === nothing && return Dict[]
 
@@ -355,6 +372,38 @@ function get_error_hotspots()
         ) |> DataFrame
 
     return dataframe_to_array(result)
+    end
+end
+
+"""True if the analytics DB connection is open (readiness check for callers)."""
+is_ready() = DB[] !== nothing
+
+"""Record the start of a tool call (status 'running'). Thread-safe; no-op if DB unready.
+Owns the SQL so the TUI/persistence callers don't reach into the connection directly."""
+function record_tool_start!(session_key, request_id, tool_name, request_time, input_size, arguments)
+    with_db_lock() do
+        db = DB[]
+        db === nothing && return
+        DBInterface.execute(db,
+            """INSERT INTO tool_executions (session_key, request_id, tool_name, request_time,
+                   duration_ms, input_size, output_size, arguments, status, result_summary)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (session_key, request_id, tool_name, request_time, 0.0, input_size, 0, arguments, "running", ""))
+    end
+    return nothing
+end
+
+"""Update a tool call with its final result. Thread-safe; no-op if DB unready / id empty."""
+function record_tool_complete!(request_id, duration_ms, output_size, status, summary)
+    with_db_lock() do
+        db = DB[]
+        (db === nothing || isempty(request_id)) && return
+        DBInterface.execute(db,
+            """UPDATE tool_executions SET duration_ms = ?, output_size = ?, status = ?, result_summary = ?
+               WHERE request_id = ?""",
+            (duration_ms, output_size, status, summary, request_id))
+    end
+    return nothing
 end
 
 """
@@ -363,6 +412,7 @@ end
 Delete old tool execution records beyond a certain age.
 """
 function cleanup_old_data!(days_to_keep::Int = 30)
+    with_db_lock() do
     db = DB[]
     db === nothing && return
 
@@ -374,6 +424,7 @@ function cleanup_old_data!(days_to_keep::Int = 30)
         "DELETE FROM tool_executions WHERE request_time < ?",
         (cutoff_str,),
     )
+    end
 end
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -391,6 +442,7 @@ function record_indexed_file(
     file_mtime::Float64,
     chunk_count::Int,
 )
+    with_db_lock() do
     db = DB[]
     DBInterface.execute(
         db,
@@ -400,6 +452,7 @@ function record_indexed_file(
         """,
         [file_path, collection, file_mtime, chunk_count],
     )
+    end
 end
 
 """
@@ -408,6 +461,7 @@ end
 Get indexing info for a file, or nothing if not indexed.
 """
 function get_indexed_file(file_path::String)
+    return with_db_lock() do
     db = DB[]
     result =
         DBInterface.execute(
@@ -427,6 +481,7 @@ function get_indexed_file(file_path::String)
         indexed_at = result[1, :indexed_at],
         chunk_count = result[1, :chunk_count],
     )
+    end
 end
 
 """
@@ -435,12 +490,14 @@ end
 Get all indexed files for a collection.
 """
 function get_indexed_files(collection::String)
+    return with_db_lock() do
     db = DB[]
-    return DBInterface.execute(
+    DBInterface.execute(
         db,
         "SELECT file_path, mtime, indexed_at, chunk_count FROM indexed_files WHERE collection = ?",
         [collection],
     ) |> DataFrame
+    end
 end
 
 """
@@ -449,8 +506,10 @@ end
 Remove a file from the indexed files tracking.
 """
 function remove_indexed_file(file_path::String)
+    with_db_lock() do
     db = DB[]
     DBInterface.execute(db, "DELETE FROM indexed_files WHERE file_path = ?", [file_path])
+    end
 end
 
 """
@@ -525,6 +584,7 @@ end
 Get recent test runs, optionally filtered by project path.
 """
 function get_test_runs(; project_path::String = "", limit::Int = 50)
+    return with_db_lock() do
     db = DB[]
     db === nothing && return Dict[]
 
@@ -560,6 +620,7 @@ function get_test_runs(; project_path::String = "", limit::Int = 50)
     end
 
     return dataframe_to_array(result)
+    end
 end
 
 """
@@ -568,6 +629,7 @@ end
 Get per-testset results for a test run.
 """
 function get_test_results(run_id::Int)
+    return with_db_lock() do
     db = DB[]
     db === nothing && return Dict[]
 
@@ -585,6 +647,7 @@ function get_test_results(run_id::Int)
         ) |> DataFrame
 
     return dataframe_to_array(result)
+    end
 end
 
 """
@@ -593,6 +656,7 @@ end
 Get failure details for a test run.
 """
 function get_test_failures(run_id::Int)
+    return with_db_lock() do
     db = DB[]
     db === nothing && return Dict[]
 
@@ -610,6 +674,7 @@ function get_test_failures(run_id::Int)
         ) |> DataFrame
 
     return dataframe_to_array(result)
+    end
 end
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -630,9 +695,11 @@ end
 
 """Close the database connection."""
 function close_db!()
+    with_db_lock() do
     if DB[] !== nothing
         SQLite.close(DB[])
         DB[] = nothing
+    end
     end
 end
 
@@ -643,6 +710,7 @@ end
 """Persist a promoted background job to the database."""
 function persist_job!(eval_id::String, session_key::String, code::String,
                       started_at::Float64, promoted_at::Float64)
+    with_db_lock() do
     db = DB[]
     db === nothing && return
     try
@@ -656,12 +724,14 @@ function persist_job!(eval_id::String, session_key::String, code::String,
     catch e
         @debug "Failed to persist background job" eval_id exception=e
     end
+    end
 end
 
 """Update a background job's status and result."""
 function update_job!(eval_id::String; status::String="", result::String="",
                      result_preview::String="", finished_at::Float64=0.0,
                      cancelled::Bool=false)
+    with_db_lock() do
     db = DB[]
     db === nothing && return
     try
@@ -689,10 +759,12 @@ function update_job!(eval_id::String; status::String="", result::String="",
     catch e
         @debug "Failed to update background job" eval_id exception=e
     end
+    end
 end
 
 """Retrieve a background job by eval_id (prefix match)."""
 function get_job(eval_id::String)
+    return with_db_lock() do
     db = DB[]
     db === nothing && return nothing
     try
@@ -704,10 +776,12 @@ function get_job(eval_id::String)
     catch
         return nothing
     end
+    end
 end
 
 """List background jobs, optionally filtered by status."""
 function list_jobs(; status::String="", limit::Int=20)
+    return with_db_lock() do
     db = DB[]
     db === nothing && return Dict[]
     try
@@ -722,10 +796,12 @@ function list_jobs(; status::String="", limit::Int=20)
     catch
         return Dict[]
     end
+    end
 end
 
 """Get aggregate stats on background jobs."""
 function get_job_stats()
+    return with_db_lock() do
     db = DB[]
     db === nothing && return Dict()
     try
@@ -744,6 +820,7 @@ function get_job_stats()
         return Dict(String(col) => df[1, col] for col in names(df))
     catch
         return Dict()
+    end
     end
 end
 

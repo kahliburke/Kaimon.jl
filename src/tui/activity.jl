@@ -185,8 +185,7 @@ end
 
 """Refresh analytics data from the database (cached for 30s unless forced)."""
 function _refresh_analytics!(m::KaimonModel; force::Bool = false)
-    db = Database.DB[]
-    db === nothing && return
+    Database.is_ready() || return
     t = time()
     if !force && (t - m.analytics_last_refresh) < 30.0 && m.analytics_cache !== nothing
         return
@@ -219,7 +218,7 @@ function _view_analytics(m::KaimonModel, area::Rect, buf::Buffer)
     )
     inner = render(title_block, area, buf)
 
-    if cache === nothing || Database.DB[] === nothing
+    if cache === nothing || !Database.is_ready()
         set_string!(
             buf,
             inner.x + 1,

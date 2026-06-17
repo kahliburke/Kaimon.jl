@@ -358,32 +358,10 @@ Record a tool call as 'running' in the SQLite database at execution start.
 Returns the request_id (UUID string) for later update, or "" on failure.
 """
 function _persist_tool_start!(tool_name::String, args_json::String, session_key::String)::String
-    db = Database.DB[]
-    db === nothing && return ""
     rid = string(UUIDs.uuid4())
     try
-        Database.DBInterface.execute(
-            db,
-            """
-    INSERT INTO tool_executions (
-        session_key, request_id, tool_name, request_time,
-        duration_ms, input_size, output_size, arguments,
-        status, result_summary
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-""",
-            (
-                session_key,
-                rid,
-                tool_name,
-                Dates.format(now(), dateformat"yyyy-mm-dd HH:MM:SS"),
-                0.0,
-                sizeof(args_json),
-                0,
-                args_json,
-                "running",
-                "",
-            ),
-        )
+        Database.record_tool_start!(session_key, rid, tool_name,
+            Dates.format(now(), dateformat"yyyy-mm-dd HH:MM:SS"), sizeof(args_json), args_json)
     catch e
         @debug "Failed to persist tool start" exception = (e, catch_backtrace())
         return ""
@@ -395,8 +373,7 @@ end
 Update a previously-recorded tool call with its final result.
 """
 function _persist_tool_complete!(db_request_id::String, r::ToolCallResult)
-    db = Database.DB[]
-    (db === nothing || isempty(db_request_id)) && return
+    isempty(db_request_id) && return
     try
         dur_ms = if endswith(r.duration_str, "ms")
             parse(Float64, r.duration_str[1:end-2])
@@ -406,21 +383,8 @@ function _persist_tool_complete!(db_request_id::String, r::ToolCallResult)
             0.0
         end
         summary = length(r.result_text) > 500 ? r.result_text[1:500] : r.result_text
-        Database.DBInterface.execute(
-            db,
-            """
-    UPDATE tool_executions SET
-        duration_ms = ?, output_size = ?, status = ?, result_summary = ?
-    WHERE request_id = ?
-""",
-            (
-                dur_ms,
-                sizeof(r.result_text),
-                r.success ? "success" : "error",
-                summary,
-                db_request_id,
-            ),
-        )
+        Database.record_tool_complete!(db_request_id, dur_ms, sizeof(r.result_text),
+            r.success ? "success" : "error", summary)
     catch e
         @debug "Failed to persist tool completion" exception = (e, catch_backtrace())
     end

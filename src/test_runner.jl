@@ -215,6 +215,7 @@ end
 
 """Persist a completed test run to the database."""
 function _persist_test_run!(run::TestRun)
+    Database.with_db_lock() do
     db = Database.DB[]
     db === nothing && return
     try
@@ -303,5 +304,6 @@ function _persist_test_run!(run::TestRun)
         end
     catch e
         @debug "Failed to persist test run" exception = (e, catch_backtrace())
+    end
     end
 end
