@@ -31,6 +31,13 @@ const DB = Ref{Union{SQLite.DB,Nothing}}(nothing)
 const DB_PATH = Ref{String}("")
 const HAS_TRIGRAM = Ref{Bool}(true)   # cleared if the bundled SQLite predates trigram
 
+# Serializes ALL access to the single SQLite connection. SQLite.jl is NOT safe for
+# concurrent use of one connection across threads (the Julia-level prepared-stmt
+# cache + finalizers race → heap corruption). The indexer writes from a background
+# job thread while search/coverage read from MCP + render threads, so every public
+# op must hold this. Reentrant so a locked op can call _db() -> init!().
+const LOCK = ReentrantLock()
+
 """Default DB path in the user's cache dir (resolved via the parent Kaimon module)."""
 function default_db_path()
     return joinpath(parentmodule(@__MODULE__).kaimon_cache_dir(), "code_fts.db")
@@ -50,6 +57,7 @@ Open the lexical index DB and create the schema if absent. Idempotent.
 """
 function init!(path::String = default_db_path())
     mkpath(dirname(path))
+    return lock(LOCK) do
     db = SQLite.DB(path)
     DB[] = db
     DB_PATH[] = path
@@ -121,13 +129,16 @@ function init!(path::String = default_db_path())
         """)
     end
 
-    return db
+    db
+    end  # lock
 end
 
 """Close the connection (mainly for tests)."""
 function close!()
-    db = DB[]
-    db !== nothing && (SQLite.close(db); DB[] = nothing)
+    lock(LOCK) do
+        db = DB[]
+        db !== nothing && (SQLite.close(db); DB[] = nothing)
+    end
     return nothing
 end
 
@@ -145,6 +156,7 @@ row is a Dict/NamedTuple with: `point_id`, `collection`, `file`, `name`, `type`,
 """
 function add_chunks!(rows)
     isempty(rows) && return 0
+    return lock(LOCK) do
     db = _db()
     n = 0
     SQLite.transaction(db) do
@@ -168,21 +180,26 @@ function add_chunks!(rows)
             n += 1
         end
     end
-    return n
+    n
+    end  # lock
 end
 
 """Remove all chunks for one file in one collection (the reindex delete step)."""
 function delete_file!(collection::AbstractString, file::AbstractString)
-    db = _db()
-    DBInterface.execute(db, "DELETE FROM chunks WHERE collection = ? AND file = ?",
-        (String(collection), String(file)))
+    lock(LOCK) do
+        db = _db()
+        DBInterface.execute(db, "DELETE FROM chunks WHERE collection = ? AND file = ?",
+            (String(collection), String(file)))
+    end
     return nothing
 end
 
 """Drop every chunk for a collection (used on collection recreate / backfill reset)."""
 function clear_collection!(collection::AbstractString)
-    db = _db()
-    DBInterface.execute(db, "DELETE FROM chunks WHERE collection = ?", (String(collection),))
+    lock(LOCK) do
+        db = _db()
+        DBInterface.execute(db, "DELETE FROM chunks WHERE collection = ?", (String(collection),))
+    end
     return nothing
 end
 
@@ -252,6 +269,7 @@ cross-project search). The caller fuses these with the semantic list.
 function search(query::AbstractString; collection::Union{AbstractString,Nothing} = nothing,
                 limit::Int = 20, chunk_type::AbstractString = "all")
     isempty(strip(query)) && return (word = FtsHit[], tri = FtsHit[])
+    return lock(LOCK) do
     db = _db()
     tclause = _type_clause(chunk_type)
     cclause = collection === nothing ? "" : "AND c.collection = ?"
@@ -283,19 +301,22 @@ function search(query::AbstractString; collection::Union{AbstractString,Nothing}
         tri = _match_hits(db, tri_sql, phrase, (ctail..., limit), :substr)
     end
 
-    return (word = word, tri = tri)
+    (word = word, tri = tri)
+    end  # lock
 end
 
 # ── Coverage (for search-health visibility) ───────────────────────────────────
 
 """Per-collection chunk counts + total, for the search-health surface."""
 function coverage()
-    db = _db()
-    # Materialize during iteration (see _match_hits note on transient Rows).
-    per = [(collection = String(r.collection), n = Int(r.n))
-           for r in DBInterface.execute(db,
-               "SELECT collection, COUNT(*) AS n FROM chunks GROUP BY collection ORDER BY n DESC")]
-    return (collections = per, total = sum(p -> p.n, per; init = 0))
+    return lock(LOCK) do
+        db = _db()
+        # Materialize during iteration (see _match_hits note on transient Rows).
+        per = [(collection = String(r.collection), n = Int(r.n))
+               for r in DBInterface.execute(db,
+                   "SELECT collection, COUNT(*) AS n FROM chunks GROUP BY collection ORDER BY n DESC")]
+        (collections = per, total = sum(p -> p.n, per; init = 0))
+    end
 end
 
 end # module FtsIndex
