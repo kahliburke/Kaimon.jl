@@ -147,18 +147,28 @@ end
 """
     check_search_health(; model=DEFAULT_EMBEDDING_MODEL)
 
-Returns a NamedTuple (qdrant_up, ollama_up, model_available, collection_count).
+Returns a NamedTuple (qdrant_up, ollama_up, model_available, collection_count,
+fts_chunks, fts_collections) — the last two report local lexical-index coverage.
 """
 function check_search_health(; model::String = DEFAULT_EMBEDDING_MODEL)
     qdrant_up = QdrantClient.ping()
     ollama_up = ping_ollama()
     model_available = ollama_up ? check_ollama_model(model) : false
     collection_count = qdrant_up ? length(QdrantClient.list_collections()) : 0
+    # Lexical (FTS5) coverage — local, so available even when Qdrant/Ollama are down.
+    fts_chunks, fts_collections = try
+        cov = FtsIndex.coverage()
+        (cov.total, length(cov.collections))
+    catch
+        (0, 0)
+    end
     return (
         qdrant_up = qdrant_up,
         ollama_up = ollama_up,
         model_available = model_available,
         collection_count = collection_count,
+        fts_chunks = fts_chunks,
+        fts_collections = fts_collections,
     )
 end
 
@@ -340,7 +350,7 @@ qdrant_collection_info_tool = @mcp_tool(
 
 qdrant_search_code_tool = @mcp_tool(
     :qdrant_search_code,
-    "Semantic search over indexed codebase using natural language queries. Finds relevant code snippets based on meaning, not just keywords. Defaults to the last-used session's project collection.",
+    "Hybrid code search: combines semantic (meaning-based) vector search with exact keyword/identifier matching, fused and ranked together. Great for both natural-language queries ('function that handles HTTP routing') and exact symbols/strings ('_eval_with_capture'). Defaults to the last-used session's project collection. Supports FTS query syntax in the keyword half (phrases, AND/OR/NOT, prefix term*).",
     Dict(
         "type" => "object",
         "properties" => Dict(
@@ -369,180 +379,17 @@ qdrant_search_code_tool = @mcp_tool(
                 "type" => "string",
                 "description" => "Ollama model for embeddings (default: $DEFAULT_EMBEDDING_MODEL)",
             ),
+            "mode" => Dict(
+                "type" => "string",
+                "description" => "Search mode: 'hybrid' (default — semantic + keyword), 'semantic' (vector only), or 'lexical' (exact keyword/identifier only; works even when embeddings are unavailable).",
+                "enum" => ["hybrid", "semantic", "lexical"],
+            ),
         ),
         "required" => ["query"],
     ),
-    function (args)
-        # Defer the model choice until the collection is known: search must use the
-        # model the collection was indexed with, not a fixed default (an explicit
-        # arg still overrides).
-        explicit_model = let v = get(args, "embedding_model", nothing)
-            (v isa AbstractString && !isempty(v)) ? String(v) : nothing
-        end
-
-        query = get(args, "query", "")
-        limit = Int(get(args, "limit", 5))
-        chunk_type = get(args, "chunk_type", "all")
-
-        if isempty(query)
-            return "Error: query is required"
-        end
-
-        # Resolve collection — cross_project uses the global collection
-        cross_project = let v = get(args, "cross_project", false)
-            v isa Bool ? v : v == "true" || v == true
-        end
-
-        collections = QdrantClient.list_collections()
-
-        collection = if cross_project
-            gc = global_collection_name()
-            if gc ∉ collections
-                # Auto-create and populate from existing collections
-                try
-                    populate_global_collection!(; verbose=false)
-                catch
-                end
-                gc = global_collection_name()
-                collections = QdrantClient.list_collections()
-                if gc ∉ collections
-                    return "Error: No indexed projects found. Index at least one project first."
-                end
-            end
-            gc
-        else
-            raw_collection = get(args, "collection", nothing)
-            if raw_collection isa String && isempty(raw_collection)
-                raw_collection = nothing
-            end
-            col, col_err = _resolve_collection(raw_collection, collections)
-            if col_err !== nothing
-                return "Error: $col_err"
-            end
-            col
-        end
-
-        # Now that the collection is resolved, pick the model it was indexed with
-        # (explicit arg wins, else the collection's recorded model, else default).
-        embedding_model = something(explicit_model, resolve_search_model(collection))
-        svc_err = _require_services(need_ollama = true, model = embedding_model)
-        svc_err !== nothing && return svc_err
-
-        # Get embedding for query
-        embedding = get_ollama_embedding(query; model = embedding_model)
-
-        if isempty(embedding)
-            return "Error: Failed to generate embedding. Make sure Ollama is running with model '$embedding_model'."
-        end
-
-        # Build filter based on chunk_type
-        filter = nothing
-        if chunk_type == "definitions"
-            # Filter for definition types (function, struct, macro, const, tool)
-            filter = Dict(
-                "should" => [
-                    Dict("key" => "type", "match" => Dict("value" => "function")),
-                    Dict("key" => "type", "match" => Dict("value" => "struct")),
-                    Dict("key" => "type", "match" => Dict("value" => "macro")),
-                    Dict("key" => "type", "match" => Dict("value" => "const")),
-                    Dict("key" => "type", "match" => Dict("value" => "tool")),
-                ],
-            )
-        elseif chunk_type == "windows"
-            filter = Dict(
-                "must" => [Dict("key" => "type", "match" => Dict("value" => "window"))],
-            )
-        end
-
-        # Search
-        results =
-            QdrantClient.search(collection, embedding; limit = limit, filter = filter)
-
-        if isempty(results)
-            return "No results found for query: \"$query\""
-        end
-
-        # Format results (optimized for minimal tokens)
-        output = "🔍 \"$query\" in $collection:\n\n"
-
-        for (i, result) in enumerate(results)
-            score = get(result, "score", 0.0)
-            payload = get(result, "payload", Dict())
-
-            # Extract key fields
-            file = get(payload, "file", "")
-            name = get(payload, "name", "")
-            start_line = get(payload, "start_line", 0)
-            end_line = get(payload, "end_line", 0)
-            chunk_type = get(payload, "type", "")
-            text = get(payload, "text", "")
-
-            # Extract rich metadata
-            signature = get(payload, "signature", "")
-            parameters = get(payload, "parameters", [])
-            type_params = get(payload, "type_params", [])
-            parent_type = get(payload, "parent_type", "")
-            is_mutable = get(payload, "is_mutable", false)
-
-            # Use relative path if possible
-            proj_path = get(payload, "project_path", "")
-            if !isempty(file)
-                if !isempty(proj_path) && startswith(file, proj_path)
-                    file = relpath(file, proj_path)
-                elseif startswith(file, pwd())
-                    file = relpath(file, pwd())
-                end
-            end
-
-            # For cross-project search, prefix with project name
-            proj_label = if cross_project && !isempty(proj_path)
-                basename(proj_path)
-            else
-                ""
-            end
-
-            # Compact format: [score] name @ file:L10-20 (type)
-            output *= "[$i $(round(score, digits=2))] "
-
-            # Show name with signature if available
-            if !isempty(signature)
-                output *= "$signature @ "
-            elseif !isempty(name)
-                output *= "$name @ "
-            end
-
-            !isempty(proj_label) && (output *= "$proj_label/")
-            output *= "$file:L$start_line"
-            output *= start_line != end_line ? "-$end_line" : ""
-
-            # Show type with additional metadata
-            type_info = chunk_type
-            if chunk_type == "struct" && is_mutable
-                type_info = "mutable struct"
-            end
-            if !isempty(parent_type)
-                type_info *= " <: $parent_type"
-            end
-            if !isempty(type_params)
-                type_info *= "{" * join(type_params, ",") * "}"
-            end
-            output *= isempty(type_info) ? "" : " ($type_info)"
-            output *= "\n"
-
-            # Only show text preview if it's meaningful (>20 chars after strip)
-            text_preview = strip(string(text))
-            if length(text_preview) > 20
-                # Truncate to 150 chars
-                if length(text_preview) > 150
-                    text_preview = first(text_preview, 150) * "..."
-                end
-                output *= "  $text_preview\n"
-            end
-            output *= "\n"
-        end
-
-        return output
-    end
+    # Implementation lives in qdrant_hybrid.jl (`_qdrant_search_code`) so the
+    # semantic + lexical fusion stays readable and unit-testable.
+    args -> _qdrant_search_code(args),
 )
 
 qdrant_browse_collection_tool = @mcp_tool(

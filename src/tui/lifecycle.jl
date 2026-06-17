@@ -261,6 +261,12 @@ function Tachikoma.init!(m::KaimonModel, _t::Tachikoma.Terminal)
             isdir(entry.project_path) || continue
             _auto_index_project!(entry.project_path)
         end
+
+        # Bring the lexical (FTS5) index to parity with the vector index in the
+        # background (e.g. first boot after the 2.0 hybrid-search upgrade). No
+        # re-embedding; idempotent once counts match. The headless path hooks this
+        # in _start_gate_services!; the TUI bypasses that, so call it here too.
+        _spawn_fts_coverage_sync!()
     end
 
     # MCP server is started on the first view() tick so the TUI is already

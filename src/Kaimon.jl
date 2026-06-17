@@ -115,6 +115,7 @@ end
 
 include("utils.jl")
 include("database.jl")
+include("fts_index.jl")   # lexical (SQLite/FTS5) half of hybrid code search
 include("qdrant_client.jl")
 include("tools.jl")
 include("Generate.jl")
@@ -167,6 +168,7 @@ include("MCPServer.jl")
 include("vscode.jl")
 include("reflection_tools.jl")
 include("qdrant_tools.jl")
+include("qdrant_hybrid.jl")   # hybrid (semantic+lexical RRF) impl behind qdrant_search_code
 # Qdrant indexer, split from the former monolithic qdrant_indexer.jl. Order
 # follows the original (config/consts first, then cache, discovery, chunking,
 # indexing, revise hook).

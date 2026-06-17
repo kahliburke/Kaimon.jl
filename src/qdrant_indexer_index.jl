@@ -64,6 +64,7 @@ function index_file(
 
     try
         points = Dict[]
+        fts_rows = Dict[]   # mirror of the same chunks for the lexical (FTS5) index
 
         # Get embedding config for size limits
         embedding_config = get_embedding_config(embedding_model)
@@ -118,6 +119,19 @@ function index_file(
                     ),
                 )
 
+                # Lexical mirror: full chunk text (not the 2000-char vector-payload
+                # truncation) so keyword/substring matches can land anywhere in it.
+                push!(fts_rows, Dict(
+                    "point_id" => point_id,
+                    "collection" => collection,
+                    "file" => embedded_chunk["file"],
+                    "name" => embedded_chunk["name"],
+                    "type" => embedded_chunk["type"],
+                    "start_line" => embedded_chunk["start_line"],
+                    "end_line" => embedded_chunk["end_line"],
+                    "text" => embedded_chunk["text"],
+                ))
+
                 # Batch upsert every 10 points
                 if length(points) >= 10
                     QdrantClient.upsert_points(collection, points)
@@ -131,6 +145,16 @@ function index_file(
         if !isempty(points)
             QdrantClient.upsert_points(collection, points)
             _upsert_to_global!(points)
+        end
+
+        # Mirror chunks into the lexical (FTS5) index for hybrid search. Delete-
+        # then-insert keeps it idempotent across fresh-index and reindex alike.
+        # Additive: an FTS failure must never fail the (already-done) vector index.
+        try
+            FtsIndex.delete_file!(collection, file_path)
+            FtsIndex.add_chunks!(fts_rows)
+        catch e
+            with_index_logger(() -> @warn "Lexical (FTS) index write failed (non-fatal)" file = basename(file_path) exception = e)
         end
 
         # Record in index state for change tracking
@@ -364,6 +388,8 @@ function index_project(
                 ))
             end
         catch; end
+        # Purge the lexical index for this collection in lockstep.
+        try; FtsIndex.clear_collection!(col_name); catch; end
     elseif !col_exists
         !silent && println("Creating collection '$col_name' (model: $embedding_model, dims: $vector_size)...")
         with_index_logger(() -> @info "Creating collection" collection = col_name model = embedding_model vector_size = vector_size)
@@ -521,5 +547,129 @@ function sync_index(
     end
     with_index_logger(() -> @info "Index sync complete" reindexed = reindexed deleted = deleted chunks = total_chunks)
     return (reindexed=reindexed, deleted=deleted, chunks=total_chunks)
+end
+
+"""
+    backfill_fts!(collection; batch=256) -> Int
+
+Build the lexical (FTS5) index for an already-vector-indexed collection by
+scrolling its Qdrant payloads — **no re-embedding**. Each payload already carries
+`text` + metadata, so this is cheap and is how existing indexes light up hybrid
+search without a re-index. Clears the collection's FTS rows first (idempotent).
+Returns the number of chunks written. Skips the global cross-project collection
+(lexical search spans per-project collections directly).
+"""
+function backfill_fts!(collection::String; batch::Int=256)
+    collection = normalize_collection_name(collection)
+    collection == global_collection_name() && return 0
+    QdrantClient.collection_exists(collection) || return 0
+
+    FtsIndex.clear_collection!(collection)
+    total = 0
+    offset = nothing
+    while true
+        res = QdrantClient.scroll_points(collection; limit=batch, offset=offset, with_vector=false)
+        haskey(res, "error") && break
+        pts = get(res, "points", [])
+        isempty(pts) && break
+
+        rows = Dict[]
+        for pt in pts
+            payload = get(pt, "payload", Dict())
+            txt = get(payload, "text", "")
+            (txt === nothing || isempty(txt)) && continue
+            push!(rows, Dict(
+                "point_id" => get(pt, "id", nothing),
+                "collection" => collection,
+                "file" => get(payload, "file", ""),
+                "name" => get(payload, "name", ""),
+                "type" => get(payload, "type", ""),
+                "start_line" => get(payload, "start_line", 0),
+                "end_line" => get(payload, "end_line", 0),
+                "text" => txt,
+            ))
+        end
+        total += FtsIndex.add_chunks!(rows)
+
+        offset = get(res, "next_page_offset", nothing)
+        offset === nothing && break
+    end
+    with_index_logger(() -> @info "FTS backfill complete" collection = collection chunks = total)
+    return total
+end
+
+"""Backfill the lexical index for every vector-indexed project collection."""
+function backfill_fts_all!()
+    gc = global_collection_name()
+    counts = Pair{String,Int}[]
+    for col in QdrantClient.list_collections()
+        col == gc && continue
+        n = try; backfill_fts!(col); catch; 0; end
+        push!(counts, col => n)
+    end
+    return counts
+end
+
+"""
+    ensure_fts_coverage!() -> Vector{Pair{String,Int}}
+
+Bring the lexical (FTS5) index up to parity with the vector index, then return the
+collections it (re)built. For each vector collection, if its lexical coverage is
+materially below its Qdrant point count — e.g. a collection indexed before the 2.0
+hybrid-search upgrade, when no FTS index existed — backfill it from Qdrant payloads
+(no re-embedding). Idempotent: once the counts match this is a cheap no-op (one
+info call per collection), so it's safe to run on every startup; if the FTS DB is
+ever lost it self-heals on the next boot. Runs in the background at startup.
+"""
+function ensure_fts_coverage!()
+    QdrantClient.ping() || return Pair{String,Int}[]
+    gc = global_collection_name()
+    cov = try; FtsIndex.coverage(); catch; (collections = NamedTuple[], total = 0); end
+    fts_counts = Dict(c.collection => c.n for c in cov.collections)
+
+    built = Pair{String,Int}[]
+    for col in QdrantClient.list_collections()
+        col == gc && continue
+        qn = try
+            round(Int, get(QdrantClient.get_collection_info(col), "points_count", 0))
+        catch; 0; end
+        qn == 0 && continue
+        # The mapping is 1:1 — every non-empty chunk is exactly one Qdrant point
+        # and one FTS row — so a correct index has fcount == qcount. Any shortfall
+        # means FTS genuinely fell behind (never built, or a co-write that threw),
+        # so rebuild it; once parity is reached this is a no-op (no churn). A
+        # concurrent reindex_file deletes by (collection, file), so any transient
+        # duplicate self-heals on that file's next reindex.
+        if get(fts_counts, col, 0) < qn
+            n = try
+                backfill_fts!(col)
+            catch e
+                with_index_logger(() -> @warn "FTS coverage backfill failed" collection = col exception = e)
+                continue
+            end
+            n > 0 && push!(built, col => n)
+        end
+    end
+    isempty(built) || with_index_logger(() -> @info "FTS coverage sync complete" built = built)
+    return built
+end
+
+"""
+    _spawn_fts_coverage_sync!(; delay=8) -> Task
+
+Run [`ensure_fts_coverage!`](@ref) once in the background, after a short delay so
+startup auto-indexing settles first. Called from BOTH startup paths — the TUI
+(`Tachikoma.setup!`) and headless (`_start_gate_services!`) — since they don't
+share a single init. Errors are non-fatal and logged.
+"""
+function _spawn_fts_coverage_sync!(; delay::Real = 8)
+    return Threads.@spawn begin
+        try
+            sleep(delay)
+            ensure_fts_coverage!()
+        catch e
+            with_index_logger(() -> @warn "FTS coverage sync failed" exception = e)
+        end
+    end
 end
 

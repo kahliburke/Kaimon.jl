@@ -396,6 +396,11 @@ function _start_gate_services!()
 
     # Periodic maintenance the TUI render loop would otherwise drive.
     _start_housekeeping!()
+
+    # One-shot: bring the lexical (FTS5) index to parity with the vector index
+    # (e.g. first boot after the 2.0 hybrid-search upgrade). The TUI path has its
+    # own call in src/tui/lifecycle.jl since it bypasses this function.
+    _spawn_fts_coverage_sync!()
     nothing
 end
 

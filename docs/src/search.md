@@ -1,17 +1,51 @@
-# Semantic Code Search
+# Code Search
 
-Kaimon provides natural language search over Julia codebases using vector embeddings. Instead of matching exact keywords, you can describe what you are looking for in plain language — for example, "function that handles HTTP routing" or "struct for database configuration" — and Kaimon returns the most semantically relevant code snippets.
+Kaimon provides **hybrid** search over Julia codebases: it combines semantic
+(meaning-based) vector search with exact keyword/identifier matching, fuses the
+two, and returns one ranked list. Describe what you want in plain language — "function
+that handles HTTP routing" — *or* paste an exact symbol like `_eval_with_capture`,
+and the right half of the engine surfaces it. Both go through the same
+`qdrant_search_code` tool; you don't have to choose.
 
 ![Kaimon search tab](./assets/kaimon_search.gif)
 
 ## How It Works
 
 1. Source files are split into **chunks** (function definitions, struct definitions, and sliding text windows).
-2. Each chunk is converted into a vector embedding using a local Ollama model.
-3. Embeddings are stored in a Qdrant vector database.
-4. When you search, your query is embedded and compared against stored vectors to find the closest matches.
+2. Each chunk is converted into a vector embedding using a local Ollama model **and** mirrored into a local SQLite/FTS5 full-text index.
+3. Embeddings are stored in a Qdrant vector database; the chunk text + metadata are stored in the lexical index.
+4. When you search, the query is embedded and compared against stored vectors (semantic), and matched against the full-text index (lexical). The two ranked lists are fused with [Reciprocal Rank Fusion](https://en.wikipedia.org/wiki/Learning_to_rank) so a chunk found by both rises to the top.
 
 All processing happens locally — no code leaves your machine.
+
+## Hybrid Search (Semantic + Lexical)
+
+The lexical half is a local SQLite/FTS5 index with two tokenizers — word-level
+(`get_ollama_embedding` → `get`/`ollama`/`embedding`) and trigram (substring, so
+`eval_with` finds `_eval_with_capture`). It catches exactly what embeddings miss:
+exact identifiers, error strings, config keys, and rare tokens. The keyword half
+also supports FTS query syntax — phrases (`"exact phrase"`), boolean
+(`memory AND leak`), and prefix (`mem*`) — through the same query box.
+
+### Modes
+
+`qdrant_search_code` takes an optional `mode`:
+
+| Mode | Behavior |
+|---|---|
+| `hybrid` (default) | Semantic + lexical, fused. Best results; no need to think about it. |
+| `semantic` | Vector search only. |
+| `lexical` | Exact keyword/identifier only. **Works even when Ollama/Qdrant are down** (the index is local SQLite). |
+
+Each result is tagged with its origin: `⚯` found by both, `≈` semantic, `⚡` exact
+keyword, `◎` substring — and lexical hits show the matched snippet.
+
+### Resilience
+
+Hybrid mode degrades gracefully: if embeddings are unavailable (Ollama down or a
+missing model) or Qdrant is unreachable, search automatically falls back to
+lexical-only results with a note, instead of failing. The lexical index is local,
+so basic search keeps working through service outages.
 
 ## Requirements
 
@@ -64,6 +98,20 @@ When a Julia REPL gate connects to Kaimon, the server automatically indexes its 
 - If a collection already exists, Kaimon runs an incremental sync to pick up any changed files.
 
 File-change notifications from the gate trigger incremental re-indexing automatically, with a 5-second debounce to batch rapid edits.
+
+### Backfilling the Lexical Index
+
+The lexical index is populated automatically as files are indexed or re-indexed.
+For collections that were indexed before hybrid search existed, you can build the
+lexical index from the existing Qdrant payloads — **without re-embedding** — by
+running once from the REPL:
+
+```julia
+Kaimon.backfill_fts!("MyProject")   # one collection
+Kaimon.backfill_fts_all!()          # every indexed collection
+```
+
+A normal `qdrant_sync_index` or reindex also fills it in.
 
 ## The Search Tab
 
