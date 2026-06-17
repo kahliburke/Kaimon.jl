@@ -90,7 +90,7 @@ b) `run_tests()` — Spawns a proper test subprocess with streaming output. Bett
 
 c) `type_info("DataFrame")` — Shows fields, hierarchy, and type parameters. Better than `ex(e="fieldnames(DataFrame)", q=false)` for complete picture. (~4 pts)
 
-d) `qdrant_search_code(query="WebSocket connection handling")` — Semantic search finds relevant code by meaning. (~3 pts)
+d) `search_code(query="WebSocket connection handling")` — hybrid search finds relevant code by meaning (and keyword). Prefer it over grep. (~3 pts)
 
 e) `ex(e="using GLMakie; scatter([1,2,3], [4,5,6])", mt=true)` — `mt=true` is **critical**. GLMakie/GLFW requires thread 1 for all OpenGL calls. Without `mt=true`, async evals run on default-pool threads, causing `ThreadAssertionError`. (~3 pts)
 
@@ -138,11 +138,27 @@ f) Background jobs are **persisted to SQLite**. On TUI restart, Kaimon checks th
 
 ---
 
+## Question 8: Code Search vs grep (15 points)
+
+**Answers:**
+
+a) `search_code(query="_eval_with_capture", mode="lexical")` (hybrid mode works too). It does exact keyword/identifier matching via a local FTS5 index — it finds exact symbols like grep would, but it's indexed, faster, and ranked. **Don't use grep/find/Bash for code search**: `search_code` is a superset for code — the old "I need grep for the exact name" reason no longer holds. (5 pts)
+
+b) `search_code(query="HTTP routing handling")` — a natural-language query; the semantic half finds code by meaning. (3 pts)
+
+c) **False.** `search_code` has a lexical half backed by a local SQLite index, so it keeps working when Ollama/Qdrant are down — `mode="lexical"`, and `hybrid` auto-degrades to lexical-only with a note. You don't need grep even offline. (4 pts)
+
+d) Only for **literal text in files that aren't part of the code index** — logs, generated files, config/data, or matching across arbitrary file types. For finding code (by concept or exact symbol), `search_code` wins. (3 pts)
+
+**Grading:** 15 points total; partial credit for capturing "search_code does exact symbols too" and "prefer it over grep".
+
+---
+
 ## Final Assessment
 
-**Total:** _____ / 115
+**Total:** _____ / 130
 
-- **90-115 — EXCELLENT:** Ready to work efficiently
-- **85-89 — GOOD:** Review missed areas before starting
-- **70-84 — REVIEW NEEDED:** Review `usage_instructions` and retake
-- **Below 70 — NEEDS STUDY:** Must score 70+ before working with users
+- **100-130 — EXCELLENT:** Ready to work efficiently
+- **90-99 — GOOD:** Review missed areas before starting
+- **78-89 — REVIEW NEEDED:** Review `usage_instructions` and retake
+- **Below 78 — NEEDS STUDY:** Must score 78+ before working with users

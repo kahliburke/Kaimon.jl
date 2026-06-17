@@ -51,7 +51,7 @@ For each task, which tool should you use and why?
 a) You want to see all methods of `push!`
 b) You want to run the project's test suite and see pass/fail summary
 c) You want to check what fields a `DataFrame` has
-d) You want to find code that handles WebSocket connections
+d) You want to find code that handles WebSocket connections (by concept)
 e) You need to run `using GLMakie; scatter([1,2,3], [4,5,6])` — what `ex` parameter is critical and why?
 
 ---
@@ -74,11 +74,22 @@ f) What happens to background jobs if the Kaimon TUI is restarted?
 
 ---
 
+## Question 8: Code Search vs grep (15 points)
+
+`search_code` is hybrid: it combines semantic (meaning-based) vector search with exact keyword/identifier matching, fused and ranked together. (`qdrant_search_code` is a deprecated alias.)
+
+a) You need to find every place the exact function `_eval_with_capture` is called. Which tool and `mode`, and why should you NOT reach for `grep`/`find`/Bash?
+b) You're new to a codebase and want "where HTTP routing is handled." Which tool and what kind of query?
+c) True or false: if Ollama (embeddings) is down, you should fall back to `grep` for code search. Explain.
+d) When, if ever, is `grep`/Bash the right tool over `search_code`?
+
+---
+
 ## Grading Scale
 
-- **90-115**: Excellent! Ready to use Kaimon effectively.
-- **85-89**: Good. Review missed areas before starting.
-- **70-84**: Review `usage_instructions` and retake.
-- **Below 70**: Study `usage_instructions` carefully and retake.
+- **100-130**: Excellent! Ready to use Kaimon effectively.
+- **90-99**: Good. Review missed areas before starting.
+- **78-89**: Review `usage_instructions` and retake.
+- **Below 78**: Study `usage_instructions` carefully and retake.
 
 **Check answers:** `usage_quiz(show_sols=true)`
