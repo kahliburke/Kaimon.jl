@@ -202,4 +202,43 @@ end
     @test isempty(KaimonGate._AUTH_TOKEN[])
 end
 
+# ── discoverable flag: serve without advertising in the discovery registry ─────
+# `discoverable=false` serves a normal IPC gate but writes NO <session_id>.json metadata, so
+# the TUI / MCP server won't list it (used by embedded/private gates like TachiRei atoms).
+
+@testset "discoverable flag (metadata registration)" begin
+    if Sys.iswindows()
+        @test_skip true
+    else
+        sock_dir = KaimonGate.sock_dir()
+
+        # discoverable=false → gate runs, but no metadata file is written
+        sid_hidden  = "test-hidden-$(bytes2hex(rand(UInt8, 4)))"
+        meta_hidden = joinpath(sock_dir, "$sid_hidden.json")
+        rm(meta_hidden; force=true)
+        KaimonGate._serve(name="test", session_id=sid_hidden, force=true, discoverable=false)
+        sleep(0.15)
+        try
+            @test KaimonGate._RUNNING[]
+            @test !isfile(meta_hidden)            # not advertised
+        finally
+            KaimonGate.stop(); sleep(0.1)
+            rm(meta_hidden; force=true)
+        end
+
+        # default (discoverable=true) → metadata file IS written
+        sid_seen  = "test-seen-$(bytes2hex(rand(UInt8, 4)))"
+        meta_seen = joinpath(sock_dir, "$sid_seen.json")
+        rm(meta_seen; force=true)
+        KaimonGate._serve(name="test", session_id=sid_seen, force=true)
+        sleep(0.15)
+        try
+            @test isfile(meta_seen)               # advertised by default
+        finally
+            KaimonGate.stop(); sleep(0.1)
+            rm(meta_seen; force=true)
+        end
+    end
+end
+
 end  # if !_RUNNING[]

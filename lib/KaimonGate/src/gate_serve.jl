@@ -32,6 +32,11 @@ to override the TTY check.
   Use `"0.0.0.0"` to accept connections from remote machines (no auth — use with care).
 - `port::Int`: Port for TCP mode (default `0` = ephemeral, ZMQ picks a free port).
   Both REP and PUB sockets support this. Use a fixed port for predictable endpoints.
+- `discoverable::Bool`: Whether to advertise this gate in the local discovery registry
+  (default `true`). When `false`, the gate serves normally but writes no metadata file, so
+  the Kaimon TUI / MCP server won't list it or import its tools — for embedded/private gates
+  that clients reach via explicit endpoints (e.g. TachiRei atoms, reached on demand by id).
+  IPC only; TCP gates are never file-discovered (they're connected via `connect_tcp!`).
 
 # Example
 ```julia
@@ -71,6 +76,7 @@ function serve(;
     server_secret::Union{String,Nothing} = nothing,
     allow_any::Union{Bool,Nothing} = nothing,
     allowed_clients::Union{Vector{String},Nothing} = nothing,
+    discoverable::Bool = true,
 )
     # Resolve defaults: explicit kwargs > env vars > kaimon.toml [gate] > defaults
     toml = _load_gate_config()
@@ -145,6 +151,7 @@ function serve(;
         server_secret,
         allow_any,
         allowed_clients,
+        discoverable,
     )
 end
 
@@ -167,6 +174,7 @@ function _serve(;
     server_secret::Union{String,Nothing} = nothing,
     allow_any::Bool = false,
     allowed_clients::Vector{String} = String[],
+    discoverable::Bool = true,
 )
     # Capture original argv for restart replay (once, on first call)
     _capture_original_argv()
@@ -367,8 +375,11 @@ function _serve(;
     _STREAM_ENDPOINT[] = stream_endpoint
 
     # Write metadata file for session discovery (IPC only — TCP sessions
-    # are connected manually via connect_tcp! and don't use file-based discovery)
-    if mode != :tcp
+    # are connected manually via connect_tcp! and don't use file-based discovery).
+    # `discoverable=false` serves the gate but does NOT advertise it in the discovery
+    # registry — for embedded/private gates that clients reach via explicit endpoints
+    # (the Kaimon TUI / MCP server won't list it or import its tools).
+    if mode != :tcp && discoverable
         write_metadata(sid, name, endpoint, stream_endpoint; spawned_by, mode)
     end
 
