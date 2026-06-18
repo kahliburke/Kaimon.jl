@@ -330,7 +330,7 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
     else
         (0, 0)
     end
-    n_agents = lock(STANDALONE_SESSIONS_LOCK) do
+    n_clients = lock(STANDALONE_SESSIONS_LOCK) do
         count(s -> s.state == Session.INITIALIZED, values(STANDALONE_SESSIONS))
     end
     uptime = format_uptime(time() - m.start_time)
@@ -359,7 +359,7 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
                 Span("  $(DOT) ", tstyle(:border)),
                 Span("$(n_exts) exts", tstyle(:primary)),
                 Span("  $(DOT) ", tstyle(:border)),
-                Span("$(n_agents) agents", tstyle(:secondary)),
+                Span("$(n_clients) clients", tstyle(:secondary)),
             ],
             right = [
                 Span("⏱ $(uptime) ", tstyle(:text_dim)),

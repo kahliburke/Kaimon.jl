@@ -57,7 +57,7 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
             end
             # Prioritize col_drag on either DataTable
             _st_drag = m.sessions_table !== nothing && m.sessions_table.col_drag > 0
-            _at_drag = m.agents_table !== nothing && m.agents_table.col_drag > 0
+            _at_drag = m.clients_table !== nothing && m.clients_table.col_drag > 0
             if !_st_drag && !_at_drag
                 handle_resize!(m.sessions_layout, evt)
                 handle_resize!(m.sessions_left_layout, evt)
@@ -74,9 +74,9 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
                     m.sessions_detail_scroll = 0
                     m.focused_pane[2] = 1
                 end
-            elseif m.agents_table !== nothing &&
-                   (m.agents_table.col_drag > 0 || _in_pane(_lr, 2, evt))
-                handle_mouse!(m.agents_table, evt)
+            elseif m.clients_table !== nothing &&
+                   (m.clients_table.col_drag > 0 || _in_pane(_lr, 2, evt))
+                handle_mouse!(m.clients_table, evt)
             elseif _in_pane(_rr, 2, evt)
                 if evt.button == mouse_scroll_up
                     m.sessions_detail_scroll = max(0, m.sessions_detail_scroll - 1)

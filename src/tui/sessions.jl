@@ -32,10 +32,10 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
 
     # ── Left column: REPL gates (top) + MCP agents (bottom) ──
     # Pull live MCP agent sessions
-    agent_sessions = lock(STANDALONE_SESSIONS_LOCK) do
+    mcp_clients = lock(STANDALONE_SESSIONS_LOCK) do
         collect(values(STANDALONE_SESSIONS))
     end
-    filter!(s -> s.state == Session.INITIALIZED, agent_sessions)
+    filter!(s -> s.state == Session.INITIALIZED, mcp_clients)
 
     left_rows = split_layout(m.sessions_left_layout, cols[1])
     length(left_rows) < 2 && return
@@ -60,9 +60,9 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
         render(dt, left_rows[1], buf)
     end
 
-    # ── MCP agents table ──
-    _sync_agents_table!(m, agent_sessions)
-    adt = m.agents_table
+    # ── MCP clients table ──
+    _sync_clients_table!(m, mcp_clients)
+    adt = m.clients_table
     if adt !== nothing
         adt.tick = m.tick
         render(adt, left_rows[2], buf)
@@ -360,12 +360,12 @@ function _sync_sessions_table!(m::KaimonModel, connections::Vector{REPLConnectio
 end
 
 """Build/rebuild the agents DataTable from live MCP sessions."""
-function _sync_agents_table!(m::KaimonModel, agent_sessions)
-    n = length(agent_sessions)
+function _sync_clients_table!(m::KaimonModel, mcp_clients)
+    n = length(mcp_clients)
     dt_hash = hash((n, m.tick ÷ 8))
-    old_dt = m.agents_table
+    old_dt = m.clients_table
 
-    if old_dt !== nothing && m._agents_table_hash == dt_hash
+    if old_dt !== nothing && m._clients_table_hash == dt_hash
         return
     end
 
@@ -373,12 +373,12 @@ function _sync_agents_table!(m::KaimonModel, agent_sessions)
     col_session = Any[]
     col_active = Any[]
 
-    if isempty(agent_sessions)
-        push!(col_client, "No agents connected")
+    if isempty(mcp_clients)
+        push!(col_client, "No clients connected")
         push!(col_session, "")
         push!(col_active, "")
     else
-        for s in agent_sessions
+        for s in mcp_clients
             client_name = get(s.client_info, "name", "unknown")
             push!(col_client, string(client_name))
             push!(col_session, s.id[1:min(8, length(s.id))] * "…")
@@ -394,13 +394,13 @@ function _sync_agents_table!(m::KaimonModel, agent_sessions)
         ];
         selected = 0,
         block = Block(
-            title = n > 0 ? "Agents ($n)" : "Agents",
+            title = n > 0 ? "Clients ($n)" : "Clients",
             border_style = _pane_border(m, TAB_SESSIONS, 2),
             title_style = _pane_title(m, TAB_SESSIONS, 2),
         ),
         tick = m.tick,
     )
-    m._agents_table_hash = dt_hash
+    m._clients_table_hash = dt_hash
 
     if old_dt !== nothing
         dt.last_content_area = old_dt.last_content_area
@@ -412,7 +412,7 @@ function _sync_agents_table!(m::KaimonModel, agent_sessions)
         dt.col_drag_start_x = old_dt.col_drag_start_x
         dt.col_drag_start_w = old_dt.col_drag_start_w
     end
-    m.agents_table = dt
+    m.clients_table = dt
 end
 
 """Get the filtered list of visible (non-extension) REPL connections."""
