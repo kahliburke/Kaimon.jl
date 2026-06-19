@@ -122,6 +122,7 @@ function collect_tools()::Vector{MCPTool}
         run_tests_tool,
         stress_test_tool,
         extension_info_tool,
+        manage_extension_tool,
         check_eval_tool,
         cancel_eval_tool,
         list_jobs_tool,

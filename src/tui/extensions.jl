@@ -637,32 +637,10 @@ end
 function _toggle_ext_field!(m::KaimonModel, field::Symbol)
     ext = _get_selected_ext(m)
     ext === nothing && return
-
-    old_entry = ext.config.entry
-    new_enabled = field == :enabled ? !old_entry.enabled : old_entry.enabled
-    new_auto = field == :auto_start ? !old_entry.auto_start : old_entry.auto_start
-    new_entry = ExtensionEntry(old_entry.project_path, new_enabled, new_auto)
-    ext.config = ExtensionConfig(new_entry, ext.config.manifest)
-
-    # Persist to extensions.json
-    entries = load_extensions_config()
-    for (i, e) in enumerate(entries)
-        norm = normalize_path(e.project_path)
-        ext_norm = normalize_path(old_entry.project_path)
-        if norm == ext_norm
-            entries[i] = new_entry
-            break
-        end
-    end
-    save_extensions_config(entries)
-
-    # Side effects
     if field == :enabled
-        if !new_enabled && ext.status in (:running, :starting)
-            stop_extension!(ext)
-        elseif new_enabled && new_auto && ext.status == :stopped
-            spawn_extension!(ext)
-        end
+        set_extension_config!(ext; enabled = !ext.config.entry.enabled)
+    else
+        set_extension_config!(ext; auto_start = !ext.config.entry.auto_start)
     end
 end
 

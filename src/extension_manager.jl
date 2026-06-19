@@ -390,6 +390,44 @@ function restart_extension!(ext::ManagedExtension)
     spawn_extension!(ext)
 end
 
+"""
+    set_extension_config!(ext; enabled=nothing, auto_start=nothing) -> (enabled, auto_start)
+
+Update an extension's `enabled` / `auto_start` flags, persist them to
+extensions.json, and apply the start/stop side effects (disabling a running
+extension stops it; enabling an auto-start extension that's stopped starts it).
+Pass only the field you want to change. Shared by the TUI Extensions tab and the
+`manage_extension` MCP tool.
+"""
+function set_extension_config!(ext::ManagedExtension; enabled = nothing, auto_start = nothing)
+    old = ext.config.entry
+    new_enabled = enabled === nothing ? old.enabled : enabled
+    new_auto = auto_start === nothing ? old.auto_start : auto_start
+    new_entry = ExtensionEntry(old.project_path, new_enabled, new_auto)
+    ext.config = ExtensionConfig(new_entry, ext.config.manifest)
+
+    # Persist to extensions.json (match by normalized project path).
+    entries = load_extensions_config()
+    target = normalize_path(old.project_path)
+    for (i, e) in enumerate(entries)
+        if normalize_path(e.project_path) == target
+            entries[i] = new_entry
+            break
+        end
+    end
+    save_extensions_config(entries)
+
+    # Side effects only when `enabled` actually changed.
+    if enabled !== nothing
+        if !new_enabled && ext.status in (:running, :starting)
+            stop_extension!(ext)
+        elseif new_enabled && new_auto && ext.status == :stopped
+            spawn_extension!(ext)
+        end
+    end
+    (enabled = new_enabled, auto_start = new_auto)
+end
+
 # ── Monitor ──────────────────────────────────────────────────────────────────
 
 const _EXTENSION_RESTART_BACKOFF = [5.0, 10.0, 30.0, 60.0]  # seconds

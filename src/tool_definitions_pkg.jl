@@ -339,6 +339,72 @@ With name: detailed view of one extension including per-tool documentation and p
     end
 )
 
+manage_extension_tool = @mcp_tool(
+    :manage_extension,
+    """Manage a configured Kaimon extension's lifecycle — the same controls as the TUI Extensions tab.
+
+Actions (target an extension by its namespace; use extension_info to list them):
+- start / stop / restart — control the running process
+- enable / disable — whether the extension may run (disable also stops it if running; persisted to extensions.json)
+- enable_auto_start / disable_auto_start — whether it auto-starts with Kaimon (persisted)
+
+Returns the extension's resulting {status, enabled, auto_start}.""",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "name" => Dict("type" => "string", "description" => "Extension namespace (see extension_info)."),
+            "action" => Dict(
+                "type" => "string",
+                "enum" => ["start", "stop", "restart", "enable", "disable",
+                           "enable_auto_start", "disable_auto_start"],
+                "description" => "Lifecycle action to apply.",
+            ),
+        ),
+        "required" => ["name", "action"],
+    ),
+    args -> begin
+        try
+            name = String(get(args, "name", ""))
+            action = String(get(args, "action", ""))
+            exts = get_managed_extensions()
+            idx = findfirst(e -> e.config.manifest.namespace == name, exts)
+            if idx === nothing
+                available = join([e.config.manifest.namespace for e in exts], ", ")
+                return "Error: No extension '$name' found. Available: $available"
+            end
+            ext = exts[idx]
+            if action == "start"
+                ext.status == :stopped ||
+                    return "Extension '$name' is already $(ext.status) (start only applies when stopped)."
+                spawn_extension!(ext)
+            elseif action == "stop"
+                stop_extension!(ext)
+            elseif action == "restart"
+                restart_extension!(ext)
+            elseif action == "enable"
+                set_extension_config!(ext; enabled = true)
+            elseif action == "disable"
+                set_extension_config!(ext; enabled = false)
+            elseif action == "enable_auto_start"
+                set_extension_config!(ext; auto_start = true)
+            elseif action == "disable_auto_start"
+                set_extension_config!(ext; auto_start = false)
+            else
+                return "Error: unknown action '$action'. Use start|stop|restart|enable|disable|enable_auto_start|disable_auto_start."
+            end
+            JSON.json(Dict(
+                "extension" => name,
+                "action" => action,
+                "status" => string(ext.status),
+                "enabled" => ext.config.entry.enabled,
+                "auto_start" => ext.config.entry.auto_start,
+            ))
+        catch e
+            "Error managing extension: $(sprint(showerror, e))"
+        end
+    end
+)
+
 stress_test_tool = @mcp_tool(
     :stress_test,
     """Run a stress test by spawning concurrent simulated MCP agents.
