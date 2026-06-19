@@ -42,6 +42,8 @@ Each entry shows:
 
 When multiple sessions are connected, tools that execute code require a `ses` or `session` parameter to specify the target. See [Sessions](sessions.md) for routing details.
 
+The tab also shows a **Clients** pane (and the bottom bar's `clients` count): the MCP clients connected to Kaimon's server — your editor or CLI (Claude Code, Cursor, Gemini CLI, …) that *consumes* Kaimon's tools. These are distinct from the **Agents** tab (tab 9), which monitors **Kaimon-owned** AI agents that Kaimon *spawns and drives*. In short: a **client** connects *in* to use Kaimon; an **agent** is launched *by* Kaimon.
+
 For agent-spawned sessions (started via the `start_session` tool), select the session and press `Enter` to open an embedded terminal with direct REPL access.
 
 ### Key Reference
