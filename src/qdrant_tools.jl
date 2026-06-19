@@ -355,7 +355,7 @@ const _SEARCH_CODE_PARAMS = Dict(
     "properties" => Dict(
         "query" => Dict(
             "type" => "string",
-            "description" => "Search query — natural language ('function that handles HTTP routing') or an exact symbol/string ('_eval_with_capture').",
+            "description" => "Search query — natural language ('function that handles HTTP routing') or exact symbols ('push! agent_add_cell!'). Julia punctuation is handled automatically: a bang/macro/dotted name attached to a word (push!, @view, Base.foo) is matched literally. Multiple bare terms are OR-joined (find any), ranked. For finer control use \"exact phrase\", full-word AND/OR/NOT, or prefix* — a standalone ! / && / || also acts as NOT / AND / OR.",
         ),
         "collection" => Dict(
             "type" => "string",
@@ -391,7 +391,7 @@ const _SEARCH_CODE_PARAMS = Dict(
 # (`_qdrant_search_code`) so the semantic + lexical fusion stays readable/testable.
 search_code_tool = @mcp_tool(
     :search_code,
-    "Search indexed code — the primary way to find code; prefer it over grep/find. Combines semantic (meaning-based) vector search with exact keyword/identifier matching, fused and ranked together. Use it to locate code by concept ('function that handles HTTP routing') OR by exact symbol/string ('_eval_with_capture') — it finds exact identifiers too, so you don't need grep for that. Works even when embeddings are unavailable (lexical fallback). Defaults to the last-used session's project; set cross_project=true to search all. Supports FTS syntax in the keyword half (phrases, AND/OR/NOT, prefix term*).",
+    "Search indexed code — the primary way to find code; prefer it over grep/find. Combines semantic (meaning-based) vector search with exact keyword/identifier matching, fused and ranked together. Use it to locate code by concept ('function that handles HTTP routing') OR by exact symbol/string ('_eval_with_capture') — it finds exact identifiers too, so you don't need grep for that. Works even when embeddings are unavailable (lexical fallback). Defaults to the last-used session's project; set cross_project=true to search all. Query handling: just type the symbols — Julia punctuation (push!, @view, Base.foo) is matched literally, and multiple bare terms are OR-joined (find any) and ranked, so you don't need operators for a symbol bag. Finer control: \"exact phrase\", full-word AND/OR/NOT, prefix*; a standalone ! / && / || acts as NOT / AND / OR. Call tool_help(:search_code, extended=true) for the full query-syntax reference.",
     _SEARCH_CODE_PARAMS,
     args -> _qdrant_search_code(args),
 )
@@ -875,6 +875,85 @@ qdrant_search_tool = @mcp_tool(
     end
 )
 
+# Lexical (FTS5) search over ONE arbitrary collection, returning STRUCTURED hits.
+# This is the keyword/identifier half of `search_code` exposed as a standalone,
+# collection-scoped tool for extensions (e.g. KaimonSlate) that maintain their own
+# Qdrant collection and need programmatic hits — not the agent-facing formatted
+# string. Implementation (`fts_search`) lives in qdrant_hybrid.jl alongside the
+# fusion it reuses. No service guard: lexical search is local (SQLite) and works
+# even when Qdrant/Ollama are down — that's the resilience half of hybrid search.
+qdrant_fts_search_tool = @mcp_tool(
+    :qdrant_fts_search,
+    "Lexical (full-text / FTS5) search over ONE Qdrant collection's `text` payloads — the keyword/identifier half of search_code, scoped to a single collection, returning STRUCTURED hits as a JSON array (not a formatted agent string). Word + trigram-substring matching, fused/deduped via RRF and exact-symbol boosted, ranked by `score` (higher is better). Works even when Qdrant/Ollama are down (local SQLite index). The collection must be FTS-covered first (see qdrant_ensure_fts_coverage). Returns a JSON array of hits, each: {point_id, name, file, type, start_line, end_line, text, snippet, sources, score}.",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "collection" =>
+                Dict("type" => "string", "description" => "Name of the collection to search"),
+            "query" => Dict(
+                "type" => "string",
+                "description" => "Lexical query. Bare terms are OR-joined (find any), ranked; use \"exact phrase\", full-word AND/OR/NOT, or prefix* for finer control. Julia punctuation attached to a word (push!, @view, Base.foo) matches literally.",
+            ),
+            "limit" => Dict(
+                "type" => "integer",
+                "description" => "Maximum number of results (default: 20)",
+            ),
+            "chunk_type" => Dict(
+                "type" => "string",
+                "description" => "Filter by chunk type: 'definitions' (functions/structs only), 'windows' (sliding-window chunks only), or 'all' (default: all)",
+                "enum" => ["all", "definitions", "windows"],
+            ),
+        ),
+        "required" => ["collection", "query"],
+    ),
+    function (args)
+        collection = get(args, "collection", "")
+        isempty(collection) && return "Error: collection is required"
+        query = get(args, "query", "")
+        isempty(query) && return "Error: query is required"
+        # limit may arrive as an int (MCP/JSON) or a string (some gate callers).
+        limit = let v = get(args, "limit", 20)
+            v isa Integer ? Int(v) : (v isa AbstractString ? parse(Int, v) : Int(v))
+        end
+        chunk_type = String(get(args, "chunk_type", "all"))
+
+        hits = fts_search(String(collection), String(query); limit = limit, chunk_type = chunk_type)
+        # JSON-stringify the structured hits (same rationale as qdrant_search): a
+        # bare array breaks the MCP agent surface, while a JSON string serves the
+        # agent AND parses cleanly for _kt/call_tool consumers (JSON.parse → Vector).
+        return JSON.json(hits)
+    end
+)
+
+# Idempotent single-collection FTS coverage: mirror a collection's `text` payloads
+# into the local lexical index so qdrant_fts_search / search_code can find them.
+# Wraps `ensure_fts_coverage` (qdrant_indexer_index.jl). Needs Qdrant (it scrolls
+# payloads), so it keeps the service guard.
+qdrant_ensure_fts_coverage_tool = @mcp_tool(
+    :qdrant_ensure_fts_coverage,
+    "Ensure a Qdrant collection's `text` payloads are mirrored into the local lexical (FTS5) index so qdrant_fts_search / search_code can find them. Idempotent: scrolls the collection's payloads (NO re-embedding) and clears+rebuilds its FTS rows. Call this after upserting points that carry a `text` payload via qdrant_upsert_points — the plain upsert path does NOT touch the FTS index (only the built-in code indexer co-writes it). Returns a JSON object {collection, chunks} with the number of chunks indexed.",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "collection" =>
+                Dict("type" => "string", "description" => "Name of the collection to FTS-cover"),
+        ),
+        "required" => ["collection"],
+    ),
+    function (args)
+        err = _require_services()
+        err !== nothing && return err
+
+        collection = get(args, "collection", "")
+        isempty(collection) && return "Error: collection is required"
+
+        n = ensure_fts_coverage(String(collection))
+        # Structured JSON (parses cleanly for _kt); `collection` is normalized to the
+        # name the chunks are stored under (matches qdrant_fts_search's scoping).
+        return JSON.json((collection = normalize_collection_name(String(collection)), chunks = n))
+    end
+)
+
 ollama_embed_tool = @mcp_tool(
     :ollama_embed,
     "Get an embedding vector for text using Ollama. Returns Vector{Float64}.",
@@ -922,6 +1001,8 @@ function create_qdrant_tools()
         qdrant_upsert_points_tool,
         qdrant_delete_points_tool,
         qdrant_search_tool,
+        qdrant_fts_search_tool,
+        qdrant_ensure_fts_coverage_tool,
         ollama_embed_tool,
     ]
 end

@@ -82,6 +82,44 @@ using Kaimon
     end
 end
 
+@testset "FTS query normalization" begin
+    F = Kaimon.FtsIndex
+
+    @testset "_fts_normalize rules" begin
+        n = F._fts_normalize
+        @test n("push!") == "\"push!\""                       # attached punct → quoted
+        @test n("one! two") == "\"one!\" OR two"              # bare bag → OR
+        @test n("one ! two") == "one NOT two"                # standalone ! → NOT
+        @test n("a && b") == "a AND b"                        # && alias
+        @test n("x || y") == "x OR y"                         # || alias
+        @test n("commit AND floor") == "commit AND floor"    # full-word op kept
+        @test n("token NOT renew") == "token NOT renew"
+        @test n("agent_add_cell! guard_commit token") ==
+              "\"agent_add_cell!\" OR guard_commit OR token"  # the real failing query
+        @test n("\"exact phrase\"") == "\"exact phrase\""    # quoted phrase passes
+        @test n("foo*") == "foo*"                            # clean prefix stays bare
+        @test n("@view Base.foo") == "\"@view\" OR \"Base.foo\""
+    end
+
+    @testset "bang-bag query returns hits, no fallback" begin
+        tmp = mktempdir()
+        F.init!(joinpath(tmp, "code_fts.db"))
+        try
+            F.add_chunks!([
+                Dict("point_id" => "q1", "collection" => "proj", "file" => "/a/cells.jl",
+                     "name" => "agent_add_cell!", "type" => "function",
+                     "start_line" => 1, "end_line" => 4,
+                     "text" => "agent_add_cell!(s, c) = guard_commit(s) && push!(s.cells, c)"),
+            ])
+            r = F.search("agent_add_cell! guard_commit token renew"; collection = "proj")
+            @test r.fellback == false                         # normalized, not fallback
+            @test any(h -> h.point_id == "q1", r.word) || any(h -> h.point_id == "q1", r.tri)
+        finally
+            F.close!()
+        end
+    end
+end
+
 @testset "Hybrid RRF fusion" begin
     mk(pid, src) = Kaimon.HybridHit(pid, "f.jl", "n", "function", 1, 2, "t",
                                     Dict(), src == :lexical ? "snip" : "", Set([src]), 0.0)

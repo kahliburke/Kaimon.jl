@@ -598,6 +598,22 @@ function backfill_fts!(collection::String; batch::Int=256)
     return total
 end
 
+"""
+    ensure_fts_coverage(collection::String) -> Int
+
+Ensure one collection's payloads are mirrored into the lexical (FTS5) index so
+[`fts_search`](@ref) / hybrid search can find them, and return the chunk count.
+
+Thin, idempotent public wrapper over [`backfill_fts!`](@ref): scrolls the
+collection's Qdrant payloads (each carrying a `text` field) — **no re-embedding** —
+and clears+rebuilds its FTS rows. Call this AFTER writing points with a `text`
+payload via the plain upsert path (`QdrantClient.upsert_points` /
+`qdrant_upsert_points`), which does NOT touch the FTS index — only Kaimon's own
+`index_file` pipeline co-writes FTS. Safe to call repeatedly: once FTS is at parity
+it just re-scrolls and rewrites the same rows.
+"""
+ensure_fts_coverage(collection::String) = backfill_fts!(collection)
+
 """Backfill the lexical index for every vector-indexed project collection."""
 function backfill_fts_all!()
     gc = global_collection_name()

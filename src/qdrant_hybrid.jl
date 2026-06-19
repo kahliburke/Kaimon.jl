@@ -280,6 +280,12 @@ function _qdrant_search_code(args)
         try
             lex = FtsIndex.search(query; collection = fts_collection, limit = fetch, chunk_type = chunk_type)
             word, tri = lex.word, lex.tri
+            if lex.fellback
+                push!(notes, "Couldn't parse the query as FTS5 even after normalizing — " *
+                    "searched it as a single literal phrase. Check for unbalanced quotes " *
+                    "or stray operators. Bare terms are OR-joined; use `\"exact phrase\"`, " *
+                    "AND/OR/NOT, or `prefix*` for finer control.")
+            end
         catch e
             mode == "lexical" && return "Error: lexical index unavailable: $e"
         end
@@ -293,10 +299,60 @@ function _qdrant_search_code(args)
     hits = collect(values(acc))
     _apply_boosts!(hits, query)
     sort!(hits; by = h -> -h.rrf)
-    isempty(hits) && return "No results found for query: \"$query\""
+    if isempty(hits)
+        msg = "No results found for query: \"$query\""
+        # Surface notes (e.g. the FTS5-fallback warning) even on the empty path —
+        # otherwise a malformed boolean query looks like "no such symbol".
+        isempty(notes) || (msg *= "\n" * join(("  ⚠ " * n for n in notes), "\n"))
+        return msg
+    end
     hits = hits[1:min(limit, length(hits))]
 
     where_label = sem_collection !== nothing ? sem_collection :
         (fts_collection !== nothing ? fts_collection : "all projects")
     return _format_hybrid(query, where_label, hits, cross_project, notes, mode)
+end
+
+"""
+    fts_search(collection, query; limit=20, chunk_type="all") -> Vector{NamedTuple}
+
+Lexical (FTS5) search over one collection, returning STRUCTURED ranked hits — the
+same word + trigram-substring lexical search `qdrant_search_code` runs (fused and
+deduped via RRF, then exact-symbol/content boosted), but as data instead of the
+agent-facing formatted string. No Qdrant/Ollama needed; works while those are down.
+
+Reuses the exact lexical half of `_qdrant_search_code`: `FtsIndex.search` (word +
+trigram) → `_lexical_hits` → `_rrf_accumulate!` (word weight 1.0, trigram 0.9) →
+`_apply_boosts!`, so structured and formatted results rank identically.
+
+Each hit is a NamedTuple:
+  (point_id::Union{String,Nothing}, name::String, file::String, type::String,
+   start_line::Int, end_line::Int, text::String, snippet::String,
+   sources::Vector{Symbol}, score::Float64)
+where `score` is the fused RRF score (higher is better) and `snippet` carries the
+matched-span highlight marks (`\\x02`/`\\x03`). `collection` is normalized to match
+how chunks were stored (see [`backfill_fts!`](@ref)).
+"""
+function fts_search(collection::AbstractString, query::AbstractString;
+                    limit::Int = 20, chunk_type::AbstractString = "all")
+    isempty(strip(query)) && return NamedTuple[]
+    col = normalize_collection_name(String(collection))
+    fetch = max(limit * 3, limit)   # over-fetch before fusion/dedup, like the tool
+
+    lex = FtsIndex.search(query; collection = col, limit = fetch, chunk_type = chunk_type)
+
+    # Identical lexical fusion to _qdrant_search_code (sans the semantic list).
+    acc = Dict{String,HybridHit}()
+    _rrf_accumulate!(acc, _lexical_hits(lex.word); weight = 1.0)
+    _rrf_accumulate!(acc, _lexical_hits(lex.tri); weight = 0.9)
+    hits = collect(values(acc))
+    _apply_boosts!(hits, query)
+    sort!(hits; by = h -> -h.rrf)
+    isempty(hits) || (hits = hits[1:min(limit, length(hits))])
+
+    return NamedTuple[(
+        point_id = h.point_id, name = h.name, file = h.file, type = h.type,
+        start_line = h.start_line, end_line = h.end_line, text = h.text,
+        snippet = h.snippet, sources = collect(h.sources), score = h.rrf,
+    ) for h in hits]
 end

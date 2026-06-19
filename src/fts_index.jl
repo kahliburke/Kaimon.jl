@@ -232,6 +232,55 @@ end
 _s(x, default = "") = x === missing || x === nothing ? default : x
 _i(x, default = 0) = x === missing || x === nothing ? default : Int(x)
 
+# FTS5 boolean keywords, honored when written out in full (any case).
+const _FTS_KEYWORDS = ("AND", "OR", "NOT", "NEAR")
+# Standalone punctuation treated as operator aliases (programmer intuition).
+const _FTS_OP_ALIAS = Dict("!" => "NOT", "&" => "AND", "&&" => "AND", "|" => "OR", "||" => "OR")
+
+# Split a query into whitespace-separated tokens, keeping "quoted phrases" whole.
+_fts_tokens(s::AbstractString) = String[String(m.match) for m in eachmatch(r"\"[^\"]*\"|\S+", s)]
+# Clean identifier-ish token (alnum + _), optional trailing prefix `*`.
+_fts_clean(t::AbstractString) = occursin(r"^[A-Za-z0-9_]+\*?$", t)
+_fts_quote(t::AbstractString) = "\"" * replace(t, "\"" => "\"\"") * "\""
+
+"""
+    _fts_normalize(query) -> String
+
+Turn an agent query into a valid FTS5 word-search expression so Julia punctuation
+never trips FTS5 query syntax. Rules:
+- `"quoted phrases"` pass through untouched.
+- A full-word keyword operator (`AND`/`OR`/`NOT`/`NEAR`, any case) is an operator.
+- Standalone punctuation is an operator: `!`→NOT, `&&`/`&`→AND, `||`/`|`→OR (others
+  pass through as-is).
+- Punctuation ATTACHED to a word (`push!`, `@view`, `Base.foo`) → quoted as a literal
+  phrase, so the `!`/`@`/`.` match literally instead of being parsed as syntax.
+- A clean identifier (`guard_commit`, `foo*`) is left bare.
+- If the query has NO explicit operator, the bare terms are OR-joined (find any),
+  ranked by the fusion layer. Explicit operators are always respected.
+"""
+function _fts_normalize(query::AbstractString)
+    toks = _fts_tokens(query)
+    isempty(toks) && return String(query)
+    rendered = String[]
+    has_op = false
+    for t in toks
+        if uppercase(t) in _FTS_KEYWORDS
+            push!(rendered, uppercase(t)); has_op = true
+        elseif haskey(_FTS_OP_ALIAS, t)
+            push!(rendered, _FTS_OP_ALIAS[t]); has_op = true
+        elseif startswith(t, '"') && endswith(t, '"') && length(t) >= 2
+            push!(rendered, t)                       # already a phrase
+        elseif !occursin(r"[A-Za-z0-9]", t)
+            push!(rendered, t); has_op = true        # standalone punctuation → operator
+        elseif _fts_clean(t)
+            push!(rendered, t)                       # clean identifier / prefix term
+        else
+            push!(rendered, _fts_quote(t))           # punctuation attached → quote
+        end
+    end
+    join(rendered, has_op ? " " : " OR ")
+end
+
 # Execute an FTS MATCH and build FtsHits, reading each row's columns DURING
 # iteration — SQLite.jl `Row`s are only valid for the current step, so they must
 # never be collected and read afterwards. Retries with the query quoted as a
@@ -252,23 +301,31 @@ function _match_hits(db, sql, query::AbstractString, tail::Tuple, source::Symbol
         out
     end
     try
-        return build(query)
+        return (build(query), false)
     catch
+        # Raw query tripped FTS5 query syntax (a bare `?`, a stray operator, a
+        # quoted phrase that tokenizes to nothing, …). Retry it as a single
+        # literal phrase so we still match something, and report the fallback so
+        # callers can warn the agent that boolean/operator syntax was NOT honored.
         quoted = "\"" * replace(String(query), "\"" => "\"\"") * "\""
-        try; return build(quoted); catch; return FtsHit[]; end
+        try; return (build(quoted), true); catch; return (FtsHit[], true); end
     end
 end
 
 """
-    search(query; collection=nothing, limit=20, chunk_type="all") -> (word, tri)
+    search(query; collection=nothing, limit=20, chunk_type="all") -> (word, tri, fellback)
 
 Lexical search returning two ranked `FtsHit` lists: `word` (unicode61 / BM25) and
 `tri` (trigram substring). `collection=nothing` searches all collections (used by
 cross-project search). The caller fuses these with the semantic list.
+
+`fellback` is `true` when the raw query was not valid FTS5 query syntax and was
+re-run as a single literal phrase — i.e. boolean operators (`OR`/`AND`/`NEAR`) and
+`?`/`@`/`.`-qualified terms were taken literally, not honored. Callers should warn.
 """
 function search(query::AbstractString; collection::Union{AbstractString,Nothing} = nothing,
                 limit::Int = 20, chunk_type::AbstractString = "all")
-    isempty(strip(query)) && return (word = FtsHit[], tri = FtsHit[])
+    isempty(strip(query)) && return (word = FtsHit[], tri = FtsHit[], fellback = false)
     return lock(LOCK) do
     db = _db()
     tclause = _type_clause(chunk_type)
@@ -283,7 +340,9 @@ function search(query::AbstractString; collection::Union{AbstractString,Nothing}
         WHERE code_fts MATCH ? $cclause $tclause
         ORDER BY rank LIMIT ?
     """
-    word = _match_hits(db, word_sql, query, (ctail..., limit), :lexical)
+    # Normalize Julia punctuation / operators into valid FTS5 before MATCH; the
+    # _match_hits fallback then only fires on genuinely unparseable input.
+    word, fellback = _match_hits(db, word_sql, _fts_normalize(query), (ctail..., limit), :lexical)
 
     tri = FtsHit[]
     if HAS_TRIGRAM[] && length(strip(query)) >= 3
@@ -298,10 +357,12 @@ function search(query::AbstractString; collection::Union{AbstractString,Nothing}
         # Trigram does substring containment; quote the whole query as a phrase so
         # punctuation in identifiers (`!`, `_`) matches literally.
         phrase = "\"" * replace(String(query), "\"" => "\"\"") * "\""
-        tri = _match_hits(db, tri_sql, phrase, (ctail..., limit), :substr)
+        # Trigram input is always a pre-quoted phrase, so its fallback isn't a
+        # syntax signal — discard it; only the word query reflects bad FTS5 syntax.
+        tri, _ = _match_hits(db, tri_sql, phrase, (ctail..., limit), :substr)
     end
 
-    (word = word, tri = tri)
+    (word = word, tri = tri, fellback = fellback)
     end  # lock
 end
 
