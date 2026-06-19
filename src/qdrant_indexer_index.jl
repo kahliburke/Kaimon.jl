@@ -207,6 +207,146 @@ function reindex_file(
 end
 
 """
+    _qdrant_distinct_files(collection; batch=256) -> Set{String}
+
+Scroll a Qdrant collection and collect the distinct `file` payload values. Heavier
+than the FTS list (a full scroll), so only used for `deep` reconciliation — to catch
+points whose FTS co-write failed (FTS writes are best-effort) and were then deleted.
+"""
+function _qdrant_distinct_files(collection::String; batch::Int=256)
+    files = Set{String}()
+    QdrantClient.collection_exists(collection) || return files
+    offset = nothing
+    while true
+        res = QdrantClient.scroll_points(collection; limit=batch, offset=offset, with_vector=false)
+        haskey(res, "error") && break
+        pts = get(res, "points", [])
+        isempty(pts) && break
+        for pt in pts
+            f = get(get(pt, "payload", Dict()), "file", "")
+            (f === nothing || isempty(f)) && continue
+            push!(files, String(f))
+        end
+        offset = get(res, "next_page_offset", nothing)
+        offset === nothing && break
+    end
+    return files
+end
+
+"""
+    _orphan_files(collection; deep=false) -> Vector{String}
+
+The indexed files for `collection` that no longer exist on disk. Candidate set is
+the FTS `distinct_files` list (cheap, and a faithful proxy since `index_file`
+dual-writes Qdrant + FTS); with `deep=true` it is unioned with the Qdrant scroll.
+Pure (no side effects) so the detection logic is unit-testable without Qdrant.
+"""
+function _orphan_files(collection::String; deep::Bool=false)
+    collection = normalize_collection_name(collection)
+    candidates = Set{String}()
+    try
+        union!(candidates, FtsIndex.distinct_files(collection))
+    catch e
+        with_index_logger(() -> @warn "FTS distinct_files failed during orphan scan" collection = collection exception = e)
+    end
+    if deep
+        try
+            union!(candidates, _qdrant_distinct_files(collection))
+        catch e
+            with_index_logger(() -> @warn "Qdrant distinct-file scan failed during orphan scan" collection = collection exception = e)
+        end
+    end
+    return String[f for f in candidates if !isfile(f)]
+end
+
+"""
+    prune_orphans!(collection; project_path=nothing, deep=false, verbose=true, silent=false) -> NamedTuple
+
+Remove index entries for files that no longer exist on disk, from BOTH the vector
+(Qdrant — project + global collections) and lexical (FTS) indexes. When `project_path`
+is given, also drops the file from the index-state cache. Returns
+`(pruned=N, live=M, files=[...])` where `live` is the count of still-existing indexed
+files (used by the sweep to detect wholesale-missing collections).
+
+Each delete is guarded independently: an FTS failure must not abort the Qdrant cleanup
+and vice versa.
+"""
+function prune_orphans!(
+    collection::String;
+    project_path::Union{String,Nothing}=nothing,
+    deep::Bool=false,
+    verbose::Bool=true,
+    silent::Bool=false,
+)
+    col = normalize_collection_name(collection)
+    orphans = _orphan_files(col; deep=deep)
+
+    # Count of still-live indexed files (for wholesale-missing detection).
+    live = 0
+    try
+        live = count(isfile, FtsIndex.distinct_files(col))
+    catch
+    end
+
+    isempty(orphans) && return (pruned=0, live=live, files=String[])
+
+    gc = global_collection_name()
+    gc_exists = try; QdrantClient.collection_exists(gc); catch; false; end
+    for file_path in orphans
+        !silent && verbose && println("  Removing orphan: $(basename(file_path))")
+        with_index_logger(() -> @info "Removing orphaned index entry" collection = col file = basename(file_path))
+        try; QdrantClient.delete_by_file(col, file_path); catch; end
+        gc_exists && try; QdrantClient.delete_by_file(gc, file_path); catch; end
+        try; FtsIndex.delete_file!(col, file_path); catch; end
+        project_path !== nothing && try; remove_indexed_file(project_path, file_path); catch; end
+    end
+    return (pruned=length(orphans), live=live, files=orphans)
+end
+
+"""
+    gc_index_orphans!(; deep=false, drop_empty=false, verbose=true, silent=false) -> NamedTuple
+
+Cross-collection sweep: prune orphaned index entries from every project collection
+(both Qdrant and FTS). Reaches collections that per-project [`sync_index`](@ref) can
+never touch — e.g. a project whose source tree was deleted wholesale. With
+`drop_empty=true`, a collection left with zero on-disk files is dropped entirely
+(Qdrant collection + FTS rows); otherwise it is left intact with a logged notice
+(at startup an empty collection is indistinguishable from a temporarily-unavailable
+mount/worktree). Returns `(pruned=N, dropped=[...], collections=K)`.
+"""
+function gc_index_orphans!(; deep::Bool=false, drop_empty::Bool=false, verbose::Bool=true, silent::Bool=false)
+    gc = global_collection_name()
+    cols = Set{String}()
+    try; union!(cols, QdrantClient.list_collections()); catch; end
+    try; union!(cols, (c.collection for c in FtsIndex.coverage().collections)); catch; end
+    delete!(cols, gc)
+
+    total_pruned = 0
+    dropped = String[]
+    for col in cols
+        res = try
+            prune_orphans!(col; deep=deep, verbose=verbose, silent=silent)
+        catch e
+            with_index_logger(() -> @warn "Orphan prune failed" collection = col exception = e)
+            continue
+        end
+        total_pruned += res.pruned
+        if res.live == 0 && (res.pruned > 0 || drop_empty)
+            if drop_empty
+                !silent && verbose && println("  Dropping empty collection: $col")
+                with_index_logger(() -> @info "Dropping empty collection (no files on disk)" collection = col)
+                try; QdrantClient.delete_collection(col); catch; end
+                try; FtsIndex.clear_collection!(col); catch; end
+                push!(dropped, col)
+            else
+                with_index_logger(() -> @warn "Collection has no files on disk — possible deleted project or unavailable mount; run gc_index_orphans!(drop_empty=true) to drop" collection = col)
+            end
+        end
+    end
+    return (pruned=total_pruned, dropped=dropped, collections=length(cols))
+end
+
+"""
     index_directory(dir_path::String, collection::String; project_path::String=pwd(), extensions::Vector{String}=DEFAULT_INDEX_EXTENSIONS, verbose::Bool=true, silent::Bool=false) -> Int
 
 Index all matching files in a directory. Returns total chunks indexed.
@@ -499,20 +639,26 @@ function sync_index(
         append!(stale_files, get_stale_files(project_path, dir; extensions=extensions, exclude_dirs=exclude_dirs))
     end
 
-    deleted_files = get_deleted_files(project_path)
+    # Deleted files: the union of cache-tracked-but-missing (fast path) and any
+    # orphans the cache no longer knows about (cache reset, narrowed dirs, indexed
+    # elsewhere) — found by reconciling the FTS file list against disk. This prunes
+    # BOTH the vector and lexical indexes; the cache-only path used to miss the FTS
+    # side entirely, leaving stale lexical hits.
+    deleted_files = unique(vcat(get_deleted_files(project_path), _orphan_files(col_name)))
 
     reindexed = 0
     deleted = 0
     total_chunks = 0
 
-    # Handle deleted files (remove from both project and global collections)
+    # Handle deleted files (remove from both project and global collections + FTS)
     gc = global_collection_name()
     gc_exists = try; QdrantClient.collection_exists(gc); catch; false; end
     for file_path in deleted_files
         !silent && verbose && println("  Removing deleted: $(basename(file_path))")
         with_index_logger(() -> @info "Removing deleted file" file = basename(file_path))
-        QdrantClient.delete_by_file(col_name, file_path)
+        try; QdrantClient.delete_by_file(col_name, file_path); catch; end
         gc_exists && try; QdrantClient.delete_by_file(gc, file_path); catch; end
+        try; FtsIndex.delete_file!(col_name, file_path); catch; end
         remove_indexed_file(project_path, file_path)
         deleted += 1
     end
@@ -644,8 +790,20 @@ function ensure_fts_coverage!()
     fts_counts = Dict(c.collection => c.n for c in cov.collections)
 
     built = Pair{String,Int}[]
+    pruned = 0
     for col in QdrantClient.list_collections()
         col == gc && continue
+        # Self-healing GC: drop index entries for files removed since last index,
+        # from both Qdrant and FTS (cheap — an FTS DISTINCT scan + isfile). Individual
+        # orphans only; a wholesale-missing collection is left intact (at boot that's
+        # indistinguishable from an unavailable mount/worktree) — use
+        # gc_index_orphans!(drop_empty=true) to drop those.
+        pruned += try
+            prune_orphans!(col; verbose = false, silent = true).pruned
+        catch e
+            with_index_logger(() -> @warn "Startup orphan prune failed" collection = col exception = e)
+            0
+        end
         qn = try
             round(Int, get(QdrantClient.get_collection_info(col), "points_count", 0))
         catch; 0; end
@@ -666,7 +824,7 @@ function ensure_fts_coverage!()
             n > 0 && push!(built, col => n)
         end
     end
-    isempty(built) || with_index_logger(() -> @info "FTS coverage sync complete" built = built)
+    (isempty(built) && pruned == 0) || with_index_logger(() -> @info "FTS coverage sync complete" built = built orphans_pruned = pruned)
     return built
 end
 

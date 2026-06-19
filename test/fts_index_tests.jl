@@ -82,6 +82,64 @@ using Kaimon
     end
 end
 
+# Orphan reconciliation: the lexical file list is the source of truth for detecting
+# index entries whose file was removed from disk. Pure SQLite + real temp files —
+# no Qdrant (deep=false), so the side-effecting prune (Qdrant deletes) isn't exercised
+# here, only the detection that drives it.
+@testset "FTS orphan detection" begin
+    F = Kaimon.FtsIndex
+    dir = mktempdir()
+    keep = joinpath(dir, "keep.jl")
+    gone = joinpath(dir, "gone.jl")
+    write(keep, "f() = 1")
+    write(gone, "g() = 2")
+
+    F.init!(joinpath(mktempdir(), "code_fts.db"))
+    try
+        rows = [
+            Dict("point_id" => "k1", "collection" => "proj", "file" => keep,
+                 "name" => "f", "type" => "function", "start_line" => 1, "end_line" => 1,
+                 "text" => "f() = 1"),
+            # two chunks for the same removed file — distinct_files must dedupe
+            Dict("point_id" => "g1", "collection" => "proj", "file" => gone,
+                 "name" => "g", "type" => "function", "start_line" => 1, "end_line" => 1,
+                 "text" => "g() = 2"),
+            Dict("point_id" => "g2", "collection" => "proj", "file" => gone,
+                 "name" => "g_win", "type" => "window", "start_line" => 1, "end_line" => 1,
+                 "text" => "g() = 2  # window"),
+            # a different collection must not bleed in
+            Dict("point_id" => "o1", "collection" => "other", "file" => gone,
+                 "name" => "g", "type" => "function", "start_line" => 1, "end_line" => 1,
+                 "text" => "g() = 2"),
+        ]
+        F.add_chunks!(rows)
+
+        @testset "distinct_files dedupes and scopes by collection" begin
+            df = sort(F.distinct_files("proj"))
+            @test df == sort([keep, gone])
+            @test F.distinct_files("other") == [gone]
+        end
+
+        @testset "_orphan_files returns only removed files" begin
+            # both files still on disk → no orphans
+            @test isempty(Kaimon._orphan_files("proj"))
+            rm(gone)
+            orphans = Kaimon._orphan_files("proj")
+            @test orphans == [gone]          # gone is missing; keep is excluded
+            @test keep ∉ orphans
+        end
+
+        @testset "distinct_files drops a file after delete_file!" begin
+            F.delete_file!("proj", gone)
+            @test F.distinct_files("proj") == [keep]
+            # "other" collection's row for the same path is untouched
+            @test F.distinct_files("other") == [gone]
+        end
+    finally
+        F.close!()
+    end
+end
+
 @testset "FTS query normalization" begin
     F = Kaimon.FtsIndex
 

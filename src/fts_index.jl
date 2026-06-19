@@ -194,6 +194,21 @@ function delete_file!(collection::AbstractString, file::AbstractString)
     return nothing
 end
 
+"""
+    distinct_files(collection) -> Vector{String}
+
+The distinct set of `file` paths indexed for one collection. Cheap (one indexed
+`SELECT DISTINCT`) and authoritative for the lexical side — used by the orphan
+reconciliation to find indexed files that no longer exist on disk.
+"""
+function distinct_files(collection::AbstractString)
+    lock(LOCK) do
+        db = _db()
+        return String[String(r.file) for r in DBInterface.execute(db,
+            "SELECT DISTINCT file FROM chunks WHERE collection = ?", (String(collection),))]
+    end
+end
+
 """Drop every chunk for a collection (used on collection recreate / backfill reset)."""
 function clear_collection!(collection::AbstractString)
     lock(LOCK) do
