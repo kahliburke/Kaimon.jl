@@ -75,7 +75,7 @@ function drain_stream_messages!(mgr::ConnectionManager)
                 raw === nothing && break
                 raw === :skip && continue
                 msg = try
-                    deserialize(IOBuffer(raw))
+                    _safe_deserialize(raw; label = "debug_stream")
                 catch
                     continue
                 end

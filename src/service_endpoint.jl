@@ -164,7 +164,7 @@ function start_service_endpoint!()
             identity = parts[1]
             payload = parts[end]
             request = try
-                Serialization.deserialize(IOBuffer(payload))
+                _safe_deserialize(payload; label = "service_request")
             catch
                 io = IOBuffer()
                 Serialization.serialize(io, (status = :error, message = "malformed service request"))

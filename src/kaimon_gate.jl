@@ -238,7 +238,7 @@ function _reconcile_stale_jobs!(conn_mgr)
                 if !isempty(data)
                     # Deserialize and format the result
                     response = try
-                        deserialize(IOBuffer(Vector{UInt8}(data)))
+                        _safe_deserialize(data; label = "job_result")
                     catch
                         (stdout="", stderr="", value_repr=data, exception=nothing, backtrace=nothing)
                     end

@@ -594,7 +594,7 @@ end
 """Handle a debug_eval PUB message — agent eval result to show in console."""
 function _handle_debug_eval_pub!(m::KaimonModel, msg)
     info = try
-        deserialize(IOBuffer(Vector{UInt8}(msg.data)))
+        _safe_deserialize(msg.data; label = "debug_eval_pub")
     catch
         nothing
     end
@@ -611,7 +611,7 @@ end
 function _handle_breakpoint_hit!(m::KaimonModel, msg)
     # Parse serialized breakpoint info
     info = try
-        deserialize(IOBuffer(Vector{UInt8}(msg.data)))
+        _safe_deserialize(msg.data; label = "breakpoint_hit_pub")
     catch
         # Try as plain text fallback
         nothing

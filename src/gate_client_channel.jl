@@ -14,6 +14,45 @@ function _zmq_recv(sock::ZMQ.Socket)::Vector{UInt8}
     return recv(sock, Vector{UInt8})
 end
 
+# ── Deserialization probe (heap-corruption forensics) ──────────────────────────
+# `Serialization.deserialize` is the only heap-unsafe operation in our code: a
+# malformed / version-skewed wire payload makes it read a bogus length and
+# allocate/write via the system malloc, corrupting the heap (surfaces LATER as an
+# `_xzm_xzone_malloc_freelist` SIGTRAP in an unrelated alloc — the latent crash).
+# This wrapper does NOT make deserialize safe; it gates obviously-bad frames and
+# captures evidence so the next occurrence names the culprit instead of vanishing.
+#
+# - Refuses (throws) frames larger than the sanity cap before touching deserialize.
+# - On any deserialize failure, logs the label + length + first bytes (hex) — the
+#   call-site catch blocks otherwise swallow this and we lose the payload.
+# - `KAIMON_TRACE_DESERIALIZE=1` pre-logs every payload's (label,len,head) BEFORE
+#   deserializing, so after a crash the last line names the offending payload.
+const _DESER_MAX_BYTES = Ref{Int}(
+    something(tryparse(Int, get(ENV, "KAIMON_MAX_DESERIALIZE_BYTES", "")), 64 * 1024 * 1024))
+_deser_trace() = get(ENV, "KAIMON_TRACE_DESERIALIZE", "") in ("1", "true", "yes", "on")
+
+_hexhead(bytes::AbstractVector{UInt8}, n::Int = 32) =
+    join((string(b; base = 16, pad = 2) for b in @view bytes[1:min(n, length(bytes))]), "")
+
+function _safe_deserialize(raw::AbstractVector{UInt8}; label::AbstractString = "")
+    n = length(raw)
+    if n > _DESER_MAX_BYTES[]
+        @warn "Refusing oversized deserialize payload (likely a corrupt/torn frame)" label len=n cap=_DESER_MAX_BYTES[] head=_hexhead(raw)
+        error("deserialize payload too large: $n bytes (cap $(_DESER_MAX_BYTES[])) [$label]")
+    end
+    _deser_trace() && @info "deserialize" label len=n head=_hexhead(raw)
+    try
+        return deserialize(IOBuffer(raw))
+    catch e
+        # Lean log (no backtrace) — the payload head + error type is the evidence,
+        # and some callers fall back to treating `data` as a plain string normally.
+        @warn "deserialize failed — captured payload for forensics" label len=n head=_hexhead(raw) err=sprint(showerror, e)
+        rethrow(e)
+    end
+end
+# Accept anything Vector{UInt8}-convertible (callers pass String data / SubArrays).
+_safe_deserialize(raw; label::AbstractString = "") = _safe_deserialize(Vector{UInt8}(raw); label = label)
+
 # Thread-safe socket *construction*. ZMQ.jl appends every new Socket to its
 # Context's `sockets::Vector{WeakRef}` with an UNLOCKED `push!` (ZMQ.jl
 # socket.jl). Kaimon still constructs sockets on the shared `mgr.zmq_context`

@@ -131,7 +131,7 @@ function _req_send_recv(conn::REPLConnection, request; caller_timeout::Float64 =
                 raw = take!(inbox)
                 isempty(raw) && return (ok = false, error = "Gate request failed (send error)")
                 response = try
-                    deserialize(IOBuffer(raw))
+                    _safe_deserialize(raw; label = "gate_reply")
                 catch e
                     return (ok = false, error = "Malformed response: $(sprint(showerror, e))")
                 end
@@ -353,7 +353,7 @@ function eval_remote_async(
                 # breakpoint info and return it as a special non-exception
                 # result so the MCP tool can inform the agent.
                 bp_info = try
-                    deserialize(IOBuffer(Vector{UInt8}(data)))
+                    _safe_deserialize(data; label = "breakpoint_hit")
                 catch
                     (file = "unknown", line = 0, locals = Dict(), locals_types = Dict())
                 end
@@ -370,7 +370,7 @@ function eval_remote_async(
                 )
             elseif ch == "eval_complete"
                 result = try
-                    deserialize(IOBuffer(Vector{UInt8}(data)))
+                    _safe_deserialize(data; label = "eval_complete")
                 catch
                     (
                         stdout = "",
@@ -384,7 +384,7 @@ function eval_remote_async(
                 return result
             elseif ch == "eval_error"
                 result = try
-                    deserialize(IOBuffer(Vector{UInt8}(data)))
+                    _safe_deserialize(data; label = "eval_error")
                 catch
                     (
                         stdout = "",

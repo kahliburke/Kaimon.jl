@@ -142,7 +142,7 @@ function _build_extension_script(config::ExtensionConfig)
                 try
                     topic = Kaimon.ZMQ.recv(sub, String)       # frame 1: channel name
                     payload = Kaimon.ZMQ.recv(sub, Vector{UInt8})  # frame 2: serialized data
-                    msg = deserialize(IOBuffer(payload))
+                    msg = Kaimon._safe_deserialize(payload; label = "ext_event")
                     $(m.module_name).on_event(msg.channel, msg.data, msg.session_name)
                 catch e
                     e isa InterruptException && break
