@@ -8,7 +8,7 @@ and a managed extension.
 
 An agent session is "an AI you can drive": open one in a directory, send it turns,
 and consume the streamed assistant text, reasoning, and tool calls as it works.
-You drive it with six MCP tools and consume one event channel per agent.
+You drive it with a small set of MCP tools and consume one event channel per agent.
 
 ## How It Works
 
@@ -83,19 +83,21 @@ Then send it turns and consume the `agent:9f3a1c20` channel:
 // → {"turn": 1}
 ```
 
-## The Six MCP Tools
+## The MCP Tools
 
-All six are registered as Kaimon MCP tools, callable by your own Claude Code and by
+All are registered as Kaimon MCP tools, callable by your own Claude Code and by
 extensions via the service endpoint. Returns are JSON strings.
 
 | Tool | Arguments | Returns |
 |---|---|---|
 | `agent_open` | `cwd` (req), `model`, `permission`, `permission_mode`, `allowed_tools`, `disallowed_tools`, `mcp_config`, `system_prompt`, `id` | `{"agent_id": "<id>"}` -- spawns & owns the process |
-| `agent_send` | `agent_id` (req), `text` (req) | `{"turn": <n>}` -- writes a user turn; events stream on `agent:<id>` |
-| `agent_interrupt` | `agent_id` (req) | `{"interrupted": bool}` -- best-effort cancel of the in-flight turn |
-| `agent_close` | `agent_id` (req) | `{"closed": bool}` -- kills the process; the slot is retained as `:dead` for review |
+| `agent_send` | `agent_id` (req), `text` (req) | `{"turn": <n>}` -- writes a user turn (async); events stream on `agent:<id>` |
+| `agent_run` | `agent_id` (req), `text` (req), `timeout` | `{"text": "…"}` -- sends a turn and **blocks** until it ends, returning the assistant text |
+| `agent_output` | `agent_id` (req), `turn`, `which` ("last_message"/"full_turn"/"all"), `include_tools`, `max_chars` | `{agent_id, turn, status, done, text, truncated, dropped_chars, usage}` -- **non-blocking** read of an agent's output (partial while still working). Pair with `agent_send` to dispatch-then-poll instead of blocking on `agent_run` |
 | `agent_status` | `agent_id` (req) | `{status, model, cwd, turn, created_at, last_activity, session_id, transcript, event_log, usage}` |
 | `agent_list` | -- | `{"agents": [ …status… ]}` |
+| `agent_interrupt` | `agent_id` (req) | `{"interrupted": bool}` -- best-effort cancel of the in-flight turn |
+| `agent_close` | `agent_id` (req) | `{"closed": bool}` -- kills the process; the slot is retained as `:dead` for review |
 
 ### `agent_open` options
 

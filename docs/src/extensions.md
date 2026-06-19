@@ -130,6 +130,25 @@ extension_info(name="smlabnotes")
 # Detailed view: status, description, tools with parameter schemas
 ```
 
+## The `manage_extension` Tool
+
+The same lifecycle controls as the TUI Extensions tab, exposed to MCP clients so an
+agent can manage extensions programmatically. Target an extension by its namespace
+(see `extension_info`):
+
+```
+manage_extension(name="smlabnotes", action="restart")   # restart the process
+manage_extension(name="smlabnotes", action="stop")      # stop it
+manage_extension(name="smlabnotes", action="start")     # start it (when stopped)
+manage_extension(name="smlabnotes", action="disable")   # disallow running (also stops it); persisted
+manage_extension(name="smlabnotes", action="enable")    # re-allow running; persisted
+manage_extension(name="smlabnotes", action="enable_auto_start")   # auto-start with Kaimon; persisted
+manage_extension(name="smlabnotes", action="disable_auto_start")
+```
+
+Returns the extension's resulting `{status, enabled, auto_start}`. `enable`/`disable`
+and the `auto_start` actions are persisted to `extensions.json`.
+
 ## Writing an Extension
 
 ### Project Structure

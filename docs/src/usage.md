@@ -1,6 +1,6 @@
 # Usage
 
-Kaimon's terminal UI has nine tabs, each accessible by pressing its number key. This page walks through each tab.
+Kaimon's terminal UI has ten tabs, each accessible by pressing its number key. This page walks through each tab.
 
 ![Kaimon dashboard](./assets/kaimon_overview.gif)
 
@@ -14,7 +14,8 @@ Kaimon's terminal UI has nine tabs, each accessible by pressing its number key. 
 | `6` | Config | MCP client setup and onboarding |
 | `7` | Debug | Interactive breakpoint debugging (Infiltrator) |
 | `8` | Extensions | Extension management |
-| `9` | Advanced | Stress testing and diagnostics |
+| `9` | Agents | Kaimon-owned AI agent monitor |
+| `0` | Advanced | Stress testing and diagnostics |
 
 Press `q` to quit, `?` to show a key reference overlay.
 
@@ -148,16 +149,28 @@ See [Getting Started](getting-started.md) for the full onboarding walkthrough.
 
 ---
 
-## 7 — Advanced
+## 7 — Debug
+
+The Debug tab is for interactive breakpoint debugging with Infiltrator.jl. When a session hits `@infiltrate` (or you inject one with `debug_exfiltrate`), execution pauses and you can inspect locals and evaluate expressions in the breakpoint scope — alongside the agent driving it via `debug_ctrl`/`debug_eval`. See [Debugging](debugging.md).
+
+---
+
+## 8 — Extensions
+
+The Extensions tab manages Kaimon extensions — Julia packages that add domain-specific MCP tools. The tab has a two-pane layout showing all registered extensions with their status, and a detail view with tool documentation and error logs. Control lifecycle here (start/stop/restart, enable, auto-start) or via the `manage_extension` MCP tool.
+
+See [Extensions](extensions.md) for full documentation on the extension system, including how to write and register extensions.
+
+---
+
+## 9 — Agents
+
+The Agents tab monitors Kaimon-owned AI agent sessions — headless `claude` processes spawned with `agent_open`. It shows each agent's live status (a colored, breathing status dot), token usage, and a scrollable event feed; press Enter on an event for its full text, or on an agent for the full transcript. See [AI Agent Sessions](agents.md).
+
+---
+
+## 0 — Advanced
 
 The Advanced tab provides stress testing and load diagnostics. It lets you fire configurable bursts of concurrent tool calls against the running server to measure throughput and latency under load.
 
 Use this tab to verify that the server handles parallel requests correctly when multiple agents or sessions are active simultaneously.
-
----
-
-## 9 — Extensions
-
-The Extensions tab manages Kaimon extensions — Julia packages that add domain-specific MCP tools. The tab has a two-pane layout showing all registered extensions with their status, and a detail view with tool documentation and error logs.
-
-See [Extensions](extensions.md) for full documentation on the extension system, including how to write and register extensions.
