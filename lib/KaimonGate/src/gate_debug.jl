@@ -168,4 +168,21 @@ function uninstall_infiltrator_hook!()
     @info "Infiltrator.jl hook removed — @infiltrate uses default REPL prompt"
 end
 
+"""
+    infiltrator_routing(on::Bool)
+
+Toggle how `@infiltrate` behaves in this gate-connected REPL, **without stopping the
+gate** (#34):
+
+  • `on = true`  — route through the gate debug protocol (agent-driven: a breakpoint
+                   pauses and the agent inspects via `debug_ctrl`/`debug_eval`).
+  • `on = false` — restore Infiltrator's normal interactive `infil>` prompt so you can
+                   debug the session yourself. Eval/tools keep working meanwhile.
+
+Flip it off to poke around a long-running computation yourself, then back on to hand
+debugging to the agent — no `restart()`/`serve()` needed. (`on = true` requires
+Infiltrator to be loaded.)
+"""
+infiltrator_routing(on::Bool) = on ? _install_infiltrator_hook!() : uninstall_infiltrator_hook!()
+
 

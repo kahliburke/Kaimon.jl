@@ -236,6 +236,23 @@ end
 
 This is particularly useful in loops where you only want to inspect a specific iteration.
 
+## Debugging it yourself
+
+While the gate is running, `@infiltrate` routes to the agent debug protocol rather than
+opening Infiltrator's interactive `infil>` prompt. To debug a gate-connected REPL
+*yourself* — without stopping the gate or losing a long-running computation — toggle
+routing off:
+
+```julia
+Gate.infiltrator_routing(false)   # @infiltrate now opens the normal interactive infil> prompt
+# ... debug interactively ...
+Gate.infiltrator_routing(true)    # hand @infiltrate back to the agent
+```
+
+If you're already paused at an agent-driven breakpoint and just want out, press `Ctrl-C`
+in the REPL to release it locally. After `Gate.stop()`, `@infiltrate` automatically
+reverts to the normal interactive prompt.
+
 ## Tips
 
 - **`using Infiltrator` must be a separate eval** from the call that triggers the breakpoint. If you `using Infiltrator; my_function()` in a single eval, the breakpoint may not fire.

@@ -161,7 +161,7 @@ end
 public serve, stop, restart, status, connect!
 public GateTool, call_tool, list_tools, image_result, MCP_CONTENT_SENTINEL
 public is_cancelled, stash, progress, push_panel, current_caller
-public tty_path, tty_size, uninstall_infiltrator_hook!
+public tty_path, tty_size, uninstall_infiltrator_hook!, infiltrator_routing
 public PROTOCOL_VERSION
 public set_version_provider!, set_mirror_pref_provider!, set_personality_provider!
 public set_tachikoma!, set_restart_code_builder!, set_auth_token_provider!
