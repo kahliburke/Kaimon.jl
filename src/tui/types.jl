@@ -153,10 +153,15 @@ const TAB_ADVANCED   = 10
     agentmon_selected::Int = 1            # selected agent in the list
     agentmon_scroll::Int = 0              # scroll offset in the events detail pane
     agentmon_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(40), Fill()])
-    agentmon_history_open::Bool = false   # full-screen event-history overlay
-    agentmon_history_scroll::Int = 0
+    agentmon_history_open::Bool = false   # full-screen transcript overlay
     agentmon_history_id::String = ""
-    agentmon_history_lines::Vector{Any} = []  # cached (style, text) display lines
+    agentmon_history_pane::Any = nothing  # MarkdownPane for the full transcript (owns scroll)
+    agentmon_list::Any = nothing          # stored SelectableList (mouse hit-testing)
+    agentmon_event_sel::Int = 0           # selected event row in the feed (0 = none)
+    agentmon_feed_area::Rect = Rect()     # feed content rect (click → event index)
+    agentmon_feed_off::Int = 0            # feed scroll offset at last render
+    agentmon_popup::Any = nothing         # frozen event NamedTuple while popup open
+    agentmon_popup_pane::Any = nothing    # MarkdownPane for the popup body (owns scroll)
 
     # Session terminal (PTY console for agent-spawned sessions)
     session_terminal_open::Bool = false

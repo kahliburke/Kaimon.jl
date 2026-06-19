@@ -185,6 +185,45 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
             end
             m.stress_scroll_pane !== nothing && handle_mouse!(m.stress_scroll_pane, evt)
         end
+        $TAB_AGENTS => begin
+            if m.agentmon_popup !== nothing
+                # Event popup captures the wheel for scrolling; Esc (key) closes it.
+                m.agentmon_popup_pane === nothing || handle_mouse!(m.agentmon_popup_pane, evt)
+            elseif m.agentmon_history_open
+                # Full-screen transcript overlay: wheel scrolls the MarkdownPane.
+                m.agentmon_history_pane === nothing || handle_mouse!(m.agentmon_history_pane, evt)
+            else
+                handle_resize!(m.agentmon_layout, evt)
+                _agr = m.agentmon_layout.rects
+                _in_ag(i, e) = length(_agr) >= i && Base.contains(_agr[i], e.x, e.y)
+                if _in_ag(1, evt)            # agent list pane → focus + click/wheel select
+                    evt.button == mouse_left && evt.action == mouse_press &&
+                        (m.focused_pane[TAB_AGENTS] = 1)
+                    if m.agentmon_list !== nothing
+                        prev = m.agentmon_list.selected
+                        handle_mouse!(m.agentmon_list, evt)
+                        if m.agentmon_list.selected != prev
+                            m.agentmon_selected = m.agentmon_list.selected
+                            m.agentmon_scroll = 0
+                            m.agentmon_event_sel = 0
+                        end
+                    end
+                elseif _in_ag(2, evt)        # detail/event-feed pane → click opens popup
+                    if evt.button == mouse_left && evt.action == mouse_press
+                        m.focused_pane[TAB_AGENTS] = 2
+                        fa = m.agentmon_feed_area
+                        if fa.width > 0 && Base.contains(fa, evt.x, evt.y)
+                            m.agentmon_event_sel = m.agentmon_feed_off + (evt.y - fa.y + 1)
+                            _open_event_popup!(m)
+                        end
+                    elseif evt.button == mouse_scroll_up
+                        m.agentmon_event_sel = max(1, (m.agentmon_event_sel == 0 ? 1 : m.agentmon_event_sel - 1))
+                    elseif evt.button == mouse_scroll_down
+                        m.agentmon_event_sel += 1    # view clamps to event count
+                    end
+                end
+            end
+        end
         _ => nothing
     end
 end
@@ -512,6 +551,17 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
     # When the agent event-history overlay is open, capture scroll + esc
     if m.tab_bar.active == TAB_AGENTS && m.agentmon_history_open
         _handle_agents_history_key!(m, evt)
+        return
+    end
+
+    # Agents tab: event-detail popup captures input (Esc closes, ↑↓/PgUp/PgDn scroll).
+    if m.tab_bar.active == TAB_AGENTS && m.agentmon_popup !== nothing
+        if evt.key === :escape
+            m.agentmon_popup = nothing
+            m.agentmon_popup_pane = nothing
+        elseif m.agentmon_popup_pane !== nothing
+            handle_key!(m.agentmon_popup_pane, evt)   # widget clamps the scroll
+        end
         return
     end
 
