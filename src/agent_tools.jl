@@ -98,6 +98,29 @@ const agent_status_tool = @mcp_tool :agent_status "Get an agent's status, model,
     end
 end
 
+const agent_output_tool = @mcp_tool :agent_output "Read a backgrounded agent's assistant output WITHOUT blocking — the companion to agent_send (dispatch async, then poll this until done=true, instead of blocking on agent_run). Reconstructs text from Kaimon's own event log (completed turns) + an in-memory stream buffer (the current, still-working turn), so it returns partial output mid-turn and still works for a reaped/dead agent whose log persists on disk. Returns {agent_id, turn, status, done, text, truncated, dropped_chars, usage}." Dict(
+    "type" => "object",
+    "properties" => Dict(
+        "agent_id" => Dict("type" => "string", "description" => "Agent id from agent_open."),
+        "turn" => Dict("type" => "integer", "description" => "Which turn's output (default: the latest turn)."),
+        "which" => Dict("type" => "string", "enum" => ["last_message", "full_turn", "all"], "description" => "last_message (the turn's final assistant text — the report), full_turn (all assistant text of the turn, in order), or all (every turn so far). Default last_message."),
+        "include_tools" => Dict("type" => "boolean", "description" => "Interleave tool-use/tool-result summaries (full_turn/all only). Default false."),
+        "max_chars" => Dict("type" => "integer", "description" => "Truncate returned text to this many chars (reports dropped count). Default 20000."),
+    ),
+    "required" => ["agent_id"],
+) (args) -> begin
+    try
+        out = agent_output(String(get(args, "agent_id", ""));
+            turn = haskey(args, "turn") ? Int(args["turn"]) : nothing,
+            which = String(get(args, "which", "last_message")),
+            include_tools = get(args, "include_tools", false) === true,
+            max_chars = Int(get(args, "max_chars", 20000)))
+        JSON.json(out)
+    catch e
+        "Error reading agent output: $(sprint(showerror, e))"
+    end
+end
+
 const agent_list_tool = @mcp_tool :agent_list "List all open Kaimon-owned agents with their status and running cost." Dict("type" => "object", "properties" => Dict()) (args) -> begin
     try
         JSON.json(Dict("agents" => list_agents()))

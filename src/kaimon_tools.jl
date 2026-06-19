@@ -131,6 +131,7 @@ function collect_tools()::Vector{MCPTool}
         agent_interrupt_tool,
         agent_close_tool,
         agent_status_tool,
+        agent_output_tool,
         agent_list_tool,
         agent_governor_status_tool,
         reflection_tools...,

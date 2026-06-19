@@ -29,6 +29,8 @@ mutable struct AgentSession
     last_activity::Float64
     usage::ACP.Usage              # running cost/token total across all turns
     recent::Vector{Any}           # ring buffer of (t,kind,summary) for the TUI monitor
+    stream_text::Vector{String}   # assistant-text deltas of the in-flight turn (partial output)
+    stream_think::Vector{String}  # thinking deltas of the in-flight turn (backfills empty thoughts)
     lock::ReentrantLock
 end
 
@@ -126,7 +128,8 @@ function agent_open(; cwd::String,
     end
 
     s = AgentSession(aid, backend, handle, cwd, model, :starting,
-                     Task(() -> nothing), time(), time(), ACP.Usage(), Any[], ReentrantLock())
+                     Task(() -> nothing), time(), time(), ACP.Usage(), Any[],
+                     String[], String[], ReentrantLock())
     s.relay = _start_relay!(s)
     lock(AGENT_SESSIONS_LOCK) do
         AGENT_SESSIONS[aid] = s
@@ -170,6 +173,29 @@ function _start_relay!(s::AgentSession)
                     _set_status!(s, :dead)
                 end
                 s.last_activity = time()
+                # Buffer streaming deltas in the session. Deltas aren't persisted, but
+                # holding them lets agent_output return partial text mid-turn, and lets us
+                # backfill an empty authoritative thought (some models stream thinking via
+                # deltas and emit an empty final `thinking` block — only a signature).
+                lock(s.lock) do
+                    if ev isa ACP.TurnStarted
+                        empty!(s.stream_text); empty!(s.stream_think)
+                    elseif ev isa ACP.AgentMessageChunk && ev.delta
+                        push!(s.stream_text, _txt(ev.content))
+                    elseif ev isa ACP.AgentThoughtChunk && ev.delta
+                        push!(s.stream_think, _txt(ev.content))
+                    end
+                end
+                # Authoritative thought with empty text: backfill from the streamed
+                # thinking, or drop it entirely so the feed/log isn't littered with bare
+                # "thought" markers.
+                if ev isa ACP.AgentThoughtChunk && !ev.delta && isempty(strip(_txt(ev.content)))
+                    buffered = lock(s.lock) do
+                        t = join(s.stream_think); empty!(s.stream_think); t
+                    end
+                    isempty(strip(buffered)) && continue
+                    ev = ACP.AgentThoughtChunk(ACP.TextBlock(buffered))
+                end
                 # Feed a synchronous agent_run() waiter for this agent, if one is
                 # parked: accumulate authoritative (non-delta) assistant text, and
                 # release the caller on TurnEnded with the joined result.
@@ -423,6 +449,95 @@ function list_agents()
     lock(AGENT_SESSIONS_LOCK) do
         [agent_status(id) for id in keys(AGENT_SESSIONS)]
     end
+end
+
+# ── Agent output (non-blocking read of assembled assistant text) ──────────────
+# Reconstructs a turn's assistant text from the Kaimon event log (completed turns)
+# or the in-memory stream buffer (the current, still-working turn). Never blocks and
+# never touches claude's transcript file. See AGENT_OUTPUT_TOOL_SPEC.md.
+
+_env_text(data) = begin
+    c = data isa AbstractDict ? get(data, "content", nothing) : nothing
+    c isa AbstractDict ? string(get(c, "text", "")) : ""
+end
+
+function _tool_summary(kind::Symbol, data)
+    g(d, k, def = "") = d isa AbstractDict ? get(d, k, def) : def
+    kind === :tool_use   && return "→ tool: $(g(g(data, "call", Dict()), "title", "?")) ($(g(g(data, "call", Dict()), "kind", "?")))"
+    kind === :tool_result && return "← result: $(g(g(data, "update", Dict()), "status", "?"))"
+    ""
+end
+
+"""
+    agent_output(id; turn=nothing, which="last_message", include_tools=false, max_chars=20000) -> Dict
+
+Non-blocking read of a backgrounded agent's assistant output, assembled from the
+Kaimon event log (completed turns) and the in-memory stream buffer (the current,
+still-working turn). `which` ∈ `"last_message"` (the turn's final assistant text),
+`"full_turn"` (all assistant text of the turn), or `"all"` (every turn). Returns
+`{agent_id, turn, status, done, which, text, truncated, dropped_chars, usage?}`.
+"""
+function agent_output(id::AbstractString; turn::Union{Int,Nothing} = nothing,
+                      which::AbstractString = "last_message", include_tools::Bool = false,
+                      max_chars::Int = 20000)
+    s = _get_agent(id)
+    logpath = _event_log_path(id)
+    (s === nothing && !isfile(logpath)) && error("no such agent: $id")
+    status = s === nothing ? "dead" : string(s.status)
+    cur = s === nothing ? 0 : current_turn(s.handle)
+
+    records = Tuple{Int,Symbol,Any}[]
+    if isfile(logpath)
+        for ln in eachline(logpath)
+            isempty(strip(ln)) && continue
+            rec = try; JSON.parse(ln); catch; continue; end
+            push!(records, (Int(get(rec, "turn", 0)), Symbol(get(rec, "kind", "?")), get(rec, "data", Dict())))
+        end
+    end
+    maxlog = isempty(records) ? 0 : maximum(r[1] for r in records)
+    target = turn === nothing ? max(cur, maxlog) : turn
+    working = s !== nothing && s.status === :working && target >= cur
+
+    function turn_lines(tn::Int)
+        out = Tuple{Symbol,String}[]
+        for (rt, kind, data) in records
+            rt == tn || continue
+            if kind === :assistant_text
+                t = _env_text(data); isempty(t) || push!(out, (:text, t))
+            elseif include_tools && (kind === :tool_use || kind === :tool_result)
+                sm = _tool_summary(kind, data); isempty(sm) || push!(out, (kind, sm))
+            end
+        end
+        out
+    end
+    partial() = lock(s.lock) do; join(s.stream_text); end
+
+    text = if which == "all"
+        parts = String[]
+        for tn in 1:max(maxlog, cur)
+            body = (working && tn == cur) ? partial() :
+                   join([t for (_, t) in turn_lines(tn)], "\n\n")
+            isempty(strip(body)) || push!(parts, "— turn $tn —\n\n" * body)
+        end
+        join(parts, "\n\n")
+    elseif working && target == cur
+        partial()                                   # authoritative copy not logged yet
+    elseif which == "full_turn"
+        join([t for (_, t) in turn_lines(target)], "\n\n")
+    else                                            # last_message
+        texts = [t for (k, t) in turn_lines(target) if k === :text]
+        isempty(texts) ? "" : last(texts)
+    end
+
+    truncated = length(text) > max_chars
+    dropped = truncated ? length(text) - max_chars : 0
+    truncated && (text = first(text, max_chars))
+    out = Dict{String,Any}(
+        "agent_id" => id, "turn" => target, "status" => status, "done" => !working,
+        "which" => which, "text" => text, "truncated" => truncated, "dropped_chars" => dropped,
+    )
+    s === nothing || (out["usage"] = ACP.to_dict(s.usage))
+    out
 end
 
 # claude writes ~/.claude/projects/<munged-cwd>/<sessionId>.jsonl
