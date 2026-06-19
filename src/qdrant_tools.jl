@@ -401,15 +401,6 @@ search_code_tool = @mcp_tool(
     args -> _qdrant_search_code(args),
 )
 
-# Deprecated alias kept for back-compat (CLAUDE.md / configs / clients that still
-# reference the old name). Same arguments + handler. Remove in a future release.
-qdrant_search_code_tool = @mcp_tool(
-    :qdrant_search_code,
-    "DEPRECATED alias of `search_code` (same arguments) — use search_code. Hybrid semantic + lexical code search.",
-    _SEARCH_CODE_PARAMS,
-    args -> _qdrant_search_code(args),
-)
-
 qdrant_browse_collection_tool = @mcp_tool(
     :qdrant_browse_collection,
     "Browse points in a collection with pagination. Useful for exploring what's indexed.",
@@ -835,100 +826,6 @@ qdrant_delete_points_tool = @mcp_tool(
     end
 )
 
-qdrant_search_tool = @mcp_tool(
-    :qdrant_search,
-    "Search a Qdrant collection with a pre-computed vector. Returns raw results with scores and payloads. Optional filter narrows results by payload fields (Qdrant filter syntax).",
-    Dict(
-        "type" => "object",
-        "properties" => Dict(
-            "collection" =>
-                Dict("type" => "string", "description" => "Name of the collection"),
-            "vector" => Dict(
-                "type" => "array",
-                "description" => "Query vector (Float64 array)",
-                "items" => Dict("type" => "number"),
-            ),
-            "limit" => Dict(
-                "type" => "integer",
-                "description" => "Maximum number of results (default: 10)",
-            ),
-            "filter" => Dict(
-                "type" => "object",
-                "description" => "Qdrant payload filter (e.g., {\"must\": [{\"key\": \"tier\", \"match\": {\"value\": \"derived\"}}]})",
-            ),
-        ),
-        "required" => ["collection", "vector"],
-    ),
-    function (args)
-        err = _require_services()
-        err !== nothing && return err
-
-        collection = get(args, "collection", "")
-        isempty(collection) && return "Error: collection name is required"
-        raw_vector = get(args, "vector", Float64[])
-        isempty(raw_vector) && return "Error: vector is required"
-        vector = Vector{Float64}(raw_vector)
-        limit = Int(get(args, "limit", 10))
-        filter = get(args, "filter", nothing)
-
-        # Serialize to a JSON string so the MCP layer wraps it as text content.
-        # Returning the raw array makes the server emit a bare JSON array, which
-        # MCP clients can't unmarshal into the standard content format.
-        return JSON.json(
-            QdrantClient.search(collection, vector; limit = limit, filter = filter),
-        )
-    end
-)
-
-# Lexical (FTS5) search over ONE arbitrary collection, returning STRUCTURED hits.
-# This is the keyword/identifier half of `search_code` exposed as a standalone,
-# collection-scoped tool for extensions (e.g. KaimonSlate) that maintain their own
-# Qdrant collection and need programmatic hits — not the agent-facing formatted
-# string. Implementation (`fts_search`) lives in qdrant_hybrid.jl alongside the
-# fusion it reuses. No service guard: lexical search is local (SQLite) and works
-# even when Qdrant/Ollama are down — that's the resilience half of hybrid search.
-qdrant_fts_search_tool = @mcp_tool(
-    :qdrant_fts_search,
-    "Lexical (full-text / FTS5) search over ONE Qdrant collection's `text` payloads — the keyword/identifier half of search_code, scoped to a single collection, returning STRUCTURED hits as a JSON array (not a formatted agent string). Word + trigram-substring matching, fused/deduped via RRF and exact-symbol boosted, ranked by `score` (higher is better). Works even when Qdrant/Ollama are down (local SQLite index). The collection must be FTS-covered first (see qdrant_ensure_fts_coverage). Returns a JSON array of hits, each: {point_id, name, file, type, start_line, end_line, text, snippet, sources, score}.",
-    Dict(
-        "type" => "object",
-        "properties" => Dict(
-            "collection" =>
-                Dict("type" => "string", "description" => "Name of the collection to search"),
-            "query" => Dict(
-                "type" => "string",
-                "description" => "Lexical query. Bare terms are OR-joined (find any), ranked; use \"exact phrase\", full-word AND/OR/NOT, or prefix* for finer control. Julia punctuation attached to a word (push!, @view, Base.foo) matches literally.",
-            ),
-            "limit" => Dict(
-                "type" => "integer",
-                "description" => "Maximum number of results (default: 20)",
-            ),
-            "chunk_type" => Dict(
-                "type" => "string",
-                "description" => "Filter by chunk type: 'definitions' (functions/structs only), 'windows' (sliding-window chunks only), or 'all' (default: all)",
-                "enum" => ["all", "definitions", "windows"],
-            ),
-        ),
-        "required" => ["collection", "query"],
-    ),
-    function (args)
-        collection = get(args, "collection", "")
-        isempty(collection) && return "Error: collection is required"
-        query = get(args, "query", "")
-        isempty(query) && return "Error: query is required"
-        # limit may arrive as an int (MCP/JSON) or a string (some gate callers).
-        limit = let v = get(args, "limit", 20)
-            v isa Integer ? Int(v) : (v isa AbstractString ? parse(Int, v) : Int(v))
-        end
-        chunk_type = String(get(args, "chunk_type", "all"))
-
-        hits = fts_search(String(collection), String(query); limit = limit, chunk_type = chunk_type)
-        # JSON-stringify the structured hits (same rationale as qdrant_search): a
-        # bare array breaks the MCP agent surface, while a JSON string serves the
-        # agent AND parses cleanly for _kt/call_tool consumers (JSON.parse → Vector).
-        return JSON.json(hits)
-    end
-)
 
 # Idempotent single-collection FTS coverage: mirror a collection's `text` payloads
 # into the local lexical index so qdrant_fts_search / search_code can find them.
@@ -959,32 +856,6 @@ qdrant_ensure_fts_coverage_tool = @mcp_tool(
     end
 )
 
-ollama_embed_tool = @mcp_tool(
-    :ollama_embed,
-    "Get an embedding vector for text using Ollama. Returns Vector{Float64}.",
-    Dict(
-        "type" => "object",
-        "properties" => Dict(
-            "text" =>
-                Dict("type" => "string", "description" => "Text to embed"),
-            "model" => Dict(
-                "type" => "string",
-                "description" => "Ollama embedding model (default: $DEFAULT_EMBEDDING_MODEL)",
-            ),
-        ),
-        "required" => ["text"],
-    ),
-    function (args)
-        model = get(args, "model", DEFAULT_EMBEDDING_MODEL)
-        err = _require_services(need_ollama = true, model = model)
-        err !== nothing && return err
-
-        text = get(args, "text", "")
-        isempty(text) && return "Error: text is required"
-
-        return get_ollama_embedding(text; model = model)
-    end
-)
 
 # ============================================================================
 # Tool Registration

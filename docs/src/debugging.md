@@ -153,21 +153,14 @@ f(21)
 """)
 ```
 
-### `debug_inspect_safehouse`
+### `debug_safehouse`
 
-View variables captured by `@exfiltrate`:
-
-```
-debug_inspect_safehouse()                        # list all captured variables
-debug_inspect_safehouse(expression="x + y")      # evaluate using captured variables
-```
-
-### `debug_clear_safehouse`
-
-Clear all captured variables from the safehouse:
+Inspect or clear variables captured by `@exfiltrate` (one tool, `action` selects):
 
 ```
-debug_clear_safehouse()
+debug_safehouse(action="inspect")                       # list all captured variables
+debug_safehouse(action="inspect", expression="x + y")   # evaluate using captured variables
+debug_safehouse(action="clear")                         # clear the safehouse
 ```
 
 ## Dual Access: Agent + User
@@ -214,7 +207,7 @@ infil> @exfiltrate
 infil> :c
 ```
 
-Then use `debug_inspect_safehouse()` to examine the captured variables.
+Then use `debug_safehouse(action="inspect")` to examine the captured variables.
 
 ### Without Pausing
 
@@ -223,9 +216,9 @@ Use `debug_exfiltrate` to inject `@exfiltrate` into a function definition. The f
 ```julia
 # Agent workflow
 debug_exfiltrate(code="function f(x); y = x*2; @exfiltrate; y; end; f(21)")
-debug_inspect_safehouse()          # => x = 21, y = 42
-debug_inspect_safehouse(expression="x + y")  # => 63
-debug_clear_safehouse()            # clean up
+debug_safehouse(action="inspect")          # => x = 21, y = 42
+debug_safehouse(action="inspect", expression="x + y")  # => 63
+debug_safehouse(action="clear")            # clean up
 ```
 
 ## Conditional Breakpoints

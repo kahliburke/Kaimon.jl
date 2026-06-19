@@ -76,7 +76,7 @@ f) What happens to background jobs if the Kaimon TUI is restarted?
 
 ## Question 8: Code Search vs grep (15 points)
 
-`search_code` is hybrid: it combines semantic (meaning-based) vector search with exact keyword/identifier matching, fused and ranked together. (`qdrant_search_code` is a deprecated alias.)
+`search_code` is hybrid: it combines semantic (meaning-based) vector search with exact keyword/identifier matching, fused and ranked together. Use `format="structured"` for a JSON hit array instead of the ranked text.
 
 a) You need to find every place the exact function `_eval_with_capture` is called. Which tool and `mode`, and why should you NOT reach for `grep`/`find`/Bash?
 b) You're new to a codebase and want "where HTTP routing is handled." Which tool and what kind of query?

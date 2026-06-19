@@ -11,7 +11,7 @@ It uses short parameter names to save tokens:
 
 ## Other tools for specific tasks
 While `ex` is your go-to tool, some tasks are better served by specialized tools:
-- **Semantic code search:** `qdrant_search_code()` - for meaning-based searches in the codebase
+- **Semantic code search:** `search_code()` - for meaning-based searches in the codebase
 - **Method discovery:** `search_methods()` - for finding method signatures and overloads
 - **Type inspection:** `type_info()` - for detailed type information, fields, and hierarchy
 - Check out the extended help pages for these tools for more details.
@@ -230,7 +230,7 @@ ex(e="Pkg.activate(\".\")")  # Never do this!
 
 ## When to Use Specialized Tools
 
-- **Semantic search:** `qdrant_search_code()` for meaning-based lookup in the codebase
+- **Semantic search:** `search_code()` for meaning-based lookup in the codebase
 - **Method discovery:** `search_methods()` for signatures and overloads
 - **Type inspection:** `type_info()` for fields and hierarchy
 

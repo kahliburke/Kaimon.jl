@@ -17,8 +17,8 @@
 #
 # Other debug tools:
 #   - debug_exfiltrate — redefine a function with @exfiltrate to capture locals
-#   - debug_inspect_safehouse — view/query captured @exfiltrate variables
-#   - debug_clear_safehouse — clear safehouse
+#   - debug_safehouse(action="inspect") — view/query captured @exfiltrate variables
+#   - debug_safehouse(action="clear") — clear safehouse
 #
 # Notes:
 #   - Assignments persist within a breakpoint session (e.g. `myVar = a + b`)

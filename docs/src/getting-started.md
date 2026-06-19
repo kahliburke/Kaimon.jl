@@ -148,7 +148,7 @@ See [The Gate](gate.md) for the full custom tools guide.
 
 The **Search** tab connects to a local [Qdrant](https://qdrant.tech) instance
 and manages vector indexes over your codebase. Once indexed, your AI agent can
-search with natural language using the `qdrant_search_code` tool.
+search with natural language using the `search_code` tool.
 
 ![Kaimon search](./assets/kaimon_search.gif)
 

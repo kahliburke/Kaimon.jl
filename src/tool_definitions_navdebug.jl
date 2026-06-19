@@ -83,7 +83,7 @@ Workflow:
 2. Add @exfiltrate at the point of interest
 3. Call this tool with the modified function definition
 4. Trigger the code path (call the function)
-5. Use debug_inspect_safehouse to see captured variables""",
+5. Use debug_safehouse (action="inspect") to see captured variables""",
     Dict(
         "type" => "object",
         "properties" => Dict(

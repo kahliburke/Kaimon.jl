@@ -92,8 +92,7 @@ Kaimon integrates with Infiltrator.jl for interactive breakpoint debugging. When
 | `debug_ctrl` | Check breakpoint status or resume execution. | `action` ("status" or "continue"), `session` |
 | `debug_eval` | Evaluate an expression in the context of a paused breakpoint. | `expression`, `session` |
 | `debug_exfiltrate` | Evaluate code containing `@exfiltrate` to capture local variables. | `code`, `session` |
-| `debug_inspect_safehouse` | Inspect variables captured by `@exfiltrate`. | `expression` (optional), `session` |
-| `debug_clear_safehouse` | Clear all captured variables from the safehouse. | `session` |
+| `debug_safehouse` | Inspect or clear variables captured by `@exfiltrate`. | `action` ("inspect"/"clear"), `expression` (optional), `session` |
 
 ## Package Management
 
@@ -133,18 +132,18 @@ Semantic search requires [Qdrant](https://qdrant.tech/) running locally and [Oll
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `qdrant_search_code` | Natural language search over an indexed codebase. | `query`, `collection`, `limit`, `chunk_type` ("all", "definitions", "windows"), `embedding_model` |
+| `search_code` | Hybrid code search -- semantic (meaning) + lexical (exact keyword/identifier), fused and ranked. Finds exact symbols too, so you don't need grep. | `query`, `mode` ("hybrid"/"semantic"/"lexical"), `format` ("text"/"structured"), `collection`, `cross_project`, `limit`, `chunk_type` ("all"/"definitions"/"windows"), `embedding_model` |
 | `qdrant_index_project` | Index a project's source files into a Qdrant collection. | `project_path`, `collection`, `recreate`, `extra_dirs`, `extensions` |
 | `qdrant_sync_index` | Incrementally sync an index -- reindex changed files, remove deleted ones. | `project_path`, `collection`, `verbose` |
 | `qdrant_reindex_file` | Re-index a single file (delete old chunks, index fresh). | `file_path`, `collection`, `project_path`, `verbose` |
 | `qdrant_list_collections` | List all available Qdrant collections. | (none) |
-| `qdrant_collection_info` | Get detailed info about a collection (vector count, dimension, distance metric). | `collection` |
-| `qdrant_browse_collection` | Browse points in a collection with pagination. | `collection`, `limit` |
 
-**`qdrant_search_code` -- Find code by meaning**
+`format="structured"` returns a JSON array of hits (`{point_id, name, file, type, start_line, end_line, text, snippet, sources, score}`) instead of the ranked text -- for programmatic use. The lexical half auto-normalizes Julia punctuation (`push!`, `@view`, `Base.foo` match literally; bare terms OR-joined). The raw vector-DB admin tools (`qdrant_collection_info`/`_exists`/`browse`/`create`/`delete_collection`, `qdrant_upsert`/`delete_points`, `qdrant_ensure_fts_coverage`) are gated off the default surface -- enable them in `.kaimon/tools.json` if needed.
+
+**`search_code` -- Find code by meaning**
 
 ```
-qdrant_search_code(query="function that handles HTTP routing")
+search_code(query="function that handles HTTP routing")
 # => [1 0.89] handle_request(req::Request) @ src/server.jl:L42-68 (function)
 #    [2 0.81] route(path::String, handler) @ src/router.jl:L15-30 (function)
 #    ...

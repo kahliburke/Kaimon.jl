@@ -5,7 +5,7 @@ Kaimon provides **hybrid** search over Julia codebases: it combines semantic
 two, and returns one ranked list. Describe what you want in plain language — "function
 that handles HTTP routing" — *or* paste an exact symbol like `_eval_with_capture`,
 and the right half of the engine surfaces it. Both go through the same
-`qdrant_search_code` tool; you don't have to choose.
+`search_code` tool; you don't have to choose.
 
 ![Kaimon search tab](./assets/kaimon_search.gif)
 
@@ -29,7 +29,7 @@ also supports FTS query syntax — phrases (`"exact phrase"`), boolean
 
 ### Modes
 
-`qdrant_search_code` takes an optional `mode`:
+`search_code` takes an optional `mode`:
 
 | Mode | Behavior |
 |---|---|

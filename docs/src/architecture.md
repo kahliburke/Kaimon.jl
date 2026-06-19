@@ -186,11 +186,11 @@ The Gate provides a service endpoint that allows gate sessions (including extens
 
 ```julia
 # From a gate session or extension:
-result = KaimonGate.call_tool(:qdrant_search_code, Dict{String,Any}("query" => "routing"))
+result = KaimonGate.call_tool(:search_code, Dict{String,Any}("query" => "routing"))
 tools = KaimonGate.list_tools()
 ```
 
-This enables extensions to compose with built-in tools — for example, a documentation extension can use `qdrant_search_code` to find relevant code before generating docs.
+This enables extensions to compose with built-in tools — for example, a documentation extension can use `search_code` to find relevant code before generating docs.
 
 ## Session & Extension Managers
 

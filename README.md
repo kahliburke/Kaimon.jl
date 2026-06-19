@@ -64,11 +64,15 @@ From the dashboard:
 | Code Analysis | `code_lowered`, `code_typed`, `format_code`, `lint_package` | IR inspection, formatting, linting |
 | Navigation | `goto_definition`, `navigate_to_file` | Jump to definitions and source locations |
 | VS Code | `execute_vscode_command`, `list_vscode_commands` | VS Code command execution |
-| Debugging | `debug_ctrl`, `debug_eval`, `debug_exfiltrate`, `debug_inspect_safehouse`, `debug_clear_safehouse` | Infiltrator.jl breakpoint debugging |
+| Debugging | `debug_ctrl`, `debug_eval`, `debug_exfiltrate`, `debug_safehouse` | Infiltrator.jl breakpoint debugging |
 | Packages | `pkg_add`, `pkg_rm` | Add/remove packages |
-| Testing | `run_tests`, `profile_code`, `stress_test` | Test execution, profiling, load testing |
-| Search | `qdrant_search_code`, `qdrant_index_project`, `qdrant_sync_index`, `qdrant_list_collections`, `qdrant_collection_info`, `qdrant_browse_collection`, `qdrant_reindex_file` | Semantic code search |
+| Testing | `run_tests`, `stress_test` | Test execution, load testing |
+| Search | `search_code`, `qdrant_index_project`, `qdrant_sync_index`, `qdrant_reindex_file`, `qdrant_list_collections` | Hybrid (semantic + lexical) code search |
+| Agents | `agent_open`, `agent_send`, `agent_run`, `agent_output`, `agent_status`, `agent_list`, `agent_interrupt`, `agent_close` | Spawn & drive headless `claude` agents |
+| Extensions | `extension_info`, `manage_extension` | Inspect & control extension lifecycle |
 | Info | `ping`, `usage_instructions`, `usage_quiz`, `tool_help` | Server status and documentation |
+
+Advanced/infra tools (IR inspection `code_lowered`/`code_typed`, `macro_expand`, `profile_code`, `lint_package`, and the raw Qdrant vector-DB admin tools) are gated **off the default surface** to keep tool selection focused -- enable them per project in `.kaimon/tools.json`.
 
 ## The Gate
 

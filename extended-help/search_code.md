@@ -12,6 +12,28 @@ don't need grep for symbol lookups.
 - `mode="lexical"` — exact keyword/identifier only; works even when embeddings
   (Ollama) are unavailable.
 
+## Output format
+
+- `format="text"` (default) — a ranked, human-readable list: relevance score, a
+  source glyph (≈ semantic / ⚡ lexical / ⚯ both), `file:Lstart-end`, the
+  signature, and a highlighted snippet. Read this yourself.
+- `format="structured"` — a **JSON array of hit objects** instead of prose, for
+  programmatic use (parse it, jump to `file:line`, dedupe, post-process, or feed it
+  to another tool). One object per result:
+
+  ```json
+  [{"point_id":"…","name":"_toggle_ext_field!","file":"…/extensions.jl",
+    "type":"function","start_line":637,"end_line":645,"text":"…full chunk…",
+    "snippet":"…matched span with highlight marks…","sources":["lexical","substr"],
+    "score":0.051}]
+  ```
+
+  `score` is the fused RRF score (higher = better, relative within the result set);
+  `sources` is which halves matched (`semantic`/`lexical`/`substr`); `snippet`
+  carries `\x02`/`\x03` highlight marks around the matched span. Works with any
+  `mode` — e.g. `search_code(query="…", mode="lexical", format="structured")` for
+  structured exact-symbol hits.
+
 ## Query syntax (lexical half)
 
 **Just type the symbols.** Julia punctuation is handled automatically — you do not

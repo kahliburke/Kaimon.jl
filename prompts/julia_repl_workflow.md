@@ -4,7 +4,7 @@
 
 Kaimon provides Julia-native code discovery tools. Prefer these over grep/shell:
 
-- **`qdrant_search_code(query="...")`** — Semantic search: find code by meaning, not keywords
+- **`search_code(query="...")`** — Semantic search: find code by meaning, not keywords
 - **`type_info("Type")`** — Complete type info: fields, hierarchy, subtypes
 - **`search_methods("function")`** — All method signatures and overloads
 - **`list_names("Module")`** — Exported (or all) names in a module
@@ -88,10 +88,10 @@ The eval history keeps the last 64 evaluations. Use `check_eval` when:
 
 **Execution:** `ex(e="code")` — primary tool for everything
 **Introspection:** `list_names("Module")`, `type_info("Type")`, `search_methods("func")`
-**Semantic search:** `qdrant_search_code(query="...")`, `qdrant_list_collections()`
+**Semantic search:** `search_code(query="...")`, `qdrant_list_collections()`
 **Code navigation:** `goto_definition()`, `document_symbols()`, `workspace_symbols()`
 **Testing:** `run_tests(pattern="...")` — spawns subprocess, streams results
-**Debugging:** `debug_ctrl()`, `debug_eval()`, `debug_exfiltrate()`, `debug_inspect_safehouse()`, `debug_clear_safehouse()`
+**Debugging:** `debug_ctrl()`, `debug_eval()`, `debug_exfiltrate()`, `debug_safehouse(action="inspect"|"clear")`
 **Utilities:** `format_code(path)`, `ping()`, `investigate_environment()`
 **Help:** `tool_help("tool_name")` or `tool_help("tool_name", extended=true)`
 **Extensions:** `extension_info()` — list loaded extensions and their tools. `extension_info(name="smlabnotes")` for detailed tool docs.
@@ -132,9 +132,9 @@ debug_ctrl(action="continue")  # resume execution
 **@exfiltrate workflow** (no breakpoint needed):
 ```julia
 debug_exfiltrate(code="function f(x)\n  y = x * 2\n  @exfiltrate\n  return y\nend\nf(21)")
-debug_inspect_safehouse()                          # see all captured vars
-debug_inspect_safehouse(expression="x + y")        # eval with captured vars
-debug_clear_safehouse()                            # clean up
+debug_safehouse(action="inspect")                  # see all captured vars
+debug_safehouse(action="inspect", expression="x + y")  # eval with captured vars
+debug_safehouse(action="clear")                    # clean up
 ```
 
 ---

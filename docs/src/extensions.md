@@ -203,7 +203,7 @@ Extensions can call back into Kaimon's MCP tools via the service endpoint:
 # In a tool handler (Kaimon is loaded at Main scope in the extension subprocess):
 
 # Call any registered MCP tool
-result = Main.Kaimon.KaimonGate.call_tool(:qdrant_search_code, Dict{String,Any}(
+result = Main.Kaimon.KaimonGate.call_tool(:search_code, Dict{String,Any}(
     "query" => "HTTP routing",
     "limit" => "5",
 ))
