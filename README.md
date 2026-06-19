@@ -110,9 +110,9 @@ Full documentation: [kahliburke.github.io/Kaimon.jl](https://kahliburke.github.i
 ## Requirements
 
 - Julia 1.12+
-- Any MCP-compatible client (Claude Code, Cursor, VS Code with MCP extension)
+- Any MCP-compatible client (Claude Code, Cursor, VS Code with Copilot Chat or Continue, Gemini CLI). VS Code's Copilot Chat / Continue speak MCP natively — no extra extension needed; press `i` in the Config tab to write the client config (`.vscode/mcp.json`).
 - Optional: [Qdrant](https://qdrant.tech) for semantic code search
-- Optional: [VS Code Remote Control](https://marketplace.visualstudio.com/items?itemName=nicollasricas.vscode-remote-control) extension for VS Code integration
+- Optional: Kaimon's built-in VS Code extension — install from the Config tab with `v` (or run `Kaimon.install_vscode_remote_control()`) — to enable the in-editor command tools (`execute_vscode_command`, `list_vscode_commands`, `navigate_to_file`).
 
 ## Contributing
 
