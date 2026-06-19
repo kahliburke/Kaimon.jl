@@ -788,3 +788,19 @@ function progress(message::String)
     end
 end
 
+"""
+    current_caller() -> Union{String,Nothing}
+
+Identity of the agent that invoked the currently-running `GateTool` handler:
+the caller's MCP session id (`Mcp-Session-Id`), threaded through the gate as the
+request's `:caller` field and scoped to the dispatch via task-local storage.
+
+Returns `nothing` when there is no caller (a self/nested call, or code run
+outside a tool dispatch). Mirrors the `:gate_request_id` idiom used by
+[`progress`](@ref)/[`is_cancelled`](@ref).
+
+A tool can use this to key per-agent state (e.g. KaimonSlate's cooperative-edit
+lock) to the implicit caller session rather than a model-threaded token.
+"""
+current_caller() = let v = get(task_local_storage(), :gate_caller, ""); isempty(v) ? nothing : v end
+

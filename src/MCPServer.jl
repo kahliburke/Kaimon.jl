@@ -451,7 +451,8 @@ function create_handler(
                 return _rpc_resources_templates_list(request)
             method == "prompts/list" && return _rpc_prompts_list(request)
             method == "prompts/get" && return _rpc_prompts_get(request)
-            method == "tools/call" && return _rpc_tools_call(request, tools, name_to_id)
+            method == "tools/call" &&
+                return _rpc_tools_call(request, tools, name_to_id, session)
 
             # Method not found
             error_response = Dict(
@@ -643,7 +644,13 @@ function _handle_gate_tool_sse(
     start_time = time()
     tool_ok = true
 
+    # Caller identity: expose the invoking agent's Mcp-Session-Id to the tool
+    # handler via a task-local, scoped to this dispatch. Session-tool handlers
+    # (gate_client_tools.jl) read :mcp_caller and forward it as request :caller.
+    caller = session === nothing ? "" : session.id
+
     result_text = try
+      task_local_storage(:mcp_caller, caller) do
         # Call tool handler with progress callback piped through
         # The tool handler calls execute_via_gate_streaming which accepts on_progress
         # We inject on_progress into the args dict as a special key that execute_via_gate_streaming
@@ -673,6 +680,7 @@ function _handle_gate_tool_sse(
             args["_on_progress"] = send_progress
             Base.invokelatest(tool.handler, args)
         end
+      end  # task_local_storage(:mcp_caller) do
     catch e
         tool_ok = false
         "ERROR: $(sprint(showerror, e))"

@@ -101,10 +101,14 @@ function _call_session_tool(conn::REPLConnection, tool_name::String, args::Dict)
         return "Error: Gate not connected (session=$(conn.session_id))"
     end
 
+    # Caller identity: the invoking agent's Mcp-Session-Id, set as a task-local
+    # by the MCP server around tool dispatch (empty for a self/nested call).
+    caller_id = string(get(task_local_storage(), :mcp_caller, ""))
     request = (
         type = :tool_call,
         name = tool_name,
         arguments = Dict{String,Any}(string(k) => v for (k, v) in args),
+        caller = caller_id,
     )
     result = _req_send_recv(conn, request; caller_timeout = 30.0)
     if result.ok
@@ -155,12 +159,17 @@ function _call_session_tool_async(
         conn._eval_inboxes[request_id] = my_inbox
     end
 
+    # Caller identity: the invoking agent's Mcp-Session-Id, set as a task-local
+    # by the MCP server around tool dispatch (empty for a self/nested call).
+    caller_id = string(get(task_local_storage(), :mcp_caller, ""))
+
     # Phase 1: Send tool_call_async request via REQ worker (non-blocking)
     request = (
         type = :tool_call_async,
         name = tool_name,
         arguments = Dict{String,Any}(string(k) => v for (k, v) in args),
         request_id = request_id,
+        caller = caller_id,
     )
     hs_result = _req_send_recv(conn, request; caller_timeout = 10.0)
 

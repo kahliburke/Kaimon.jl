@@ -423,7 +423,7 @@ end
 
 # ── tools/call (body extracted byte-exact from the original branch) ──────────
 
-function _rpc_tools_call(request, tools, name_to_id)
+function _rpc_tools_call(request, tools, name_to_id, session = nothing)
                 params = get(request, "params", nothing)
                 if params === nothing || !haskey(params, "name")
                     error_response = Dict(
@@ -538,10 +538,18 @@ function _rpc_tools_call(request, tools, name_to_id)
                     tool_ok = true
                     time_str = ""
 
+                    # Caller identity: expose the invoking agent's Mcp-Session-Id
+                    # to the tool handler via a task-local, scoped to this dispatch.
+                    # Session-tool handlers (gate_client_tools.jl) read :mcp_caller
+                    # and forward it over the wire as the request's :caller field.
+                    caller = session === nothing ? "" : session.id
+
                     # Non-streaming mode (streaming handled in hybrid_handler)
                     # Use invokelatest to pick up Revise changes to tool handlers
                     result_text = try
-                        Base.invokelatest(tool.handler, args)
+                        task_local_storage(:mcp_caller, caller) do
+                            Base.invokelatest(tool.handler, args)
+                        end
                     catch
                         tool_ok = false
                         rethrow()

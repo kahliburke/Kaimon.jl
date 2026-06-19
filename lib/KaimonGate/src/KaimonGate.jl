@@ -160,7 +160,7 @@ end
 # ── Public API (mirrors the former `Kaimon.Gate.*` surface) ──────────────────
 public serve, stop, restart, status, connect!
 public GateTool, call_tool, list_tools, image_result, MCP_CONTENT_SENTINEL
-public is_cancelled, stash, progress, push_panel
+public is_cancelled, stash, progress, push_panel, current_caller
 public tty_path, tty_size, uninstall_infiltrator_hook!
 public PROTOCOL_VERSION
 public set_version_provider!, set_mirror_pref_provider!, set_personality_provider!

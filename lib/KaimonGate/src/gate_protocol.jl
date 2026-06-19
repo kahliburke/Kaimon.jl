@@ -377,8 +377,16 @@ function handle_message(request::NamedTuple)
             return (type = :error, message = "Unknown session tool: $tool_name")
         end
         tool = _SESSION_TOOLS[][idx]
+        # Caller identity = the invoking agent's Mcp-Session-Id (empty for a
+        # self/nested call). MUST use the SCOPED task_local_storage(key, val) do…
+        # form: this sync path may run on the long-lived message-loop task, so a
+        # bare 2-arg setter would leak the caller into the next request handled on
+        # that task. Scoping clears it on return. current_caller() reads :gate_caller.
+        caller = string(get(request, :caller, ""))
         try
-            result = _dispatch_tool_call(tool.handler, tool_args)
+            result = task_local_storage(:gate_caller, caller) do
+                _dispatch_tool_call(tool.handler, tool_args)
+            end
             return (type = :result, value = result)
         catch e
             return (type = :error, message = sprint(showerror, e))
@@ -398,6 +406,10 @@ function handle_message(request::NamedTuple)
             return (type = :error, message = "Unknown session tool: $tool_name")
         end
         tool = _SESSION_TOOLS[][idx]
+        # Caller identity = the invoking agent's Mcp-Session-Id (read before the
+        # spawn so the captured `request` value is used). This path spawns a fresh
+        # task per call, so the bare 2-arg setter below is already naturally scoped.
+        caller = string(get(request, :caller, ""))
 
         # Run tool handler on a default-pool thread so the interactive message
         # loop stays responsive to pings during CPU-intensive tool calls.
@@ -406,6 +418,7 @@ function handle_message(request::NamedTuple)
                 # Make progress function available via task-local storage
                 task_local_storage(:gate_request_id, request_id)
                 task_local_storage(:gate_progress, true)
+                task_local_storage(:gate_caller, caller)
 
                 result = _dispatch_tool_call(tool.handler, tool_args)
                 _stderr_finish!()
