@@ -145,6 +145,24 @@ function start!(mgr::ConnectionManager)
         end
     end
 
+    # Stream drain pump — headless only. Eval results arrive on the SUB stream and
+    # are routed to the waiting caller's inbox by drain_stream_messages!, which in
+    # the TUI is driven by the render loop. Headless (task_queue === nothing) has no
+    # render loop, so without this pump every eval_complete is never read and `ex`
+    # hangs for the full timeout, then promotes to a stuck background job. (#50)
+    if mgr.task_queue === nothing
+        mgr.drain_task = Threads.@spawn begin
+            while mgr.running
+                try
+                    drain_stream_messages!(mgr)
+                catch e
+                    @debug "Headless drain error" exception = e
+                end
+                sleep(0.05)
+            end
+        end
+    end
+
     return mgr
 end
 
@@ -376,7 +394,7 @@ function stop!(mgr::ConnectionManager)
 
     # Let background tasks finish (they'll exit on next loop since running=false)
     Threads.@spawn begin
-        for task in [mgr.watcher_task, mgr.health_task]
+        for task in [mgr.watcher_task, mgr.health_task, mgr.drain_task]
             if task !== nothing && !istaskdone(task)
                 try
                     wait(task)

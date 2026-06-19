@@ -18,6 +18,7 @@ mutable struct ConnectionManager
     event_pub_socket::Union{ZMQ.Socket,Nothing}  # global PUB for extension events
     event_pub_lock::ReentrantLock                # serializes ALL event_pub_socket access — ZMQ sockets are not thread-safe and the TUI thread + agent relay tasks all publish (#51)
     task_queue::Any  # Tachikoma.TaskQueue (or nothing if headless)
+    drain_task::Union{Task,Nothing}  # headless-only SUB drain pump (see start!) (#50)
 end
 
 function ConnectionManager(; sock_dir::String = joinpath(kaimon_cache_dir(), "sock"),
@@ -36,6 +37,7 @@ function ConnectionManager(; sock_dir::String = joinpath(kaimon_cache_dir(), "so
         nothing,
         ReentrantLock(),
         task_queue,
+        nothing,
     )
 end
 

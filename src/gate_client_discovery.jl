@@ -234,11 +234,15 @@ function discover_sessions(mgr::ConnectionManager)
         # Skip if we already track this session with the exact same PID —
         # nothing changed.  If the PID is different the process restarted:
         # don't skip so the watcher can replace the stale connection.
-        # For TCP sessions, always skip if already tracked (any status) —
-        # the PID may differ between metadata file and pong, and replacing
-        # would lose the SUB socket established by connect_tcp!.
         session_mode = Symbol(get(meta, "mode", "ipc"))
-        if session_mode == :tcp && haskey(known_id_pids, session_id)
+        # TCP gates are owned exclusively by _poll_tcp_gates!, which connects them
+        # via connect_tcp! with the auth token from tcp_gates.json. The file-watcher
+        # must NOT connect them: it has no token, so its connection is rejected with
+        # "Authentication required". And on a successful poll-connect the gate drops a
+        # mode=:tcp marker into sock_dir (for reconnect bookkeeping) — which the
+        # watcher would otherwise pick up and double-connect tokenless, the bad
+        # connection winning. So ignore TCP markers here entirely. (#50)
+        if session_mode == :tcp
             continue
         end
         if session_mode != :tcp && haskey(known_id_pids, session_id) && known_id_pids[session_id] == pid
