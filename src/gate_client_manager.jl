@@ -73,14 +73,25 @@ end
 # Re-broadcasts gate stream events on a single PUB socket so extensions can
 # SUB to one well-known endpoint with topic filtering.
 
+# Windows has no ipc:// transport, so the global event PUB (a per-Kaimon-instance
+# singleton) uses a fixed TCP loopback port there — the analog of the single fixed
+# `kaimon-events.sock` path on Unix. Extension SUB sockets connect to this same port
+# (see `_build_extension_script`). (#41)
+const _EVENT_PUB_TCP_PORT = Ref{Int}(
+    something(tryparse(Int, get(ENV, "KAIMON_EVENT_PUB_TCP_PORT", "")), 9878))
+
 """Start the global event PUB socket. Extensions SUB to this."""
 function _start_event_pub!(mgr::ConnectionManager)
-    sock_path = joinpath(mgr.sock_dir, "kaimon-events.sock")
-    ispath(sock_path) && rm(sock_path)
     pub = _zmq_socket(mgr.zmq_context, PUB)
     pub.sndhwm = 10000  # drop events if extensions can't keep up
     pub.linger = 0
-    bind(pub, "ipc://$sock_path")
+    if Sys.iswindows()
+        bind(pub, "tcp://127.0.0.1:$(_EVENT_PUB_TCP_PORT[])")
+    else
+        sock_path = joinpath(mgr.sock_dir, "kaimon-events.sock")
+        ispath(sock_path) && rm(sock_path)
+        bind(pub, "ipc://$sock_path")
+    end
     mgr.event_pub_socket = pub
 end
 
@@ -95,8 +106,11 @@ function _stop_event_pub!(mgr::ConnectionManager)
             mgr.event_pub_socket = nothing
         end
     end
-    sock_path = joinpath(mgr.sock_dir, "kaimon-events.sock")
-    ispath(sock_path) && try; rm(sock_path); catch; end
+    # ipc:// only — Windows uses TCP, so there's no socket file to clean up.
+    if !Sys.iswindows()
+        sock_path = joinpath(mgr.sock_dir, "kaimon-events.sock")
+        ispath(sock_path) && try; rm(sock_path); catch; end
+    end
 end
 
 """Re-publish a gate event on the global PUB socket (2-frame: topic + payload)."""

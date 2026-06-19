@@ -421,6 +421,22 @@ function _try_revise!()
 end
 
 """
+    _set_windows_utf8!()
+
+Switch the Windows console to the UTF-8 code page (65001) so the TUI's box-drawing
+and theme glyphs render correctly instead of as garbled text. No-op on Unix. (#41)
+"""
+function _set_windows_utf8!()
+    Sys.iswindows() || return
+    try
+        ccall((:SetConsoleOutputCP, "kernel32"), Int32, (UInt32,), 65001)
+        ccall((:SetConsoleCP, "kernel32"), Int32, (UInt32,), 65001)
+    catch
+    end
+    return
+end
+
+"""
     tui(; port=2828, theme=:kokaku)
 
 Launch the Kaimon TUI. This is a blocking call that takes over the terminal.
@@ -433,6 +449,7 @@ connections in `~/.cache/kaimon/sock/`.
 - `theme::Symbol=:kokaku`: Tachikoma theme name
 """
 function tui(; port::Int = 2828, theme_name::Union{Symbol,Nothing} = nothing, revise_polling::Bool = false, revise_mod::Any = nothing)
+    _set_windows_utf8!()
     if Threads.nthreads() < 2
         @warn """Kaimon TUI running with only 1 thread — UI may be unresponsive.
                  Start Julia with: julia -t auto

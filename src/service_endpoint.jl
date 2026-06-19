@@ -102,11 +102,16 @@ calls its handler on a worker task.
 Returns `(endpoint, socket, context)` on success.
 """
 function start_service_endpoint!()
-    endpoint = "ipc://$(KaimonGate.sock_dir())/kaimon-service.sock"
-    sock_path = replace(endpoint, "ipc://" => "")
-
-    # Clean up stale socket file
-    ispath(sock_path) && rm(sock_path)
+    # Unix: ipc:// socket file. Windows: fixed TCP loopback port (no ipc:// transport),
+    # matching the port the gate's `_service_request` connects to. (#41)
+    if Sys.iswindows()
+        endpoint = "tcp://127.0.0.1:$(KaimonGate._SERVICE_TCP_PORT[])"
+    else
+        endpoint = "ipc://$(KaimonGate.sock_dir())/kaimon-service.sock"
+        sock_path = replace(endpoint, "ipc://" => "")
+        # Clean up stale socket file
+        ispath(sock_path) && rm(sock_path)
+    end
 
     RateGovernor.init!()   # admission control for agent turns
 
@@ -205,11 +210,13 @@ function stop_service_endpoint!()
     end
     Threads.atomic_xchg!(_INFLIGHT, 0)
 
-    # Clean up socket file
-    endpoint = _SERVICE_ENDPOINT[]
-    if !isempty(endpoint)
-        sock_path = replace(endpoint, "ipc://" => "")
-        ispath(sock_path) && rm(sock_path; force = true)
+    # Clean up socket file (ipc:// only — Windows uses TCP, nothing to remove)
+    if !Sys.iswindows()
+        endpoint = _SERVICE_ENDPOINT[]
+        if !isempty(endpoint)
+            sock_path = replace(endpoint, "ipc://" => "")
+            ispath(sock_path) && rm(sock_path; force = true)
+        end
     end
 
     # Null refs — let GC handle ZMQ cleanup (same pattern as KaimonGate._cleanup)

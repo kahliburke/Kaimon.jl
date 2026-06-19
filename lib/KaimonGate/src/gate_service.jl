@@ -10,6 +10,13 @@
 # Legacy ref: per-call sockets are used now (below), but cleanup still nils this.
 const _SERVICE_SOCKET = Ref{Union{ZMQ.Socket,Nothing}}(nothing)
 
+# Windows has no ipc:// transport, so the service endpoint (a per-Kaimon-instance
+# singleton) uses a fixed TCP loopback port there — the direct analog of the single
+# fixed `kaimon-service.sock` path on Unix. Kaimon's `start_service_endpoint!` binds
+# this same port. (#41)
+const _SERVICE_TCP_PORT = Ref{Int}(
+    something(tryparse(Int, get(ENV, "KAIMON_SERVICE_TCP_PORT", "")), 9877))
+
 # Per-call REQ recv timeout (ms). Must exceed the worst case admission-wait +
 # slowest-tool timeout (agent_run defaults to 600s and is caller-settable). Kept
 # finite on purpose — an infinite timeout blocks forever if the server dies
@@ -30,16 +37,24 @@ wedge: the strict REQ send/recv FSM starts fresh every call. Supersedes the old
 single shared REQ + lock (+ reset-on-throw) design.
 """
 function _service_request(request)
-    sock_path = joinpath(sock_dir(), "kaimon-service.sock")
-    ispath(sock_path) || error("Kaimon service endpoint not available. Is the Kaimon TUI running?")
     ctx = _GATE_CONTEXT[]
     ctx === nothing && error("Kaimon service endpoint not available (no ZMQ context).")
+
+    # Unix: ipc:// socket file (presence-checkable). Windows: fixed TCP loopback port
+    # (no file to check — unavailability surfaces as a send/recv timeout below). (#41)
+    if Sys.iswindows()
+        endpoint = "tcp://127.0.0.1:$(_SERVICE_TCP_PORT[])"
+    else
+        sock_path = joinpath(sock_dir(), "kaimon-service.sock")
+        ispath(sock_path) || error("Kaimon service endpoint not available. Is the Kaimon TUI running?")
+        endpoint = "ipc://$(sock_path)"
+    end
 
     sock = _zmq_socket(ctx, REQ)
     sock.rcvtimeo = _SERVICE_RCV_TIMEOUT_MS[]
     sock.sndtimeo = 5000   # 5s send timeout
     sock.linger = 0
-    connect(sock, "ipc://$(sock_path)")
+    connect(sock, endpoint)
     try
         io = IOBuffer()
         serialize(io, request)
