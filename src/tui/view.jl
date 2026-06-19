@@ -184,7 +184,10 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
             spawn_task!(m._task_queue, :mcp_server_started) do
                 try
                     security_config = load_global_config()
-                    tools = collect_tools()
+                    # Mirror start!(): register the full set, then serve the config-
+                    # filtered view (drops DEFAULT_OFF_TOOLS when there's no tools.json).
+                    ALL_TOOLS[] = collect_tools()
+                    tools = filter_tools_by_config(load_tools_config(".kaimon/tools.json"))
                     server = start_mcp_server(
                         tools,
                         port;

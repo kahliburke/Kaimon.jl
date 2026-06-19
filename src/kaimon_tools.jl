@@ -69,9 +69,25 @@ end
 Filter tools from ALL_TOOLS based on the enabled tools set.
 If enabled_tools is `nothing`, returns all tools (backward compatibility).
 """
+# Tools registered but OFF the default MCP surface — advanced/infra that most
+# agents never need and that would only dilute tool selection. Still reachable by
+# listing them in `.kaimon/tools.json` (which switches to an explicit allowlist).
+# Keeps the everyday surface punchy.
+const DEFAULT_OFF_TOOLS = Set{Symbol}([
+    # Qdrant vector-DB admin (the search/index tools stay on the surface).
+    :qdrant_collection_info, :qdrant_collection_exists, :qdrant_browse_collection,
+    :qdrant_create_collection, :qdrant_delete_collection,
+    :qdrant_upsert_points, :qdrant_delete_points, :qdrant_ensure_fts_coverage,
+    # Rare/advanced Julia introspection.
+    :code_lowered, :code_typed, :macro_expand, :profile_code, :lint_package,
+    # Niche agent backpressure telemetry.
+    :agent_governor_status,
+])
+
 function filter_tools_by_config(enabled_tools::Union{Set{Symbol},Nothing})
     if enabled_tools === nothing
-        return ALL_TOOLS[]
+        # No config: serve everything except the default-off advanced/infra set.
+        return filter(t -> !(t.id in DEFAULT_OFF_TOOLS), ALL_TOOLS[])
     end
 
     return filter(tool -> tool.id in enabled_tools, ALL_TOOLS[])
@@ -113,8 +129,7 @@ function collect_tools()::Vector{MCPTool}
         lint_tool,
         navigate_to_file_tool,
         debug_exfiltrate_tool,
-        debug_inspect_safehouse_tool,
-        debug_clear_safehouse_tool,
+        debug_safehouse_tool,
         debug_ctrl_tool,
         debug_eval_tool,
         pkg_add_tool,

@@ -208,6 +208,7 @@ function _qdrant_search_code(args)
     chunk_type = String(get(args, "chunk_type", "all"))
     mode = lowercase(String(get(args, "mode", "hybrid")))
     mode in ("hybrid", "semantic", "lexical") || (mode = "hybrid")
+    format = lowercase(String(get(args, "format", "text")))   # "text" | "structured"
     fetch = max(limit * 3, limit)
 
     explicit_model = let v = get(args, "embedding_model", nothing)
@@ -300,6 +301,7 @@ function _qdrant_search_code(args)
     _apply_boosts!(hits, query)
     sort!(hits; by = h -> -h.rrf)
     if isempty(hits)
+        format == "structured" && return "[]"
         msg = "No results found for query: \"$query\""
         # Surface notes (e.g. the FTS5-fallback warning) even on the empty path —
         # otherwise a malformed boolean query looks like "no such symbol".
@@ -307,6 +309,15 @@ function _qdrant_search_code(args)
         return msg
     end
     hits = hits[1:min(limit, length(hits))]
+
+    # Structured output (subsumes the old qdrant_fts_search): ranked hits as data.
+    if format == "structured"
+        return JSON.json([(
+            point_id = h.point_id, name = h.name, file = h.file, type = h.type,
+            start_line = h.start_line, end_line = h.end_line, text = h.text,
+            snippet = h.snippet, sources = collect(h.sources), score = h.rrf,
+        ) for h in hits])
+    end
 
     where_label = sem_collection !== nothing ? sem_collection :
         (fts_collection !== nothing ? fts_collection : "all projects")

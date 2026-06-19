@@ -383,6 +383,11 @@ const _SEARCH_CODE_PARAMS = Dict(
             "description" => "Search mode: 'hybrid' (default — semantic + keyword), 'semantic' (vector only), or 'lexical' (exact keyword/identifier only; works even when embeddings are unavailable).",
             "enum" => ["hybrid", "semantic", "lexical"],
         ),
+        "format" => Dict(
+            "type" => "string",
+            "description" => "Output format: 'text' (default — ranked, human-readable) or 'structured' (a JSON array of hits {point_id, name, file, type, start_line, end_line, text, snippet, sources, score} for programmatic use).",
+            "enum" => ["text", "structured"],
+        ),
     ),
     "required" => ["query"],
 )
@@ -987,22 +992,23 @@ ollama_embed_tool = @mcp_tool(
 
 function create_qdrant_tools()
     return [
+        # Everyday surface
         qdrant_list_collections_tool,
-        qdrant_collection_info_tool,
-        search_code_tool,
-        qdrant_search_code_tool,   # deprecated alias of search_code
-        qdrant_browse_collection_tool,
+        search_code_tool,                # hybrid; format="structured" replaces qdrant_fts_search
         qdrant_index_project_tool,
         qdrant_sync_index_tool,
         qdrant_reindex_file_tool,
+        # Vector-DB admin — gated off by default via DEFAULT_OFF_TOOLS (kaimon_tools.jl)
+        qdrant_collection_info_tool,
         qdrant_collection_exists_tool,
+        qdrant_browse_collection_tool,
         qdrant_create_collection_tool,
         qdrant_delete_collection_tool,
         qdrant_upsert_points_tool,
         qdrant_delete_points_tool,
-        qdrant_search_tool,
-        qdrant_fts_search_tool,
         qdrant_ensure_fts_coverage_tool,
-        ollama_embed_tool,
+        # Removed from the surface: qdrant_search_code (deprecated alias of search_code),
+        # qdrant_search (raw precomputed-vector search) + ollama_embed (its building block),
+        # qdrant_fts_search (folded into search_code format="structured").
     ]
 end

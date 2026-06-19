@@ -114,15 +114,21 @@ Workflow:
     end
 )
 
-debug_inspect_safehouse_tool = @mcp_tool(
-    :debug_inspect_safehouse,
-    """Inspect variables captured by @exfiltrate in Infiltrator's safehouse.
+debug_safehouse_tool = @mcp_tool(
+    :debug_safehouse,
+    """Inspect or clear Infiltrator's @exfiltrate safehouse.
 
-With no expression: lists all captured variables with types and values.
-With an expression: evaluates it using safehouse variables via Infiltrator.@withstore.""",
+action="inspect" (default): with no expression, list all captured variables with
+types and values; with an expression, evaluate it against the safehouse via
+Infiltrator.@withstore. action="clear": drop all captured variables.""",
     Dict(
         "type" => "object",
         "properties" => Dict(
+            "action" => Dict(
+                "type" => "string",
+                "enum" => ["inspect", "clear"],
+                "description" => "inspect (default) lists/evaluates captured variables; clear drops them all.",
+            ),
             "expression" => Dict(
                 "type" => "string",
                 "description" => "Optional expression to evaluate using safehouse variables (e.g., 'typeof(x)' or 'length(data)')",
@@ -136,6 +142,11 @@ With an expression: evaluates it using safehouse variables via Infiltrator.@with
     ),
     function (args)
         session = get(args, "session", "")
+        if lowercase(String(get(args, "action", "inspect"))) == "clear"
+            return execute_repllike(
+                "using Infiltrator; Infiltrator.clear_store!(); \"Safehouse cleared.\"";
+                quiet = false, session = session)
+        end
         expr = get(args, "expression", "")
         if isempty(expr)
             code = """
@@ -164,28 +175,6 @@ With an expression: evaluates it using safehouse variables via Infiltrator.@with
     end
 )
 
-debug_clear_safehouse_tool = @mcp_tool(
-    :debug_clear_safehouse,
-    "Clear all variables from Infiltrator's safehouse.",
-    Dict(
-        "type" => "object",
-        "properties" => Dict(
-            "session" => Dict(
-                "type" => "string",
-                "description" => "Session key (8-char ID). Required when multiple sessions are connected.",
-            ),
-        ),
-        "required" => [],
-    ),
-    function (args)
-        session = get(args, "session", "")
-        execute_repllike(
-            "using Infiltrator; Infiltrator.clear_store!(); \"Safehouse cleared.\"";
-            quiet = false,
-            session = session,
-        )
-    end
-)
 
 debug_ctrl_tool = @mcp_tool(
     :debug_ctrl,
