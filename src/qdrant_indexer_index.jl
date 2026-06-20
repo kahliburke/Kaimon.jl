@@ -45,7 +45,15 @@ can each call it and get an identical `(chunk, point_id)` set. `[]` on skip/empt
 function _prepare_file_chunks(file_path::String, collection::String, max_length::Int)
     content = _read_indexable_content(file_path)
     content === nothing && return Tuple{Dict,String}[]
-    chunks = chunk_code(content, file_path)
+    # A parse failure here usually means the file is being actively edited (transiently
+    # invalid syntax) — skip quietly and let the next save reindex it, rather than
+    # surfacing a loud "Error indexing" with a useless backtrace.
+    chunks = try
+        chunk_code(content, file_path)
+    catch e
+        with_index_logger(() -> @debug "Could not parse file for chunking (may be mid-edit); skipping" file = basename(file_path) reason = sprint(showerror, e))
+        return Tuple{Dict,String}[]
+    end
     isempty(chunks) && return Tuple{Dict,String}[]
     prepared = Tuple{Dict,String}[]
     for chunk in chunks
@@ -179,7 +187,7 @@ function index_file(
         fail_count = INDEX_FAILED_FILES[][file_path]
         msg = "Error indexing $(basename(file_path))"
         !silent && verbose && println("  ❌ $msg: $e")
-        with_index_logger(() -> @error msg file = file_path fail_count = fail_count exception = (e, catch_backtrace()))
+        with_index_logger(() -> @error msg file = file_path fail_count = fail_count reason = sprint(showerror, e))
         return 0
     end
 end
@@ -425,7 +433,7 @@ function index_directory(
         catch e
             INDEX_FAILED_FILES[][file_path] = get(INDEX_FAILED_FILES[], file_path, 0) + 1
             !silent && verbose && println("  ❌ Error indexing $(basename(file_path)): $e")
-            with_index_logger(() -> @error "Error indexing file" file = file_path exception = (e, catch_backtrace()))
+            with_index_logger(() -> @error "Error indexing file" file = file_path reason = sprint(showerror, e))
         end
     end
 

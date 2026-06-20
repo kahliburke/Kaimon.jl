@@ -121,7 +121,7 @@ function start_revise_event_watcher(;
                 if e isa InterruptException || REVISE_EVENT_STOP[]
                     break
                 end
-                with_index_logger(() -> @error "Revise watcher error" exception = (e, catch_backtrace()))
+                with_index_logger(() -> @error "Revise watcher error" reason = sprint(showerror, e))
                 sleep(1)  # Brief back-off on error
             end
         end
