@@ -169,3 +169,54 @@ end
     @test cp("a1b2-uuid") == "a1b2-uuid"
     @test cp("abc") == "abc"
 end
+
+# Size-based chunk splitting, decoupled from embedding (no Ollama). Underpins the
+# FTS-first / embed-second two-pass index.
+@testset "split_to_fit" begin
+    mk(text; sl=1, el=9, name="w") = Dict("file"=>"/a/x.jl", "start_line"=>sl, "end_line"=>el,
+                                          "type"=>"window", "name"=>name, "text"=>text)
+    @testset "in-size chunk returned unchanged" begin
+        c = mk("short")
+        parts = Kaimon.split_to_fit(c, 1000)
+        @test length(parts) == 1
+        @test parts[1]["text"] == "short"
+    end
+    @testset "oversized chunk splits into fitting pieces" begin
+        c = mk(join(["line $i" for i in 1:9], "\n"))
+        parts = Kaimon.split_to_fit(c, 20)
+        @test length(parts) > 1
+        @test all(p -> length(p["text"]) <= 20, parts)
+        # spans stay within the original; names get "(part N)" suffixes
+        @test all(p -> p["start_line"] >= 1 && p["end_line"] <= 9, parts)
+        @test any(p -> occursin("part", p["name"]), parts)
+    end
+    @testset "unsplittable single line is truncated, not dropped" begin
+        c = mk("x"^100)  # one line, no newlines
+        parts = Kaimon.split_to_fit(c, 10)
+        @test length(parts) == 1
+        @test length(parts[1]["text"]) == 10
+    end
+end
+
+# Deterministic point IDs (C): same content+location → same ID (idempotent reindex),
+# any change → new ID. Pure uuid5, no Qdrant/Ollama.
+@testset "deterministic point IDs" begin
+    base = Dict("file"=>"/a/x.jl", "start_line"=>1, "end_line"=>5,
+                "type"=>"function", "name"=>"f", "text"=>"f() = 1")
+    pid = Kaimon._chunk_point_id
+    id = pid("proj", base)
+    @test id == pid("proj", copy(base))                                   # deterministic
+    @test id != pid("proj", merge(base, Dict("text"=>"f() = 2")))         # content-sensitive
+    @test id != pid("proj", merge(base, Dict("start_line"=>2)))           # span-sensitive
+    @test id != pid("proj", merge(base, Dict("file"=>"/a/y.jl")))         # file-sensitive
+    @test id != pid("other", base)                                        # collection-scoped
+    @test id isa String && length(id) == 36                              # well-formed UUID string
+
+    # Regression: chunk text with regex/backslash escapes must not throw. Julia's
+    # uuid5 runs unescape_string on its name, which errors on `\d`/`\w`; the ID must
+    # be SHA-hashed first so regex-heavy code indexes cleanly.
+    rgx = merge(base, Dict("text"=>"m = match(r\"\\b(\\d+)\\w*\\\$\", s)"))
+    @test (pid("proj", rgx); true)                                        # no throw
+    @test pid("proj", rgx) == pid("proj", copy(rgx))                      # still deterministic
+    @test pid("proj", rgx) != id                                          # distinct from plain text
+end

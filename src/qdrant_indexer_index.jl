@@ -2,11 +2,153 @@
 # Kaimon Qdrant indexer · index_file/reindex/directory/project · sync_index  (split from qdrant_indexer.jl)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Deterministic point IDs (uuid5, SHA1-based) so the lexical and embedding passes
+# derive identical IDs for the same chunk independently — and so reindexing unchanged
+# content overwrites the same point instead of churning a fresh random UUID. The name
+# folds collection + file + span + the full chunk text, so any content change yields a
+# new ID (old one cleared by the reindex delete-by-file).
+const _KAIMON_PID_NAMESPACE = UUID("d7a3e0b2-1c4f-5a86-9b3d-2e7f6c1a8b40")
+function _chunk_point_id(collection::AbstractString, chunk::Dict)
+    key = string(collection, '|', chunk["file"], '|', chunk["start_line"], '|', chunk["end_line"], '|', chunk["text"])
+    # SHA1→hex first: Julia's uuid5 runs unescape_string on its name, which throws on
+    # backslash sequences like `\d`/`\w` that are normal in regex-heavy code. Hashing to
+    # a plain hex string makes the name escape-safe while staying deterministic.
+    return string(uuid5(_KAIMON_PID_NAMESPACE, bytes2hex(sha1(key))))
+end
+
+"""Read a file's indexable text (PDF or plain), or `nothing` to skip. File-log only."""
+function _read_indexable_content(file_path::String)
+    isfile(file_path) || (with_index_logger(() -> @warn "File not found" file = file_path); return nothing)
+    content = if endswith(lowercase(file_path), ".pdf")
+        text = applicable(_extract_pdf_text, file_path) ? _extract_pdf_text(file_path) : nothing
+        text === nothing && (with_index_logger(() -> @info "Skipping PDF (PDFIO not loaded)" file = basename(file_path)); return nothing)
+        text
+    else
+        try
+            read(file_path, String)
+        catch e
+            with_index_logger(() -> @warn "Failed to read file" file = basename(file_path) exception = e)
+            return nothing
+        end
+    end
+    isempty(strip(content)) && return nothing
+    return content
+end
+
+"""
+    _prepare_file_chunks(file_path, collection, max_length) -> Vector{Tuple{Dict,String}}
+
+Read + chunk + size-split a file and attach a deterministic point ID to each piece.
+Pure aside from reading the file (no Ollama/Qdrant), so the lexical and embedding passes
+can each call it and get an identical `(chunk, point_id)` set. `[]` on skip/empty.
+"""
+function _prepare_file_chunks(file_path::String, collection::String, max_length::Int)
+    content = _read_indexable_content(file_path)
+    content === nothing && return Tuple{Dict,String}[]
+    chunks = chunk_code(content, file_path)
+    isempty(chunks) && return Tuple{Dict,String}[]
+    prepared = Tuple{Dict,String}[]
+    for chunk in chunks
+        isempty(strip(chunk["text"])) && continue
+        for sub in split_to_fit(chunk, max_length)
+            push!(prepared, (sub, _chunk_point_id(collection, sub)))
+        end
+    end
+    return prepared
+end
+
+"""Write the lexical (FTS5) rows for a file's prepared chunks. No Ollama. Idempotent
+(delete-then-insert). Non-fatal on error. Returns the row count."""
+function _write_fts!(file_path::String, collection::String, prepared::Vector{Tuple{Dict,String}})
+    fts_rows = Dict[]
+    for (chunk, point_id) in prepared
+        push!(fts_rows, Dict(
+            "point_id" => point_id,
+            "collection" => collection,
+            "file" => chunk["file"],
+            "name" => chunk["name"],
+            "type" => chunk["type"],
+            "start_line" => chunk["start_line"],
+            "end_line" => chunk["end_line"],
+            "text" => chunk["text"],  # full text (not the 2000-char vector-payload truncation)
+        ))
+    end
+    try
+        FtsIndex.delete_file!(collection, file_path)
+        FtsIndex.add_chunks!(fts_rows)
+    catch e
+        with_index_logger(() -> @warn "Lexical (FTS) index write failed (non-fatal)" file = basename(file_path) exception = e)
+    end
+    return length(fts_rows)
+end
+
+"""Embed a file's prepared chunks and upsert them to Qdrant (project + global) under
+their shared deterministic IDs. Returns the number of vectors written."""
+function _embed_upsert!(
+    file_path::String,
+    collection::String,
+    prepared::Vector{Tuple{Dict,String}};
+    embedding_model::String,
+    project_path::String,
+)
+    isempty(prepared) && return 0
+    max_length = get_embedding_config(embedding_model).context_chars
+    points = Dict[]
+    n = 0
+    for (chunk, point_id) in prepared
+        text = chunk["text"]
+
+        # Chunks are already size-fit by split_to_fit; embed directly. A rare embed
+        # failure retries on the truncated text under the SAME id (keeps FTS↔Qdrant 1:1);
+        # if that also fails the chunk stays lexical-only.
+        embedding = get_ollama_embedding(text; model=embedding_model)
+        if isempty(embedding)
+            embedding = get_ollama_embedding(first(text, max_length); model=embedding_model)
+            if isempty(embedding)
+                with_index_logger(() -> @warn "Failed to embed chunk; lexical-only" file = basename(file_path) start_line = chunk["start_line"])
+                continue
+            end
+        end
+
+        payload = Dict(
+            "file" => chunk["file"],
+            "start_line" => chunk["start_line"],
+            "end_line" => chunk["end_line"],
+            "type" => chunk["type"],
+            "name" => chunk["name"],
+            "text" => first(chunk["text"], 2000),  # Truncate for storage (Unicode-safe)
+            "project_path" => project_path,
+            "collection" => collection,
+            "indexed_at" => round(Int, time()),
+            "kaimon_schema" => 1,  # schema version for future migrations
+        )
+        for key in ["signature", "parameters", "type_params", "parent_type", "is_mutable", "is_exported"]
+            if haskey(chunk, key) && !isempty(chunk[key])
+                payload[key] = chunk[key]
+            end
+        end
+
+        push!(points, Dict("id" => point_id, "vector" => embedding, "payload" => payload))
+        n += 1
+
+        if length(points) >= 10
+            QdrantClient.upsert_points(collection, points)
+            _upsert_to_global!(points)
+            points = Dict[]
+        end
+    end
+    if !isempty(points)
+        QdrantClient.upsert_points(collection, points)
+        _upsert_to_global!(points)
+    end
+    return n
+end
+
 """
     index_file(file_path::String, collection::String; project_path::String=pwd(), verbose::Bool=true, silent::Bool=false) -> Int
 
-Index a single Julia file into Qdrant. Returns number of chunks indexed.
-Uses split-and-retry strategy for oversized chunks.
+Index a single file: write its lexical rows, then embed + upsert its vectors (the
+single-file path, e.g. reindex-on-save — both halves in one go). Returns chunk count.
 Set silent=true to suppress all output (logs to file only).
 """
 function index_file(
@@ -17,160 +159,24 @@ function index_file(
     silent::Bool=false,
     embedding_model::String=resolve_search_model(collection),
 )
-    if !isfile(file_path)
-        msg = "File not found: $file_path"
-        !silent && verbose && println("  ⚠️  $msg")
-        with_index_logger(() -> @warn msg)
-        return 0
-    end
-
-    content = if endswith(lowercase(file_path), ".pdf")
-        text = applicable(_extract_pdf_text, file_path) ? _extract_pdf_text(file_path) : nothing
-        if text === nothing
-            msg = "Skipping PDF (PDFIO not loaded): $(basename(file_path))"
-            !silent && verbose && println("  ⏭️  $msg")
-            with_index_logger(() -> @info msg)
-            return 0
-        end
-        text
-    else
-        try
-            read(file_path, String)
-        catch e
-            msg = "Failed to read: $(basename(file_path))"
-            !silent && verbose && println("  ⚠️  $msg - $e")
-            with_index_logger(() -> @warn msg exception = e)
-            return 0
-        end
-    end
-
-    if isempty(strip(content))
-        msg = "Skipping empty file: $(basename(file_path))"
-        !silent && verbose && println("  ⏭️  $msg")
-        with_index_logger(() -> @debug msg)
-        return 0
-    end
-
-    chunks = chunk_code(content, file_path)
-    if isempty(chunks)
-        msg = "No indexable content: $(basename(file_path))"
-        !silent && verbose && println("  ⏭️  $msg")
-        with_index_logger(() -> @debug msg)
-        return 0
-    end
-
-    !silent && verbose && println("  📄 $(basename(file_path)): $(length(chunks)) chunks")
-    with_index_logger(() -> @info "Indexing file" file = basename(file_path) chunks = length(chunks))
-
     try
-        points = Dict[]
-        fts_rows = Dict[]   # mirror of the same chunks for the lexical (FTS5) index
+        max_length = get_embedding_config(embedding_model).context_chars
+        prepared = _prepare_file_chunks(file_path, collection, max_length)
+        isempty(prepared) && return 0
 
-        # Get embedding config for size limits
-        embedding_config = get_embedding_config(embedding_model)
-        max_length = embedding_config.context_chars
+        !silent && verbose && println("  📄 $(basename(file_path)): $(length(prepared)) chunks")
+        with_index_logger(() -> @info "Indexing file" file = basename(file_path) chunks = length(prepared))
 
-        for (i, chunk) in enumerate(chunks)
-            text = chunk["text"]
-            if isempty(strip(text))
-                continue
-            end
+        _write_fts!(file_path, collection, prepared)
+        _embed_upsert!(file_path, collection, prepared; embedding_model=embedding_model, project_path=project_path)
 
-            # Use split-and-retry strategy for oversized chunks or embedding failures
-            embedded_chunks = split_chunk_recursive(chunk, max_length, embedding_model)
-
-            if isempty(embedded_chunks)
-                with_index_logger(() -> @warn "Failed to embed chunk after splitting" file = file_path chunk = i start_line = chunk["start_line"] end_line = chunk["end_line"])
-                continue
-            end
-
-            # Process each successfully embedded sub-chunk
-            for embedded_chunk in embedded_chunks
-                # Create point with UUID
-                point_id = string(Base.UUID(rand(UInt128)))
-
-                # Build payload with all available metadata
-                payload = Dict(
-                    "file" => embedded_chunk["file"],
-                    "start_line" => embedded_chunk["start_line"],
-                    "end_line" => embedded_chunk["end_line"],
-                    "type" => embedded_chunk["type"],
-                    "name" => embedded_chunk["name"],
-                    "text" => first(embedded_chunk["text"], 2000),  # Truncate for storage (Unicode-safe)
-                    "project_path" => project_path,
-                    "collection" => collection,
-                    "indexed_at" => round(Int, time()),
-                    "kaimon_schema" => 1,  # schema version for future migrations
-                )
-
-                # Add optional metadata fields if they exist
-                for key in ["signature", "parameters", "type_params", "parent_type", "is_mutable", "is_exported"]
-                    if haskey(embedded_chunk, key) && !isempty(embedded_chunk[key])
-                        payload[key] = embedded_chunk[key]
-                    end
-                end
-
-                push!(
-                    points,
-                    Dict(
-                        "id" => point_id,
-                        "vector" => embedded_chunk["embedding"],
-                        "payload" => payload,
-                    ),
-                )
-
-                # Lexical mirror: full chunk text (not the 2000-char vector-payload
-                # truncation) so keyword/substring matches can land anywhere in it.
-                push!(fts_rows, Dict(
-                    "point_id" => point_id,
-                    "collection" => collection,
-                    "file" => embedded_chunk["file"],
-                    "name" => embedded_chunk["name"],
-                    "type" => embedded_chunk["type"],
-                    "start_line" => embedded_chunk["start_line"],
-                    "end_line" => embedded_chunk["end_line"],
-                    "text" => embedded_chunk["text"],
-                ))
-
-                # Batch upsert every 10 points
-                if length(points) >= 10
-                    QdrantClient.upsert_points(collection, points)
-                    _upsert_to_global!(points)
-                    points = Dict[]
-                end
-            end
-        end
-
-        # Upsert remaining points
-        if !isempty(points)
-            QdrantClient.upsert_points(collection, points)
-            _upsert_to_global!(points)
-        end
-
-        # Mirror chunks into the lexical (FTS5) index for hybrid search. Delete-
-        # then-insert keeps it idempotent across fresh-index and reindex alike.
-        # Additive: an FTS failure must never fail the (already-done) vector index.
-        try
-            FtsIndex.delete_file!(collection, file_path)
-            FtsIndex.add_chunks!(fts_rows)
-        catch e
-            with_index_logger(() -> @warn "Lexical (FTS) index write failed (non-fatal)" file = basename(file_path) exception = e)
-        end
-
-        # Record in index state for change tracking
-        record_indexed_file(project_path, file_path, mtime(file_path), length(chunks))
-
-        # Reset failed file counter on success
+        record_indexed_file(project_path, file_path, mtime(file_path), length(prepared))
         delete!(INDEX_FAILED_FILES[], file_path)
-
-        with_index_logger(() -> @info "Successfully indexed file" file = basename(file_path) chunks = length(chunks))
-
-        return length(chunks)
+        with_index_logger(() -> @info "Successfully indexed file" file = basename(file_path) chunks = length(prepared))
+        return length(prepared)
     catch e
-        # Track failed files
         INDEX_FAILED_FILES[][file_path] = get(INDEX_FAILED_FILES[], file_path, 0) + 1
         fail_count = INDEX_FAILED_FILES[][file_path]
-
         msg = "Error indexing $(basename(file_path))"
         !silent && verbose && println("  ❌ $msg: $e")
         with_index_logger(() -> @error msg file = file_path fail_count = fail_count exception = (e, catch_backtrace()))
@@ -389,16 +395,38 @@ function index_directory(
     !silent && verbose && println("Found $(length(files)) files to index")
     with_index_logger(() -> @info "Indexing directory" dir = dir_path file_count = length(files))
 
+    max_length = get_embedding_config(embedding_model).context_chars
+
+    # Pass 1 — lexical (FTS5), fast and Ollama-free: the whole directory's keyword /
+    # identifier search lights up here, before any embeddings exist.
+    !silent && verbose && println("Pass 1/2 (lexical): indexing $(length(files)) files…")
     for file_path in files
-        chunks = index_file(
-            file_path,
-            collection;
-            project_path=project_path,
-            verbose=verbose,
-            silent=silent,
-            embedding_model=embedding_model,
-        )
-        total_chunks += chunks
+        try
+            prepared = _prepare_file_chunks(file_path, collection, max_length)
+            isempty(prepared) || _write_fts!(file_path, collection, prepared)
+        catch e
+            with_index_logger(() -> @warn "Lexical pass failed for file" file = basename(file_path) exception = e)
+        end
+    end
+
+    # Pass 2 — semantic (embeddings + vector upsert), the slow part. Deterministic IDs
+    # mean re-preparing here yields the exact chunks/IDs pass 1 wrote, so the two halves
+    # stay joined for hybrid fusion.
+    !silent && verbose && println("Pass 2/2 (embeddings): indexing $(length(files)) files…")
+    for file_path in files
+        try
+            prepared = _prepare_file_chunks(file_path, collection, max_length)
+            isempty(prepared) && continue
+            !silent && verbose && println("  📄 $(basename(file_path)): $(length(prepared)) chunks")
+            _embed_upsert!(file_path, collection, prepared; embedding_model=embedding_model, project_path=project_path)
+            record_indexed_file(project_path, file_path, mtime(file_path), length(prepared))
+            delete!(INDEX_FAILED_FILES[], file_path)
+            total_chunks += length(prepared)
+        catch e
+            INDEX_FAILED_FILES[][file_path] = get(INDEX_FAILED_FILES[], file_path, 0) + 1
+            !silent && verbose && println("  ❌ Error indexing $(basename(file_path)): $e")
+            with_index_logger(() -> @error "Error indexing file" file = file_path exception = (e, catch_backtrace()))
+        end
     end
 
     with_index_logger(() -> @info "Directory indexing complete" total_chunks = total_chunks)

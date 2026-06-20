@@ -499,6 +499,55 @@ function create_window_chunks(content::String, file_path::String)
 end
 
 """
+    split_to_fit(chunk::Dict, max_length::Int, depth::Int=0) -> Vector{Dict}
+
+Recursively split a chunk by lines until each piece is within `max_length` characters —
+the **size**-based half of `split_chunk_recursive`, with no embedding. Pure and
+deterministic: the same chunk + `max_length` always yields the same pieces (same
+`"(part N)"` names and line spans), so the lexical (FTS) and embedding passes derive an
+identical chunk set — and identical deterministic point IDs — independently.
+
+A within-size chunk returns `[chunk]`; an unsplittable oversized chunk (single line, or
+past the recursion guard) is truncated to `max_length` rather than dropped.
+"""
+function split_to_fit(chunk::Dict, max_length::Int, depth::Int=0)
+    text = chunk["text"]
+
+    if length(text) <= max_length
+        return Dict[chunk]
+    end
+
+    lines = split(text, '\n')
+    if depth > 10 || length(lines) <= 1
+        depth > 10 ||
+            with_index_logger(() -> @warn "Cannot split chunk further, truncating" file = chunk["file"] start_line = chunk["start_line"] original_length = length(text))
+        return Dict[merge(chunk, Dict("text" => first(text, max_length)))]
+    end
+
+    mid = div(length(lines), 2)
+    first_half_text = join(lines[1:mid], '\n')
+    second_half_text = join(lines[mid+1:end], '\n')
+    start_line = chunk["start_line"]
+    mid_line = start_line + mid
+
+    chunk1 = merge(chunk, Dict(
+        "text" => first_half_text,
+        "end_line" => mid_line,
+        "name" => chunk["name"] * " (part 1)",
+    ))
+    chunk2 = merge(chunk, Dict(
+        "text" => second_half_text,
+        "start_line" => mid_line + 1,
+        "name" => chunk["name"] * " (part 2)",
+    ))
+
+    results = Dict[]
+    append!(results, split_to_fit(chunk1, max_length, depth + 1))
+    append!(results, split_to_fit(chunk2, max_length, depth + 1))
+    return results
+end
+
+"""
     split_chunk_recursive(chunk::Dict, max_length::Int, model::String) -> Vector{Dict}
 
 Recursively split a chunk if it's too large or fails to embed.
