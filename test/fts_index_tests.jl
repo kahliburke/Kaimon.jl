@@ -28,6 +28,14 @@ using Kaimon
         ]
         @test F.add_chunks!(rows) == 3
 
+        # The lexical index is a process-global single connection. A background
+        # FTS-coverage backfill (`_spawn_fts_coverage_sync!` → `backfill_fts!`,
+        # armed by an earlier test's gate-services startup) can fire mid-suite and
+        # write real-collection chunks through that shared connection — landing in
+        # THIS test's temp DB. So assert on the collections this test owns, never
+        # the process-global `coverage().total`.
+        ccount(c) = sum(p.n for p in F.coverage().collections if p.collection == c; init = 0)
+
         @testset "exact identifier found by content" begin
             r = F.search("_eval_with_capture"; collection = "proj")
             @test any(h -> h.point_id == "p1", r.word)
@@ -61,21 +69,21 @@ using Kaimon
         end
 
         @testset "coverage" begin
-            cov = F.coverage()
-            @test cov.total == 3
-            @test ("proj" => 2) in [(c.collection => c.n) for c in cov.collections]
+            @test ccount("proj") == 2       # p1 (helper) + p2 (foo)
+            @test ccount("other") == 1      # p3 (bar)
         end
 
         @testset "delete-by-file sync" begin
             F.delete_file!("proj", "/a/gate.jl")
             r = F.search("_eval_with_capture"; collection = "proj")
             @test isempty(r.word) && isempty(r.tri)
-            @test F.coverage().total == 2
+            @test ccount("proj") == 1       # only p2 (foo) remains
         end
 
         @testset "clear collection" begin
             F.clear_collection!("proj")
-            @test F.coverage().total == 1   # only the "other" collection remains
+            @test ccount("proj") == 0       # proj cleared
+            @test ccount("other") == 1      # "other" untouched
         end
     finally
         F.close!()
