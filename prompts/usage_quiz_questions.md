@@ -74,14 +74,15 @@ f) What happens to background jobs if the Kaimon TUI is restarted?
 
 ---
 
-## Question 8: Code Search vs grep (15 points)
+## Question 8: Searching effectively (15 points)
 
-`search_code` is hybrid: it combines semantic (meaning-based) vector search with exact keyword/identifier matching, fused and ranked together. Use `format="structured"` for a JSON hit array instead of the ranked text.
+`search_code` is hybrid: it combines semantic (meaning-based) vector search with exact keyword/identifier matching, fused and ranked together. Picking the mode for your intent and keeping the query focused matters as much as choosing the tool.
 
 a) You need to find every place the exact function `_eval_with_capture` is called. Which tool and `mode`, and why should you NOT reach for `grep`/`find`/Bash?
-b) You're new to a codebase and want "where HTTP routing is handled." Which tool and what kind of query?
-c) True or false: if Ollama (embeddings) is down, you should fall back to `grep` for code search. Explain.
-d) When, if ever, is `grep`/Bash the right tool over `search_code`?
+b) You're new to a codebase and want "where HTTP routing is handled." Which tool, which `mode`, and what kind of query?
+c) You're looking for a specific method in a project of 4,000 decompiled Java classes, and your instinct is to call `search_code(query="transform power parse STS1 power java method body atStartOfTurn onApplyPower actions")`. Why is that a poor query, and what should you do instead?
+d) True or false: if Ollama (embeddings) is down, you should fall back to `grep` for code search. Explain.
+e) When, if ever, is `grep`/Bash the right tool over `search_code`?
 
 ---
 

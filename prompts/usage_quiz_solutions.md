@@ -138,19 +138,21 @@ f) Background jobs are **persisted to SQLite**. On TUI restart, Kaimon checks th
 
 ---
 
-## Question 8: Code Search vs grep (15 points)
+## Question 8: Searching effectively (15 points)
 
 **Answers:**
 
-a) `search_code(query="_eval_with_capture", mode="lexical")` (hybrid mode works too). It does exact keyword/identifier matching via a local FTS5 index — it finds exact symbols like grep would, but it's indexed, faster, and ranked. **Don't use grep/find/Bash for code search**: `search_code` is a superset for code — the old "I need grep for the exact name" reason no longer holds. (5 pts)
+a) `search_code(query="_eval_with_capture", mode="lexical")` (hybrid works too). It does exact keyword/identifier matching via a local FTS5 index — finds exact symbols like grep would, but indexed, faster, and ranked. **Don't use grep/find/Bash for code search**: `search_code` is a superset for code, so the old "I need grep for the exact name" reason no longer holds. (3 pts)
 
-b) `search_code(query="HTTP routing handling")` — a natural-language query; the semantic half finds code by meaning. (3 pts)
+b) `search_code(query="HTTP routing handling")` — default `hybrid` or `mode="semantic"`, a short natural-language phrase; the semantic half finds code by meaning. (3 pts)
 
-c) **False.** `search_code` has a lexical half backed by a local SQLite index, so it keeps working when Ollama/Qdrant are down — `mode="lexical"`, and `hybrid` auto-degrades to lexical-only with a note. You don't need grep even offline. (4 pts)
+c) It's a **kitchen-sink query**: ~11 bare terms, OR-joined, several of them common words (`parse`, `power`, `java`, `method`, `body`, `actions`) that each match enormous swaths of the index — slow and imprecise, and the tool will trim it to the most distinctive terms with a ⚠ note. Instead, **pick the few distinctive identifiers and go lexical**: `search_code(query="atStartOfTurn onApplyPower", mode="lexical", collection="…")`. Scope to the project, name 1–3 distinctive symbols, use `AND` if two must co-occur. (3 pts)
 
-d) Only for **literal text in files that aren't part of the code index** — logs, generated files, config/data, or matching across arbitrary file types. For finding code (by concept or exact symbol), `search_code` wins. (3 pts)
+d) **False.** `search_code` has a lexical half backed by a local SQLite index, so it keeps working when Ollama/Qdrant are down — `mode="lexical"`, and `hybrid` auto-degrades to lexical-only with a note. You don't need grep even offline. (3 pts)
 
-**Grading:** 15 points total; partial credit for capturing "search_code does exact symbols too" and "prefer it over grep".
+e) Only for **literal text in files that aren't part of the code index** — logs, generated files, config/data, or matching across arbitrary file types. For finding code (by concept or exact symbol), `search_code` wins. (3 pts)
+
+**Grading:** 15 points total (3 each); partial credit. Key concepts: lexical for symbols / semantic for concepts, "a few distinctive terms — not a sentence", scope to a collection, and "prefer it over grep".
 
 ---
 

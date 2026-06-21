@@ -355,7 +355,7 @@ const _SEARCH_CODE_PARAMS = Dict(
     "properties" => Dict(
         "query" => Dict(
             "type" => "string",
-            "description" => "Search query — natural language ('function that handles HTTP routing') or exact symbols ('push! agent_add_cell!'). Julia punctuation is handled automatically: a bang/macro/dotted name attached to a word (push!, @view, Base.foo) is matched literally. Multiple bare terms are OR-joined (find any), ranked. For finer control use \"exact phrase\", full-word AND/OR/NOT, or prefix* — a standalone ! / && / || also acts as NOT / AND / OR.",
+            "description" => "Search query. Match it to your intent and keep it tight: hunting a symbol you can name → a FEW (1–3) distinctive identifiers with mode='lexical' (e.g. 'atStartOfTurn onApplyPower'); hunting a concept → a short natural-language phrase (e.g. 'function that handles HTTP routing'). Do NOT dump a sentence of keywords — bare terms are OR-joined, so common words (parse, method, value) each pull in a huge match set; a bag beyond ~8 terms is trimmed to the most distinctive (with a ⚠ note). Julia punctuation is handled automatically: a bang/macro/dotted name attached to a word (push!, @view, Base.foo) is matched literally. Finer control: \"exact phrase\", full-word AND/OR/NOT (use AND to require two terms together), prefix* — a standalone ! / && / || also acts as NOT / AND / OR.",
         ),
         "collection" => Dict(
             "type" => "string",
@@ -380,7 +380,7 @@ const _SEARCH_CODE_PARAMS = Dict(
         ),
         "mode" => Dict(
             "type" => "string",
-            "description" => "Search mode: 'hybrid' (default — semantic + keyword), 'semantic' (vector only), or 'lexical' (exact keyword/identifier only; works even when embeddings are unavailable).",
+            "description" => "Search mode: 'hybrid' (default — semantic + keyword), 'semantic' (vector only; concept queries), or 'lexical' (exact keyword/identifier only — best for symbol hunts, and works even when embeddings are unavailable).",
             "enum" => ["hybrid", "semantic", "lexical"],
         ),
         "format" => Dict(
@@ -396,7 +396,7 @@ const _SEARCH_CODE_PARAMS = Dict(
 # (`_qdrant_search_code`) so the semantic + lexical fusion stays readable/testable.
 search_code_tool = @mcp_tool(
     :search_code,
-    "Search indexed code — the primary way to find code; prefer it over grep/find. Combines semantic (meaning-based) vector search with exact keyword/identifier matching, fused and ranked together. Use it to locate code by concept ('function that handles HTTP routing') OR by exact symbol/string ('_eval_with_capture') — it finds exact identifiers too, so you don't need grep for that. Works even when embeddings are unavailable (lexical fallback). Defaults to the last-used session's project; set cross_project=true to search all. Query handling: just type the symbols — Julia punctuation (push!, @view, Base.foo) is matched literally, and multiple bare terms are OR-joined (find any) and ranked, so you don't need operators for a symbol bag. Finer control: \"exact phrase\", full-word AND/OR/NOT, prefix*; a standalone ! / && / || acts as NOT / AND / OR. Call tool_help(:search_code, extended=true) for the full query-syntax reference.",
+    "Search indexed code — the primary way to find code; prefer it over grep/find. Fuses semantic (meaning-based) vector search with exact keyword/identifier matching, ranked together. Match the query to the intent and keep it focused: to find a symbol you can name use mode='lexical' with a FEW distinctive identifiers (e.g. 'atStartOfTurn onApplyPower' — also the right move instead of grep for 'find every use of _eval_with_capture'); to find a concept use the default hybrid (or mode='semantic') with a short phrase (e.g. 'function that handles HTTP routing'). Do NOT paste a sentence of keywords — bare terms are OR-joined, so common words each drag in a huge match set (slow and imprecise); a bag beyond ~8 terms is trimmed to the most distinctive, with a ⚠ note to narrow. Lexical works even when embeddings are unavailable. Search is scoped to one collection (defaults to the session's project); cross_project=true fans out over all projects (slower — only when you don't know the project). Julia punctuation (push!, @view, Base.foo) is matched literally; \"exact phrase\", full-word AND/OR/NOT, and prefix* give finer control. Call tool_help(:search_code, extended=true) for the full query-syntax reference.",
     _SEARCH_CODE_PARAMS,
     args -> _qdrant_search_code(args),
 )

@@ -38,7 +38,7 @@ also supports FTS query syntax — phrases (`"exact phrase"`), boolean
 | `lexical` | Exact keyword/identifier only. **Works even when Ollama/Qdrant are down** (the index is local SQLite). |
 
 Each result is tagged with its origin: `⚯` found by both, `≈` semantic, `⚡` exact
-keyword, `◎` substring — and lexical hits show the matched snippet.
+keyword, `⊂` substring — and lexical hits show the matched snippet.
 
 ### Resilience
 
