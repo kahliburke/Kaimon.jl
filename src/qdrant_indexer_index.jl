@@ -621,7 +621,82 @@ Uses the directory and extension configuration from the initial index_project ca
 Returns (reindexed=N, deleted=M, chunks=K)
 Set silent=true to suppress all output (logs to file only).
 """
+# ── Sync coalescing guard ─────────────────────────────────────────────────────
+# Many independent triggers call sync_index for the same project (Revise callback +
+# event watcher, TUI + headless periodic sync, the MCP tool, the manage panel). On a
+# large backlog a sync runs longer than the trigger interval, so without a guard the
+# runs overlap — reprocessing the same files and racing on the index-state JSON, so the
+# backlog never converges. _run_coalesced serializes per project and collapses rapid
+# triggers into a single pending re-run.
+const _SYNC_GUARD_LOCK = ReentrantLock()
+const _SYNC_RUNNING = Set{String}()   # project keys with a sync in flight
+const _SYNC_PENDING = Set{String}()   # keys with one coalesced re-run queued
+
+"""
+    _run_coalesced(key, f) -> result | nothing
+
+Run `f()` for `key`, serialized per key. If a run is already in flight, mark a single
+pending re-run and return `nothing` (the trigger is coalesced). When a run finishes, if
+a re-run was requested it loops once more (to pick up changes that arrived mid-run). The
+key is always cleared, even on error.
+"""
+function _run_coalesced(key::String, f)
+    proceed = lock(_SYNC_GUARD_LOCK) do
+        if key in _SYNC_RUNNING
+            push!(_SYNC_PENDING, key)
+            return false
+        end
+        push!(_SYNC_RUNNING, key)
+        return true
+    end
+    proceed || return nothing
+
+    try
+        local result = nothing
+        while true
+            result = f()
+            rerun = lock(_SYNC_GUARD_LOCK) do
+                if key in _SYNC_PENDING
+                    delete!(_SYNC_PENDING, key)
+                    return true
+                end
+                delete!(_SYNC_RUNNING, key)
+                return false
+            end
+            rerun || break
+        end
+        return result
+    catch e
+        lock(_SYNC_GUARD_LOCK) do
+            delete!(_SYNC_RUNNING, key)
+            delete!(_SYNC_PENDING, key)
+        end
+        rethrow(e)
+    end
+end
+
 function sync_index(
+    project_path::String=pwd();
+    collection::Union{String,Nothing}=nothing,
+    verbose::Bool=true,
+    silent::Bool=false,
+)
+    # Coalesce overlapping syncs of the same project (see _run_coalesced). A coalesced
+    # trigger returns a zero-result of the usual shape so callers reading
+    # .reindexed/.deleted/.chunks keep working. (Pass the thunk explicitly — a `do`
+    # block would bind it as the FIRST arg, ahead of the key.)
+    result = _run_coalesced(
+        abspath(project_path),
+        () -> _sync_index_impl(project_path; collection=collection, verbose=verbose, silent=silent),
+    )
+    if result === nothing
+        with_index_logger(() -> @debug "sync_index already running for project; coalesced" project = abspath(project_path))
+        return (reindexed=0, deleted=0, chunks=0)
+    end
+    return result
+end
+
+function _sync_index_impl(
     project_path::String=pwd();
     collection::Union{String,Nothing}=nothing,
     verbose::Bool=true,

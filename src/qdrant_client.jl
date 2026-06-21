@@ -186,6 +186,31 @@ function get_point(collection::String, point_id)
     end
 end
 
+"""Transient connection failures worth retrying for an idempotent request — a stale
+HTTP keepalive connection Qdrant already closed (→ `unexpected EOF` / ECONNRESET) or a
+brief gateway hiccup. Surfaces under sustained upsert load."""
+_is_transient_http(e) =
+    e isa HTTP.ParseError || e isa Base.IOError || e isa Base.SystemError ||
+    e isa EOFError || e isa HTTP.ConnectError || e isa HTTP.TimeoutError ||
+    (e isa HTTP.StatusError && e.status in (502, 503, 504))
+
+"""Run `f()` with a few retries on transient connection errors (exponential backoff).
+Used for idempotent requests (Qdrant upserts carry explicit point IDs, so a retried,
+partially-applied batch just overwrites the same points)."""
+function _with_http_retry(f; tries::Int=4)
+    local last_err
+    for attempt in 1:tries
+        try
+            return f()
+        catch e
+            last_err = e
+            (_is_transient_http(e) && attempt < tries) || rethrow()
+            sleep(0.1 * 2.0^(attempt - 1))   # 0.1s, 0.2s, 0.4s
+        end
+    end
+    throw(last_err)
+end
+
 """
     upsert_points(collection::String, points::Vector{Dict}) -> Bool
 
@@ -205,16 +230,18 @@ function upsert_points(collection::String, points::Vector{Dict})
     try
         body = Dict("points" => points)
 
-        response = HTTP.put(
-            "$(QDRANT_URL[])/collections/$(collection)/points",
-            ["Content-Type" => "application/json"],
-            JSON.json(body),
-        )
+        response = _with_http_retry() do
+            HTTP.put(
+                "$(QDRANT_URL[])/collections/$(collection)/points",
+                ["Content-Type" => "application/json"],
+                JSON.json(body),
+            )
+        end
 
         data = JSON.parse(String(response.body))
         return get(data, "status", "") == "ok"
     catch e
-        @error "Upsert failed" collection = collection exception = e
+        @error "Upsert failed" collection = collection reason = sprint(showerror, e)
         return false
     end
 end

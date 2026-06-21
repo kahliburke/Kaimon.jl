@@ -220,3 +220,65 @@ end
     @test pid("proj", rgx) == pid("proj", copy(rgx))                      # still deterministic
     @test pid("proj", rgx) != id                                          # distinct from plain text
 end
+
+# Coalescing guard (A): many triggers fire sync_index for one project concurrently;
+# only one runs at a time and rapid triggers collapse to a single pending re-run.
+@testset "_run_coalesced sync guard" begin
+    K = Kaimon
+    @testset "concurrent triggers coalesce" begin
+        key = "/tmp/kaimon-coalesce-" * string(rand(UInt32))
+        ran = Threads.Atomic{Int}(0)
+        f = () -> (Threads.atomic_add!(ran, 1); sleep(0.2); :done)
+        tasks = [Threads.@spawn K._run_coalesced(key, f) for _ in 1:6]
+        results = fetch.(tasks)
+        @test ran[] <= 2                                       # initial + at most one coalesced re-run
+        @test any(r -> r === :done, results)                   # the runner returned the value
+        @test any(r -> r === nothing, results)                 # others coalesced
+        @test !(key in K._SYNC_RUNNING) && !(key in K._SYNC_PENDING)   # state cleaned up
+    end
+    @testset "different keys run independently" begin
+        @test K._run_coalesced("/tmp/kaimon-key-" * string(rand(UInt32)), () -> 42) == 42
+    end
+    @testset "sync_index wrapper passes (key, thunk) in the right order" begin
+        # Exercises the real sync_index → _run_coalesced call path (the unit tests above
+        # call _run_coalesced directly, so they'd miss a `do`-block arg-order bug in the
+        # wrapper). An empty temp project needs no Qdrant/Ollama.
+        tmp = mktempdir()
+        r = K.sync_index(tmp; verbose=false, silent=true)
+        @test r.reindexed == 0 && r.deleted == 0 && r.chunks == 0
+        rm(tmp; recursive=true)
+    end
+    @testset "exception clears the key" begin
+        key = "/tmp/kaimon-coalesce-err-" * string(rand(UInt32))
+        @test_throws ErrorException K._run_coalesced(key, () -> error("boom"))
+        @test !(key in K._SYNC_RUNNING) && !(key in K._SYNC_PENDING)
+    end
+end
+
+# Transient-error retry (B) for Qdrant upserts (stale keepalive / reset).
+@testset "Qdrant upsert retry" begin
+    Q = Kaimon.QdrantClient
+    @testset "transient classification" begin
+        @test Q._is_transient_http(EOFError())
+        @test Q._is_transient_http(Base.IOError("connection reset", -54))
+        @test !Q._is_transient_http(ArgumentError("not a connection error"))
+    end
+    @testset "retries transient then succeeds" begin
+        n = Ref(0)
+        r = Q._with_http_retry(tries=4) do
+            n[] += 1
+            n[] < 3 && throw(EOFError())   # fail twice, succeed on the third
+            :ok
+        end
+        @test r === :ok
+        @test n[] == 3
+    end
+    @testset "rethrows a non-transient error without retrying" begin
+        n = Ref(0)
+        @test_throws ArgumentError Q._with_http_retry(tries=4) do
+            n[] += 1
+            throw(ArgumentError("fatal"))
+        end
+        @test n[] == 1
+    end
+end
