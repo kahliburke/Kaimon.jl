@@ -51,18 +51,32 @@ export init_db!,
 const _DB = Ref{Union{SQLite.DB,Nothing}}(nothing)
 const _LOCK = ReentrantLock()   # reentrant so guarded ops can nest
 
+# SQLite calls are blocking C with no Julia safepoints, so they must not run on an
+# `:interactive`-pool thread (the TUI / MCP accept loop). This DB is hit from the MCP
+# request dispatch and the TUI render thread — both interactive — so hop the blocking
+# work to the `:default` pool there; the awaiting task yields and frees the interactive
+# thread. No hop when already off it. (Self-contained copy of the FtsIndex helper to
+# keep the two SQLite modules decoupled.)
+function _run_off_interactive(work::Function)
+    Threads.threadpool() === :interactive || return work()
+    return fetch(Threads.@spawn :default work())
+end
+
 """
     _withdb(f, default=nothing)
 
 The ONLY way to touch the connection. Holds `_LOCK` for the whole call and passes
 the live connection to `f(db)`. Returns `default` if the DB isn't open. `f` MUST
 materialize any query result before returning (never hand back a live cursor — it
-would be stepped outside the lock). Private.
+would be stepped outside the lock). Runs the blocking SQLite work off the interactive
+pool (see `_run_off_interactive`). Private.
 """
 function _withdb(f, default = nothing)
-    lock(_LOCK) do
-        db = _DB[]
-        db === nothing ? default : f(db)
+    _run_off_interactive() do
+        lock(_LOCK) do
+            db = _DB[]
+            db === nothing ? default : f(db)
+        end
     end
 end
 
