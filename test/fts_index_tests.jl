@@ -178,6 +178,56 @@ end
     end
 end
 
+@testset "FTS query planning (cap / trigram gate / scope)" begin
+    F = Kaimon.FtsIndex
+
+    @testset "OR fan-out cap" begin
+        cap = F._MAX_OR_TERMS
+        small = join(["t$i" for i in 1:(cap - 1)], " ")
+        big   = join(["t$i" for i in 1:(cap + 5)], " ")
+        @test F._fts_or_dropped(small) == 0                  # within cap → nothing dropped
+        @test F._fts_or_dropped(big) == 5                    # over cap → report the overflow
+        @test F._fts_or_dropped("a AND b AND c") == 0        # explicit operator → never capped
+        # the rendered expression keeps exactly `cap` OR-terms
+        @test count(==("OR"), split(F._fts_normalize(big))) == cap - 1
+        # distinctiveness keeps the identifier-shaped term over short common words
+        kept = F._fts_normalize("a b c d e f g h onApplyPower"; max_terms = 1)
+        @test kept == "onApplyPower"
+    end
+
+    @testset "trigram eligibility" begin
+        @test F._tri_eligible("onApplyPower")                # single bounded token → yes
+        @test F._tri_eligible("abc")                         # exactly the min length
+        @test !F._tri_eligible("ab")                         # too short
+        @test !F._tri_eligible("a b")                        # multi-word → never trigram
+        @test !F._tri_eligible("atStartOfTurn onApplyPower actions parse")  # the slow shape
+        @test !F._tri_eligible("x"^65)                       # too long
+    end
+
+    @testset "collection scope prunes a term shared across collections" begin
+        F.init!(joinpath(mktempdir(), "code_fts.db"))
+        try
+            F.add_chunks!([
+                Dict("point_id" => "a1", "collection" => "alpha_proj", "file" => "/a.jl",
+                     "name" => "f", "type" => "function", "start_line" => 1, "end_line" => 1,
+                     "text" => "render the widget"),
+                Dict("point_id" => "b1", "collection" => "beta", "file" => "/b.jl",
+                     "name" => "g", "type" => "function", "start_line" => 1, "end_line" => 1,
+                     "text" => "render the other widget"),
+            ])
+            # `render` is in both collections; a scoped search must return only its own.
+            ra = F.search("render"; collection = "alpha_proj")  # note the underscore (stripped in coltok)
+            @test any(h -> h.point_id == "a1", ra.word)
+            @test !any(h -> h.point_id == "b1", ra.word)
+            # unscoped (cross-project) sees both
+            rall = F.search("render")
+            @test any(h -> h.point_id == "a1", rall.word) && any(h -> h.point_id == "b1", rall.word)
+        finally
+            F.close!()
+        end
+    end
+end
+
 @testset "Hybrid RRF fusion" begin
     mk(pid, src) = Kaimon.HybridHit(pid, "f.jl", "n", "function", 1, 2, "t",
                                     Dict(), src == :lexical ? "snip" : "", Set([src]), 0.0)
