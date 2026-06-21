@@ -153,6 +153,68 @@ function _embed_upsert!(
 end
 
 """
+    _index_files_two_pass(files, collection; project_path, embedding_model, reindex=false, verbose=true, silent=false) -> Int
+
+Index a list of files **FTS-first**: Pass 1 writes the lexical (FTS5) rows for every
+file (Ollama-free — keyword/identifier search lights up immediately), Pass 2 embeds +
+upserts the vectors (the slow part). Deterministic IDs make re-preparing in Pass 2 line
+up with Pass 1. With `reindex=true`, each file's stale Qdrant points are deleted in
+Pass 1 first (changed content yields new IDs, orphaning the old chunks). Returns total
+chunks. Shared by `index_directory` (fresh index) and `sync_index` (incremental).
+"""
+function _index_files_two_pass(
+    files::Vector{String},
+    collection::String;
+    project_path::String,
+    embedding_model::String,
+    reindex::Bool=false,
+    verbose::Bool=true,
+    silent::Bool=false,
+)
+    isempty(files) && return 0
+    max_length = get_embedding_config(embedding_model).context_chars
+    gc = global_collection_name()
+    gc_exists = reindex ? (try; QdrantClient.collection_exists(gc); catch; false; end) : false
+
+    # Pass 1 — lexical (Ollama-free): keyword/identifier search lights up here.
+    !silent && verbose && println("Pass 1/2 (lexical): $(length(files)) files…")
+    for f in files
+        try
+            prepared = _prepare_file_chunks(f, collection, max_length)
+            if reindex
+                # Changed content gets new deterministic IDs; clear the old chunks so
+                # stale vectors don't linger.
+                try; QdrantClient.delete_by_file(collection, f); catch; end
+                gc_exists && (try; QdrantClient.delete_by_file(gc, f); catch; end)
+            end
+            isempty(prepared) || _write_fts!(f, collection, prepared)
+        catch e
+            with_index_logger(() -> @warn "Lexical pass failed for file" file = basename(f) reason = sprint(showerror, e))
+        end
+    end
+
+    # Pass 2 — semantic (embeddings + vector upsert).
+    !silent && verbose && println("Pass 2/2 (embeddings): $(length(files)) files…")
+    total = 0
+    for f in files
+        try
+            prepared = _prepare_file_chunks(f, collection, max_length)
+            isempty(prepared) && continue
+            !silent && verbose && println("  📄 $(basename(f)): $(length(prepared)) chunks")
+            _embed_upsert!(f, collection, prepared; embedding_model=embedding_model, project_path=project_path)
+            record_indexed_file(project_path, f, mtime(f), length(prepared))
+            delete!(INDEX_FAILED_FILES[], f)
+            total += length(prepared)
+        catch e
+            INDEX_FAILED_FILES[][f] = get(INDEX_FAILED_FILES[], f, 0) + 1
+            !silent && verbose && println("  ❌ Error indexing $(basename(f)): $e")
+            with_index_logger(() -> @error "Error indexing file" file = f reason = sprint(showerror, e))
+        end
+    end
+    return total
+end
+
+"""
     index_file(file_path::String, collection::String; project_path::String=pwd(), verbose::Bool=true, silent::Bool=false) -> Int
 
 Index a single file: write its lexical rows, then embed + upsert its vectors (the
@@ -173,7 +235,6 @@ function index_file(
         isempty(prepared) && return 0
 
         !silent && verbose && println("  📄 $(basename(file_path)): $(length(prepared)) chunks")
-        with_index_logger(() -> @info "Indexing file" file = basename(file_path) chunks = length(prepared))
 
         _write_fts!(file_path, collection, prepared)
         _embed_upsert!(file_path, collection, prepared; embedding_model=embedding_model, project_path=project_path)
@@ -403,39 +464,11 @@ function index_directory(
     !silent && verbose && println("Found $(length(files)) files to index")
     with_index_logger(() -> @info "Indexing directory" dir = dir_path file_count = length(files))
 
-    max_length = get_embedding_config(embedding_model).context_chars
-
-    # Pass 1 — lexical (FTS5), fast and Ollama-free: the whole directory's keyword /
-    # identifier search lights up here, before any embeddings exist.
-    !silent && verbose && println("Pass 1/2 (lexical): indexing $(length(files)) files…")
-    for file_path in files
-        try
-            prepared = _prepare_file_chunks(file_path, collection, max_length)
-            isempty(prepared) || _write_fts!(file_path, collection, prepared)
-        catch e
-            with_index_logger(() -> @warn "Lexical pass failed for file" file = basename(file_path) exception = e)
-        end
-    end
-
-    # Pass 2 — semantic (embeddings + vector upsert), the slow part. Deterministic IDs
-    # mean re-preparing here yields the exact chunks/IDs pass 1 wrote, so the two halves
-    # stay joined for hybrid fusion.
-    !silent && verbose && println("Pass 2/2 (embeddings): indexing $(length(files)) files…")
-    for file_path in files
-        try
-            prepared = _prepare_file_chunks(file_path, collection, max_length)
-            isempty(prepared) && continue
-            !silent && verbose && println("  📄 $(basename(file_path)): $(length(prepared)) chunks")
-            _embed_upsert!(file_path, collection, prepared; embedding_model=embedding_model, project_path=project_path)
-            record_indexed_file(project_path, file_path, mtime(file_path), length(prepared))
-            delete!(INDEX_FAILED_FILES[], file_path)
-            total_chunks += length(prepared)
-        catch e
-            INDEX_FAILED_FILES[][file_path] = get(INDEX_FAILED_FILES[], file_path, 0) + 1
-            !silent && verbose && println("  ❌ Error indexing $(basename(file_path)): $e")
-            with_index_logger(() -> @error "Error indexing file" file = file_path reason = sprint(showerror, e))
-        end
-    end
+    total_chunks = _index_files_two_pass(
+        files, collection;
+        project_path=project_path, embedding_model=embedding_model,
+        reindex=false, verbose=verbose, silent=silent,
+    )
 
     with_index_logger(() -> @info "Directory indexing complete" total_chunks = total_chunks)
     return total_chunks
@@ -774,18 +807,15 @@ function _sync_index_impl(
         deleted += 1
     end
 
-    # Re-index stale files
-    for file_path in stale_files
-        chunks = reindex_file(
-            file_path,
-            col_name;
-            project_path=project_path,
-            verbose=verbose,
-            silent=silent,
-        )
-        total_chunks += chunks
-        reindexed += 1
-    end
+    # Re-index stale files FTS-first: Pass 1 refreshes the lexical index for the whole
+    # stale set (keyword search updates immediately, even on a huge backlog), Pass 2
+    # backfills embeddings. reindex=true clears each file's old vectors first.
+    total_chunks += _index_files_two_pass(
+        stale_files, col_name;
+        project_path=project_path, embedding_model=resolve_search_model(col_name),
+        reindex=true, verbose=verbose, silent=silent,
+    )
+    reindexed = length(stale_files)
 
     if !silent && verbose
         if reindexed == 0 && deleted == 0
