@@ -191,7 +191,8 @@ row is a Dict/NamedTuple with: `point_id`, `collection`, `file`, `name`, `type`,
 """
 function add_chunks!(rows)
     isempty(rows) && return 0
-    return lock(LOCK) do
+    return _run_off_interactive() do
+    lock(LOCK) do
     db = _db()
     n = 0
     SQLite.transaction(db) do
@@ -217,15 +218,18 @@ function add_chunks!(rows)
     end
     n
     end  # lock
+    end  # off-interactive
 end
 
 """Remove all chunks for one file in one collection (the reindex delete step)."""
 function delete_file!(collection::AbstractString, file::AbstractString)
+    _run_off_interactive() do
     lock(LOCK) do
         db = _db()
         DBInterface.execute(db, "DELETE FROM chunks WHERE collection = ? AND file = ?",
             (String(collection), String(file)))
     end
+    end  # off-interactive
     return nothing
 end
 
@@ -237,19 +241,23 @@ The distinct set of `file` paths indexed for one collection. Cheap (one indexed
 reconciliation to find indexed files that no longer exist on disk.
 """
 function distinct_files(collection::AbstractString)
+    _run_off_interactive() do
     lock(LOCK) do
         db = _db()
         return String[String(r.file) for r in DBInterface.execute(db,
             "SELECT DISTINCT file FROM chunks WHERE collection = ?", (String(collection),))]
     end
+    end  # off-interactive
 end
 
 """Drop every chunk for a collection (used on collection recreate / backfill reset)."""
 function clear_collection!(collection::AbstractString)
+    _run_off_interactive() do
     lock(LOCK) do
         db = _db()
         DBInterface.execute(db, "DELETE FROM chunks WHERE collection = ?", (String(collection),))
     end
+    end  # off-interactive
     return nothing
 end
 
