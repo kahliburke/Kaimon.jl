@@ -25,16 +25,20 @@ using Kaimon
         const ZMQ = Kaimon.ZMQ
         ctx = ZMQ.Context()
         N = max(Threads.nthreads(), 1)
-        PER = 1500
+        # Windows exhausts socket handles faster than Unix (lower per-process limit).
+        # Enough iterations to hammer concurrent construction; not so many we hit EMFILE.
+        PER = Sys.iswindows() ? 200 : 1500
+        gc_every = Sys.iswindows() ? 25 : 100
         @sync for _t in 1:N
             Threads.@spawn for i in 1:PER
                 s = Kaimon._zmq_socket(ctx, ZMQ.REQ)   # the serialized constructor
                 s.linger = 0
                 close(s)
-                (i % 100 == 0) && GC.gc(false)         # release fds + clear weakrefs
+                (i % gc_every == 0) && GC.gc(false)    # release fds + clear weakrefs
             end
         end
         GC.gc()
+        close(ctx)
         println("ZMQ_SOCKET_STRESS_OK total=", N * PER)
     """
     path, io = mktemp()
@@ -42,8 +46,10 @@ using Kaimon
     close(io)
 
     out = IOBuffer()
-    # -t 6 forces real concurrency in the child regardless of how the suite runs.
-    cmd = pipeline(`$(Base.julia_cmd()) --project=$proj -t 6 $path`; stdout = out, stderr = out)
+    # Force real concurrency in the child regardless of how the suite runs.
+    # Windows: fewer threads to stay under socket-handle limits.
+    threads = Sys.iswindows() ? 4 : 6
+    cmd = pipeline(`$(Base.julia_cmd()) --project=$proj -t $threads $path`; stdout = out, stderr = out)
     proc = run(cmd; wait = false)
     wait(proc)
     output = String(take!(out))

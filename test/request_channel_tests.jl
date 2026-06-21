@@ -30,18 +30,27 @@ using Kaimon
         shortbase = Sys.iswindows() ? tempdir() : "/tmp"
         mktempdir(shortbase) do dir
             ENV["XDG_CACHE_HOME"] = dir
-            sid = KG.serve(force = true)
+            if Sys.iswindows()
+                sid = KG.serve(force = true, mode = :tcp, host = "127.0.0.1", port = 0)
+            else
+                sid = KG.serve(force = true)
+            end
             @assert KG.PROTOCOL_VERSION == 2
 
             mgr = K.ConnectionManager(; sock_dir = KG.sock_dir())
             K.start!(mgr)
 
             conn = nothing
-            t0 = time()
-            while time() - t0 < 10
-                cs = K.connected_sessions(mgr)
-                isempty(cs) || (conn = cs[1]; break)
-                sleep(0.2)
+            if Sys.iswindows()
+                sleep(0.15)  # let gate bind its TCP sockets
+                conn = K.connect_tcp!(mgr, KG._TCP_HOST[], KG._TCP_PORT[])
+            else
+                t0 = time()
+                while time() - t0 < 10
+                    cs = K.connected_sessions(mgr)
+                    isempty(cs) || (conn = cs[1]; break)
+                    sleep(0.2)
+                end
             end
             conn === nothing && error("client never connected to in-process gate")
             @assert conn.req_channel !== nothing "no request channel after connect"

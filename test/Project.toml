@@ -17,6 +17,9 @@ Tachikoma = "468859d6-42d8-48b7-8ad9-1d312e0e3b0a"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 ZMQ = "c2297ded-f4af-51ae-bb23-16f91089e4e1"
 
+[sources]
+Kaimon = {path = ".."}
+
 [compat]
 Aqua = "0.8"
 DBInterface = "2.6.1"

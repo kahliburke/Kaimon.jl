@@ -31,7 +31,11 @@ using Kaimon
             KG.on_stream_subscribe(t -> push!(joined, t))
             KG.on_stream_unsubscribe(t -> push!(left, t))
 
-            KG.serve(force = true)
+            if Sys.iswindows()
+                KG.serve(force = true, mode = :tcp, host = "127.0.0.1", port = 0)
+            else
+                KG.serve(force = true)
+            end
             ep = KG._STREAM_ENDPOINT[]
             @assert !isempty(ep) "no stream endpoint"
 

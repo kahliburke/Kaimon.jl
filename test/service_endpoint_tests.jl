@@ -3,6 +3,19 @@ using Kaimon
 
 const ZMQt = Kaimon.ZMQ
 
+# Windows has no ipc:// transport; use ephemeral TCP loopback like production.
+function _bind_test_router!(router)
+    if Sys.iswindows()
+        ZMQt.bind(router, "tcp://127.0.0.1:0")
+        return rstrip(ZMQt._get_last_endpoint(router), '\0')
+    else
+        dir = mktempdir()
+        path = joinpath(dir, "svc-test-$(bytes2hex(rand(UInt8, 4))).sock")
+        ZMQt.bind(router, "ipc://$path")
+        return "ipc://$path"
+    end
+end
+
 @testset "Service endpoint (ROUTER concurrency rework)" begin
     @testset "_is_agent_turn gates only agent_run" begin
         @test Kaimon._is_agent_turn((type = :tool_call, tool_name = :agent_run, args = Dict()))
@@ -12,14 +25,12 @@ const ZMQt = Kaimon.ZMQ
     end
 
     @testset "multipart framing round-trips REQ↔ROUTER" begin
-        # Hermetic: private context + temp ipc path, never touches the live service socket.
-        dir = mktempdir()
-        path = joinpath(dir, "svc-test.sock")
+        # Hermetic: private context + temp endpoint, never touches the live service socket.
         ctx = ZMQt.Context()
         router = ZMQt.Socket(ctx, ZMQt.ROUTER); router.rcvtimeo = 2000; router.linger = 0
-        ZMQt.bind(router, "ipc://$path")
+        endpoint = _bind_test_router!(router)
         req = ZMQt.Socket(ctx, ZMQt.REQ); req.rcvtimeo = 2000; req.linger = 0
-        ZMQt.connect(req, "ipc://$path")
+        ZMQt.connect(req, endpoint)
         try
             # REQ → ROUTER: arrives as [identity, empty-delimiter, payload]
             ZMQt.send(req, Vector{UInt8}("ping"))
@@ -36,13 +47,11 @@ const ZMQt = Kaimon.ZMQ
     end
 
     @testset "two REQ clients are routed back by identity" begin
-        dir = mktempdir()
-        path = joinpath(dir, "svc-multi.sock")
         ctx = ZMQt.Context()
         router = ZMQt.Socket(ctx, ZMQt.ROUTER); router.rcvtimeo = 2000; router.linger = 0
-        ZMQt.bind(router, "ipc://$path")
-        a = ZMQt.Socket(ctx, ZMQt.REQ); a.rcvtimeo = 2000; a.linger = 0; ZMQt.connect(a, "ipc://$path")
-        b = ZMQt.Socket(ctx, ZMQt.REQ); b.rcvtimeo = 2000; b.linger = 0; ZMQt.connect(b, "ipc://$path")
+        endpoint = _bind_test_router!(router)
+        a = ZMQt.Socket(ctx, ZMQt.REQ); a.rcvtimeo = 2000; a.linger = 0; ZMQt.connect(a, endpoint)
+        b = ZMQt.Socket(ctx, ZMQt.REQ); b.rcvtimeo = 2000; b.linger = 0; ZMQt.connect(b, endpoint)
         try
             ZMQt.send(a, Vector{UInt8}("A"))
             ZMQt.send(b, Vector{UInt8}("B"))
