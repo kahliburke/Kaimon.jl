@@ -124,7 +124,40 @@ function _source_glyph(s::Set{Symbol})
     has_sem && has_lex && return "⚯"   # both
     has_sem && return "≈"              # semantic
     :lexical in s && return "⚡"        # exact keyword
-    return "◎"                          # substring
+    return "⊂"                          # substring (term contained in a word)
+end
+
+# Significant (≥3-char) query tokens, lowercased — what we re-find in chunk text to
+# locate matched lines. Mirrors the tokenization used by `_apply_boosts!`.
+_query_tokens(query::AbstractString) =
+    [t for t in split(lowercase(query), r"[^a-z0-9_]+"; keepempty = false) if length(t) >= 3]
+
+# Wrap each query-token occurrence in `**…**` (case-insensitive, original case kept).
+# Tokens are alnum/underscore only (no regex metachars), so no escaping needed.
+function _highlight_tokens(line::AbstractString, toks::Vector{<:AbstractString})
+    isempty(toks) && return line
+    pat = Regex("(" * join(sort(unique(toks); by = length, rev = true), "|") * ")", "i")
+    replace(line, pat => s"**\1**")
+end
+
+# Grep-style matched lines: the actual source lines within a chunk that contain a
+# query token, each with its ABSOLUTE line number (chunk `start_line` + offset).
+# FTS5 doesn't expose match offsets, so we re-find the tokens in the chunk text; a
+# term that only matched via trigram across a line boundary won't be found here and
+# the hit falls back to its snippet/preview. Capped per hit to keep output lean.
+function _matched_lines(text::AbstractString, start_line::Int, toks::Vector{<:AbstractString};
+                        max_lines::Int = 3, width::Int = 160)
+    (start_line <= 0 || isempty(toks) || isempty(text)) && return Tuple{Int,String}[]
+    out = Tuple{Int,String}[]
+    for (i, ln) in enumerate(split(text, '\n'))
+        if any(t -> occursin(t, lowercase(ln)), toks)
+            t = strip(ln)
+            length(t) > width && (t = first(t, width) * "…")
+            push!(out, (start_line + i - 1, _highlight_tokens(t, toks)))
+            length(out) >= max_lines && break
+        end
+    end
+    return out
 end
 
 function _format_hybrid(query, where_label, hits::Vector{HybridHit},
@@ -139,6 +172,7 @@ function _format_hybrid(query, where_label, hits::Vector{HybridHit},
     # result set only — it shows how far each hit trails #1, not an absolute match
     # quality (semantic cosine and lexical BM25 aren't on one scale).
     maxrrf = maximum(h -> h.rrf, hits)
+    toks = _query_tokens(query)
 
     for (i, h) in enumerate(hits)
         payload = h.payload
@@ -177,8 +211,15 @@ function _format_hybrid(query, where_label, hits::Vector{HybridHit},
         out *= isempty(type_info) ? "" : " ($type_info)"
         out *= "\n"
 
-        # Lexical hits show the matched snippet (highlighted); semantic hits a preview.
-        if !isempty(h.snippet)
+        # Grep-style: show the actual matched source line(s) with absolute line
+        # numbers. Falls back to the FTS snippet (lexical hits) then a preview
+        # (semantic hits whose terms aren't literally in the text).
+        mlines = _matched_lines(string(h.text), h.start_line, toks)
+        if !isempty(mlines)
+            for (ln, txt) in mlines
+                out *= "  L$ln  $txt\n"
+            end
+        elseif !isempty(h.snippet)
             snip = replace(replace(h.snippet, '\x02' => "**"), '\x03' => "**")
             snip = replace(snip, '\n' => ' ')
             out *= "  $snip\n"
@@ -249,8 +290,20 @@ function _qdrant_search_code(args)
         want_semantic = false
         push!(notes, "Qdrant unreachable — lexical results only.")
         if !cross_project
+            # Resolve the same project-default as the Qdrant-up path, but against the
+            # collections actually present in the FTS index (no Qdrant list offline).
+            # This keeps an offline / lexical-only default search scoped to the project
+            # (and coltok-pruned) instead of scanning the whole corpus. Unresolved →
+            # nothing (unscoped) rather than an error, since lexical can still serve.
             raw = get(args, "collection", nothing)
-            fts_collection = (raw isa String && !isempty(raw)) ? normalize_collection_name(raw) : nothing
+            raw isa String && isempty(raw) && (raw = nothing)
+            fts_cols = try
+                String[c.collection for c in FtsIndex.coverage().collections]
+            catch
+                String[]
+            end
+            col, col_err = _resolve_collection(raw, fts_cols)
+            fts_collection = col_err === nothing ? col : nothing
         end
     end
 
@@ -286,6 +339,12 @@ function _qdrant_search_code(args)
                     "searched it as a single literal phrase. Check for unbalanced quotes " *
                     "or stray operators. Bare terms are OR-joined; use `\"exact phrase\"`, " *
                     "AND/OR/NOT, or `prefix*` for finer control.")
+            end
+            if lex.capped > 0
+                push!(notes, "Query had too many terms — used only the " *
+                    "$(FtsIndex._MAX_OR_TERMS) most distinctive and dropped $(lex.capped). " *
+                    "Narrow the query to a few distinctive symbols " *
+                    "(e.g. `atStartOfTurn onApplyPower`), not a sentence of keywords.")
             end
         catch e
             mode == "lexical" && return "Error: lexical index unavailable: $e"
