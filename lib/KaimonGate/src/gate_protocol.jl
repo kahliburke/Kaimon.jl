@@ -4,10 +4,32 @@
 
 # ── Metadata ──────────────────────────────────────────────────────────────────
 
+function _json_escape_string(s::AbstractString)
+    io = IOBuffer()
+    print(io, '"')
+    for c in s
+        if c == '\\'
+            print(io, "\\\\")
+        elseif c == '"'
+            print(io, "\\\"")
+        elseif c == '\n'
+            print(io, "\\n")
+        elseif c == '\r'
+            print(io, "\\r")
+        elseif c == '\t'
+            print(io, "\\t")
+        else
+            print(io, c)
+        end
+    end
+    print(io, '"')
+    return String(take!(io))
+end
+
 function _json_value(v)
     v isa Bool && return v ? "true" : "false"
     v isa Number && return string(v)
-    return "\"$v\""
+    return _json_escape_string(string(v))
 end
 
 function write_metadata(

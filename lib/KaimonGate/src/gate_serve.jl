@@ -26,8 +26,8 @@ to override the TTY check.
   serve(tools=tools, namespace="todo_dev")    # branch A
   serve(tools=tools, namespace="todo_main")   # branch B
   ```
-- `mode::Symbol`: Transport mode — `:ipc` (default, local Unix socket) or
-  `:tcp` (network-accessible, for remote debugging).
+- `mode::Symbol`: Transport mode — `:ipc` (default on Unix, local Unix socket) or
+  `:tcp` (default on Windows; network-accessible, for remote debugging).
 - `host::String`: Bind address for TCP mode (default `"127.0.0.1"`, localhost only).
   Use `"0.0.0.0"` to accept connections from remote machines (no auth — use with care).
 - `port::Int`: Port for TCP mode (default `0` = ephemeral, ZMQ picks a free port).
@@ -36,7 +36,9 @@ to override the TTY check.
   (default `true`). When `false`, the gate serves normally but writes no metadata file, so
   the Kaimon TUI / MCP server won't list it or import its tools — for embedded/private gates
   that clients reach via explicit endpoints (e.g. TachiRei atoms, reached on demand by id).
-  IPC only; TCP gates are never file-discovered (they're connected via `connect_tcp!`).
+  IPC only; TCP gates on remote hosts are connected via `connect_tcp!`. Localhost
+  TCP gates (e.g. on Windows) write metadata for file-based discovery when
+  `discoverable=true`.
 
 # Example
 ```julia
@@ -52,7 +54,7 @@ KaimonGate.serve(mode=:tcp, port=9876, force=true)
 
 # Environment variables
 These override the keyword defaults when set:
-- `KAIMON_GATE_MODE`: `"ipc"` or `"tcp"` (default: `"ipc"`)
+- `KAIMON_GATE_MODE`: `"ipc"` or `"tcp"` (default: `"tcp"` on Windows, `"ipc"` elsewhere)
 - `KAIMON_GATE_HOST`: Bind address for TCP (default: `"127.0.0.1"`)
 - `KAIMON_GATE_PORT`: Port for TCP (default: `"0"` = ephemeral)
 - `KAIMON_GATE_STREAM_PORT`: PUB stream port for TCP (default: `"0"` = ephemeral).
@@ -92,9 +94,14 @@ function serve(;
             :tcp
         elseif toml_mode == "tcp" || has_toml_port
             :tcp
+        elseif Sys.iswindows()
+            :tcp   # no ipc:// transport (#41)
         else
             :ipc
         end
+    end
+    if mode == :ipc && Sys.iswindows()
+        throw(ArgumentError("ipc:// transport is not available on Windows; omit mode or use mode=:tcp"))
     end
     if host === nothing
         env_host = get(ENV, "KAIMON_GATE_HOST", "")
@@ -374,13 +381,11 @@ function _serve(;
     _STREAM_SOCKET[] = pub_socket
     _STREAM_ENDPOINT[] = stream_endpoint
 
-    # Write metadata file for session discovery (IPC only — TCP sessions
-    # are connected manually via connect_tcp! and don't use file-based discovery).
-    # `discoverable=false` serves the gate but does NOT advertise it in the discovery
-    # registry — for embedded/private gates that clients reach via explicit endpoints
-    # (the Kaimon TUI / MCP server won't list it or import its tools).
-    if mode != :tcp && discoverable
-        write_metadata(sid, name, endpoint, stream_endpoint; spawned_by, mode)
+    # Write metadata for session discovery. IPC always (when discoverable).
+    # Localhost TCP too (Windows has no ipc:// — this is how the TUI finds local gates).
+    # Remote TCP and tcp_gates.json poll markers are connected via connect_tcp! (#50).
+    if discoverable && (mode == :ipc || (mode == :tcp && _is_local_bind_host(host)))
+        write_metadata(sid, name, String(endpoint), String(stream_endpoint); spawned_by, mode)
     end
 
     # Register cleanup

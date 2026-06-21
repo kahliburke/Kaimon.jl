@@ -72,18 +72,28 @@ end
     end)
 
     session_id = "test-async-$(bytes2hex(rand(UInt8, 4)))"
-    KaimonGate._serve(name="test", session_id=session_id, force=true, tools=[tool])
+    if Sys.iswindows()
+        KaimonGate._serve(
+            name = "test",
+            session_id = session_id,
+            force = true,
+            tools = [tool],
+            mode = :tcp,
+            host = "127.0.0.1",
+            port = 0,
+        )
+    else
+        KaimonGate._serve(name = "test", session_id = session_id, force = true, tools = [tool])
+    end
     sleep(0.15)
 
     ctx = ZMQ.Context()
     req = ZMQ.Socket(ctx, ZMQ.REQ)
     sub = ZMQ.Socket(ctx, ZMQ.SUB)
-    
+
     if Sys.iswindows()
-        sock = KaimonGate._GATE_SOCKET[]
-        rep_path = rstrip(ZMQ._get_last_endpoint(sock), '\0')
-        pub_sock = KaimonGate._STREAM_SOCKET[]
-        pub_path = rstrip(ZMQ._get_last_endpoint(pub_sock), '\0')
+        rep_path = rstrip(ZMQ._get_last_endpoint(KaimonGate._GATE_SOCKET[]), '\0')
+        pub_path = KaimonGate._STREAM_ENDPOINT[]
     else
         sock_dir = KaimonGate.sock_dir()
         rep_path = "ipc://" * joinpath(sock_dir, "$session_id.sock")
@@ -237,6 +247,35 @@ end
         finally
             KaimonGate.stop(); sleep(0.1)
             rm(meta_seen; force=true)
+        end
+    end
+end
+
+@testset "metadata JSON escapes backslashes" begin
+    @test KaimonGate._json_value(raw"K:\Dev\proj") == "\"K:\\\\Dev\\\\proj\""
+    mktempdir() do tmp
+        old_xdg = get(ENV, "XDG_CACHE_HOME", nothing)
+        ENV["XDG_CACHE_HOME"] = tmp
+        try
+            sid = "json-escape-test"
+            meta_path = KaimonGate.write_metadata(
+                sid, "test", "tcp://127.0.0.1:1", "tcp://127.0.0.1:2"; mode = :tcp,
+            )
+            content = read(meta_path, String)
+            proj = dirname(Base.active_project())
+            if occursin('\\', proj)
+                @test occursin(replace(proj, "\\" => "\\\\"), content)
+            end
+            # Must be valid JSON (stdlib has no JSON dep; use a minimal round-trip check).
+            m = match(r"\"project_path\": \"(.*)\"", content)
+            @test m !== nothing
+            @test m.captures[1] == replace(proj, "\\" => "\\\\")
+        finally
+            if old_xdg === nothing
+                delete!(ENV, "XDG_CACHE_HOME")
+            else
+                ENV["XDG_CACHE_HOME"] = old_xdg
+            end
         end
     end
 end

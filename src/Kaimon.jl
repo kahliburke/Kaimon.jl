@@ -59,13 +59,18 @@ function kaimon_cache_dir()
     # Append "kaimon" under XDG_CACHE_HOME rather than using it verbatim, so we
     # get our own subdir instead of scattering kaimon.db/sock/sessions.json into
     # the shared cache root. Mirrors kaimon_config_dir's (correct) handling. (#42)
-    dir = if Sys.iswindows()
+    # When XDG_CACHE_HOME is set (including tests on Windows), honor it on all
+    # platforms so gate metadata and server discovery share the same sock dir.
+    xdg = get(ENV, "XDG_CACHE_HOME", "")
+    dir = if !isempty(xdg)
+        joinpath(xdg, "kaimon")
+    elseif Sys.iswindows()
         joinpath(
             get(ENV, "LOCALAPPDATA", joinpath(homedir(), "AppData", "Local")),
             "Kaimon",
         )
     else
-        joinpath(get(ENV, "XDG_CACHE_HOME", joinpath(homedir(), ".cache")), "kaimon")
+        joinpath(joinpath(homedir(), ".cache"), "kaimon")
     end
     mkpath(dir)
     return dir

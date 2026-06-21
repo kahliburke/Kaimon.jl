@@ -74,13 +74,18 @@ function _gate_cache_dir()
     # gate auto-discovery whenever XDG_CACHE_HOME is set. Mirrors the #42 server
     # fix (1cf20a5) on the gate side — the half PR #45 patched in gate.jl that the
     # KaimonGate split didn't carry over. (#42, #45)
-    d = if Sys.iswindows()
+    # When XDG_CACHE_HOME is set (including in tests on Windows), honor it on all
+    # platforms; otherwise fall back to the OS-native default location.
+    xdg = get(ENV, "XDG_CACHE_HOME", "")
+    d = if !isempty(xdg)
+        joinpath(xdg, "kaimon")
+    elseif Sys.iswindows()
         joinpath(
             get(ENV, "LOCALAPPDATA", joinpath(homedir(), "AppData", "Local")),
             "Kaimon",
         )
     else
-        joinpath(get(ENV, "XDG_CACHE_HOME", joinpath(homedir(), ".cache")), "kaimon")
+        joinpath(joinpath(homedir(), ".cache"), "kaimon")
     end
     mkpath(d)
     return d
@@ -92,6 +97,13 @@ function sock_dir()
     d = joinpath(_gate_cache_dir(), "sock")
     mkpath(d)
     return d
+end
+
+"""Whether `host` is a loopback bind address (localhost TCP gates may be file-discovered)."""
+function _is_local_bind_host(host::AbstractString)
+    h = lowercase(strip(host))
+    return h in ("127.0.0.1", "::1", "localhost", "0.0.0.0", "") ||
+           startswith(h, "127.")
 end
 
 """
