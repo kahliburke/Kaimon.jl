@@ -2,10 +2,32 @@
 
 const REINDEX_DEBOUNCE_SECONDS = 5.0
 const REINDEX_MAX_WAIT_SECONDS = 30.0
+# Back-off: after a project's reindex finishes, suppress the next one for this long.
+# Without it, a sustained edit/generation burst (a file every few seconds, each
+# followed by >debounce quiet) trips the debounce per-file and reindexes every ~10s.
+# The cooldown caps it to roughly once per window, batching everything that changed
+# while it was cooling down into a single catch-up sync.
+const REINDEX_COOLDOWN_SECONDS = 30.0
 
 # Concurrent reindex guard: prevents multiple simultaneous reindexes for the same project
 const _REINDEX_IN_PROGRESS = Set{String}()
 const _REINDEX_LOCK = ReentrantLock()
+# project_path → time() the last reindex for it FINISHED (drives the cooldown).
+const _REINDEX_LAST_RUN = Dict{String,Float64}()
+
+"""
+    _reindex_gate_ok(path, now_t) -> Bool
+
+True when `path` is eligible to reindex now: nothing is already running for it AND
+its cooldown window has elapsed since the last run finished. Read under
+`_REINDEX_LOCK` so it can't race the in-progress set or the last-run map.
+"""
+function _reindex_gate_ok(path::String, now_t::Float64)
+    lock(_REINDEX_LOCK) do
+        (path in _REINDEX_IN_PROGRESS) && return false
+        return now_t - get(_REINDEX_LAST_RUN, path, 0.0) >= REINDEX_COOLDOWN_SECONDS
+    end
+end
 
 """
     _process_pending_reindexes!(m)
@@ -23,7 +45,11 @@ function _process_pending_reindexes!(m::KaimonModel)
         debounce_elapsed = now_t - last_ts >= REINDEX_DEBOUNCE_SECONDS
         first_seen = get(m._reindex_first_seen, path, now_t)
         max_wait_exceeded = now_t - first_seen >= REINDEX_MAX_WAIT_SECONDS
-        if debounce_elapsed || max_wait_exceeded
+        # Only fire once the debounce (or max-wait cap) is satisfied AND the cooldown
+        # gate is open. When the gate is closed the entry stays pending (and its
+        # first_seen keeps counting), so changes accumulated during the cooldown fire
+        # as one catch-up sync the moment the window opens.
+        if (debounce_elapsed || max_wait_exceeded) && _reindex_gate_ok(path, now_t)
             push!(ready, path)
         end
     end
@@ -79,6 +105,9 @@ function _trigger_background_reindex(project_path::String, render_mode::Bool = f
         finally
             lock(_REINDEX_LOCK) do
                 delete!(_REINDEX_IN_PROGRESS, project_path)
+                # Stamp completion so the cooldown window starts now — back off before
+                # the next reindex even if changes are still streaming in.
+                _REINDEX_LAST_RUN[project_path] = time()
             end
         end
     end
