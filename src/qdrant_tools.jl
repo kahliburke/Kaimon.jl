@@ -388,6 +388,11 @@ const _SEARCH_CODE_PARAMS = Dict(
             "description" => "Output format: 'text' (default — ranked, human-readable) or 'structured' (a JSON array of hits {point_id, name, file, type, start_line, end_line, text, snippet, sources, score} for programmatic use).",
             "enum" => ["text", "structured"],
         ),
+        "filters" => Dict(
+            "type" => "object",
+            "description" => "Optional metadata filter applied to indexed chunks that carry a `metadata` payload. An object of field → allowed-values: a result must match, for EVERY field, at least one of its values (AND across fields, any-of within). Applied in-query on both engines, so the limit is honored after filtering. Example: {\"module\": [\"DataFrames\", \"Plots\"]}. No effect on chunks without that metadata field.",
+            "additionalProperties" => Dict("type" => "array", "items" => Dict("type" => "string")),
+        ),
     ),
     "required" => ["query"],
 )

@@ -874,6 +874,9 @@ function backfill_fts!(collection::String; batch::Int=256)
                 "start_line" => get(payload, "start_line", 0),
                 "end_line" => get(payload, "end_line", 0),
                 "text" => txt,
+                # Mirror opt-in metadata (e.g. {"module":"X"}) from the Qdrant payload so
+                # the lexical side's metadata filters work, not just the direct-ingest path.
+                "metadata" => get(payload, "metadata", nothing),
             ))
         end
         total += FtsIndex.add_chunks!(rows)

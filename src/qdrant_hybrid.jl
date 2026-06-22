@@ -117,6 +117,25 @@ function _chunk_type_filter(chunk_type::AbstractString)
     return nothing
 end
 
+# Combine the chunk_type filter with the opt-in metadata `filters` into one Qdrant filter.
+# Metadata: each field → `match: {any: [...]}` (any-of), all ANDed in `must`. The chunk_type
+# filter (which may itself be a should/must group) is nested as one `must` clause so both
+# groups are required. Mirrors the lexical side's AND-across / any-of-within semantics.
+function _build_qdrant_filter(chunk_type::AbstractString, filters)
+    must = Any[]
+    if filters !== nothing
+        for (field, vals) in pairs(filters)
+            vlist = vals isa AbstractVector ? collect(vals) : [vals]
+            isempty(vlist) && continue
+            push!(must, Dict("key" => "metadata.$(field)",
+                             "match" => Dict("any" => [string(v) for v in vlist])))
+        end
+    end
+    ctf = _chunk_type_filter(chunk_type)
+    ctf !== nothing && push!(must, ctf)
+    isempty(must) ? nothing : Dict("must" => must)
+end
+
 # Origin glyph for a hit (so the agent sees *why* it surfaced).
 function _source_glyph(s::Set{Symbol})
     has_sem = :semantic in s
@@ -258,6 +277,12 @@ function _qdrant_search_code(args)
     cross_project = let v = get(args, "cross_project", false)
         v isa Bool ? v : v == "true" || v == true
     end
+    # Opt-in metadata filter (e.g. {"module":["DataFrames","Plots"]}). Same spec drives
+    # both engines: AND across keys, any-of within. Applied IN each query (post-MATCH /
+    # filtered HNSW), so the top-k limit is honored after filtering — no recall loss.
+    filters = let v = get(args, "filters", nothing)
+        (v isa AbstractDict && !isempty(v)) ? v : nothing
+    end
 
     want_semantic = mode != "lexical"
     want_lexical = mode != "semantic"
@@ -321,7 +346,7 @@ function _qdrant_search_code(args)
                 push!(notes, "Embedding failed — lexical results only.")
             else
                 results = QdrantClient.search(sem_collection, embedding;
-                    limit = fetch, filter = _chunk_type_filter(chunk_type))
+                    limit = fetch, filter = _build_qdrant_filter(chunk_type, filters))
                 sem = _semantic_hits(results)
             end
         end
@@ -332,7 +357,8 @@ function _qdrant_search_code(args)
     tri = FtsIndex.FtsHit[]
     if want_lexical
         try
-            lex = FtsIndex.search(query; collection = fts_collection, limit = fetch, chunk_type = chunk_type)
+            lex = FtsIndex.search(query; collection = fts_collection, limit = fetch,
+                chunk_type = chunk_type, filters = filters)
             word, tri = lex.word, lex.tri
             if lex.fellback
                 push!(notes, "Couldn't parse the query as FTS5 even after normalizing — " *

@@ -102,6 +102,7 @@ function init!(path::String = default_db_path())
             start_line INTEGER,
             end_line   INTEGER,
             text       TEXT NOT NULL,
+            metadata   TEXT,  -- optional JSON blob for opt-in filterable fields (e.g. {"module":"X"})
             coltok     TEXT GENERATED ALWAYS AS
                        ('zc'||replace(replace(lower(collection),'_',''),'-','')) VIRTUAL
         );
@@ -170,6 +171,17 @@ end
 _field(row, k, default = nothing) = row isa AbstractDict ? get(row, k, default) :
     (hasproperty(row, Symbol(k)) ? getproperty(row, Symbol(k)) : default)
 
+# Encode a row's optional `metadata` for storage: a Dict/NamedTuple → JSON text, a
+# String passed through verbatim (already JSON), nothing/empty → missing (SQL NULL).
+# Stored so `search`'s filters can `json_extract` on it. Values are kept VERBATIM —
+# never normalized — so index-time and query-time strings match exactly.
+function _metadata_json(r)
+    m = _field(r, "metadata", nothing)
+    (m === nothing || m === missing) && return missing
+    m isa AbstractString && return isempty(m) ? missing : String(m)
+    return parentmodule(@__MODULE__).JSON.json(m)
+end
+
 """
     add_chunks!(rows) -> Int
 
@@ -185,8 +197,8 @@ function add_chunks!(rows)
     n = 0
     SQLite.transaction(db) do
         stmt = """
-            INSERT INTO chunks(point_id, collection, file, name, type, start_line, end_line, text)
-            VALUES (?,?,?,?,?,?,?,?)
+            INSERT INTO chunks(point_id, collection, file, name, type, start_line, end_line, text, metadata)
+            VALUES (?,?,?,?,?,?,?,?,?)
         """
         for r in rows
             txt = _field(r, "text", "")
@@ -200,6 +212,7 @@ function add_chunks!(rows)
                 something(_field(r, "start_line"), missing),
                 something(_field(r, "end_line"), missing),
                 String(txt),
+                _metadata_json(r),
             ))
             n += 1
         end
@@ -416,8 +429,28 @@ re-run as a single literal phrase — i.e. boolean operators (`OR`/`AND`/`NEAR`)
 fan-out cap or an explicit operator was used); callers should warn the agent to
 narrow the query when it's > 0.
 """
+# Build a parameterized metadata-filter SQL fragment from `filters` (field => allowed
+# values). Semantics: AND across fields, any-of (IN) within a field. The JSON path is a
+# BOUND parameter (`json_extract(c.metadata, ?)`), so field names are never interpolated
+# into SQL — no injection, no escaping. Returns (sql_fragment, params). Empty when none.
+function _filter_clause(filters)
+    (filters === nothing || isempty(filters)) && return ("", Any[])
+    frags = String[]
+    params = Any[]
+    for (field, vals) in pairs(filters)
+        vlist = vals isa AbstractVector ? collect(vals) : [vals]
+        isempty(vlist) && continue
+        ph = join(fill("?", length(vlist)), ",")
+        push!(frags, "AND json_extract(c.metadata, ?) IN ($ph)")
+        push!(params, "\$." * String(string(field)))   # JSON path, bound
+        append!(params, [string(v) for v in vlist])     # values, bound
+    end
+    (join(frags, " "), params)
+end
+
 function search(query::AbstractString; collection::Union{AbstractString,Nothing} = nothing,
-                limit::Int = 20, chunk_type::AbstractString = "all")
+                limit::Int = 20, chunk_type::AbstractString = "all",
+                filters::Union{Nothing,AbstractDict} = nothing)
     isempty(strip(query)) && return (word = FtsHit[], tri = FtsHit[], fellback = false, capped = 0)
     return _run_off_interactive() do
     lock(LOCK) do
@@ -425,6 +458,9 @@ function search(query::AbstractString; collection::Union{AbstractString,Nothing}
     tclause = _type_clause(chunk_type)
     cclause = collection === nothing ? "" : "AND c.collection = ?"
     ctail = collection === nothing ? () : (String(collection),)
+    # Opt-in metadata filter (AND across fields, any-of within). Applied IN the query
+    # so LIMIT/top-k is post-filter (no recall loss). Params bound — incl. the JSON path.
+    fclause, fparams = _filter_clause(filters)
     # Scope the MATCH itself to the collection (prunes the scan), keeping the JOIN
     # filter above as a cheap correctness backstop. Skipped when unscoped (cross-project).
     scope = collection !== nothing ? _coltok(collection) : nothing
@@ -441,7 +477,7 @@ function search(query::AbstractString; collection::Union{AbstractString,Nothing}
                snippet(code_fts, 0, char(2), char(3), '…', 12) AS snip,
                bm25(code_fts) AS rank
         FROM code_fts CROSS JOIN chunks c ON c.id = code_fts.rowid
-        WHERE code_fts MATCH ? $cclause $tclause
+        WHERE code_fts MATCH ? $cclause $fclause $tclause
         ORDER BY rank LIMIT ?
     """
     # Normalize Julia punctuation / operators into valid FTS5 before MATCH (and cap
@@ -449,7 +485,7 @@ function search(query::AbstractString; collection::Union{AbstractString,Nothing}
     # unparseable input. Append the collection scope as an ANDed column filter.
     word_expr = _fts_normalize(query)
     scope !== nothing && (word_expr = "($word_expr) AND coltok:$scope")
-    word, fellback = _match_hits(db, word_sql, word_expr, (ctail..., limit), :lexical)
+    word, fellback = _match_hits(db, word_sql, word_expr, (ctail..., fparams..., limit), :lexical)
 
     tri = FtsHit[]
     if _tri_eligible(query)
@@ -458,7 +494,7 @@ function search(query::AbstractString; collection::Union{AbstractString,Nothing}
                    snippet(code_tri, 0, char(2), char(3), '…', 12) AS snip,
                    bm25(code_tri) AS rank
             FROM code_tri CROSS JOIN chunks c ON c.id = code_tri.rowid
-            WHERE code_tri MATCH ? $cclause $tclause
+            WHERE code_tri MATCH ? $cclause $fclause $tclause
             ORDER BY rank LIMIT ?
         """
         # Trigram does substring containment; quote the (single, bounded) token as a
@@ -472,7 +508,7 @@ function search(query::AbstractString; collection::Union{AbstractString,Nothing}
             (phrase = "($phrase) AND coltok:$(_coltok(collection))")
         # Trigram input is always a pre-quoted phrase, so its fallback isn't a
         # syntax signal — discard it; only the word query reflects bad FTS5 syntax.
-        tri, _ = _match_hits(db, tri_sql, phrase, (ctail..., limit), :substr)
+        tri, _ = _match_hits(db, tri_sql, phrase, (ctail..., fparams..., limit), :substr)
     end
 
     (word = word, tri = tri, fellback = fellback, capped = capped)
