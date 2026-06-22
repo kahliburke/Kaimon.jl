@@ -29,8 +29,6 @@ export FtsHit
 
 const DB = Ref{Union{SQLite.DB,Nothing}}(nothing)
 const DB_PATH = Ref{String}("")
-const HAS_TRIGRAM = Ref{Bool}(true)   # cleared if the bundled SQLite predates trigram
-const HAS_COLTOK = Ref{Bool}(true)    # code_fts carries the collection-scope column
 
 # A separator-free, single FTS5 token encoding a collection name, so a scoped search
 # can AND `coltok:<tok>` into the MATCH and prune the scan to one collection instead
@@ -118,23 +116,14 @@ function init!(path::String = default_db_path())
             text, name, file, coltok, content='chunks', content_rowid='id'
         );
     """)
-    # Reflect the ACTUAL schema: `CREATE IF NOT EXISTS` is a no-op on a pre-`coltok`
-    # DB, so don't assume the column exists — scoping the MATCH by a missing column
-    # would error every search. Fresh DB ⇒ true (scoped); old DB ⇒ false (unscoped,
-    # still correct via the JOIN filter). Delete code_fts.db to get the scoped schema.
-    HAS_COLTOK[] = "coltok" in
-        String[String(r.name) for r in DBInterface.execute(db, "PRAGMA table_info(code_fts)")]
-    # Trigram is SQLite ≥3.34; degrade to word-only on older builds.
-    HAS_TRIGRAM[] = try
-        SQLite.execute(db, """
-            CREATE VIRTUAL TABLE IF NOT EXISTS code_tri USING fts5(
-                text, name, content='chunks', content_rowid='id', tokenize='trigram'
-            );
-        """)
-        true
-    catch
-        false
-    end
+    # code_tri carries the same `coltok` column as code_fts so a scoped trigram
+    # search can prune the MATCH to one collection (cost ∝ collection size, not corpus
+    # size) instead of scanning whole-corpus and filtering after.
+    SQLite.execute(db, """
+        CREATE VIRTUAL TABLE IF NOT EXISTS code_tri USING fts5(
+            text, name, coltok, content='chunks', content_rowid='id', tokenize='trigram'
+        );
+    """)
 
     # Keep the FTS shadow tables in sync with `chunks` (insert + delete only;
     # reindex is delete-then-insert, so no update trigger is needed).
@@ -150,19 +139,18 @@ function init!(path::String = default_db_path())
                 VALUES('delete', old.id, old.text, old.name, old.file, old.coltok);
         END;
     """)
-    if HAS_TRIGRAM[]
-        SQLite.execute(db, """
-            CREATE TRIGGER IF NOT EXISTS chunks_ai_tri AFTER INSERT ON chunks BEGIN
-                INSERT INTO code_tri(rowid, text, name) VALUES (new.id, new.text, new.name);
-            END;
-        """)
-        SQLite.execute(db, """
-            CREATE TRIGGER IF NOT EXISTS chunks_ad_tri AFTER DELETE ON chunks BEGIN
-                INSERT INTO code_tri(code_tri, rowid, text, name)
-                    VALUES('delete', old.id, old.text, old.name);
-            END;
-        """)
-    end
+    SQLite.execute(db, """
+        CREATE TRIGGER IF NOT EXISTS chunks_ai_tri AFTER INSERT ON chunks BEGIN
+            INSERT INTO code_tri(rowid, text, name, coltok)
+                VALUES (new.id, new.text, new.name, new.coltok);
+        END;
+    """)
+    SQLite.execute(db, """
+        CREATE TRIGGER IF NOT EXISTS chunks_ad_tri AFTER DELETE ON chunks BEGIN
+            INSERT INTO code_tri(code_tri, rowid, text, name, coltok)
+                VALUES('delete', old.id, old.text, old.name, old.coltok);
+        END;
+    """)
 
     db
     end  # lock
@@ -439,14 +427,20 @@ function search(query::AbstractString; collection::Union{AbstractString,Nothing}
     ctail = collection === nothing ? () : (String(collection),)
     # Scope the MATCH itself to the collection (prunes the scan), keeping the JOIN
     # filter above as a cheap correctness backstop. Skipped when unscoped (cross-project).
-    scope = (collection !== nothing && HAS_COLTOK[]) ? _coltok(collection) : nothing
+    scope = collection !== nothing ? _coltok(collection) : nothing
     capped = _fts_or_dropped(query)
 
+    # CROSS JOIN pins the FTS table as the join driver. Without it SQLite sees the
+    # `c.collection` filter, judges idx_chunks_cf selective, and drives from chunks —
+    # evaluating the FTS MATCH per-collection-row (whole-corpus per-row cost for common
+    # terms: ~2 s on 1,315 docs). Driving from the FTS index instead is index-pruned
+    # (sub-ms). The MATCH is always the most selective path, so forcing it is safe for
+    # both the scoped (coltok) and unscoped (cross-project) cases.
     word_sql = """
         SELECT c.point_id, c.file, c.name, c.type, c.start_line, c.end_line, c.text,
                snippet(code_fts, 0, char(2), char(3), '…', 12) AS snip,
                bm25(code_fts) AS rank
-        FROM code_fts JOIN chunks c ON c.id = code_fts.rowid
+        FROM code_fts CROSS JOIN chunks c ON c.id = code_fts.rowid
         WHERE code_fts MATCH ? $cclause $tclause
         ORDER BY rank LIMIT ?
     """
@@ -458,19 +452,24 @@ function search(query::AbstractString; collection::Union{AbstractString,Nothing}
     word, fellback = _match_hits(db, word_sql, word_expr, (ctail..., limit), :lexical)
 
     tri = FtsHit[]
-    if HAS_TRIGRAM[] && _tri_eligible(query)
+    if _tri_eligible(query)
         tri_sql = """
             SELECT c.point_id, c.file, c.name, c.type, c.start_line, c.end_line, c.text,
                    snippet(code_tri, 0, char(2), char(3), '…', 12) AS snip,
                    bm25(code_tri) AS rank
-            FROM code_tri JOIN chunks c ON c.id = code_tri.rowid
+            FROM code_tri CROSS JOIN chunks c ON c.id = code_tri.rowid
             WHERE code_tri MATCH ? $cclause $tclause
             ORDER BY rank LIMIT ?
         """
         # Trigram does substring containment; quote the (single, bounded) token as a
-        # phrase so punctuation in identifiers (`!`, `_`) matches literally. code_tri
-        # has no coltok column, so it relies on the JOIN filter for scoping.
+        # phrase so punctuation in identifiers (`!`, `_`) matches literally.
         phrase = "\"" * replace(String(query), "\"" => "\"\"") * "\""
+        # Scope the MATCH to the collection's coltok (prunes the scan to collection
+        # size, not corpus size). Trigram substring-matches coltok, so it can over-
+        # include prefix-sibling collections — but the `cclause` JOIN filter above is
+        # the correctness backstop (same pattern as the word query).
+        collection !== nothing &&
+            (phrase = "($phrase) AND coltok:$(_coltok(collection))")
         # Trigram input is always a pre-quoted phrase, so its fallback isn't a
         # syntax signal — discard it; only the word query reflects bad FTS5 syntax.
         tri, _ = _match_hits(db, tri_sql, phrase, (ctail..., limit), :substr)
