@@ -221,6 +221,71 @@ function _start_revise_watcher()
     end
 end
 
+# Proactive auto-import: a freshly connected session's `Main` is empty, so the very
+# common `Pkg.foo(...)` first call fails with `UndefVarError: Pkg not defined`. Before
+# evaluating, casually scan the top-level AST for the *base* of qualified references
+# and `import` any that (a) aren't already defined in Main and (b) resolve as real
+# packages in the active environment. Proactive (not catch-and-retry) so the eval runs
+# exactly once — no double side effects. `isdefined(Main, …)` is the in-scope check and
+# resets on REPL restart, so no registry to track. Experimental; toggle with _AUTO_IMPORT.
+const _AUTO_IMPORT = Ref{Bool}(true)
+
+"""True if `s` names a package loadable from the active environment (dep or stdlib)."""
+function _is_loadable_package(s::Symbol)
+    try
+        return Base.identify_package(String(s)) !== nothing
+    catch
+        return false
+    end
+end
+
+"""Collect the leftmost symbols of qualified references (`X.y` → `X`) in `expr`,
+skipping modules the code already `using`/`import`s itself."""
+function _qualified_ref_bases(expr)
+    bases = Set{Symbol}()
+    skip = Set{Symbol}()   # roots the code imports itself — don't double-import
+    walk(x) = begin
+        x isa Expr || return
+        if x.head in (:using, :import)
+            for a in x.args
+                a isa Expr && a.head === :. && !isempty(a.args) && a.args[1] isa Symbol &&
+                    push!(skip, a.args[1])
+            end
+            return
+        end
+        x.head === :. && !isempty(x.args) && x.args[1] isa Symbol && push!(bases, x.args[1])
+        for a in x.args
+            walk(a)
+        end
+    end
+    walk(expr)
+    return setdiff(bases, skip)
+end
+
+"""Import any top-level qualified package refs in `expr` that aren't yet in `Main`.
+Returns the symbols actually imported (for a one-line note to the agent)."""
+function _autoimport!(expr)::Vector{Symbol}
+    _AUTO_IMPORT[] || return Symbol[]
+    imported = Symbol[]
+    for s in _qualified_ref_bases(expr)
+        isdefined(Main, s) && continue
+        _is_loadable_package(s) || continue
+        try
+            # Load quietly — precompile/info chatter from the import must not leak to
+            # the user's mirrored terminal or the captured output. devnull temporarily,
+            # then the surrounding redirect is restored.
+            redirect_stdout(devnull) do
+                redirect_stderr(devnull) do
+                    Core.eval(Main, :(import $s))
+                end
+            end
+            push!(imported, s)
+        catch
+        end
+    end
+    return imported
+end
+
 function _eval_with_capture(expr)
     orig_stdout = stdout
     orig_stderr = stderr
@@ -274,6 +339,7 @@ function _eval_with_capture(expr)
     value = nothing
     caught = nothing
     bt = nothing
+    autoimported = Symbol[]
     try
         # Apply REPL ast_transforms (Revise, softscope, etc.)
         if isdefined(Base, :active_repl_backend) && Base.active_repl_backend !== nothing
@@ -281,6 +347,8 @@ function _eval_with_capture(expr)
                 expr = Base.invokelatest(xf, expr)
             end
         end
+        # Blank-session convenience: import qualified package refs before evaluating.
+        autoimported = _autoimport!(expr)
         value = Core.eval(Main, expr)
     catch e
         caught = e
@@ -346,6 +414,13 @@ function _eval_with_capture(expr)
         String(take!(io))
     else
         nothing
+    end
+
+    if !isempty(autoimported)
+        pkgs = join(string.(autoimported), ", ")
+        push!(stderr_content,
+            "[kaimon] auto-imported $pkgs — a freshly connected session's Main starts " *
+            "empty; `using`/`import` once at session start (idempotent) to make this explicit.\n")
     end
 
     return (
