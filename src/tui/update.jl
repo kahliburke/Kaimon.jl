@@ -370,7 +370,11 @@ function Tachikoma.update!(m::KaimonModel, evt::TaskEvent)
         if result.success
             m.mcp_server = result.server
             SERVER[] = result.server
-            ALL_TOOLS[] = result.tools
+            # NB: do NOT set `ALL_TOOLS[] = result.tools` here. `result.tools` is the
+            # config-FILTERED, agent-advertised surface; `ALL_TOOLS[]` is the FULL
+            # registry (set to collect_tools() in view.jl before the server starts) and
+            # is what the service endpoint / tool_help resolve against so extensions can
+            # reach gated tools. Overwriting it with the filtered set hid them.
             m.server_running = true
             GATE_PORT[] = result.port
             _push_log!(:info, "MCP server listening on port $(result.port)")
