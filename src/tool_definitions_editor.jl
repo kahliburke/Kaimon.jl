@@ -213,11 +213,23 @@ tool_help_tool = @mcp_tool(
             end
 
             server = SERVER[]
-            if !haskey(server.tools, tool_id)
+            # Resolve against the FULL registry (ALL_TOOLS[]), not just the agent-
+            # advertised surface, so hidden/gated tools (off the default tool-list but
+            # callable by extensions via the service endpoint) are still documentable.
+            tool = nothing
+            registry = ALL_TOOLS[]
+            if registry !== nothing
+                for t in registry
+                    if t.id == tool_id
+                        tool = t
+                        break
+                    end
+                end
+            end
+            tool === nothing && haskey(server.tools, tool_id) && (tool = server.tools[tool_id])
+            if tool === nothing
                 return "Error: Tool ':$tool_id' not found. Use list_tools() to see available tools."
             end
-
-            tool = server.tools[tool_id]
 
             result = "📖 Help for MCP Tool: $tool_name\n"
             result *= "="^70 * "\n\n"
