@@ -289,14 +289,28 @@ function _dispatch_tool_call(request)
         return (status = :error, message = "MCP server not running")
     end
 
-    tool_id = get(server.name_to_id, tool_name, nothing)
-    if tool_id === nothing
-        return (status = :error, message = "Unknown tool: $tool_name")
+    # Resolve against the FULL tool registry (ALL_TOOLS[]), not the agent-advertised
+    # surface. Trusted extensions (e.g. KaimonSlate's doc pipeline) reach this via the
+    # service endpoint and must be able to call infra/building-block tools that are
+    # gated off the agent tool-list (DEFAULT_OFF_TOOLS). The agent path (MCP tools/call)
+    # still uses the filtered server.name_to_id and is unaffected.
+    tool = nothing
+    registry = ALL_TOOLS[]
+    if registry !== nothing
+        for t in registry
+            if t.name == tool_name
+                tool = t
+                break
+            end
+        end
     end
-
-    tool = get(server.tools, tool_id, nothing)
     if tool === nothing
-        return (status = :error, message = "Tool not found: $tool_name")
+        # Fallback to the server's advertised registry (pre-populate window / safety).
+        tid = get(server.name_to_id, tool_name, nothing)
+        tid !== nothing && (tool = get(server.tools, tid, nothing))
+    end
+    if tool === nothing
+        return (status = :error, message = "Unknown tool: $tool_name")
     end
 
     result = try

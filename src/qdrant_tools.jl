@@ -862,6 +862,80 @@ qdrant_ensure_fts_coverage_tool = @mcp_tool(
 )
 
 
+# Low-level building blocks for extensions (e.g. KaimonSlate's doc pipeline):
+# precomputed-vector search + Ollama embedding. Off the default agent surface
+# (DEFAULT_OFF_TOOLS) but callable by trusted extensions via the service endpoint.
+qdrant_search_tool = @mcp_tool(
+    :qdrant_search,
+    "Search a Qdrant collection with a pre-computed vector. Returns raw results with scores and payloads. Optional filter narrows results by payload fields (Qdrant filter syntax).",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "collection" =>
+                Dict("type" => "string", "description" => "Name of the collection"),
+            "vector" => Dict(
+                "type" => "array",
+                "description" => "Query vector (Float64 array)",
+                "items" => Dict("type" => "number"),
+            ),
+            "limit" => Dict(
+                "type" => "integer",
+                "description" => "Maximum number of results (default: 10)",
+            ),
+            "filter" => Dict(
+                "type" => "object",
+                "description" => "Qdrant payload filter (e.g., {\"must\": [{\"key\": \"tier\", \"match\": {\"value\": \"derived\"}}]})",
+            ),
+        ),
+        "required" => ["collection", "vector"],
+    ),
+    function (args)
+        err = _require_services()
+        err !== nothing && return err
+
+        collection = get(args, "collection", "")
+        isempty(collection) && return "Error: collection name is required"
+        raw_vector = get(args, "vector", Float64[])
+        isempty(raw_vector) && return "Error: vector is required"
+        vector = Vector{Float64}(raw_vector)
+        limit = Int(get(args, "limit", 10))
+        filter = get(args, "filter", nothing)
+
+        # Serialize to a JSON string so the MCP layer wraps it as text content.
+        return JSON.json(
+            QdrantClient.search(collection, vector; limit = limit, filter = filter),
+        )
+    end
+)
+
+ollama_embed_tool = @mcp_tool(
+    :ollama_embed,
+    "Get an embedding vector for text using Ollama. Returns Vector{Float64}.",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "text" =>
+                Dict("type" => "string", "description" => "Text to embed"),
+            "model" => Dict(
+                "type" => "string",
+                "description" => "Ollama embedding model (default: $DEFAULT_EMBEDDING_MODEL)",
+            ),
+        ),
+        "required" => ["text"],
+    ),
+    function (args)
+        model = get(args, "model", DEFAULT_EMBEDDING_MODEL)
+        err = _require_services(need_ollama = true, model = model)
+        err !== nothing && return err
+
+        text = get(args, "text", "")
+        isempty(text) && return "Error: text is required"
+
+        return get_ollama_embedding(text; model = model)
+    end
+)
+
+
 # ============================================================================
 # Tool Registration
 # ============================================================================
@@ -883,8 +957,11 @@ function create_qdrant_tools()
         qdrant_upsert_points_tool,
         qdrant_delete_points_tool,
         qdrant_ensure_fts_coverage_tool,
+        # Extension building blocks (off the agent surface, callable via the service
+        # endpoint) — KaimonSlate's doc pipeline embeds + upserts + searches through these.
+        qdrant_search_tool,
+        ollama_embed_tool,
         # Removed from the surface: qdrant_search_code (deprecated alias of search_code),
-        # qdrant_search (raw precomputed-vector search) + ollama_embed (its building block),
         # qdrant_fts_search (folded into search_code format="structured").
     ]
 end

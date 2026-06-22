@@ -78,6 +78,9 @@ const DEFAULT_OFF_TOOLS = Set{Symbol}([
     :qdrant_collection_info, :qdrant_collection_exists, :qdrant_browse_collection,
     :qdrant_create_collection, :qdrant_delete_collection,
     :qdrant_upsert_points, :qdrant_delete_points, :qdrant_ensure_fts_coverage,
+    # Extension building blocks (precomputed-vector search + embedding) — callable
+    # by trusted extensions via the service endpoint, never on the agent surface.
+    :qdrant_search, :ollama_embed,
     # Rare/advanced Julia introspection.
     :code_lowered, :code_typed, :macro_expand, :profile_code, :lint_package,
     # Niche agent backpressure telemetry.
