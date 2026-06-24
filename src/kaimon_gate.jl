@@ -74,17 +74,139 @@ end
 
 const GATE_MODE = Ref{Bool}(false)
 const GATE_CONN_MGR = Ref{Union{Nothing,ConnectionManager}}(nothing)
-const _LAST_SESSION_KEY = Ref{String}("")  # last session used by ex/tools — for default collection resolution
+# Caller-less fallback ONLY (REPL/self tool calls with no Mcp-Session-Id). Each
+# AGENT's default lives per-session on `MCPSession.target_julia_session_id` (set by
+# `_bind_caller_session!`) so concurrent agents don't clobber a shared global — see
+# `_last_session_project_path`.
+const _LAST_SESSION_KEY = Ref{String}("")
+# Workspace root captured from a client's MCP `roots` (mcp_session_id => abs path),
+# so an agent's default search scopes to its project even before it touches a gate.
+const _SESSION_WORKSPACE_ROOT = Dict{String,String}()
+const _SESSION_WORKSPACE_ROOT_LOCK = ReentrantLock()
 
-"""Get the project path of the last session the agent interacted with."""
+"""The MCP caller (agent) id for the in-flight tool dispatch, or "" for REPL/self calls."""
+_current_mcp_caller() = string(get(task_local_storage(), :mcp_caller, ""))
+
+"""Bind the calling agent's MCP session to a gate session key, so its later
+collection/search defaults resolve to that gate's project. No-op for caller-less
+(REPL/self) calls. Both the agent's explicit `ses=` (via `_resolve_gate_conn`) and
+the `roots` auto-match flow through here."""
+function _bind_caller_session!(gate_key::AbstractString)
+    caller = _current_mcp_caller()
+    isempty(caller) && return
+    lock(STANDALONE_SESSIONS_LOCK) do
+        s = get(STANDALONE_SESSIONS, caller, nothing)
+        s === nothing || (s.target_julia_session_id = String(gate_key))
+    end
+    return nothing
+end
+
+"""Project path for the calling agent's default session. Resolution order:
+1. explicit/auto binding on the caller's MCP session (`target_julia_session_id`),
+2. workspace root captured from the caller's MCP `roots`,
+3. caller-less legacy global (REPL/self only)."""
 function _last_session_project_path()
-    key = _LAST_SESSION_KEY[]
-    isempty(key) && return ""
     mgr = GATE_CONN_MGR[]
-    mgr === nothing && return ""
-    conn = get_connection_by_key(mgr, key)
-    conn === nothing && return ""
-    return conn.project_path
+    caller = _current_mcp_caller()
+    if !isempty(caller)
+        bound = lock(STANDALONE_SESSIONS_LOCK) do
+            s = get(STANDALONE_SESSIONS, caller, nothing)
+            s === nothing ? nothing : s.target_julia_session_id
+        end
+        if bound !== nothing && !isempty(bound) && mgr !== nothing
+            conn = get_connection_by_key(mgr, bound)
+            conn === nothing || return conn.project_path
+        end
+        wr = lock(_SESSION_WORKSPACE_ROOT_LOCK) do
+            get(_SESSION_WORKSPACE_ROOT, caller, "")
+        end
+        isempty(wr) || return wr
+    end
+    key = _LAST_SESSION_KEY[]
+    if !isempty(key) && mgr !== nothing
+        conn = get_connection_by_key(mgr, key)
+        conn === nothing || return conn.project_path
+    end
+    return ""
+end
+
+"""Convert a `file://` root URI to a local path (percent-decoded), or `nothing`."""
+function _root_uri_to_path(uri)
+    uri isa AbstractString || return nothing
+    s = String(uri)
+    startswith(s, "file://") || return nothing
+    s = s[length("file://")+1:end]
+    s = replace(s, r"%([0-9A-Fa-f]{2})" => m -> string(Char(parse(UInt8, m[2:end], base = 16))))
+    return isempty(s) ? nothing : s
+end
+
+"""Match a captured workspace root to a connected gate and bind the caller to it
+(longest project_path that is `root` or an ancestor of it wins)."""
+function _bind_caller_to_project!(caller::AbstractString, project_path::AbstractString)
+    mgr = GATE_CONN_MGR[]
+    mgr === nothing && return
+    proj = rstrip(String(project_path), '/')
+    best = nothing
+    for c in connected_sessions(mgr)
+        isempty(c.project_path) && continue
+        cp = rstrip(c.project_path, '/')
+        if cp == proj || startswith(proj, cp * "/")
+            (best === nothing || length(rstrip(best.project_path, '/')) < length(cp)) &&
+                (best = c)
+        end
+    end
+    best === nothing && return
+    lock(STANDALONE_SESSIONS_LOCK) do
+        s = get(STANDALONE_SESSIONS, String(caller), nothing)
+        s === nothing || (s.target_julia_session_id = short_key(best))
+    end
+    @debug "Auto-bound agent to gate via MCP roots" caller gate = short_key(best) project =
+        best.project_path
+    return nothing
+end
+
+"""Request the client's MCP `roots` and auto-bind this agent to the matching gate.
+Spawned when the agent's GET SSE receive stream opens; best-effort (no-op if the
+client returns no roots or none match a connected gate)."""
+function _capture_roots!(session_id::AbstractString)
+    res = request_roots(session_id)
+    res isa AbstractDict || return
+    roots = get(res, "roots", nothing)
+    (roots isa AbstractVector && !isempty(roots)) || return
+    for r in roots
+        uri = r isa AbstractDict ? get(r, "uri", nothing) : nothing
+        path = _root_uri_to_path(uri)
+        path === nothing && continue
+        lock(_SESSION_WORKSPACE_ROOT_LOCK) do
+            get!(_SESSION_WORKSPACE_ROOT, String(session_id), path)
+        end
+        _persist_workspace_root!(session_id, path)  # survive server restart
+        _bind_caller_to_project!(session_id, path)
+        break  # first usable root is the workspace; refine later if multi-root matters
+    end
+    return nothing
+end
+
+"""Re-establish a restored session's agent→gate binding from its persisted MCP
+workspace root, so the binding survives a server restart without the agent
+reconnecting (we restore sessions from persistence rather than re-initialize).
+Fast no-op once the session is already bound in memory."""
+function _ensure_session_binding!(session)
+    tj = session.target_julia_session_id
+    (tj === nothing || isempty(tj)) || return  # already bound this process-life
+    root = lock(_SESSION_WORKSPACE_ROOT_LOCK) do
+        get(_SESSION_WORKSPACE_ROOT, session.id, "")
+    end
+    if isempty(root)
+        pr = _persisted_workspace_root(session.id)
+        pr === nothing && return
+        root = pr
+        lock(_SESSION_WORKSPACE_ROOT_LOCK) do
+            _SESSION_WORKSPACE_ROOT[session.id] = root
+        end
+    end
+    _bind_caller_to_project!(session.id, root)  # no-op until the gate reconnects
+    return nothing
 end
 const TUI_MODEL = Ref{Any}(nothing)
 const TUI_LAST_FRAME = Ref{String}("")
@@ -131,8 +253,10 @@ function _resolve_gate_conn(session::String; allow_stalled::Bool = false)
         return (nothing, "ERROR: No session matched '$(session)'. Available: $available")
     end
 
-    # Track last used session for default collection resolution
+    # Default-session tracking: caller-less global fallback + per-agent binding, so
+    # the `ses=` an agent targets becomes ITS default without clobbering other agents.
     _LAST_SESSION_KEY[] = short_key(conn)
+    _bind_caller_session!(short_key(conn))
 
     # Stalled sessions: return a status message instead of letting tools timeout.
     # Callers managing the session lifecycle (manage_repl) pass allow_stalled=true

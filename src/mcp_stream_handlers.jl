@@ -275,13 +275,28 @@ function _stream_get_sse(http, req)
                 HTTP.setheader(http, "Content-Type" => "text/event-stream")
                 HTTP.setheader(http, "Cache-Control" => "no-cache")
                 HTTP.setheader(http, "Connection" => "keep-alive")
+                # This GET stream is the client's standalone receive channel. Bind it
+                # to the session so we can target it for server→client requests
+                # (roots/list), and proactively capture the agent's workspace roots to
+                # auto-bind it to its gate session.
+                sid = try; something(extract_mcp_session_id(req), ""); catch; ""; end
                 HTTP.startwrite(http)
+                outbox = isempty(sid) ? nothing : _register_session_stream!(sid)
+                if !isempty(sid)
+                    @async try; _capture_roots!(sid); catch; end
+                end
                 try
                     # Track which notifications this stream has already delivered
                     # so we don't re-send every second but also don't consume them
                     # (POST flush is the primary delivery path).
                     sent = Set{String}()
                     while isopen(http)
+                        # Targeted server→client messages (e.g. roots/list) first.
+                        if outbox !== nothing
+                            while isready(outbox)
+                                write(http, "data: $(JSON.json(take!(outbox)))\n\n")
+                            end
+                        end
                         notifs = lock(_PENDING_NOTIFICATIONS_LOCK) do
                             collect(values(_PENDING_NOTIFICATIONS))
                         end
@@ -296,6 +311,8 @@ function _stream_get_sse(http, req)
                         sleep(1)
                     end
                 catch
+                finally
+                    outbox === nothing || _unregister_session_stream!(sid, outbox)
                 end
                 return true
             end

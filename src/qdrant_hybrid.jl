@@ -304,7 +304,7 @@ function _qdrant_search_code(args)
         else
             raw = get(args, "collection", nothing)
             raw isa String && isempty(raw) && (raw = nothing)
-            col, col_err = _resolve_collection(raw, collections)
+            col, col_err = _resolve_search_collection(raw, collections)
             col_err !== nothing && return "Error: $col_err"
             sem_collection = col
             fts_collection = col

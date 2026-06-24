@@ -277,11 +277,40 @@ qdrant_list_collections_tool = @mcp_tool(
             return "No collections found in Qdrant."
         end
 
+        # Associate each collection with a live REPL session (if any) so an agent
+        # can see which `ses=`/project a collection belongs to, and which is likely
+        # its own. (Hints only — full list always shown.)
+        K = parentmodule(@__MODULE__)
+        mgr = try; K.GATE_CONN_MGR[]; catch; nothing; end
+        sessions = mgr === nothing ? () : K.connected_sessions(mgr)
+        by_col = Dict{String,Any}()
+        for c in sessions
+            rn, _ = _resolve_collection(get_project_collection_name(c.project_path), collections)
+            rn in collections && (by_col[rn] = c)
+        end
+        caller_proj = try; K._last_session_project_path(); catch; ""; end
+        caller_col = if isempty(caller_proj)
+            ""
+        else
+            rn, _ = _resolve_collection(get_project_collection_name(caller_proj), collections)
+            rn
+        end
+
         result = "📚 Available Collections:\n\n"
         for (i, name) in enumerate(collections)
             info = QdrantClient.get_collection_info(name)
             vector_count = get(get(info, "vectors_count", Dict()), "count", "unknown")
-            result *= "$i. $name (vectors: $vector_count)\n"
+            result *= "$i. $name (vectors: $vector_count)"
+            if haskey(by_col, name)
+                c = by_col[name]
+                result *= "  ↔ ses=$(K.short_key(c)) ($(c.project_path))"
+            end
+            name == caller_col && !isempty(caller_col) &&
+                (result *= "  ← likely this agent's project")
+            result *= "\n"
+        end
+        if !isempty(sessions)
+            result *= "\nTip: search_code defaults to your bound session's collection; pass collection= to override.\n"
         end
 
         return result

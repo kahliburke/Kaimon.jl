@@ -115,23 +115,58 @@ function save_persisted_sessions(sessions::Dict{String,Dict})
     end
 end
 
+# Guards read-modify-write cycles on sessions.json (register + workspace-root
+# persist) so concurrent agents/requests don't clobber each other's updates.
+const _SESSIONS_FILE_LOCK = ReentrantLock()
+
 """
     register_persisted_session(session_id::String)
 
 Register a session in the persistence file with the current timestamp.
 """
 function register_persisted_session(session_id::String)
-    sessions = load_persisted_sessions()
-    now_str = Dates.format(now(), "yyyy-mm-dd\\THH:MM:SS")
+    lock(_SESSIONS_FILE_LOCK) do
+        sessions = load_persisted_sessions()
+        now_str = Dates.format(now(), "yyyy-mm-dd\\THH:MM:SS")
 
-    # If session exists, only update last_seen; otherwise create new entry
-    if haskey(sessions, session_id)
-        sessions[session_id]["last_seen"] = now_str
-    else
-        sessions[session_id] = Dict("created_at" => now_str, "last_seen" => now_str)
+        # If session exists, only update last_seen; otherwise create new entry
+        if haskey(sessions, session_id)
+            sessions[session_id]["last_seen"] = now_str
+        else
+            sessions[session_id] = Dict("created_at" => now_str, "last_seen" => now_str)
+        end
+
+        save_persisted_sessions(sessions)
     end
+end
 
-    save_persisted_sessions(sessions)
+"""
+    _persist_workspace_root!(session_id, root)
+
+Persist the MCP workspace root captured for a session so its agent→gate binding
+survives a server restart — restored sessions (which don't re-`initialize`) get
+their default back without forcing the agent to reconnect.
+"""
+function _persist_workspace_root!(session_id::AbstractString, root::AbstractString)
+    lock(_SESSIONS_FILE_LOCK) do
+        sessions = load_persisted_sessions()
+        now_str = Dates.format(now(), "yyyy-mm-dd\\THH:MM:SS")
+        entry = get!(
+            sessions,
+            String(session_id),
+            Dict("created_at" => now_str, "last_seen" => now_str),
+        )
+        entry["workspace_root"] = String(root)
+        save_persisted_sessions(sessions)
+    end
+end
+
+"""The persisted MCP workspace root for a session, or `nothing`."""
+function _persisted_workspace_root(session_id::AbstractString)
+    entry = get(load_persisted_sessions(), String(session_id), nothing)
+    entry === nothing && return nothing
+    r = get(entry, "workspace_root", nothing)
+    (r isa AbstractString && !isempty(r)) ? String(r) : nothing
 end
 
 """
@@ -273,6 +308,95 @@ which would otherwise upgrade its first POST response to SSE unexpectedly."""
 function _clear_notifications!()
     lock(_PENDING_NOTIFICATIONS_LOCK) do
         empty!(_PENDING_NOTIFICATIONS)
+    end
+end
+
+# ============================================================================
+# Server→client RPC (per-session): targeted delivery + response correlation
+# ============================================================================
+# Notifications broadcast via the shared board above (every agent's GET SSE
+# stream peeks it). A server→client *request* (e.g. `roots/list`) is different:
+# it targets ONE agent and expects a correlated reply. So:
+#   • each agent's GET SSE receive stream registers an outbox Channel here, keyed
+#     by its Mcp-Session-Id; the stream loop drains it onto the wire.
+#   • the client POSTs its JSON-RPC response back to /mcp; the POST handler routes
+#     it to the waiting request by id.
+const _SESSION_OUTBOX = Dict{String,Channel{Dict{String,Any}}}()   # session_id => outbound
+const _SESSION_OUTBOX_LOCK = ReentrantLock()
+const _PENDING_SERVER_REQUESTS = Dict{String,Channel{Any}}()       # request_id => response sink
+const _PENDING_SERVER_REQUESTS_LOCK = ReentrantLock()
+
+"""Register an outbound queue for a session's GET SSE receive stream; returns the
+Channel the stream loop should drain. Replaces any prior queue for that session."""
+function _register_session_stream!(session_id::AbstractString)
+    ch = Channel{Dict{String,Any}}(64)
+    lock(_SESSION_OUTBOX_LOCK) do
+        old = get(_SESSION_OUTBOX, String(session_id), nothing)
+        old === nothing || (try; close(old); catch; end)
+        _SESSION_OUTBOX[String(session_id)] = ch
+    end
+    return ch
+end
+
+"""Tear down a session's outbox when its GET SSE stream closes (only if still ours)."""
+function _unregister_session_stream!(session_id::AbstractString, ch::Channel)
+    lock(_SESSION_OUTBOX_LOCK) do
+        get(_SESSION_OUTBOX, String(session_id), nothing) === ch &&
+            delete!(_SESSION_OUTBOX, String(session_id))
+    end
+    try; close(ch); catch; end
+    return nothing
+end
+
+"""Queue a JSON-RPC message for delivery on a session's GET SSE stream. Returns
+false if that session has no open receive stream."""
+function _push_to_session_outbox!(session_id::AbstractString, msg::Dict{String,Any})
+    lock(_SESSION_OUTBOX_LOCK) do
+        ch = get(_SESSION_OUTBOX, String(session_id), nothing)
+        ch === nothing && return false
+        try; put!(ch, msg); return true; catch; return false; end
+    end
+end
+
+"""If `parsed` is a JSON-RPC *response* to a server-issued request (id + result/
+error, no method), hand it to the waiter and return true; else false."""
+function _route_server_response!(parsed)
+    parsed isa AbstractDict || return false
+    haskey(parsed, "method") && return false
+    haskey(parsed, "id") || return false
+    (haskey(parsed, "result") || haskey(parsed, "error")) || return false
+    rid = string(parsed["id"])
+    ch = lock(_PENDING_SERVER_REQUESTS_LOCK) do
+        get(_PENDING_SERVER_REQUESTS, rid, nothing)
+    end
+    ch === nothing && return false
+    payload =
+        haskey(parsed, "result") ? parsed["result"] :
+        Dict{String,Any}("error" => parsed["error"])
+    try; put!(ch, payload); catch; end
+    return true
+end
+
+"""Send a `roots/list` request to `session_id` over its SSE stream and await the
+client's reply. Returns the parsed `result` (e.g. `Dict("roots"=>[...])`), or
+`nothing` on timeout / no open receive stream."""
+function request_roots(session_id::AbstractString; timeout::Float64 = 8.0)
+    rid = "srv-" * string(UUIDs.uuid4())
+    sink = Channel{Any}(1)
+    lock(_PENDING_SERVER_REQUESTS_LOCK) do
+        _PENDING_SERVER_REQUESTS[rid] = sink
+    end
+    try
+        _push_to_session_outbox!(session_id, Dict{String,Any}(
+            "jsonrpc" => "2.0", "id" => rid, "method" => "roots/list",
+        )) || return nothing
+        Base.timedwait(() -> isready(sink), timeout) === :ok || return nothing
+        return take!(sink)
+    finally
+        lock(_PENDING_SERVER_REQUESTS_LOCK) do
+            delete!(_PENDING_SERVER_REQUESTS, rid)
+        end
+        try; close(sink); catch; end
     end
 end
 
@@ -804,6 +928,16 @@ function start_mcp_server(
                 nothing
             end
 
+            # A JSON-RPC *response* to a server-issued request (e.g. the client's
+            # reply to our `roots/list`): route it to the waiter and 202-ack. These
+            # carry an id + result/error and no method, so they precede session
+            # lookup (correlation is by request id, not session).
+            if _route_server_response!(parsed_request)
+                HTTP.setstatus(http, 202)
+                HTTP.startwrite(http)
+                return nothing
+            end
+
             is_initialize =
                 parsed_request !== nothing &&
                 get(parsed_request, "method", "") == "initialize"
@@ -814,6 +948,11 @@ function start_mcp_server(
             # Update activity timestamp so the reaper doesn't kill active sessions
             if session !== nothing
                 Session.update_activity!(session)
+                # Restore the agent→gate binding for a session brought back from
+                # persistence after a restart (no re-initialize). Fast no-op once bound.
+                if !is_new_session
+                    try; _ensure_session_binding!(session); catch; end
+                end
             end
 
             # For non-initialize requests without a valid session, return 404 per

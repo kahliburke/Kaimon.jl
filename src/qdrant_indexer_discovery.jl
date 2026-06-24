@@ -467,3 +467,61 @@ function _resolve_collection(name::Union{String,Nothing}, available::Vector{Stri
     return (name, msg)
 end
 
+"""
+    _resolve_search_collection(raw, available) -> (name|nothing, err|nothing)
+
+Default-collection resolution for `search_code`. With an explicit `raw` name it
+defers to `_resolve_collection`. Without one, it walks the ladder — the calling
+agent's bound session / workspace root → a single connected session → (embedded,
+no gates) pwd → else an ambiguity error listing collection ↔ session ↔ project so
+the agent can pick. Unlike the bare `pwd()` default, this never silently scopes a
+multi-agent server to the wrong project.
+"""
+function _resolve_search_collection(raw::Union{String,Nothing}, available::Vector{String})
+    raw === nothing || return _resolve_collection(raw, available)
+    K = parentmodule(@__MODULE__)
+
+    # 1. The caller's bound session / captured workspace root.
+    proj = try; K._last_session_project_path(); catch; ""; end
+    if !isempty(proj)
+        rn, _ = _resolve_collection(get_project_collection_name(proj), available)
+        rn in available && return (rn, nothing)
+    end
+
+    mgr = try; K.GATE_CONN_MGR[]; catch; nothing; end
+    sessions = mgr === nothing ? () : K.connected_sessions(mgr)
+
+    # 2. Embedded / no gates: the legacy pwd() default (one project == the cwd).
+    isempty(sessions) && return _resolve_collection(nothing, available)
+
+    # 3. Exactly one session: auto-pick it (mirrors `ex`'s single-session default).
+    if length(sessions) == 1
+        rn, _ = _resolve_collection(get_project_collection_name(first(sessions).project_path), available)
+        rn in available && return (rn, nothing)
+    end
+
+    # 4. Ambiguous (≥2 sessions) or unresolved: require an explicit choice, with hints.
+    return (nothing, _ambiguous_collection_error(available, sessions))
+end
+
+"""Associative error for an unscoped `search_code` when the agent isn't bound:
+lists each connected REPL session as collection ↔ ses ↔ project so the agent can
+pick the right `collection=` (and learn the `ses=` that would bind it)."""
+function _ambiguous_collection_error(available::Vector{String}, sessions)
+    K = parentmodule(@__MODULE__)
+    io = IOBuffer()
+    print(io, "no `collection` specified and no session is bound to this agent. ")
+    print(io, "Pass `collection=` explicitly, or run a session tool first (e.g. `ex` with ")
+    print(io, "`ses=<key>`) — the session you target becomes this agent's default for later searches.")
+    if !isempty(sessions)
+        print(io, "\n\nConnected REPL sessions (collection ↔ ses ↔ project):")
+        for c in sessions
+            nm = get_project_collection_name(c.project_path)
+            shown = nm in available ? nm : "$nm (not indexed)"
+            print(io, "\n  • ", shown, "  ↔  ses=", K.short_key(c), "  ↔  ", c.project_path)
+        end
+    end
+    isempty(available) || print(io, "\n\nAll collections: ", join(available, ", "))
+    return String(take!(io))
+end
+

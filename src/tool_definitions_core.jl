@@ -123,6 +123,21 @@ ping_tool = @mcp_tool(
             connected_count = count(c -> c.status == :connected, user_conns)
             # Sort by connected_at descending (newest first)
             sort!(user_conns; by=c -> c.connected_at, rev=true)
+            # The gate this agent is bound to (its default for unscoped tools/search),
+            # set from its `ses=` or auto-matched from its MCP workspace root. Promote
+            # it to the top and mark it so the agent knows its default at a glance.
+            bound_key = let caller = _current_mcp_caller()
+                isempty(caller) ? "" : lock(STANDALONE_SESSIONS_LOCK) do
+                    s = get(STANDALONE_SESSIONS, caller, nothing)
+                    s === nothing ? "" : something(s.target_julia_session_id, "")
+                end
+            end
+            if !isempty(bound_key)
+                bi = findfirst(c -> short_key(c) == bound_key, user_conns)
+                if bi !== nothing
+                    pushfirst!(user_conns, popat!(user_conns, bi))
+                end
+            end
             status *= "\n\nSessions: $(connected_count) connected / $(length(user_conns)) total"
             for conn in user_conns
                 key = short_key(conn)
@@ -158,7 +173,9 @@ ping_tool = @mcp_tool(
                 else
                     ", free"
                 end
-                status *= "\n  $icon $key $dname ($(conn.status), up $(uptime_str), PID $(conn.pid)$tools_info$extra)"
+                mine = (!isempty(bound_key) && key == bound_key) ?
+                    "  ← your session (default for unscoped tools/search; override with ses=)" : ""
+                status *= "\n  $icon $key $dname ($(conn.status), up $(uptime_str), PID $(conn.pid)$tools_info$extra)$mine"
             end
             # Extension session summary (internal only, not addressable via tools)
             if !isempty(ext_conns)
