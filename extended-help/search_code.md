@@ -1,33 +1,30 @@
 # search_code
 
-The primary way to find code — prefer it over grep/find. It fuses **semantic**
-(meaning-based vector) search with **lexical** (exact keyword/identifier) search,
-ranks them together, and returns the best hits. Finds exact identifiers too, so you
-don't need grep for symbol lookups.
+Find code by **meaning** — prefer it (and its exact-pattern sibling `grep_code`) over
+shell grep/find. Semantic (vector) search is the primary signal, lightly boosted by
+exact keyword matches; results come back ranked by relevance.
 
-## Pick the mode for your intent — then keep the query focused
+## search_code vs grep_code
 
-Two kinds of search; choose deliberately:
+- **`search_code`** — you can describe *what the code does* but not its exact name.
+- **`grep_code`** — you have an exact symbol, string, or regex. It runs a true regex
+  over the live working tree and returns each hit's enclosing function. This is the
+  right replacement for "find every call site of `_eval_with_capture`" — which used to
+  be a `mode="lexical"` search here.
 
-- **You know the symbol** (a function/type name or a distinctive fragment of one) →
-  `mode="lexical"`, and type **1–3 distinctive identifiers**. Fast, exact, and works
-  with embeddings down. This is the right tool for "find `atStartOfTurn`" or "where
-  is `onApplyPower` defined", and the right answer for hunting symbols in a large
-  decompiled / generated codebase.
-- **You know the concept, not the name** ("where is HTTP routing handled") →
-  `mode="semantic"` (or the default `hybrid`), with a **short natural-language
-  phrase** — a handful of meaningful words.
+## Just describe what you want
 
-**Do NOT dump a sentence of keywords.** A long bag of words is the #1 cause of slow,
-imprecise searches: bare terms are OR-joined, so common words (`parse`, `method`,
-`body`, `value`, `data`) each drag in an enormous match set the engine must merge and
-rank. Pick the few distinctive terms that actually identify what you want. The tool
-caps the OR fan-out and returns a `⚠` note if you over-stuff a query — heed it and
-narrow.
+Semantic-first means a **natural-language phrase is good, not bad** — you don't need to
+boil it down to a few keywords or ration common words. Say what the code does:
 
-> Bad: `transform power parse STS1 power java method body atStartOfTurn onApplyPower actions`
-> Good (symbol hunt): `search_code(query="atStartOfTurn onApplyPower", mode="lexical")`
-> Good (concept):     `search_code(query="apply power on turn start")`
+- Concept / behaviour → a short phrase: `"where is HTTP routing handled"`,
+  `"apply a browser value change to a cell"`. (default `hybrid`, or `mode="semantic"`.)
+- An exact symbol you can name → reach for `grep_code(pattern="…")`; or stay here with
+  `mode="lexical"` if you want semantic neighbours ranked alongside the exact hits.
+
+> Good (concept): `search_code(query="apply a browser value change to a cell")`
+> Good (concept): `search_code(query="recompute reactive cells when a dependency changes")`
+> Exact symbol:   `grep_code(pattern="_eval_with_capture")`
 
 ## Scope to a collection
 
@@ -42,7 +39,8 @@ only when you genuinely don't know which project holds the code.
   unsure; still keep the query focused.
 - `mode="semantic"` — vector search only (concept/behavior queries).
 - `mode="lexical"` — exact keyword/identifier only; works even when embeddings
-  (Ollama) are unavailable. Best for symbol hunts.
+  (Ollama) are unavailable. (For pure exact-symbol/pattern hunts, `grep_code` is
+  usually the better tool — it's repo-scoped and shows the enclosing function.)
 
 ## Output format
 
@@ -83,10 +81,9 @@ need to escape or quote anything for the common cases.
 
 ### Rules
 
-- **Multiple bare terms → OR** (any-of), ranked so chunks matching more/better terms
-  float to the top. You don't need operators for a few symbols — but keep it to a
-  *few*: a bare bag beyond ~8 terms is trimmed to the most distinctive ones (you'll
-  get a `⚠` note), because OR-ing many common words is slow and unranked-helpful.
+- **Multiple bare terms → OR** (any-of) on the lexical half, ranked so chunks matching
+  more/better terms float up. This half is a *light boost* on top of semantic now, so
+  you don't need to ration keywords — describe what you want and let meaning lead.
 - **Attached punctuation** (`push!`, `sort!`, `@view`, `Base.push!`, `foo?`) is quoted
   for you and matched literally — never a syntax error.
 - **Full-word operators** `AND` / `OR` / `NOT` / `NEAR` (any case) are honored as
@@ -118,11 +115,11 @@ single literal phrase and a ⚠ note is returned explaining why.
 ## Examples
 
 ```julia
-search_code(query="atStartOfTurn onApplyPower", mode="lexical")  # symbol hunt: few distinctive ids
-search_code(query="_eval_with_capture", mode="lexical")          # one exact symbol
-search_code(query="function that handles HTTP routing")          # concept (hybrid/semantic)
-search_code(query="commit AND floor")                            # intersect two required terms
-search_code(query="\"acquire_floor\"")                           # exact phrase
-search_code(query="parsePower", collection="slaythespiremodfactory")  # scope to a project
-search_code(query="render", cross_project=true)                  # only when project unknown
+search_code(query="function that handles HTTP routing")          # concept (default hybrid)
+search_code(query="apply a browser value change to a cell")      # behaviour, full phrase
+search_code(query="commit AND floor")                            # intersect two required terms (lexical half)
+search_code(query="render output to HTML", collection="kaimonslate")  # scope to a project
+search_code(query="how dependency cycles are detected", cross_project=true)  # only when unknown
+# Exact symbol or pattern? Use grep_code instead:
+grep_code(pattern="_eval_with_capture")                          # every call site, with enclosing fn
 ```

@@ -142,17 +142,17 @@ f) Background jobs are **persisted to SQLite**. On TUI restart, Kaimon checks th
 
 **Answers:**
 
-a) `search_code(query="_eval_with_capture", mode="lexical")` (hybrid works too). It does exact keyword/identifier matching via a local FTS5 index — finds exact symbols like grep would, but indexed, faster, and ranked. **Don't use grep/find/Bash for code search**: `search_code` is a superset for code, so the old "I need grep for the exact name" reason no longer holds. (3 pts)
+a) `grep_code(pattern="_eval_with_capture")` — it returns every call site **with its enclosing function**, exact, repo-scoped, over the live tree. Don't use grep/find/Bash: `grep_code` is the better grep (shows the enclosing symbol, is `.gitignore`-aware, ranks). (`search_code` with `mode="lexical"` also finds it, but `grep_code` is the purpose-built tool for "every exact occurrence".) (3 pts)
 
-b) `search_code(query="HTTP routing handling")` — default `hybrid` or `mode="semantic"`, a short natural-language phrase; the semantic half finds code by meaning. (3 pts)
+b) `search_code(query="where HTTP routing is handled")` — `search_code`, a short natural-language phrase. It's semantic-first, so describe the behaviour; you don't need to know the name. (3 pts)
 
-c) It's a **kitchen-sink query**: ~11 bare terms, OR-joined, several of them common words (`parse`, `power`, `java`, `method`, `body`, `actions`) that each match enormous swaths of the index — slow and imprecise, and the tool will trim it to the most distinctive terms with a ⚠ note. Instead, **pick the few distinctive identifiers and go lexical**: `search_code(query="atStartOfTurn onApplyPower", mode="lexical", collection="…")`. Scope to the project, name 1–3 distinctive symbols, use `AND` if two must co-occur. (3 pts)
+c) Under semantic-first it's **no longer the OR-bag disaster** it once was — the lexical arm is floored on bag-of-words queries, so it won't flood you with keyword-coincidences. But a word-salad still embeds worse than a coherent phrase: **say what you want** — `search_code(query="apply power at the start of a turn")`. And if `atStartOfTurn` / `onApplyPower` are exact symbols you already know, that's `grep_code(pattern="atStartOfTurn|onApplyPower")`. (3 pts)
 
-d) **False.** `search_code` has a lexical half backed by a local SQLite index, so it keeps working when Ollama/Qdrant are down — `mode="lexical"`, and `hybrid` auto-degrades to lexical-only with a note. You don't need grep even offline. (3 pts)
+d) **False.** `search_code`'s lexical half (local SQLite FTS) keeps working with Ollama/Qdrant down — `mode="lexical"`, and `hybrid` auto-degrades to lexical-only. And `grep_code` never needs embeddings at all (it's ripgrep over files). You don't need shell grep even offline. (3 pts)
 
-e) Only for **literal text in files that aren't part of the code index** — logs, generated files, config/data, or matching across arbitrary file types. For finding code (by concept or exact symbol), `search_code` wins. (3 pts)
+e) Only for **non-code text not in the index** — logs, generated files, config/data, or matching across arbitrary file types. For finding code (by concept → `search_code`, by exact pattern → `grep_code`), the Kaimon tools win. (3 pts)
 
-**Grading:** 15 points total (3 each); partial credit. Key concepts: lexical for symbols / semantic for concepts, "a few distinctive terms — not a sentence", scope to a collection, and "prefer it over grep".
+**Grading:** 15 points total (3 each); partial credit. Key concepts: `grep_code` for exact patterns / `search_code` for meaning (semantic-first — a phrase is fine), both repo-scoped with enclosing symbols, work offline (lexical / ripgrep), and "prefer them over shell grep".
 
 ---
 

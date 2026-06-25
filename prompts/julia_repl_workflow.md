@@ -4,33 +4,31 @@
 
 Kaimon provides Julia-native code discovery tools. Prefer these over grep/shell:
 
-- **`search_code(query="...")`** — Hybrid code search (semantic + exact identifier)
+- **`search_code(query="...")`** — find code by MEANING (a concept/behaviour); semantic-ranked
+- **`grep_code(pattern="...")`** — find an EXACT pattern/regex over the live tree, with enclosing symbol
 - **`type_info("Type")`** — Complete type info: fields, hierarchy, subtypes
 - **`search_methods("function")`** — All method signatures and overloads
 - **`list_names("Module")`** — Exported (or all) names in a module
 - **`goto_definition / document_symbols / workspace_symbols`** — Code navigation via Julia reflection
 
-### Searching effectively (read this before your first `search_code`)
+### Searching effectively (read this before your first search)
 
-`search_code` is your default for finding code — but match the query to the intent
-and keep it tight:
+Two tools, picked by intent — both beat shell grep/find (repo-scoped, `.gitignore`-aware,
+and they show each hit's enclosing function):
 
-- **Hunting a symbol you can name** (a function/type, or a distinctive fragment) →
-  `mode="lexical"` with **1–3 distinctive identifiers**. Exact, fast, no embeddings
-  needed. e.g. `search_code(query="atStartOfTurn onApplyPower", mode="lexical")`.
-- **Hunting a concept you can't name** ("where is HTTP routing handled") →
-  default `hybrid` (or `mode="semantic"`) with a **short natural-language phrase**.
-- **Don't dump a sentence of keywords.** Bare terms are OR-joined, so common words
-  (`parse`, `method`, `value`, `data`) each pull in a huge match set — slow and
-  imprecise. A long bag is trimmed to the most distinctive terms and you get a `⚠`
-  note; narrow it. Use full-word `AND` to require two terms together.
-- **Stay scoped.** Search defaults to the session's project; pass `collection="…"`
-  for another. `cross_project=true` fans out over every project — slower, use only
-  when you don't know which project holds the code.
-- One symbol, one mode: for "find every use of `_eval_with_capture`", that's
-  `search_code(query="_eval_with_capture", mode="lexical")` — not grep/find/Bash.
+- **By MEANING → `search_code(query="…")`.** You can describe what the code does but not
+  its exact name. Semantic-first, so a **natural-language phrase is good** — say it in
+  words: `search_code(query="where is HTTP routing handled")`. No need to ration keywords.
+- **By EXACT pattern → `grep_code(pattern="…")`.** You have a symbol, string, or regex.
+  Returns every occurrence with its enclosing symbol:
+  `grep_code(pattern="_eval_with_capture")`. Add `query="…"` to also rank the matching
+  files by relevance.
+- **Stay scoped.** Both default to your session's project; pass `collection=` / `path=`
+  for another. `search_code(..., cross_project=true)` fans out over every project —
+  slower, only when you don't know which one holds the code.
 
-`tool_help("search_code", extended=true)` has the full query-syntax reference.
+Full references: `tool_help("search_code", extended=true)` and
+`tool_help("grep_code", extended=true)`.
 
 ---
 
@@ -110,7 +108,7 @@ The eval history keeps the last 64 evaluations. Use `check_eval` when:
 
 **Execution:** `ex(e="code")` — primary tool for everything
 **Introspection:** `list_names("Module")`, `type_info("Type")`, `search_methods("func")`
-**Code search:** `search_code(query="...", mode="lexical"|"semantic"|"hybrid")`, `qdrant_list_collections()`
+**Code search:** `search_code(query="...")` (by meaning) · `grep_code(pattern="...")` (exact pattern/regex) · `qdrant_list_collections()`
 **Code navigation:** `goto_definition()`, `document_symbols()`, `workspace_symbols()`
 **Testing:** `run_tests(pattern="...")` — spawns subprocess, streams results
 **Debugging:** `debug_ctrl()`, `debug_eval()`, `debug_exfiltrate()`, `debug_safehouse(action="inspect"|"clear")`

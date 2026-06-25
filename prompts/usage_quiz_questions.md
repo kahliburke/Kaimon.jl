@@ -76,13 +76,13 @@ f) What happens to background jobs if the Kaimon TUI is restarted?
 
 ## Question 8: Searching effectively (15 points)
 
-`search_code` is hybrid: it combines semantic (meaning-based) vector search with exact keyword/identifier matching, fused and ranked together. Picking the mode for your intent and keeping the query focused matters as much as choosing the tool.
+Kaimon gives you TWO code-search tools: `search_code` finds by MEANING (semantic-first — describe what the code does), and `grep_code` finds an EXACT pattern/regex over the live tree, returning each hit's enclosing function. Picking the right one for your intent matters.
 
-a) You need to find every place the exact function `_eval_with_capture` is called. Which tool and `mode`, and why should you NOT reach for `grep`/`find`/Bash?
-b) You're new to a codebase and want "where HTTP routing is handled." Which tool, which `mode`, and what kind of query?
-c) You're looking for a specific method in a project of 4,000 decompiled Java classes, and your instinct is to call `search_code(query="transform power parse STS1 power java method body atStartOfTurn onApplyPower actions")`. Why is that a poor query, and what should you do instead?
-d) True or false: if Ollama (embeddings) is down, you should fall back to `grep` for code search. Explain.
-e) When, if ever, is `grep`/Bash the right tool over `search_code`?
+a) You need to find every place the exact function `_eval_with_capture` is called. Which tool, and why should you NOT reach for `grep`/`find`/Bash?
+b) You're new to a codebase and want "where HTTP routing is handled." Which tool, and what kind of query?
+c) Your instinct is to write a long bag of keywords: `search_code(query="transform power parse STS1 power java method body atStartOfTurn onApplyPower actions")`. Under semantic-first search, is that the problem it used to be? What's a better query?
+d) True or false: if Ollama (embeddings) is down, you should fall back to shell `grep` for code search. Explain.
+e) When, if ever, is shell `grep`/Bash the right tool over `search_code`/`grep_code`?
 
 ---
 
