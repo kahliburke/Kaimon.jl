@@ -363,11 +363,13 @@ usage_instructions_tool =
 
 usage_quiz_tool = @mcp_tool(
     :usage_quiz,
-    """Self-graded quiz on Kaimon usage patterns.
+    """Self-graded quiz on Kaimon usage patterns — a primer for working effectively.
 
 Default: returns quiz questions. With show_sols=true: returns solutions and grading rubric.
-Tests understanding of shared REPL model, q=true/false usage, multi-session routing, and tool selection.
-If score < 75, review usage_instructions and retake.""",
+Covers the shared REPL model, q-flag usage, sessions/routing, picking purpose-built tools
+(search/introspection/testing/debugging), eval tracking + background jobs, the search tools
+(search_code/grep_code), and environment discipline. Scored out of 100; if < 75, review
+usage_instructions and retake.""",
     Dict(
         "type" => "object",
         "properties" => Dict(

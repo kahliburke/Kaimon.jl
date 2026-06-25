@@ -1,96 +1,126 @@
 # Kaimon Usage Quiz
 
-Test your understanding of the `ex` tool and shared REPL environment. Answer each question, then call `usage_quiz(show_sols=true)` to check answers and grade yourself.
+A primer on working effectively with Kaimon: the shared REPL and `ex` tool, sessions, the
+purpose-built tools (search, introspection, testing, debugging), background jobs, and the
+behaviours that keep you productive and out of trouble. Answer each question, then call
+`usage_quiz(show_sols=true)` to check your answers and self-grade. **Aim for ≥75/100.**
 
 ---
 
-## Question 1: Shared REPL Model (15 points)
+## Question 1: Shared REPL model (10 points)
 
-What does it mean that the user and agent work in a shared REPL, and what's the most important implication for communication?
+You and the user share one live REPL. What does that mean concretely, and what is the
+single most important implication for how you communicate and how you surface values?
 
 ---
 
-## Question 2: When to Use `q=false` (25 points)
+## Question 2: When to use `q=false` (10 points)
 
-Should you use `q=true` or `q=false` for each? Explain why.
+`q=true` (the default) suppresses the return value; `q=false` returns it. Pick one for each
+and say why:
 
 a) `ex(e="using Statistics")`
-b) `ex(e="test_data = [1, 2, 3, 4, 5]")`
-c) `ex(e="length(result)")` - to check if there's a bug
-d) `ex(e="function foo(x) return x^2 end")`
-e) `ex(e="methods(my_function)")` - to analyze signatures
+b) `ex(e="data = [1, 2, 3, 4, 5]")`
+c) `ex(e="length(result)")` — to check for a bug
+d) `ex(e="function foo(x) x^2 end")`
+e) `ex(e="methods(my_function)")` — to read the signatures
 
 ---
 
-## Question 3: Critique This Code (20 points)
+## Question 3: Critique this code (10 points)
 
-Identify ALL problems and explain what should be done instead:
+Identify every problem and give the fix:
 
 ```julia
-ex(e="println('Loading module...'); include('MyModule.jl')", q=false)
-ex(e="println('Creating test data...'); data = [1,2,3,4,5]", q=false)
-ex(e="println('Computing mean...'); m = mean(data)", q=false)
-ex(e="println('Result is: ', m)", q=false)
+ex(e="println('Loading...'); include('MyModule.jl')", q=false)
+ex(e="println('Data...'); data = [1,2,3,4,5]", q=false)
+ex(e="println('Mean...'); m = mean(data)", q=false)
+ex(e="println('Result: ', m)", q=false)
 ```
 
 ---
 
-## Question 4: Multi-Session Concept (20 points)
+## Question 4: Sessions & routing (12 points)
 
 a) What is a "session" in Kaimon?
-b) How do you discover available sessions?
-c) When and how do you use the `ses` parameter on `ex` and other tools?
-d) What happens if you call `ex` without `ses` when multiple sessions are connected?
+b) How do you discover the connected sessions?
+c) When and how do you use `ses=` on `ex` and other tools?
+d) What happens if you omit `ses` while several sessions are connected — and why does this
+   matter for *safety*?
 
 ---
 
-## Question 5: Tool Selection (15 points)
+## Question 5: Pick the right tool (10 points)
 
-For each task, which tool should you use and why?
+Which Kaimon tool fits each task — and why does it beat raw `ex`?
 
-a) You want to see all methods of `push!`
-b) You want to run the project's test suite and see pass/fail summary
-c) You want to check what fields a `DataFrame` has
-d) You want to find code that handles WebSocket connections (by concept)
-e) You need to run `using GLMakie; scatter([1,2,3], [4,5,6])` — what `ex` parameter is critical and why?
-
----
-
-## Question 6: Eval Tracking (10 points)
-
-a) When does the eval ID become available — before, during, or after the evaluation executes? How is it delivered?
-b) If a long-running `ex()` call times out on the client side, how can you check if it completed?
+a) See every method of `push!`
+b) Run the project's test suite with a pass/fail summary
+c) Inspect the fields and hierarchy of a `DataFrame`
+d) Find code that handles WebSocket connections, by concept (you don't know the name)
+e) Find every call site of the exact function `_eval_with_capture`
+f) Run `using GLMakie; scatter([1,2,3],[4,5,6])` — which `ex` parameter is essential, and why?
 
 ---
 
-## Question 7: Background Jobs (15 points)
+## Question 6: Eval tracking (6 points)
 
-a) What happens automatically when an `ex()` call takes longer than 30 seconds?
-b) How do you check on a promoted job's progress? What information is available?
-c) How often should you poll check_eval, and how does "last activity" help you decide?
-d) How can running code report intermediate values to the agent? Give an example.
-e) How does cooperative cancellation work? What must the running code do?
-f) What happens to background jobs if the Kaimon TUI is restarted?
+a) When is the eval ID available — before, during, or after execution — and how is it delivered?
+b) An `ex()` call timed out on your side. How do you find out whether it actually finished?
 
 ---
 
-## Question 8: Searching effectively (15 points)
+## Question 7: Background jobs (12 points)
 
-Kaimon gives you TWO code-search tools: `search_code` finds by MEANING (semantic-first — describe what the code does), and `grep_code` finds an EXACT pattern/regex over the live tree, returning each hit's enclosing function. Picking the right one for your intent matters.
-
-a) You need to find every place the exact function `_eval_with_capture` is called. Which tool, and why should you NOT reach for `grep`/`find`/Bash?
-b) You're new to a codebase and want "where HTTP routing is handled." Which tool, and what kind of query?
-c) Your instinct is to write a long bag of keywords: `search_code(query="transform power parse STS1 power java method body atStartOfTurn onApplyPower actions")`. Under semantic-first search, is that the problem it used to be? What's a better query?
-d) True or false: if Ollama (embeddings) is down, you should fall back to shell `grep` for code search. Explain.
-e) When, if ever, is shell `grep`/Bash the right tool over `search_code`/`grep_code`?
+a) What happens automatically when an `ex()` runs longer than ~30 s?
+b) How do you check a promoted job, and what does it report?
+c) How often should you poll, and how does "last activity" guide that?
+d) How can long-running code report progress / intermediate values to you? Give an example.
+e) How does cancellation work — what must the running code do?
+f) What happens to background jobs across a Kaimon restart?
 
 ---
 
-## Grading Scale
+## Question 8: Searching code (10 points)
 
-- **100-130**: Excellent! Ready to use Kaimon effectively.
-- **90-99**: Good. Review missed areas before starting.
-- **78-89**: Review `usage_instructions` and retake.
-- **Below 78**: Study `usage_instructions` carefully and retake.
+Kaimon has TWO search tools: **`search_code`** finds by MEANING (semantic-first — describe
+what the code does), and **`grep_code`** finds an EXACT pattern/regex over the live tree,
+returning each hit's enclosing function.
 
-**Check answers:** `usage_quiz(show_sols=true)`
+a) Find every call site of the exact function `_eval_with_capture`. Which tool, and why not shell `grep`/`find`?
+b) You want "where HTTP routing is handled" but don't know the function name. Which tool, and what query?
+c) Is a long bag of keywords (`"transform power parse method body atStartOfTurn actions"`) a problem under semantic-first search? What's better?
+d) Ollama (embeddings) is down. Should you fall back to shell `grep`? Explain.
+e) You need to search a `.log` file or other generated/gitignored text. Do you have to leave the Kaimon tools? When is shell `grep`/`sed`/`awk` actually the right call?
+
+---
+
+## Question 9: Debugging (10 points)
+
+a) A test fails and the output doesn't tell you why. What's the recommended approach
+   instead of re-running and guessing — and which macro?
+b) What's the difference between `@infiltrate` and `@exfiltrate`, and when do you use each?
+c) At an `@infiltrate` breakpoint, how do you see the locals, evaluate an expression in that
+   scope, and then resume?
+d) You used `@exfiltrate` to capture values without pausing. How do you inspect them afterward?
+
+---
+
+## Question 10: Environment & staying out of trouble (10 points)
+
+a) Add a package to the session's project — which tool, and what must you NEVER do to the environment?
+b) After changing a `struct` or `__init__`, the session behaves as if the old code is loaded. What do you do?
+c) You suspect the precompile cache is corrupt, or that Revise didn't pick up your edit. Are these likely the cause?
+d) To run project code or tests, should you `julia -e ...` in Bash or go through the session? Why?
+
+---
+
+## Scoring
+
+**Total: 100. Pass: ≥75.**
+
+- **90–100** — excellent; ready to work efficiently.
+- **75–89** — good; skim the areas you missed.
+- **Below 75** — review `usage_instructions` and retake.
+
+**Check your answers:** `usage_quiz(show_sols=true)`
