@@ -145,20 +145,38 @@ function start!(mgr::ConnectionManager)
         end
     end
 
-    # Stream drain pump — headless only. Eval results arrive on the SUB stream and
-    # are routed to the waiting caller's inbox by drain_stream_messages!, which in
-    # the TUI is driven by the render loop. Headless (task_queue === nothing) has no
-    # render loop, so without this pump every eval_complete is never read and `ex`
-    # hangs for the full timeout, then promotes to a stuck background job. (#50)
+    # Stream drain — headless only. Eval results arrive on the SUB stream and are
+    # routed to the waiting caller's inbox by drain_stream_messages!, which in the
+    # TUI is driven by the render loop. Headless (task_queue === nothing) has no
+    # render loop, so without this every eval_complete is never read and `ex` hangs
+    # then promotes to a stuck background job (#50). Rather than poll, we run an
+    # event-driven per-connection SUB reader (persistent FDWatcher, like the DEALER
+    # reader). A lightweight supervisor keeps one reader per connection; the readers
+    # self-exit on disconnect. The supervisor's coarse cadence is bookkeeping only —
+    # the draining itself is event-driven (a reader parks until its SUB is readable).
     if mgr.task_queue === nothing
         mgr.drain_task = Threads.@spawn begin
+            readers = Dict{UInt,Task}()   # objectid(conn) → reader task
             while mgr.running
                 try
-                    drain_stream_messages!(mgr)
+                    conns = lock(mgr.lock) do; copy(mgr.connections) end
+                    live = Set{UInt}()
+                    for conn in conns
+                        key = objectid(conn)
+                        push!(live, key)
+                        t = get(readers, key, nothing)
+                        if t === nothing || istaskdone(t)
+                            readers[key] = Threads.@spawn _sub_reader(mgr, conn)
+                        end
+                    end
+                    # Forget readers for connections that are gone (they self-exit).
+                    for key in collect(keys(readers))
+                        key in live || delete!(readers, key)
+                    end
                 catch e
-                    @debug "Headless drain error" exception = e
+                    @debug "Headless drain supervisor error" exception = e
                 end
-                sleep(0.05)
+                sleep(1.0)
             end
         end
     end
@@ -310,7 +328,7 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
                 # Serialize with the drain (which recvs sub_socket under req_lock)
                 # so we never close it mid-recv (#51).
                 lock(conn.req_lock) do
-                    try; close(conn.sub_socket); catch; end
+                    _zmq_close!(conn.sub_socket)   # close + drop its ctx.sockets weakref
                     conn.sub_socket = nothing
                 end
                 needs_sub = true

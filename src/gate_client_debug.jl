@@ -194,3 +194,60 @@ function drain_stream_messages!(mgr::ConnectionManager)
     return messages
 end
 
+"""
+    _sub_reader(mgr::ConnectionManager, conn::REPLConnection)
+
+Per-connection SUB stream reader — the event-driven, persistent-`FDWatcher`
+counterpart to a poll loop, symmetric with the DEALER reader (`_rc_reader`).
+Blocks on ONE persistent watcher over the connection's SUB socket fd (zero idle
+CPU) and, on each readable wake, calls [`drain_stream_messages!`](@ref) to route
+the pending messages. Only the *trigger* changes — the recv still happens inside
+`drain_stream_messages!` under `conn.req_lock`, so socket ownership is unchanged
+(#51-safe).
+
+Used by the HEADLESS drain supervisor; the TUI instead drives
+`drain_stream_messages!` from its render loop. Exits when the connection
+disconnects or the manager stops. A recreated SUB socket (new fd, closed old fd)
+makes the parked `wait` throw, and the loop rebuilds the watcher on the new fd.
+"""
+function _sub_reader(mgr::ConnectionManager, conn::REPLConnection)
+    fdw = nothing
+    watched_fd = Cint(-1)
+    try
+        while mgr.running && conn.status !== :disconnected
+            sub = conn.sub_socket
+            fd = sub === nothing ? Cint(-1) : (try Cint(sub.fd) catch; Cint(-1) end)
+            if fd < 0
+                # SUB not connected yet / mid-recreation — brief settle, retry.
+                fdw === nothing || (try; close(fdw); catch; end)
+                fdw = nothing
+                sleep(0.1)
+                continue
+            end
+            if fdw === nothing || watched_fd != fd
+                fdw === nothing || (try; close(fdw); catch; end)
+                fdw = try FileWatching.FDWatcher(RawFD(fd), true, false) catch; nothing end
+                watched_fd = fd
+                fdw === nothing && (sleep(0.1); continue)
+                # Buffered data may already be present — drain before parking
+                # (also re-arms the ZMQ_FD edge so the watcher fires on the next).
+                drain_stream_messages!(mgr)
+            end
+            # Block until the SUB is readable (zero idle CPU). A closed fd — socket
+            # recreated or disconnected — makes `wait` throw → rebuild/exit.
+            woke = try
+                wait(fdw)
+                true
+            catch
+                fdw = nothing
+                false
+            end
+            woke && drain_stream_messages!(mgr)
+        end
+    finally
+        fdw === nothing || (try; close(fdw); catch; end)
+    end
+    return nothing
+end
+
+

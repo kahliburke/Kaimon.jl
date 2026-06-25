@@ -499,7 +499,7 @@ function tui(; port::Int = 2828, theme_name::Union{Symbol,Nothing} = nothing, re
     while true
         # invokelatest so that after Revise updates, the new method bodies
         # for view()/update!() are visible inside Tachikoma's event loop.
-        Base.invokelatest(app, model; fps = 30)
+        Base.invokelatest(app, model; fps = tui_fps())
 
         if model._restart_requested
             model._restart_requested = false

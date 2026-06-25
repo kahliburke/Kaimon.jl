@@ -217,6 +217,57 @@ function save_global_config(config::SecurityConfig)
     end
 end
 
+# ── TUI frame rate ───────────────────────────────────────────────────────────
+# Stored as the extra "fps" key in config.json (preserved by save_global_config's
+# read-then-merge, like "personality"). The render loop redraws every frame, so a
+# lower fps cuts idle render CPU ~proportionally at the cost of less smooth
+# animation. Resolution: env KAIMON_TUI_FPS > config.json "fps" > default 30.
+
+const _TUI_FPS_DEFAULT = 30
+const _TUI_FPS_MIN = 1
+const _TUI_FPS_MAX = 120
+
+"""
+    tui_fps() -> Int
+
+Resolve the TUI render frame rate (env `KAIMON_TUI_FPS` > config.json `"fps"` >
+default $(_TUI_FPS_DEFAULT)), clamped to $(_TUI_FPS_MIN)–$(_TUI_FPS_MAX).
+"""
+function tui_fps()
+    env = tryparse(Int, strip(get(ENV, "KAIMON_TUI_FPS", "")))
+    env !== nothing && return clamp(env, _TUI_FPS_MIN, _TUI_FPS_MAX)
+    fps = _TUI_FPS_DEFAULT
+    try
+        p = get_global_config_path()
+        if isfile(p)
+            data = JSON.parse(read(p, String); dicttype = Dict{String,Any})
+            v = get(data, "fps", nothing)
+            v isa Real && (fps = round(Int, v))
+        end
+    catch
+    end
+    return clamp(fps, _TUI_FPS_MIN, _TUI_FPS_MAX)
+end
+
+"""
+    set_tui_fps!(fps::Integer) -> Int
+
+Persist the TUI frame rate to config.json (clamped to $(_TUI_FPS_MIN)–$(_TUI_FPS_MAX)).
+Takes effect on the next TUI start. Returns the clamped value.
+"""
+function set_tui_fps!(fps::Integer)
+    fps = clamp(Int(fps), _TUI_FPS_MIN, _TUI_FPS_MAX)
+    p = get_global_config_path()
+    mkpath(dirname(p))
+    data = isfile(p) ?
+           (try JSON.parse(read(p, String); dicttype = Dict{String,Any}) catch; Dict{String,Any}() end) :
+           Dict{String,Any}()
+    data["fps"] = fps
+    write(p, JSON.json(data, 2))
+    Sys.iswindows() || (try chmod(p, 0o600) catch end)
+    return fps
+end
+
 """
     _get_global_install_dismissed() -> Bool
 

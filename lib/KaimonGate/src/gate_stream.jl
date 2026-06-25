@@ -65,52 +65,79 @@ function _stream_send(sock::ZMQ.Socket, frames::Vector{Vector{UInt8}})
     return nothing
 end
 
-# The XPUB's single owner. Interleaves draining publish work (the hot stdout
-# path — prioritized) with polling for subscription events. Polls `events &
-# POLLIN` before recv to avoid the costly throw path when idle (mirrors the
-# client SUB drain).
+# Owner-only send wrapper: swallow transient send errors (a dropped subscriber
+# mid-send must not kill the broadcaster).
+function _safe_stream_send(sock::ZMQ.Socket, frames::Vector{Vector{UInt8}})
+    isempty(frames) && return  # _STREAM_WAKE sentinel — nothing to send
+    try
+        _stream_send(sock, frames)
+    catch e
+        @debug "stream publish failed" exception = e
+    end
+    return
+end
+
+# Drain all pending XPUB sub/unsub events in one pass (owner-only recv). Checks
+# `events & POLLIN` before each recv to avoid the costly throw path when empty.
+function _drain_xpub_events(sock::ZMQ.Socket)
+    while (try (sock.events & ZMQ.POLLIN) != 0 catch; false end)
+        frame = try
+            _zmq_recv(sock)
+        catch e
+            e isa ZMQ.StateError && !_RUNNING[] && return
+            UInt8[]
+        end
+        isempty(frame) && return
+        _handle_subscription_frame(frame)
+    end
+    return
+end
+
+# The XPUB's single owner — fully event-driven. BLOCKS on `take!(_STREAM_OUTBOX)`
+# (zero idle CPU): a publish wakes it instantly. The only periodic wake is a slow
+# liveness `tick` that nudges it to service the rare XPUB sub/unsub event during
+# total idle (those arrive on the socket, not the channel, so they can't ride the
+# `take!` wait). This replaces the old 5ms (200Hz) spin — which, with a subscriber
+# attached, cost a getsockopt→poll() syscall per tick and woke the whole thread
+# pool ~200×/s (measured ~10% CPU per idle gate). Shutdown: a caller sets _RUNNING
+# false and _cleanup nudges the outbox, so the parked `take!` returns promptly.
 function _stream_broadcaster(sock::ZMQ.Socket)
     last_reconcile = time()
-    while _RUNNING[]
-        work = false
-        # 1. drain all queued publishes first (owner-only send).
-        while isready(_STREAM_OUTBOX)
-            frames = take!(_STREAM_OUTBOX)
-            try
-                _stream_send(sock, frames)
-            catch e
-                @debug "stream publish failed" exception = e
+    tick = Timer(_STREAM_SUBPOLL_INTERVAL[]; interval = _STREAM_SUBPOLL_INTERVAL[]) do _
+        try; put!(_STREAM_OUTBOX, _STREAM_WAKE); catch; end
+    end
+    try
+        while _RUNNING[]
+            # Block until woken by a publish, the sub-poll tick, or the shutdown
+            # nudge. _STREAM_WAKE (empty frames) carries no data — just a wake.
+            frames = try
+                take!(_STREAM_OUTBOX)
+            catch
+                break  # outbox closed → exit
             end
-            work = true
-        end
-        # 2. poll one subscription event (non-blocking; rcvtimeo=0 as a backstop).
-        if (try (sock.events & ZMQ.POLLIN) != 0 catch; false end)
-            frame = try
-                _zmq_recv(sock)
-            catch e
-                e isa ZMQ.StateError && !_RUNNING[] && break
-                UInt8[]
+            _RUNNING[] || break
+            _safe_stream_send(sock, frames)
+            # Coalesce any further-queued publishes (owner-only send).
+            while isready(_STREAM_OUTBOX)
+                f = try; take!(_STREAM_OUTBOX); catch; break; end
+                _safe_stream_send(sock, f)
             end
-            if !isempty(frame)
-                _handle_subscription_frame(frame)
-                work = true
+            # Service all pending XPUB sub/unsub events on every wake.
+            _drain_xpub_events(sock)
+            # Periodic hygiene.
+            if time() - last_reconcile >= _STREAM_RECONCILE_EVERY
+                _reconcile_stream_subs()
+                last_reconcile = time()
             end
         end
-        # 3. periodic hygiene.
-        if time() - last_reconcile >= _STREAM_RECONCILE_EVERY
-            _reconcile_stream_subs()
-            last_reconcile = time()
-        end
-        work || sleep(0.005)   # idle backoff; keeps event latency ~<=5ms
+    finally
+        close(tick)
     end
     # Final bounded drain so late lifecycle messages (eval_complete) flush.
     deadline = time() + 1.0
     while isready(_STREAM_OUTBOX) && time() < deadline
-        try
-            _stream_send(sock, take!(_STREAM_OUTBOX))
-        catch
-            break
-        end
+        f = try; take!(_STREAM_OUTBOX); catch; break; end
+        _safe_stream_send(sock, f)
     end
     return nothing
 end

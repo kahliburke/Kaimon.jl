@@ -15,6 +15,7 @@ using Sockets
 using TOML
 using LoggingExtras
 using Serialization
+using FileWatching
 using Preferences
 using ZMQ
 using CommonMark  # triggers Tachikoma's TachikomaMarkdownExt for markdown rendering

@@ -216,6 +216,22 @@ const _ON_STREAM_SUBSCRIBE = Any[]                          # f(topic::String) o
 const _ON_STREAM_UNSUBSCRIBE = Any[]                        # f(topic::String) on 1->0
 const _STREAM_RECONCILE_EVERY = 5.0                         # seconds between hygiene passes
 
+# Empty-frames sentinel: enqueued into _STREAM_OUTBOX purely to WAKE the
+# broadcaster (which blocks on `take!`). `_stream_send` on zero frames is a no-op,
+# so it carries no wire traffic. Used by the sub-poll tick and the shutdown nudge.
+const _STREAM_WAKE = Vector{UInt8}[]
+
+# Sub-event poll interval (seconds). The broadcaster is fully event-driven for the
+# hot path — it BLOCKS on the outbox and a publish wakes it instantly. But XPUB
+# sub/unsub notifications arrive on the socket, not the channel, so during total
+# idle (no publishes) a slow timer nudges the broadcaster to service them. This is
+# a liveness pulse, NOT a busy poll: at 2Hz it's ~100x cheaper than the old 5ms
+# (200Hz) spin, which — with a subscriber attached — cost a getsockopt→poll()
+# syscall per tick and woke the whole thread pool (~10% CPU per idle gate).
+# Env-overridable; bounds worst-case presence-event latency.
+const _STREAM_SUBPOLL_INTERVAL = Ref{Float64}(
+    something(tryparse(Float64, get(ENV, "KAIMON_GATE_STREAM_SUBPOLL", "")), 0.5))
+
 # libzmq socket-option ids (stable ZMTP ABI; see gate_curve.jl for the pattern).
 const _ZMQ_TCP_KEEPALIVE       = 34
 const _ZMQ_TCP_KEEPALIVE_CNT   = 35

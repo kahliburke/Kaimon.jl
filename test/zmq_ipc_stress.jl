@@ -15,7 +15,7 @@
 
 using ZMQ
 using Serialization
-using FileWatching: poll_fd
+using FileWatching: FDWatcher
 using Test
 
 const N_THREADS = Threads.nthreads()
@@ -68,34 +68,33 @@ function make_req(ctx, endpoint; timeout_ms=5000)
     return req
 end
 
-"""IO loop: drain outbox → PUB, poll REP for requests."""
+"""IO loop using the patterns the gate settled on — a sender that BLOCKS on the
+outbox channel (the broadcaster pattern) and a receiver with a PERSISTENT
+FDWatcher it blocks on (the DEALER-reader pattern). No `poll_fd`-per-iteration
+(which re-acquires an FDWatcher + creates/closes a Timer every call → iolock +
+timer churn). Returns the number of messages PUB'd."""
 function run_io_loop(
     pub::Socket, rep::Socket,
     outbox::Channel{Vector{UInt8}},
     rep_inbox::Channel,
 )::Int
+    # Receiver: ONE persistent FDWatcher on the REP fd; block on it (zero idle
+    # CPU), drain all pending requests on each readable wake. Stopped by closing
+    # the watcher, which wakes the wait — exactly like the gate's DEALER reader.
     rep_fd = RawFD(ZMQ._get_fd(rep))
-    pub_sent = 0
-    while true
-        batch = 0
-        while isready(outbox) && batch < 64
-            packed = try; take!(outbox); catch; break; end
-            try
-                send(pub, packed)
-                pub_sent += 1
-            catch e
-                (e isa StateError || e isa EOFError) || @warn "PUB send error" exception=e
+    rep_fdw = FDWatcher(rep_fd, true, false)
+    recv_on = Ref(true)
+    recv_task = Threads.@spawn :interactive begin
+        while recv_on[]
+            if ZMQ._get_events(rep) & ZMQ.POLLIN == 0
+                try
+                    wait(rep_fdw)
+                catch
+                    break  # watcher closed → stop
+                end
+                recv_on[] || break
+                ZMQ._get_events(rep) & ZMQ.POLLIN != 0 || continue
             end
-            batch += 1
-        end
-        !isopen(outbox) && !isready(outbox) && break
-        has_data = ZMQ._get_events(rep) & ZMQ.POLLIN != 0
-        if !has_data
-            timeout = isready(outbox) ? 0.0 : 0.05
-            result = poll_fd(rep_fd, timeout; readable=true, writable=false)
-            has_data = result.readable || ZMQ._get_events(rep) & ZMQ.POLLIN != 0
-        end
-        if has_data
             try
                 data = recv(rep)
                 msg = deserialize(IOBuffer(data))
@@ -108,6 +107,21 @@ function run_io_loop(
             end
         end
     end
+    # Sender: block on the outbox (`for … in channel` = blocking take! per item)
+    # and drain to PUB. Ends when the test closes the channel.
+    pub_sent = 0
+    for packed in outbox
+        try
+            send(pub, packed)
+            pub_sent += 1
+        catch e
+            (e isa StateError || e isa EOFError) || @warn "PUB send error" exception=e
+        end
+    end
+    # Outbox closed → stop the receiver: closing the watcher wakes its `wait`.
+    recv_on[] = false
+    try; close(rep_fdw); catch; end
+    try; wait(recv_task); catch; end
     return pub_sent
 end
 

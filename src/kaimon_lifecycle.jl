@@ -522,6 +522,59 @@ function shutdown(; session::String = "")
     call_tool(:manage_repl, Dict("command" => "shutdown", "session" => session))
 end
 
+"""
+    _install_profile_hook!()
+
+Spawn a background watcher that turns a trigger file into an in-process, **timed**
+CPU profile of the whole host process. The host has no gate to `ex` into, so this
+is how we attribute its CPU — and unlike wall-clock `sample`, `Profile` samples on
+a timer and records full backtraces of every thread, so it catches the diffuse,
+brief-but-frequent work that a wall-clock snapshot misses.
+
+Usage from outside the process:
+
+    echo 5 > ~/.cache/kaimon/profile_request    # profile for 5s (0.5–60, default 5)
+    # ...wait the window...
+    less ~/.cache/kaimon/profile_dump.txt        # flat report, hottest self-time first
+
+Event-driven (FileWatching on the cache dir) — zero idle cost until triggered.
+"""
+function _install_profile_hook!()
+    dir = kaimon_cache_dir()
+    req = joinpath(dir, "profile_request")
+    out = joinpath(dir, "profile_dump.txt")
+    Threads.@spawn begin
+        while true
+            try
+                # Wait (event-driven) for the trigger file to appear.
+                if !isfile(req)
+                    try; watch_folder(dir, 3600); catch; sleep(1.0); end
+                    isfile(req) || continue
+                end
+                secs = clamp(something(tryparse(Float64, strip(read(req, String))),
+                                       5.0), 0.5, 60.0)
+                rm(req; force = true)
+                Profile.clear()
+                Profile.init(; n = 30_000_000, delay = 0.001)
+                Profile.@profile sleep(secs)
+                open(out, "w") do io
+                    println(io, "# in-process CPU profile, ", secs, "s window, ",
+                            Threads.nthreads(), " threads")
+                    Base.invokelatest(Profile.print, io;
+                        format = :flat, sortedby = :count, mincount = 5)
+                end
+                Profile.clear()
+            catch e
+                try; open(out, "w") do io
+                    println(io, "profile hook error: ", sprint(showerror, e))
+                end; catch; end
+                sleep(1.0)
+            end
+        end
+    end
+    return nothing
+end
+
 function (@main)(ARGS)
     # Fire-and-forget: resolve the user's global environment in the background.
     # When Kaimon gains new deps, the global env manifest (where Kaimon is dev'd)
@@ -613,6 +666,9 @@ function (@main)(ARGS)
 
     # Load optional extensions
     try Main.eval(:(using PDFIO)) catch end
+
+    # Diagnostic: file-triggered in-process CPU profiler (covers TUI + headless).
+    try _install_profile_hook!() catch end
 
     if headless
         start!(; port = port)

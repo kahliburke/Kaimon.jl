@@ -269,6 +269,11 @@ function _serve(;
     # by correlation id. Replaces the old REP, which forced strict request/reply
     # alternation and drove per-request ephemeral REQ churn on the client.
     ctx = Context()
+    # libzmq background I/O threads (default 1) — set before any socket is created.
+    # More can raise throughput when one I/O thread saturates (KAIMON_ZMQ_IO_THREADS).
+    let n = tryparse(Int, get(ENV, "KAIMON_ZMQ_IO_THREADS", ""))
+        n === nothing || n < 1 || (try; ctx.io_threads = n; catch; end)
+    end
     socket = _zmq_socket(ctx, ROUTER)
     _GATE_CONTEXT[] = ctx
     _GATE_SOCKET[] = socket
@@ -613,6 +618,11 @@ function _cleanup()
     # It exits once _RUNNING is false (set by every caller before _cleanup).
     stask = _STREAM_TASK[]
     if stask !== nothing && !istaskdone(stask)
+        # The broadcaster now BLOCKS on the outbox (event-driven, no spin), so a
+        # bare _RUNNING=false won't wake it — nudge with the wake sentinel so its
+        # `take!` returns and it observes the flag (else we'd wait a full sub-poll
+        # interval for the liveness tick).
+        try; put!(_STREAM_OUTBOX, _STREAM_WAKE); catch; end
         try; wait(stask); catch; end
     end
     _STREAM_TASK[] = nothing

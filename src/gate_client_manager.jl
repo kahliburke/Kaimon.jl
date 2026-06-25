@@ -21,11 +21,20 @@ mutable struct ConnectionManager
     drain_task::Union{Task,Nothing}  # headless-only SUB drain pump (see start!) (#50)
 end
 
+"""Apply `KAIMON_ZMQ_IO_THREADS` (libzmq background I/O threads) to a *fresh*
+context — must be called before any socket is created on it. Default libzmq is 1;
+more can raise message throughput when one I/O thread saturates."""
+function _apply_io_threads!(ctx::ZMQ.Context)
+    n = tryparse(Int, get(ENV, "KAIMON_ZMQ_IO_THREADS", ""))
+    n === nothing || n < 1 || (try; ctx.io_threads = n; catch e; @debug "io_threads set failed" exception=e; end)
+    return ctx
+end
+
 function ConnectionManager(; sock_dir::String = joinpath(kaimon_cache_dir(), "sock"),
                              task_queue = nothing)
     ConnectionManager(
         REPLConnection[],
-        Context(),
+        _apply_io_threads!(Context()),
         sock_dir,
         false,
         nothing,
@@ -104,7 +113,7 @@ function _stop_event_pub!(mgr::ConnectionManager)
     lock(mgr.event_pub_lock) do
         pub = mgr.event_pub_socket
         if pub !== nothing
-            try; close(pub); catch; end
+            _zmq_close!(pub)   # close + drop its ctx.sockets weakref
             mgr.event_pub_socket = nothing
         end
     end

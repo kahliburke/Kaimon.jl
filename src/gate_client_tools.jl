@@ -205,16 +205,10 @@ function _call_session_tool_async(
                 return "Error: Session disconnected during tool call. The process may have exited or been restarted."
             end
 
-            msg = if isready(my_inbox)
-                try
-                    take!(my_inbox)
-                catch
-                    nothing
-                end
-            else
-                sleep(0.1)
-                nothing
-            end
+            # Block for the next tool message (event-driven; tool_progress streams
+            # with low latency), waking by `deadline` at the latest. Disconnect
+            # closes my_inbox → wakes us → the guard above returns the error.
+            msg = _await_inbox(my_inbox, deadline)
 
             msg === nothing && continue
 

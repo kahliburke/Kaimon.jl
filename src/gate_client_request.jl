@@ -47,10 +47,7 @@ function disconnect!(conn::REPLConnection)
         rc = conn.req_channel
         conn.req_channel = nothing
         if conn.sub_socket !== nothing
-            try
-                close(conn.sub_socket)
-            catch
-            end
+            _zmq_close!(conn.sub_socket)   # close + drop its ctx.sockets weakref
             conn.sub_socket = nothing
         end
         conn.status = :disconnected
@@ -124,24 +121,22 @@ function _req_send_recv(conn::REPLConnection, request; caller_timeout::Float64 =
             return (ok = false, error = "Request channel closed")
         end
 
-        # Wait for the correlated reply (polling the inbox, not ZMQ).
-        deadline = time() + caller_timeout
-        while time() < deadline
-            if isready(inbox)
-                raw = take!(inbox)
-                isempty(raw) && return (ok = false, error = "Gate request failed (send error)")
-                response = try
-                    _safe_deserialize(raw; label = "gate_reply")
-                catch e
-                    return (ok = false, error = "Malformed response: $(sprint(showerror, e))")
-                end
-                conn.last_seen = now()
-                return (ok = true, response = response)
-            end
-            rc.alive[] || return (ok = false, error = "Gate disconnected")
-            sleep(0.005)
+        # Block for the correlated reply (event-driven; the reader put!s it, and a
+        # disconnect close(inbox) or the deadline wakes us — no 200Hz poll).
+        raw = _await_inbox(inbox, time() + caller_timeout)
+        if raw === nothing
+            return rc.alive[] ?
+                   (ok = false, error = "Caller timeout after $(caller_timeout)s") :
+                   (ok = false, error = "Gate disconnected")
         end
-        return (ok = false, error = "Caller timeout after $(caller_timeout)s")
+        isempty(raw) && return (ok = false, error = "Gate request failed (send error)")
+        response = try
+            _safe_deserialize(raw; label = "gate_reply")
+        catch e
+            return (ok = false, error = "Malformed response: $(sprint(showerror, e))")
+        end
+        conn.last_seen = now()
+        return (ok = true, response = response)
     finally
         # Always unregister so the pending map can't grow without bound and a late
         # reply is dropped by the reader.
@@ -326,17 +321,16 @@ function eval_remote_async(
                 )
             end
 
-            # Poll the per-request inbox
-            msg = if isready(my_inbox)
-                try
-                    take!(my_inbox)
-                catch
-                    nothing
-                end
-            else
-                sleep(0.1)
-                nothing
+            # Block for the next message (event-driven; a real message returns
+            # immediately, keeping stream latency low), but wake no later than the
+            # next keepalive / inactivity checkpoint so the periodic logic above
+            # still runs. Disconnect closes my_inbox → wakes us → loop guard catches.
+            wake = last_activity + inactivity_timeout
+            if on_output !== nothing
+                wake = min(wake, max(last_activity + silence_threshold,
+                                     last_keepalive + keepalive_interval))
             end
+            msg = _await_inbox(my_inbox, wake)
 
             msg === nothing && continue
 
