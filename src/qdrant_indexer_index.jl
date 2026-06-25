@@ -170,15 +170,22 @@ function _index_files_two_pass(
     reindex::Bool=false,
     verbose::Bool=true,
     silent::Bool=false,
+    progress_cb::Union{Nothing,Function}=nothing,
 )
     isempty(files) && return 0
     max_length = get_embedding_config(embedding_model).context_chars
     gc = global_collection_name()
     gc_exists = reindex ? (try; QdrantClient.collection_exists(gc); catch; false; end) : false
+    n = length(files)
+    # Report per-file progress to a watcher (e.g. a background job). `phase` is 1 (lexical)
+    # or 2 (embeddings); called once per file even when it yields no chunks so the count
+    # advances monotonically. Best-effort — a throwing callback must never abort indexing.
+    report(phase, i, chunks) = progress_cb === nothing ? nothing :
+        (try; progress_cb(phase, i, n, chunks); catch; end)
 
     # Pass 1 — lexical (Ollama-free): keyword/identifier search lights up here.
-    !silent && verbose && println("Pass 1/2 (lexical): $(length(files)) files…")
-    for f in files
+    !silent && verbose && println("Pass 1/2 (lexical): $n files…")
+    for (i, f) in enumerate(files)
         try
             prepared = _prepare_file_chunks(f, collection, max_length)
             if reindex
@@ -191,25 +198,28 @@ function _index_files_two_pass(
         catch e
             with_index_logger(() -> @warn "Lexical pass failed for file" file = basename(f) reason = sprint(showerror, e))
         end
+        report(1, i, 0)
     end
 
     # Pass 2 — semantic (embeddings + vector upsert).
-    !silent && verbose && println("Pass 2/2 (embeddings): $(length(files)) files…")
+    !silent && verbose && println("Pass 2/2 (embeddings): $n files…")
     total = 0
-    for f in files
+    for (i, f) in enumerate(files)
         try
             prepared = _prepare_file_chunks(f, collection, max_length)
-            isempty(prepared) && continue
-            !silent && verbose && println("  📄 $(basename(f)): $(length(prepared)) chunks")
-            _embed_upsert!(f, collection, prepared; embedding_model=embedding_model, project_path=project_path)
-            record_indexed_file(project_path, f, mtime(f), length(prepared))
-            delete!(INDEX_FAILED_FILES[], f)
-            total += length(prepared)
+            if !isempty(prepared)
+                !silent && verbose && println("  📄 $(basename(f)): $(length(prepared)) chunks")
+                _embed_upsert!(f, collection, prepared; embedding_model=embedding_model, project_path=project_path)
+                record_indexed_file(project_path, f, mtime(f), length(prepared))
+                delete!(INDEX_FAILED_FILES[], f)
+                total += length(prepared)
+            end
         catch e
             INDEX_FAILED_FILES[][f] = get(INDEX_FAILED_FILES[], f, 0) + 1
             !silent && verbose && println("  ❌ Error indexing $(basename(f)): $e")
             with_index_logger(() -> @error "Error indexing file" file = f reason = sprint(showerror, e))
         end
+        report(2, i, total)
     end
     return total
 end
@@ -437,6 +447,7 @@ function index_directory(
     verbose::Bool=true,
     silent::Bool=false,
     embedding_model::String=resolve_search_model(collection),
+    progress_cb::Union{Nothing,Function}=nothing,
 )
     total_chunks = 0
     isdir(dir_path) || return total_chunks
@@ -467,7 +478,7 @@ function index_directory(
     total_chunks = _index_files_two_pass(
         files, collection;
         project_path=project_path, embedding_model=embedding_model,
-        reindex=false, verbose=verbose, silent=silent,
+        reindex=false, verbose=verbose, silent=silent, progress_cb=progress_cb,
     )
 
     with_index_logger(() -> @info "Directory indexing complete" total_chunks = total_chunks)
@@ -504,6 +515,7 @@ function index_project(
     extensions::Union{Vector{String},Nothing}=nothing,
     source::String="manual",
     embedding_model::String=_load_embedding_model(),
+    progress_cb::Union{Nothing,Function}=nothing,
 )
     # Use project name as collection if not specified; always normalize
     col_name = collection === nothing ? get_project_collection_name(project_path) : normalize_collection_name(collection)
@@ -625,11 +637,17 @@ function index_project(
         source = source,
     )
 
-    # Index each directory and sum total chunks
+    # Index each directory and sum total chunks. The progress callback is uniform
+    # `(phase, done, total, chunks)`; per-file done/total restart at each directory while
+    # the chunk count stays cumulative (most projects index a single `src/` anyway).
     total_chunks = 0
     for dir in dirs_to_index
+        base = total_chunks
+        dir_cb = progress_cb === nothing ? nothing :
+            (phase, done, tot, chunks) -> progress_cb(phase, done, tot, base + chunks)
         chunks = index_directory(dir, col_name; project_path=project_path, silent=silent,
-            extensions=actual_extensions, exclude_dirs=config_exclude_dirs, embedding_model=embedding_model)
+            extensions=actual_extensions, exclude_dirs=config_exclude_dirs,
+            embedding_model=embedding_model, progress_cb=dir_cb)
         total_chunks += chunks
     end
 

@@ -517,7 +517,21 @@ function _run_index_as_job(description::AbstractString, work::Function)
     Database.persist_job!(job_id, "indexer", String(description), now, now)
     Threads.@spawn begin
         try
-            summary = work()
+            # Live progress into result_preview (throttled to ~2 Hz, but always on a
+            # pass's final file) so check_eval / list_jobs report "Pass P/2 · done/total
+            # files · N chunks" instead of only elapsed time. work() receives this cb and
+            # threads it down through index_project.
+            last = Ref(0.0)
+            progress = function (phase, done, total, chunks)
+                t = time()
+                (done == total || t - last[] >= 0.5) || return
+                last[] = t
+                pct = total > 0 ? round(Int, 100 * done / total) : 0
+                msg = "Pass $phase/2 · $done/$total files ($pct%)" *
+                      (chunks > 0 ? " · $chunks chunks" : "")
+                Database.update_job!(job_id; result_preview = msg)
+            end
+            summary = work(progress)
             Database.update_job!(job_id; status = "completed", result = summary,
                 result_preview = summary, finished_at = time())
         catch e
@@ -587,7 +601,7 @@ qdrant_index_project_tool = @mcp_tool(
             collection === nothing ? get_project_collection_name(project_path) :
             normalize_collection_name(collection)
 
-        work = function ()
+        work = function (progress_cb)
             chunks = index_project(
                 project_path;
                 collection = collection,
@@ -595,11 +609,12 @@ qdrant_index_project_tool = @mcp_tool(
                 silent = true,
                 extra_dirs = extra_dirs,
                 extensions = extensions,
+                progress_cb = progress_cb,
             )
             "✓ Indexed $chunks chunks into '$col_name' from $(1 + length(extra_dirs)) director$(length(extra_dirs) == 0 ? "y" : "ies")."
         end
 
-        wait_flag && return work()
+        wait_flag && return work(nothing)
 
         job_id = _run_index_as_job("index_project $col_name (recreate=$recreate)", work)
         return "🔄 Indexing '$col_name' started in the background (job `$job_id`) — returns immediately so the request won't time out.\n" *

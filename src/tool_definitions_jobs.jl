@@ -209,7 +209,12 @@ to see only running, completed, failed, or cancelled jobs.""",
             icon = jstatus == "completed" ? "✓" : jstatus == "running" ? "⏳" : jstatus == "failed" ? "✗" : "⊘"
             code_preview = length(code) > 60 ? first(code, 60) * "..." : code
 
-            push!(lines, "$icon $jid [$jstatus] $(elapsed_str) — $code_preview")
+            line = "$icon $jid [$jstatus] $(elapsed_str) — $code_preview"
+            # Live progress for running jobs (e.g. indexing reports "Pass 2/2 · 45/120 files").
+            prev = get(job, "result_preview", "")
+            prev = (prev === missing || prev === nothing) ? "" : String(prev)
+            jstatus == "running" && !isempty(prev) && (line *= "  ·  $(first(prev, 90))")
+            push!(lines, line)
         end
 
         if show_stats
