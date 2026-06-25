@@ -67,4 +67,32 @@ using Kaimon
             rm(dir; recursive = true)
         end
     end
+
+    @testset "code-search nudge detection" begin
+        cs = Kaimon._is_code_search
+        # Real filesystem searches → a code search.
+        @test cs("grep foo src")
+        @test cs("cd x && grep foo .")
+        @test cs("rg bar .")
+        @test cs("ag TODO src")
+        @test cs("find . -name '*.jl'")
+        # grep-family downstream of a pipe = filtering a stream, NOT a code search.
+        @test !cs("git status | grep -v '^??'")
+        @test !cs("ps aux | grep julia")
+        @test !cs("cat f | rg bar")
+        # Non-search commands / non-code finds.
+        @test !cs("ls -la")
+        @test !cs("echo grep is a tool")
+        @test !cs("find . -name '*.log'")
+        # Quoted/heredoc DATA mentioning grep is not a command (commit messages, echo text).
+        @test !cs("git commit -m \"refactor grep && rg path handling\"")
+        @test !cs("echo 'run grep foo src to find it'")
+        @test !cs("git commit -F - <<'EOF'\nfix: improve grep && rg detection\nEOF")
+        # Payload: nudge JSON when matched, "" otherwise, fail-open on junk.
+        yes = Kaimon._hook_nudge_payload("/hook/nudge?agent=claude",
+            "{\"tool_input\":{\"command\":\"grep foo src\"}}")
+        @test occursin("additionalContext", yes) && occursin("grep_code", yes)
+        @test Kaimon._hook_nudge_payload("/hook/nudge", "{\"tool_input\":{\"command\":\"ls\"}}") == ""
+        @test Kaimon._hook_nudge_payload("/hook/nudge", "not json") == ""
+    end
 end

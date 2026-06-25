@@ -320,16 +320,63 @@ const _HOOK_NUDGE_MSG =
 # position (so `echo grep` / `x | grep` are judged by the actual program invoked), matching
 # grep/rg/ag/ack or `find … -name '*.<codeext>'`. Best-effort tokenization — a soft nudge
 # doesn't need a full shell parser.
+# Quote-aware tokenization into simple-commands. Heredoc bodies are dropped first (they
+# are data — commit messages, etc.), then the string is walked tracking quote state, so
+# operators (&&, ||, |, ;, &) inside quotes are literal and quote characters are removed
+# while their content is kept (a quoted `-name '*.jl'` arg survives intact). Returns
+# (piped, tokens) per command, where `piped` is true when it's downstream of a `|`.
+function _shell_commands(cmd::AbstractString)
+    s = replace(String(cmd), r"<<-?\s*['\"]?(\w+)['\"]?[\s\S]*?\n[ \t]*\1\b" => "\n")
+    chars = collect(s)
+    n = length(chars)
+    cmds = Tuple{Bool,Vector{String}}[]
+    toks = String[]
+    buf = Char[]
+    q = '\0'
+    piped = false
+    endtok!() = (isempty(buf) || (push!(toks, String(buf)); empty!(buf)))
+    endcmd!() = (endtok!(); isempty(toks) || (push!(cmds, (piped, copy(toks))); empty!(toks)))
+    i = 1
+    while i <= n
+        ch = chars[i]
+        if q != '\0'
+            ch == q ? (q = '\0') : push!(buf, ch); i += 1
+        elseif ch == '\'' || ch == '"' || ch == '`'
+            q = ch; i += 1
+        elseif ch == '&' && i < n && chars[i+1] == '&'
+            endcmd!(); piped = false; i += 2
+        elseif ch == '|' && i < n && chars[i+1] == '|'
+            endcmd!(); piped = false; i += 2
+        elseif ch == '|'
+            endcmd!(); piped = true; i += 1
+        elseif ch == ';' || ch == '&' || ch == '\n'
+            endcmd!(); piped = false; i += 1
+        elseif isspace(ch)
+            endtok!(); i += 1
+        else
+            push!(buf, ch); i += 1
+        end
+    end
+    endcmd!()
+    return cmds
+end
+
 function _is_code_search(cmd::AbstractString)
-    for seg in split(cmd, r"\|\||&&|[|;&\n]")
-        toks = String[strip(t, ['"', '\'']) for t in split(strip(seg)) if !isempty(t)]
+    # A grep-family program searches the filesystem only when it's NOT reading piped
+    # stdin: `grep foo src/`, `cd x && grep …`, `rg …` (searches cwd) qualify; `git
+    # status | grep …` / `ps | grep …` (filtering a stream) do not. `find … -name
+    # '*.<codeext>'` qualifies too.
+    for (piped, toks) in _shell_commands(cmd)
         i = 1
         while i <= length(toks) && occursin(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[i])
             i += 1   # skip leading VAR=val env assignments
         end
         i <= length(toks) || continue
         prog = last(split(toks[i], '/'))   # basename
-        prog in _HOOK_GREP_PROGS && return true
+        if prog in _HOOK_GREP_PROGS
+            piped && continue   # downstream of a pipe → filtering output, not a search
+            return true
+        end
         if prog == "find"
             for j = (i + 1):(length(toks) - 1)
                 if toks[j] in ("-name", "-iname", "-path", "-ipath")
