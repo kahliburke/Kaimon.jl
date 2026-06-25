@@ -179,6 +179,28 @@ function _stream_agents_md(http, req)
     return false
 end
 
+# Soft anti-shell-grep nudge endpoint. Agents' PreToolUse(Bash) hooks POST their tool-call
+# JSON here (one-line curl, no per-machine script); we return a decision that ALLOWS the
+# command but injects guidance toward grep_code/search_code when it's a code-search, else an
+# empty 200. Pure nudge — never blocks. Handled before the security gate so the hook curl
+# needs no credentials (localhost, canned response, no side effects). Logic lives in
+# Kaimon `_hook_nudge_payload` (hot-reloadable, one source of truth, per-agent via ?agent=).
+function _stream_hook_nudge(http, req, body)
+    if req.method == "POST" && startswith(req.target, "/hook/nudge")
+        payload = try
+            parentmodule(@__MODULE__)._hook_nudge_payload(req.target, body)
+        catch
+            ""
+        end
+        HTTP.setstatus(http, 200)
+        HTTP.setheader(http, "Content-Type" => "application/json")
+        HTTP.startwrite(http)
+        isempty(payload) || write(http, payload)
+        return true
+    end
+    return false
+end
+
 function _stream_vscode_response(http, req, body)
             if req.target == "/vscode-response" && req.method == "POST"
                 try

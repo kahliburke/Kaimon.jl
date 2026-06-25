@@ -905,6 +905,11 @@ function start_mcp_server(
             rethrow()
         end
 
+        # Anti-shell-grep nudge endpoint (mcp_stream_handlers.jl) — handled before the
+        # security gate so an agent's PreToolUse hook curl needs no credentials. Localhost,
+        # canned response, no side effects.
+        _stream_hook_nudge(http, req, body) && return nothing
+
         # Origin + API-key/nonce/IP security gate (mcp_stream_handlers.jl).
         _stream_security_gate(http, req, body, security_config) && return nothing
 

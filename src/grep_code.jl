@@ -297,3 +297,101 @@ function _grep_code(args)
     scope_label = root == base ? basename(rstrip(base, '/')) : _grep_relfile(root, base)
     return _grep_format(pattern, scope_label, hits, more, base, query, sem_windows, ctx_arg)
 end
+
+# ── Anti-shell-grep nudge: the brain behind the agent PreToolUse hooks ─────────
+#
+# Instead of a per-machine detector script, each agent's PreToolUse(Bash) hook is a
+# one-line `curl` that POSTs the tool-call JSON to `/hook/nudge?agent=<name>`; this is
+# where the decision is made (Julia, hot-reloadable, one source of truth). It is a SOFT
+# nudge — it only ever injects guidance, never blocks — and fails open: any parse error
+# yields "no nudge" so a misread can't break the agent's shell call.
+
+const _HOOK_GREP_PROGS = Set(["grep", "egrep", "fgrep", "rg", "ripgrep", "ag", "ack"])
+const _HOOK_CODE_EXTS =
+    Set(["jl", "ts", "tsx", "jsx", "py", "rs", "go", "c", "h", "cpp", "js", "md"])
+const _HOOK_NUDGE_MSG =
+    "You ran a shell code-search. Prefer Kaimon's MCP tools: grep_code(pattern=...) for " *
+    "an exact pattern/regex (repo-scoped, .gitignore-aware, and returns each hit's enclosing " *
+    "function/struct), or search_code(query=...) for finding code by meaning. Shell grep/find " *
+    "miss the enclosing symbol and aren't semantically ranked. (Shell search is still fine for " *
+    "logs, generated files, or non-code text.)"
+
+# Is this shell command a code-search? Inspects each command segment at its program
+# position (so `echo grep` / `x | grep` are judged by the actual program invoked), matching
+# grep/rg/ag/ack or `find … -name '*.<codeext>'`. Best-effort tokenization — a soft nudge
+# doesn't need a full shell parser.
+function _is_code_search(cmd::AbstractString)
+    for seg in split(cmd, r"\|\||&&|[|;&\n]")
+        toks = String[strip(t, ['"', '\'']) for t in split(strip(seg)) if !isempty(t)]
+        i = 1
+        while i <= length(toks) && occursin(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[i])
+            i += 1   # skip leading VAR=val env assignments
+        end
+        i <= length(toks) || continue
+        prog = last(split(toks[i], '/'))   # basename
+        prog in _HOOK_GREP_PROGS && return true
+        if prog == "find"
+            for j = (i + 1):(length(toks) - 1)
+                if toks[j] in ("-name", "-iname", "-path", "-ipath")
+                    m = match(r"\.([A-Za-z0-9]+)$", toks[j + 1])
+                    m !== nothing && lowercase(m.captures[1]) in _HOOK_CODE_EXTS && return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+# Pull a query-string parameter out of a request target (`/hook/nudge?agent=claude`).
+function _hook_query_param(target::AbstractString, key::AbstractString, default::AbstractString)
+    q = findfirst('?', target)
+    q === nothing && return default
+    for kv in split(SubString(target, q + 1), '&')
+        parts = split(kv, '='; limit = 2)
+        length(parts) == 2 && String(parts[1]) == key && return String(parts[2])
+    end
+    return default
+end
+
+# Extract the shell command from an agent's PreToolUse payload (Claude `tool_input.command`,
+# else a top-level `command`). Returns nothing when absent.
+function _hook_extract_command(payload::AbstractDict)
+    ti = get(payload, "tool_input", nothing)
+    if ti isa AbstractDict
+        c = get(ti, "command", nothing)
+        c isa AbstractString && return c
+    end
+    c = get(payload, "command", nothing)
+    return c isa AbstractString ? c : nothing
+end
+
+# Per-agent PreToolUse decision JSON for a soft nudge (ALLOW + inject context). The Claude
+# shape is implemented; other agents' decision shapes differ and are added as each is wired
+# — default to the Claude shape for now.
+function _hook_decision_json(agent::AbstractString)
+    return JSON.json(Dict(
+        "hookSpecificOutput" => Dict(
+            "hookEventName" => "PreToolUse",
+            "additionalContext" => _HOOK_NUDGE_MSG,
+        ),
+    ))
+end
+
+"""
+    _hook_nudge_payload(target, body) -> String
+
+Decide the nudge for a `/hook/nudge` request: parse the agent from the target query and
+the tool command from the POST body, and return the per-agent decision JSON when the
+command is a code-search — else "" (no nudge). Never throws (fails open).
+"""
+function _hook_nudge_payload(target::AbstractString, body::AbstractString)
+    try
+        payload = JSON.parse(body)
+        payload isa AbstractDict || return ""
+        cmd = _hook_extract_command(payload)
+        (cmd === nothing || isempty(cmd) || !_is_code_search(cmd)) && return ""
+        return _hook_decision_json(_hook_query_param(target, "agent", "claude"))
+    catch
+        return ""
+    end
+end
