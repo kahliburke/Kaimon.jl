@@ -99,6 +99,33 @@ using Kaimon
         @test any(c -> c["name"] == "K", chunks)
     end
 
+    @testset "extract_definitions - overloaded methods anchor distinctly (regression)" begin
+        # Two methods of one function must each get THEIR OWN span + body. The old
+        # get_expr_lines regex-scanned from the top of the file for `function <name>`,
+        # so every method resolved to the FIRST signature's lines — producing duplicate
+        # chunks (identical span + text, differing only in the signature metadata). The
+        # AST LineNumberNode hint now anchors each method on its own occurrence.
+        code = "function g(a)\n    a\nend\n\nfunction g(a, b)\n    a + b\nend\n"
+        chunks = Kaimon.extract_definitions(code, "test.jl")
+        gs = filter(c -> c["name"] == "g", chunks)
+        @test length(gs) == 2
+        spans = Set((c["start_line"], c["end_line"]) for c in gs)
+        @test length(spans) == 2                      # NOT collapsed onto one span
+        @test (1, 3) in spans && (5, 7) in spans
+        # Each chunk carries its OWN body (the 2-arg method must not show the 1-arg text).
+        m2 = only(filter(c -> (c["start_line"], c["end_line"]) == (5, 7), gs))
+        @test occursin("g(a, b)", m2["text"]) && occursin("a + b", m2["text"])
+        @test !occursin("a + b", only(filter(c -> c["start_line"] == 1, gs))["text"])
+
+        # Same, but with a docstring on the first method (the bind.jl shape that surfaced
+        # this): the docstring must not drag the second method onto the first's span.
+        doc = "\"\"\"doc\"\"\"\nfunction h(x::Int)\n    x\nend\n\nfunction h(x::String)\n    x\nend\n"
+        hs = filter(c -> c["name"] == "h", Kaimon.extract_definitions(doc, "test.jl"))
+        @test length(hs) == 2
+        @test length(Set((c["start_line"], c["end_line"]) for c in hs)) == 2
+        @test any(c -> occursin("x::String", c["text"]), hs)
+    end
+
     @testset "create_window_chunks" begin
         code = "line1\nline2\nline3\nline4\nline5"
         chunks = Kaimon.create_window_chunks(code, "small.jl")
@@ -153,6 +180,17 @@ end
         start_line, end_line = Kaimon.get_expr_lines(expr, lines)
         @test start_line == 2
         @test end_line == 4
+    end
+
+    @testset "get_expr_lines - line_hint disambiguates same-named methods" begin
+        lines = split("function dup(x)\n  x\nend\nfunction dup(x, y)\n  x + y\nend\n", '\n')
+        expr2 = Meta.parse("function dup(x, y) x + y end")
+        # With the AST hint at the 2nd method's line, it anchors there (4-6)…
+        @test Kaimon.get_expr_lines(expr2, lines, 4) == (4, 6)
+        # …and a stale/out-of-range hint falls back to a whole-file scan (never lost).
+        @test Kaimon.get_expr_lines(expr2, lines, 999) == (1, 3)
+        # Hint 0 (unknown) preserves the legacy first-match behavior.
+        @test Kaimon.get_expr_lines(expr2, lines) == (1, 3)
     end
 end
 

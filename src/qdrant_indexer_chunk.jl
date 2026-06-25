@@ -46,60 +46,77 @@ function extract_definitions(content::String, file_path::String)
     return chunks
 end
 
-"""
-    extract_from_expr!(chunks, expr, lines, file_path)
+# Walk a block / toplevel / macrocall arg list, threading the most-recently-seen
+# LineNumberNode down as each definition's start-line hint. Without this hint,
+# get_expr_lines regex-scans from the top of the file and maps EVERY method of an
+# overloaded function onto the FIRST signature's span — producing duplicate chunks
+# (identical span + text) for the 2nd+ methods. The AST line node disambiguates which
+# occurrence each method is.
+function _walk_args!(
+    chunks::Vector{Dict},
+    args,
+    lines::Vector{<:AbstractString},
+    file_path::String,
+)
+    hint = 0
+    for arg in args
+        if arg isa LineNumberNode
+            arg.line isa Integer && (hint = Int(arg.line))
+        elseif arg isa Expr
+            extract_from_expr!(chunks, arg, lines, file_path, hint)
+        end
+    end
+    return chunks
+end
 
-Recursively extract definitions from an expression.
+"""
+    extract_from_expr!(chunks, expr, lines, file_path, line_hint=0)
+
+Recursively extract definitions from an expression. `line_hint` is the source line of
+the enclosing AST LineNumberNode (0 = unknown), used to anchor the line lookup.
 """
 function extract_from_expr!(
     chunks::Vector{Dict},
     expr,
     lines::Vector{<:AbstractString},
     file_path::String,
+    line_hint::Int = 0,
 )
-    if expr isa Expr
-        # Check for definition types
-        if expr.head == :function || expr.head == :macro
-            extract_definition!(chunks, expr, lines, file_path, "function")
-        elseif expr.head == :struct || expr.head == :abstract || expr.head == :primitive
-            extract_definition!(chunks, expr, lines, file_path, "struct")
-        elseif expr.head == :(=) && length(expr.args) >= 1
-            # Short function definition: f(x) = ...
-            first_arg = expr.args[1]
-            if first_arg isa Expr && first_arg.head == :call
-                extract_definition!(chunks, expr, lines, file_path, "function")
-            elseif first_arg isa Expr && first_arg.head == :const
-                extract_definition!(chunks, expr, lines, file_path, "const")
-            end
-        elseif expr.head == :const
-            extract_definition!(chunks, expr, lines, file_path, "const")
-        elseif expr.head == :module
-            # Recurse into module
-            for arg in expr.args
-                extract_from_expr!(chunks, arg, lines, file_path)
-            end
-        elseif expr.head == :toplevel || expr.head == :block
-            # Recurse into blocks
-            for arg in expr.args
-                extract_from_expr!(chunks, arg, lines, file_path)
-            end
-        elseif expr.head == :macrocall && length(expr.args) >= 1
-            macro_name = string(expr.args[1])
-            if occursin("mcp_tool", macro_name)
-                extract_definition!(chunks, expr, lines, file_path, "tool")
-            else
-                # Any other macro that wraps a definition — a docstring (`@doc`,
-                # i.e. `"""..."""  <def>`) on a module/struct/function/const,
-                # `Base.@kwdef struct`, etc. Recurse into the macrocall's Expr
-                # arguments so the wrapped definition is found via normal dispatch.
-                # NB: a file-leading docstring makes the WHOLE file
-                # `@doc "..." module X ... end`; the old `@doc` branch only
-                # descended into function/struct/=, so it skipped the module and
-                # hid every symbol in the file.
-                for arg in expr.args
-                    arg isa Expr && extract_from_expr!(chunks, arg, lines, file_path)
-                end
-            end
+    expr isa Expr || return
+    # Check for definition types
+    if expr.head == :function || expr.head == :macro
+        extract_definition!(chunks, expr, lines, file_path, "function", line_hint)
+    elseif expr.head == :struct || expr.head == :abstract || expr.head == :primitive
+        extract_definition!(chunks, expr, lines, file_path, "struct", line_hint)
+    elseif expr.head == :(=) && length(expr.args) >= 1
+        # Short function definition: f(x) = ...
+        first_arg = expr.args[1]
+        if first_arg isa Expr && first_arg.head == :call
+            extract_definition!(chunks, expr, lines, file_path, "function", line_hint)
+        elseif first_arg isa Expr && first_arg.head == :const
+            extract_definition!(chunks, expr, lines, file_path, "const", line_hint)
+        end
+    elseif expr.head == :const
+        extract_definition!(chunks, expr, lines, file_path, "const", line_hint)
+    elseif expr.head == :module
+        # Recurse into the module body (its block carries the LineNumberNodes).
+        for arg in expr.args
+            arg isa Expr && extract_from_expr!(chunks, arg, lines, file_path)
+        end
+    elseif expr.head == :toplevel || expr.head == :block
+        _walk_args!(chunks, expr.args, lines, file_path)
+    elseif expr.head == :macrocall && length(expr.args) >= 1
+        macro_name = string(expr.args[1])
+        if occursin("mcp_tool", macro_name)
+            extract_definition!(chunks, expr, lines, file_path, "tool", line_hint)
+        else
+            # Any other macro that wraps a definition — a docstring (`@doc`,
+            # i.e. `"""..."""  <def>`) on a module/struct/function/const,
+            # `Base.@kwdef struct`, etc. Recurse into the macrocall's Expr arguments
+            # (threading its own line node) so the wrapped definition is found via
+            # normal dispatch. NB: a file-leading docstring makes the WHOLE file
+            # `@doc "..." module X ... end`; descending here keeps every symbol visible.
+            _walk_args!(chunks, expr.args, lines, file_path)
         end
     end
 end
@@ -115,6 +132,7 @@ function extract_definition!(
     lines::Vector{<:AbstractString},
     file_path::String,
     def_type::String,
+    line_hint::Int = 0,
 )
     # Get the name of the definition
     name = get_definition_name(expr)
@@ -122,8 +140,9 @@ function extract_definition!(
         return
     end
 
-    # Get source location if available
-    start_line, end_line = get_expr_lines(expr, lines)
+    # Get source location if available (anchored on the AST line hint so overloaded
+    # methods each resolve to their own signature, not the first one in the file).
+    start_line, end_line = get_expr_lines(expr, lines, line_hint)
     if start_line === nothing
         return
     end
@@ -345,80 +364,97 @@ function get_definition_name(expr::Expr)
     return nothing
 end
 
-"""
-    get_expr_lines(expr, lines) -> Tuple{Union{Int,Nothing}, Union{Int,Nothing}}
+# Resolve the matching `end` for a function/macro opened at line `i` by depth-counting
+# nested block openers. Returns the end line, or nothing if unbalanced.
+function _block_end(i::Int, lines::Vector{<:AbstractString})
+    depth = 1
+    for j = (i+1):length(lines)
+        l = strip(lines[j])
+        if startswith(l, "function ") ||
+           startswith(l, "macro ") ||
+           startswith(l, "if ") ||
+           startswith(l, "for ") ||
+           startswith(l, "while ") ||
+           startswith(l, "let ") ||
+           startswith(l, "begin") ||
+           startswith(l, "try") ||
+           startswith(l, "struct ") ||
+           startswith(l, "module ")
+            depth += 1
+        elseif l == "end" || startswith(l, "end ")
+            depth -= 1
+            depth == 0 && return j
+        end
+    end
+    return nothing
+end
 
-Get the start and end line numbers for an expression.
+# Locate a definition's (start, end) by finding its header line (matching `header`) at
+# or after `start_at`, then resolving the end via `endfind(i, lines)`. Falls back to a
+# whole-file scan when the hint misses, so a stale/odd hint can never lose a definition.
+function _scan_span(lines::Vector{<:AbstractString}, start_at::Int, header::Regex,
+                    endfind::Function)
+    find_from(from) = begin
+        for i = from:length(lines)
+            if occursin(header, lines[i])
+                j = endfind(i, lines)
+                j !== nothing && return (i, j)
+            end
+        end
+        return nothing
+    end
+    r = find_from(start_at)
+    (r === nothing && start_at > 1) && (r = find_from(1))
+    return r
+end
+
+"""
+    get_expr_lines(expr, lines, line_hint=0) -> Tuple{Union{Int,Nothing}, Union{Int,Nothing}}
+
+Get the start and end line numbers for an expression. `line_hint` (the source line of
+the enclosing AST LineNumberNode, 0 = unknown) anchors the header scan so an overloaded
+function's Nth method resolves to ITS signature rather than the first match in the file.
 Uses heuristics based on expression structure.
 """
-function get_expr_lines(expr::Expr, lines::Vector{<:AbstractString})
-    # For functions/macros, look for the signature
+function get_expr_lines(expr::Expr, lines::Vector{<:AbstractString}, line_hint::Int = 0)
+    start_at = (1 <= line_hint <= length(lines)) ? line_hint : 1
+
+    # For functions/macros, find the signature line then its matching `end`.
     if expr.head in (:function, :macro) && length(expr.args) >= 1
         name = get_definition_name(expr)
-        if name !== nothing
-            # Find line containing "function name" or "macro name"
-            keyword = expr.head == :function ? "function" : "macro"
-            for (i, line) in enumerate(lines)
-                if occursin(Regex("^\\s*$keyword\\s+$name"), line)
-                    # Find matching end
-                    depth = 1
-                    for j = (i+1):length(lines)
-                        l = strip(lines[j])
-                        if startswith(l, "function ") ||
-                           startswith(l, "macro ") ||
-                           startswith(l, "if ") ||
-                           startswith(l, "for ") ||
-                           startswith(l, "while ") ||
-                           startswith(l, "let ") ||
-                           startswith(l, "begin") ||
-                           startswith(l, "try") ||
-                           startswith(l, "struct ") ||
-                           startswith(l, "module ")
-                            depth += 1
-                        elseif l == "end" || startswith(l, "end ")
-                            depth -= 1
-                            if depth == 0
-                                return (i, j)
-                            end
-                        end
-                    end
-                end
-            end
-        end
+        name === nothing && return (nothing, nothing)
+        keyword = expr.head == :function ? "function" : "macro"
+        span = _scan_span(lines, start_at, Regex("^\\s*$keyword\\s+$name"), _block_end)
+        span !== nothing && return span
     elseif expr.head == :struct
         name = get_definition_name(expr)
-        if name !== nothing
-            for (i, line) in enumerate(lines)
-                if occursin(Regex("^\\s*(mutable\\s+)?struct\\s+$name"), line)
-                    for j = (i+1):length(lines)
-                        if strip(lines[j]) == "end"
-                            return (i, j)
-                        end
-                    end
-                end
+        name === nothing && return (nothing, nothing)
+        struct_end(i, ls) = begin
+            for j = (i+1):length(ls)
+                strip(ls[j]) == "end" && return j
             end
+            return nothing
         end
+        span = _scan_span(lines, start_at, Regex("^\\s*(mutable\\s+)?struct\\s+$name"),
+                          struct_end)
+        span !== nothing && return span
     elseif expr.head == :(=) && length(expr.args) >= 1
         # Short function definition - single line
         first_arg = expr.args[1]
         if first_arg isa Expr && first_arg.head == :call
             name = string(first_arg.args[1])
-            for (i, line) in enumerate(lines)
-                if occursin(Regex("^\\s*$name\\s*\\(.*\\)\\s*="), line)
-                    return (i, i)
-                end
-            end
+            span = _scan_span(lines, start_at, Regex("^\\s*$name\\s*\\(.*\\)\\s*="),
+                              (i, _) -> i)
+            span !== nothing && return span
         end
     elseif expr.head == :const
         # `const NAME = ...` — locate the declaring line (consts had no line
         # lookup, so they were silently dropped from results entirely).
         name = get_definition_name(expr)
         if name !== nothing
-            for (i, line) in enumerate(lines)
-                if occursin(Regex("^\\s*const\\s+$name\\b"), line)
-                    return (i, i)
-                end
-            end
+            span = _scan_span(lines, start_at, Regex("^\\s*const\\s+$name\\b"),
+                              (i, _) -> i)
+            span !== nothing && return span
         end
     end
 
