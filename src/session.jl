@@ -199,8 +199,8 @@ function get_server_instructions()
 
     Finding code (prefer these over shell grep/find/rg — both are repo-scoped, .gitignore-aware, and return each hit's enclosing function/struct):
     • search_code(query="…") finds code by MEANING — a concept or behaviour you can describe. Natural-language phrases work well; results are ranked by semantic relevance.
-    • grep_code(pattern="…") finds an EXACT pattern/regex over the live working tree — every occurrence, with its enclosing symbol. Use it for a symbol name, a call site, a string, or a TODO; add query="…" to also rank the matching files by relevance.
-    Shell grep/rg/find is still fine for non-code text (logs, generated files).
+    • grep_code(pattern="…") finds an EXACT pattern/regex over the live working tree — every occurrence, with its enclosing symbol. Use it for a symbol name, a call site, a string, or a TODO; add query="…" to also rank the matching files by relevance, or no_ignore=true to also search logs and generated/gitignored files.
+    So grep_code covers the same ground as shell grep; shell grep/rg/find is only needed to TRANSFORM matches (sed/awk) or pipe them into another command.
 
     Running Julia: ex(code) evaluates in a REPL the USER SHARES live. Default q=true (suppress output); pass q=false only when you need the value back. println/print to stdout is STRIPPED — return a final expression instead. Slow evals auto-promote to background jobs (poll check_eval). Use mt=true for GLMakie/OpenGL.
 

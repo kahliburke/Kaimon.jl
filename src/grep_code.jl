@@ -103,21 +103,31 @@ end
 
 # ── per-file context (raw lines + definitions), parsed once per grep call ──────
 
+# Extensions we attempt enclosing-symbol enrichment for. The chunker parses CODE, not
+# logs/data — so non-code files (logs, generated output, csv/json/txt) still match via
+# ripgrep, they just show file:line + the matched line, which is all you want there.
+const _GREP_CODE_EXTS = Set([".jl", ".ts", ".tsx", ".jsx", ".js", ".py", ".rs", ".go",
+    ".c", ".h", ".cpp", ".hpp", ".cc", ".java", ".rb", ".ex", ".exs"])
+_grep_is_code_file(file::AbstractString) = lowercase(splitext(file)[2]) in _GREP_CODE_EXTS
+
 # (lines, defs) for a file, cached for the duration of one grep call. `defs` are the
-# non-window definitions as (start, end, name, type); empty on read/parse failure.
+# non-window definitions as (start, end, name, type) — only parsed for code files (a log
+# isn't worth parsing as code), else empty.
 function _grep_file_ctx(file::AbstractString, cache::Dict)
     return get!(cache, file) do
         content = try; read(file, String); catch; return (String[], Tuple{Int,Int,String,String}[]); end
         lines = collect(eachsplit(content, '\n'))
         defs = Tuple{Int,Int,String,String}[]
-        try
-            for d in extract_definitions(content, String(file))
-                get(d, "type", "") == "window" && continue
-                sl = get(d, "start_line", nothing); el = get(d, "end_line", nothing)
-                (sl isa Integer && el isa Integer) || continue
-                push!(defs, (Int(sl), Int(el), String(get(d, "name", "")), String(get(d, "type", ""))))
+        if _grep_is_code_file(file)
+            try
+                for d in extract_definitions(content, String(file))
+                    get(d, "type", "") == "window" && continue
+                    sl = get(d, "start_line", nothing); el = get(d, "end_line", nothing)
+                    (sl isa Integer && el isa Integer) || continue
+                    push!(defs, (Int(sl), Int(el), String(get(d, "name", "")), String(get(d, "type", ""))))
+                end
+            catch
             end
-        catch
         end
         (lines, defs)
     end
@@ -273,6 +283,12 @@ function _grep_code(args)
     _grep_bool(args, "ignore_case") && push!(flags, "-i")
     _grep_bool(args, "word") && push!(flags, "-w")
     _grep_bool(args, "fixed") && push!(flags, "-F")
+    # no_ignore: also search .gitignored + hidden files (logs, build/ output, generated,
+    # dotfiles) — makes grep_code the one pattern-search tool instead of falling back to
+    # shell grep for non-tracked text. Default off keeps code search free of build noise.
+    if _grep_bool(args, "no_ignore")
+        push!(flags, "--no-ignore"); push!(flags, "--hidden")
+    end
     for g in _grep_globs(args)
         push!(flags, "-g"); push!(flags, g)
     end
@@ -310,11 +326,12 @@ const _HOOK_GREP_PROGS = Set(["grep", "egrep", "fgrep", "rg", "ripgrep", "ag", "
 const _HOOK_CODE_EXTS =
     Set(["jl", "ts", "tsx", "jsx", "py", "rs", "go", "c", "h", "cpp", "js", "md"])
 const _HOOK_NUDGE_MSG =
-    "You ran a shell code-search. Prefer Kaimon's MCP tools: grep_code(pattern=...) for " *
-    "an exact pattern/regex (repo-scoped, .gitignore-aware, and returns each hit's enclosing " *
-    "function/struct), or search_code(query=...) for finding code by meaning. Shell grep/find " *
-    "miss the enclosing symbol and aren't semantically ranked. (Shell search is still fine for " *
-    "logs, generated files, or non-code text.)"
+    "You ran a shell code-search. Prefer Kaimon's MCP tools: grep_code(pattern=...) for an " *
+    "exact pattern/regex (repo-scoped, .gitignore-aware, returns each hit's enclosing " *
+    "function/struct), or search_code(query=...) for finding code by meaning. grep_code also " *
+    "searches logs and generated/gitignored files with no_ignore=true — so it covers the same " *
+    "ground as shell grep. Shell grep/find is only really needed to TRANSFORM matches (sed/awk) " *
+    "or pipe them into another command."
 
 # Is this shell command a code-search? Inspects each command segment at its program
 # position (so `echo grep` / `x | grep` are judged by the actual program invoked), matching

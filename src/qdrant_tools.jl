@@ -471,6 +471,7 @@ const _GREP_CODE_PARAMS = Dict(
         "ignore_case" => Dict("type" => "boolean", "description" => "Case-insensitive match (default: false)."),
         "word" => Dict("type" => "boolean", "description" => "Match whole words only (default: false)."),
         "fixed" => Dict("type" => "boolean", "description" => "Treat the pattern as a literal string, not a regex (default: false)."),
+        "no_ignore" => Dict("type" => "boolean", "description" => "Also search .gitignored and hidden files — logs, build/generated output, dotfiles (default: false, which keeps code search free of build noise). Use this to grep logs or generated text without falling back to shell grep."),
         "limit" => Dict("type" => "integer", "description" => "Max matches to return (default: 40); more are reported as truncated."),
     ),
     "required" => ["pattern"],
@@ -478,7 +479,7 @@ const _GREP_CODE_PARAMS = Dict(
 
 grep_code_tool = @mcp_tool(
     :grep_code,
-    "Find an EXACT PATTERN in code — a better grep than grep. Runs a real regex over the live working tree (.gitignore-aware, no stale index), scoped to the bound project by default (narrow with path=/file=/glob=), and returns file:line WITH the enclosing function/struct for each hit. Use this when you know the literal text or a regex (a symbol name, a call site, a string, a TODO) and want every occurrence — `grep_code(pattern=\"_eval_with_capture\")` is the right move over shell grep/rg/find, which miss the enclosing symbol and aren't repo-scoped. Add an optional natural-language `query` to RANK the matching files by relevance and auto-expand context around the relevant hits. For finding code purely by MEANING (a concept you can't name), use search_code instead. Flags: ignore_case, word (whole-word), fixed (literal, not regex).",
+    "Find an EXACT PATTERN over files — a better grep than grep. Runs a real regex over the live working tree (no stale index), scoped to the bound project by default (narrow with path=/file=/glob=), and returns file:line WITH the enclosing function/struct for each code hit. Use it whenever you know the literal text or a regex (a symbol name, a call site, a string, a TODO) and want every occurrence — `grep_code(pattern=\"_eval_with_capture\")` is the right move over shell grep/rg/find, which miss the enclosing symbol and aren't repo-scoped. By default it respects .gitignore (clean code search); pass no_ignore=true to also search logs and generated/gitignored/hidden files, so it covers the same ground as shell grep. Add an optional natural-language `query` to RANK the matching files by relevance and auto-expand context around relevant hits. For finding code purely by MEANING (a concept you can't name), use search_code instead. Flags: ignore_case, word (whole-word), fixed (literal, not regex), no_ignore (include ignored/hidden files).",
     _GREP_CODE_PARAMS,
     args -> _grep_code(args),
 )

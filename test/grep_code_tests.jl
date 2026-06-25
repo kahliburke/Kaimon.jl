@@ -95,4 +95,28 @@ using Kaimon
         @test Kaimon._hook_nudge_payload("/hook/nudge", "{\"tool_input\":{\"command\":\"ls\"}}") == ""
         @test Kaimon._hook_nudge_payload("/hook/nudge", "not json") == ""
     end
+
+    @testset "no_ignore covers ignored / non-code files" begin
+        @test Kaimon._grep_is_code_file("foo.jl")
+        @test Kaimon._grep_is_code_file("Bar.TS")          # case-insensitive
+        @test !Kaimon._grep_is_code_file("app.log")
+        @test !Kaimon._grep_is_code_file("data.csv")
+
+        if Kaimon._rg_argv() === nothing
+            @test_skip "ripgrep not available"
+        else
+            dir = mktempdir()
+            write(joinpath(dir, ".ignore"), "*.log\n")              # rg always honors .ignore
+            write(joinpath(dir, "app.log"), "a\nzz_tok_zz happened here\nb\n")
+            write(joinpath(dir, "code.jl"), "function f()\n    zz_tok_zz = 1\nend\n")
+            # default: the ignored .log is skipped; the .jl hit carries its enclosing symbol
+            d = Kaimon._grep_code(Dict("pattern" => "zz_tok_zz", "path" => dir))
+            @test occursin("code.jl", d) && occursin("f  ", d)      # "L2  f  zz_tok_zz = 1"
+            @test !occursin("app.log", d)
+            # no_ignore: the .log is searched too (file:line, no enclosing symbol)
+            n = Kaimon._grep_code(Dict("pattern" => "zz_tok_zz", "path" => dir, "no_ignore" => true))
+            @test occursin("app.log", n) && occursin("L2", n)
+            rm(dir; recursive = true)
+        end
+    end
 end

@@ -29,6 +29,7 @@ Flags:
 - `fixed=true` — treat `pattern` as a **literal** string, not a regex (no escaping).
 - `word=true` — whole-word match only (ripgrep `-w`).
 - `ignore_case=true` — case-insensitive.
+- `no_ignore=true` — also search `.gitignore`d and hidden files (see below).
 
 ## Scope
 
@@ -38,6 +39,21 @@ Narrow it:
 - `path="src/server"` — a subdirectory (relative to the project, or absolute).
 - `file="src/bind.jl"` — a single file (the common "grep one file to locate a function").
 - `glob=["src/**/*.jl", "!**/test/**"]` — ripgrep include/exclude globs, repeatable.
+
+## Logs, generated, and gitignored files (`no_ignore`)
+
+By default `grep_code` respects `.gitignore` (so code search isn't drowned in `build/`,
+`node_modules/`, etc.). Pass `no_ignore=true` to also search **gitignored and hidden
+files** — logs, build/generated output, dotfiles. Non-code files still match (it's
+ripgrep over any text); they just show `file:line + the matched line` with no enclosing
+symbol (a log has none). This means `grep_code` covers the same ground as shell `grep`:
+reach for the shell only when you need to *transform* matches (`sed`/`awk`) or pipe them
+into another command.
+
+```julia
+grep_code(pattern="ERROR|panic", path="logs", no_ignore=true)   # grep the logs
+grep_code(pattern="TODO", no_ignore=true)                       # incl. generated/ignored
+```
 
 ## Semantic-assisted ranking + adaptive context (optional `query`)
 
