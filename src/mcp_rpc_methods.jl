@@ -26,7 +26,8 @@ function _rpc_initialize(request, session)
                 # Mirror the session path's advertised capabilities (incl. tools.listChanged
                 # and resources.listChanged) so the no-session fallback can't silently
                 # under-declare them — keep this in lockstep with get_server_capabilities().
-                "capabilities" => get_server_capabilities(),
+                "capabilities" => Session.get_server_capabilities(),
+                "instructions" => Session.get_server_instructions(),
                 "serverInfo" =>
                     Dict("name" => "Kaimon", "title" => "Kaimon MCP Server", "version" => PACKAGE_VERSION),
             )

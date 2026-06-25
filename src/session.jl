@@ -186,6 +186,31 @@ function get_server_capabilities()
 end
 
 """
+    get_server_instructions() -> String
+
+Server-level guidance injected into the agent's context on connect (the MCP `instructions`
+field of the initialize result — honored cross-client). This is the cross-cutting "how to
+use Kaimon" that doesn't belong to any single tool's description; kept tight because it
+rides in every session's handshake.
+"""
+function get_server_instructions()
+    return """
+    Kaimon exposes a Julia REPL and code-intelligence tools over MCP.
+
+    Finding code (prefer these over shell grep/find/rg — both are repo-scoped, .gitignore-aware, and return each hit's enclosing function/struct):
+    • search_code(query="…") finds code by MEANING — a concept or behaviour you can describe. Natural-language phrases work well; results are ranked by semantic relevance.
+    • grep_code(pattern="…") finds an EXACT pattern/regex over the live working tree — every occurrence, with its enclosing symbol. Use it for a symbol name, a call site, a string, or a TODO; add query="…" to also rank the matching files by relevance.
+    Shell grep/rg/find is still fine for non-code text (logs, generated files).
+
+    Running Julia: ex(code) evaluates in a REPL the USER SHARES live. Default q=true (suppress output); pass q=false only when you need the value back. println/print to stdout is STRIPPED — return a final expression instead. Slow evals auto-promote to background jobs (poll check_eval). Use mt=true for GLMakie/OpenGL.
+
+    Sessions: each connected project is a session; when more than one is connected, pass ses=<key> to target one (ping lists them).
+
+    New here? Call usage_quiz (then usage_quiz(show_sols=true) to self-grade) and usage_instructions before starting.
+    """
+end
+
+"""
     initialize_session!(session::MCPSession, params::Dict) -> Dict{String,Any}
 
 Initialize a session with protocol version and capability negotiation.
@@ -268,6 +293,7 @@ function initialize_session!(session::MCPSession, params::Dict)
     return Dict{String,Any}(
         "protocolVersion" => supported_version,
         "capabilities" => session.server_capabilities,
+        "instructions" => get_server_instructions(),
         "serverInfo" => Dict{String,Any}(
             "name" => "Kaimon",
             "version" => get_version(),
