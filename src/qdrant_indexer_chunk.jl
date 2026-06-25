@@ -364,27 +364,27 @@ function get_definition_name(expr::Expr)
     return nothing
 end
 
-# Resolve the matching `end` for a function/macro opened at line `i` by depth-counting
-# nested block openers. Returns the end line, or nothing if unbalanced.
+# Leading-indent width of a line (tabs count as 4), used to match an opener to its `end`.
+function _indent(l::AbstractString)
+    n = 0
+    for c in l
+        c == ' ' ? (n += 1) : c == '\t' ? (n += 4) : break
+    end
+    return n
+end
+
+# Resolve the matching `end` for a function/macro opened at line `i`. Keyword
+# depth-counting is unreliable: mid-line block openers (`x = let … end`, `f() do … end`,
+# `= begin … end`, `quote … end`) put an `end` on a later line with no opener visible at
+# line start, so a naive counter underflows and stops early — truncating the chunk. In
+# well-formatted code the matching `end` instead sits at the SAME indentation as the
+# opener (inner blocks are indented deeper), so take the first `end` at or below the
+# opener's indent. Returns the end line, or nothing if none is found.
 function _block_end(i::Int, lines::Vector{<:AbstractString})
-    depth = 1
+    open_indent = _indent(lines[i])
     for j = (i+1):length(lines)
-        l = strip(lines[j])
-        if startswith(l, "function ") ||
-           startswith(l, "macro ") ||
-           startswith(l, "if ") ||
-           startswith(l, "for ") ||
-           startswith(l, "while ") ||
-           startswith(l, "let ") ||
-           startswith(l, "begin") ||
-           startswith(l, "try") ||
-           startswith(l, "struct ") ||
-           startswith(l, "module ")
-            depth += 1
-        elseif l == "end" || startswith(l, "end ")
-            depth -= 1
-            depth == 0 && return j
-        end
+        occursin(r"^end\b", strip(lines[j])) || continue   # `end`, `end #…`, `end)`, … (not `endpoint`)
+        _indent(lines[j]) <= open_indent && return j
     end
     return nothing
 end

@@ -126,6 +126,27 @@ using Kaimon
         @test any(c -> occursin("x::String", c["text"]), hs)
     end
 
+    @testset "extract_definitions - mid-line block openers don't truncate the span (regression)" begin
+        # `x = let … end` and `… do … end` put an `end` on a later line with no opener
+        # visible at line start; the old keyword depth-counter underflowed and cut the
+        # function off at the first inner `end`. The indent-matched end finder spans full.
+        code = join([
+            "function big(x)",          # 1
+            "    y = let a = x",         # 2
+            "        a + 1",             # 3
+            "    end",                   # 4  (inner end — must NOT terminate `big`)
+            "    z = map(1:3) do i",     # 5
+            "        i * y",             # 6
+            "    end",                   # 7  (inner end — must NOT terminate `big`)
+            "    return z",              # 8
+            "end",                       # 9  (the real end)
+            "const AFTER = 1",           # 10
+        ], "\n")
+        big = only(filter(c -> c["name"] == "big", Kaimon.extract_definitions(code, "test.jl")))
+        @test (big["start_line"], big["end_line"]) == (1, 9)
+        @test occursin("return z", big["text"])
+    end
+
     @testset "create_window_chunks" begin
         code = "line1\nline2\nline3\nline4\nline5"
         chunks = Kaimon.create_window_chunks(code, "small.jl")
