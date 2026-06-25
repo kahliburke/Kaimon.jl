@@ -435,6 +435,54 @@ search_code_tool = @mcp_tool(
     args -> _qdrant_search_code(args),
 )
 
+# grep_code — exact-pattern counterpart to search_code (implementation in grep_code.jl).
+const _GREP_CODE_PARAMS = Dict(
+    "type" => "object",
+    "properties" => Dict(
+        "pattern" => Dict(
+            "type" => "string",
+            "description" => "The regex to search for (or a literal string with fixed=true). Standard regex syntax — e.g. `_eval_with_capture\\b`, `function\\s+set_\\w+`, `TODO|FIXME`. Matched literally over the working tree, so this finds EXACTLY what you type (use search_code instead when you want matches by meaning).",
+        ),
+        "path" => Dict(
+            "type" => "string",
+            "description" => "Directory or file to search, relative to the bound project or absolute (default: the bound project root). Use this to scope to a subtree, e.g. 'src/server'.",
+        ),
+        "file" => Dict(
+            "type" => "string",
+            "description" => "Search a single file (relative to the bound project or absolute) — the common 'grep one file to locate a function' case.",
+        ),
+        "glob" => Dict(
+            "type" => "array",
+            "items" => Dict("type" => "string"),
+            "description" => "Include-only globs in ripgrep syntax, e.g. ['src/**/*.jl', '!**/test/**']. Repeatable; narrows which files are scanned within the scope.",
+        ),
+        "query" => Dict(
+            "type" => "string",
+            "description" => "Optional natural-language intent. When given, the files that matched are RANKED by semantic relevance to this query (most relevant first), and hits inside a semantically-relevant region get a few lines of surrounding context. Use it to say what you're actually after, e.g. pattern='set_bind' + query='applying a browser value change to a cell'.",
+        ),
+        "collection" => Dict(
+            "type" => "string",
+            "description" => "Collection to use for semantic ranking when `query` is set (default: the scope project's collection). Ignored without a `query`.",
+        ),
+        "context" => Dict(
+            "type" => "integer",
+            "description" => "Lines of surrounding context to show on every hit (default: 0 — one tight line per hit; semantically-relevant hits already auto-expand when `query` is set).",
+        ),
+        "ignore_case" => Dict("type" => "boolean", "description" => "Case-insensitive match (default: false)."),
+        "word" => Dict("type" => "boolean", "description" => "Match whole words only (default: false)."),
+        "fixed" => Dict("type" => "boolean", "description" => "Treat the pattern as a literal string, not a regex (default: false)."),
+        "limit" => Dict("type" => "integer", "description" => "Max matches to return (default: 40); more are reported as truncated."),
+    ),
+    "required" => ["pattern"],
+)
+
+grep_code_tool = @mcp_tool(
+    :grep_code,
+    "Find an EXACT PATTERN in code — a better grep than grep. Runs a real regex over the live working tree (.gitignore-aware, no stale index), scoped to the bound project by default (narrow with path=/file=/glob=), and returns file:line WITH the enclosing function/struct for each hit. Use this when you know the literal text or a regex (a symbol name, a call site, a string, a TODO) and want every occurrence — `grep_code(pattern=\"_eval_with_capture\")` is the right move over shell grep/rg/find, which miss the enclosing symbol and aren't repo-scoped. Add an optional natural-language `query` to RANK the matching files by relevance and auto-expand context around the relevant hits. For finding code purely by MEANING (a concept you can't name), use search_code instead. Flags: ignore_case, word (whole-word), fixed (literal, not regex).",
+    _GREP_CODE_PARAMS,
+    args -> _grep_code(args),
+)
+
 qdrant_browse_collection_tool = @mcp_tool(
     :qdrant_browse_collection,
     "Browse points in a collection with pagination. Useful for exploring what's indexed.",
@@ -989,6 +1037,7 @@ function create_qdrant_tools()
         # Everyday surface
         qdrant_list_collections_tool,
         search_code_tool,                # hybrid; format="structured" replaces qdrant_fts_search
+        grep_code_tool,                  # exact-pattern (ripgrep) counterpart to search_code
         qdrant_index_project_tool,
         qdrant_sync_index_tool,
         qdrant_reindex_file_tool,

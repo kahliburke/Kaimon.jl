@@ -18,6 +18,7 @@ using Serialization
 using FileWatching
 using Preferences
 using ZMQ
+import ripgrep_jll   # bundled ripgrep binary backing grep_code (system `rg` is the fallback)
 using CommonMark  # triggers Tachikoma's TachikomaMarkdownExt for markdown rendering
 using Printf
 using UUIDs
@@ -170,6 +171,7 @@ include("vscode.jl")
 include("reflection_tools.jl")
 include("qdrant_tools.jl")
 include("qdrant_hybrid.jl")   # hybrid (semantic+lexical RRF) impl behind qdrant_search_code
+include("grep_code.jl")       # exact-pattern (ripgrep) search behind grep_code
 # Qdrant indexer, split from the former monolithic qdrant_indexer.jl. Order
 # follows the original (config/consts first, then cache, discovery, chunking,
 # indexing, revise hook).

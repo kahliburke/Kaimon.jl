@@ -40,6 +40,7 @@ Tachikoma = "468859d6-42d8-48b7-8ad9-1d312e0e3b0a"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 UUIDs = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
 ZMQ = "c2297ded-f4af-51ae-bb23-16f91089e4e1"
+ripgrep_jll = "e10fc14b-37cd-5cbc-b289-ad01b12ebaad"
 
 [weakdeps]
 PDFIO = "4d0d745f-9d9a-592e-8d18-1ad8a0f42b92"
@@ -91,6 +92,7 @@ Test = "1.10"
 UUIDs = "1.11.0"
 ZMQ = "1"
 julia = "1.12"
+ripgrep_jll = "13.0.0"
 
 [apps.kaimon]
 julia_flags = ["--threads=auto,2", "--gcthreads=1", "--startup-file=no"]
