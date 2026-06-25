@@ -23,12 +23,10 @@ function _rpc_initialize(request, session)
             # Fallback without session management
             init_result = Dict(
                 "protocolVersion" => "2025-11-25",
-                "capabilities" => Dict(
-                    "tools" => Dict(),
-                    "prompts" => Dict(),
-                    "resources" => Dict(),
-                    "logging" => Dict(),
-                ),
+                # Mirror the session path's advertised capabilities (incl. tools.listChanged
+                # and resources.listChanged) so the no-session fallback can't silently
+                # under-declare them — keep this in lockstep with get_server_capabilities().
+                "capabilities" => get_server_capabilities(),
                 "serverInfo" =>
                     Dict("name" => "Kaimon", "title" => "Kaimon MCP Server", "version" => PACKAGE_VERSION),
             )
