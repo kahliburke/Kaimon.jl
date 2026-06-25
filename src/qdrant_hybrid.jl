@@ -101,6 +101,49 @@ function _apply_boosts!(hits::Vector{HybridHit}, query::AbstractString)
     return hits
 end
 
+# Query-dependent lexical weight for the hybrid fuse. The lexical arm OR-joins the
+# query's distinctive terms, so on a natural-language / bag-of-words query ANY chunk
+# repeating one term enters at the same RRF scale as the #1 semantic hit and crowds
+# out the genuinely-on-intent (but fewer-literal-keyword) code. Scaling the lexical
+# contribution down turns that arm from an *injector* into a *booster*: a chunk found
+# by both arms still gets a bump, but a lexical-coincidence chunk falls back toward its
+# (low) semantic rank. Symbol hunts and explicit boolean/phrase queries keep it high —
+# there lexical is the signal, not the noise. Returns a multiplier in [0.15, 1.0].
+#
+# Only meaningful for mode="hybrid": with one arm the top-hit normalization makes the
+# weight rank-invariant. grep_code now owns the pure-pattern case, so even symbol-ish
+# hybrid queries stay modest rather than going full lexical.
+function _classify_lexical_weight(query::AbstractString, capped::Int)
+    q = strip(query)
+    isempty(q) && return 1.0
+    # Explicit lexical intent — a quoted phrase, a full-word boolean keyword, or a
+    # standalone operator alias — means the caller wants exact matching: trust lexical.
+    if occursin('"', q) ||
+       occursin(r"(^|\s)(AND|OR|NOT|NEAR)(\s|$)", q) ||
+       occursin(r"(^|\s)(&&?|\|\|?|!)(\s|$)", q)
+        return 1.0
+    end
+    # A sentence of keywords tripped the OR-cap ⇒ unambiguously NL ⇒ make lexical a
+    # whisper. Anything higher still lets a both-arms keyword-coincidence chunk edge out
+    # a semantic-only on-intent hit; the exactness story rides on _apply_boosts! instead.
+    capped > 0 && return 0.05
+    # Token shape. "code-shaped" = snake_case / camelCase / digits / attached Julia
+    # punctuation (! @ . : /) — far more selective than prose words.
+    toks = [t for t in split(q, r"\s+"; keepempty = false) if length(t) >= 2]
+    n = length(toks)
+    n == 0 && return 1.0
+    is_code(t) = occursin('_', t) || occursin(r"[a-z][A-Z]", t) ||
+                 occursin(r"[0-9]", t) || occursin(r"[!@.:/]", t)
+    code_ratio = count(is_code, toks) / n
+    if n <= 3
+        # Few tokens: a symbol hunt if they're code-shaped, else a short concept phrase.
+        return code_ratio >= 0.5 ? 0.8 : 0.5
+    end
+    # 4+ tokens: interpolate by how code-shaped the bag is — prose ⇒ semantic-dominant,
+    # mostly identifiers ⇒ lexical gets a real vote.
+    return clamp(0.05 + 0.55 * code_ratio, 0.05, 0.6)
+end
+
 # Qdrant payload filter for the chunk_type facet (mirrors the legacy behavior).
 function _chunk_type_filter(chunk_type::AbstractString)
     if chunk_type == "definitions"
@@ -136,6 +179,37 @@ function _build_qdrant_filter(chunk_type::AbstractString, filters)
     isempty(must) ? nothing : Dict("must" => must)
 end
 
+# Two hits are span-redundant when they're in the same file and their line spans are
+# identical or one contains the other — e.g. two method chunks the indexer mapped onto
+# one signature's span, or a sliding `window` that encloses a `definition`. Partial
+# overlaps (neither contains the other) are NOT redundant: they carry distinct code.
+function _spans_redundant(a::HybridHit, b::HybridHit)
+    (isempty(a.file) || a.file != b.file) && return false
+    (a.start_line <= 0 || b.start_line <= 0) && return false
+    (a.start_line == b.start_line && a.end_line == b.end_line) ||         # identical
+        (a.start_line <= b.start_line && b.end_line <= a.end_line) ||     # a ⊇ b
+        (b.start_line <= a.start_line && a.end_line <= b.end_line)        # b ⊇ a
+end
+
+# Collapse span-redundant hits, unioning a merged hit's sources so the surviving hit's
+# origin glyph still reflects every method that found it. Run before the top-`limit` cut
+# so freed slots fill with genuinely distinct results instead of repeats of one span.
+#
+# Representatives are chosen definitions-first (then by the incoming rrf order): a precise
+# definition must never be swallowed by an enclosing `window`, so a window that contains a
+# def merges INTO the def rather than the reverse. Distinct definitions never contain one
+# another (nested defs aren't indexed), so an overloaded function's separate methods all
+# survive. The result is returned in the original rrf-sorted order.
+function _dedup_overlaps(hits::Vector{HybridHit})
+    order = sort(collect(eachindex(hits)); by = i -> (hits[i].type == "window", i))
+    keep = Int[]
+    for i in order
+        j = findfirst(k -> _spans_redundant(hits[k], hits[i]), keep)
+        j === nothing ? push!(keep, i) : union!(hits[keep[j]].sources, hits[i].sources)
+    end
+    return hits[sort!(keep)]
+end
+
 # Origin glyph for a hit (so the agent sees *why* it surfaced).
 function _source_glyph(s::Set{Symbol})
     has_sem = :semantic in s
@@ -146,10 +220,17 @@ function _source_glyph(s::Set{Symbol})
     return "⊂"                          # substring (term contained in a word)
 end
 
+# FTS5 boolean keywords (lowercased) — operators in a query, never search terms, so we
+# don't re-find or highlight them as matched content. `or` is already excluded by the
+# ≥3-char floor below; `and`/`not`/`near` need an explicit skip.
+const _FTS_OPERATOR_WORDS = Set(("and", "not", "near"))
+
 # Significant (≥3-char) query tokens, lowercased — what we re-find in chunk text to
-# locate matched lines. Mirrors the tokenization used by `_apply_boosts!`.
+# locate matched lines. Mirrors the tokenization used by `_apply_boosts!`, minus the
+# boolean operators (so `reactive AND refresh` doesn't bold stray `and`s in the source).
 _query_tokens(query::AbstractString) =
-    [t for t in split(lowercase(query), r"[^a-z0-9_]+"; keepempty = false) if length(t) >= 3]
+    [t for t in split(lowercase(query), r"[^a-z0-9_]+"; keepempty = false)
+     if length(t) >= 3 && t ∉ _FTS_OPERATOR_WORDS]
 
 # Wrap each query-token occurrence in `**…**` (case-insensitive, original case kept).
 # Tokens are alnum/underscore only (no regex metachars), so no escaping needed.
@@ -355,36 +436,41 @@ function _qdrant_search_code(args)
     # ── Lexical ──
     word = FtsIndex.FtsHit[]
     tri = FtsIndex.FtsHit[]
+    lex_capped = 0
     if want_lexical
         try
             lex = FtsIndex.search(query; collection = fts_collection, limit = fetch,
                 chunk_type = chunk_type, filters = filters)
             word, tri = lex.word, lex.tri
+            lex_capped = lex.capped
             if lex.fellback
                 push!(notes, "Couldn't parse the query as FTS5 even after normalizing — " *
                     "searched it as a single literal phrase. Check for unbalanced quotes " *
                     "or stray operators. Bare terms are OR-joined; use `\"exact phrase\"`, " *
                     "AND/OR/NOT, or `prefix*` for finer control.")
             end
-            if lex.capped > 0
-                push!(notes, "Query had too many terms — used only the " *
-                    "$(FtsIndex._MAX_OR_TERMS) most distinctive and dropped $(lex.capped). " *
-                    "Narrow the query to a few distinctive symbols " *
-                    "(e.g. `atStartOfTurn onApplyPower`), not a sentence of keywords.")
-            end
+            # NB: lex.capped is still consulted (it's the hard-NL signal for
+            # _classify_lexical_weight), but we no longer warn the agent to "narrow the
+            # query" — search_code is meaning-first now, and the low w_lex absorbs the
+            # OR-bag dilution that warning used to be about. Exact-pattern work is grep_code's.
         catch e
             mode == "lexical" && return "Error: lexical index unavailable: $e"
         end
     end
 
     # ── Fuse (RRF), boost exact symbols, rank ──
+    # Query-dependent lexical weight (hybrid only): on NL/bag queries the lexical arm
+    # is scaled down so it boosts what semantic surfaced rather than injecting keyword-
+    # coincidence chunks; symbol/operator queries keep it high. See _classify_lexical_weight.
+    w_lex = mode == "hybrid" ? _classify_lexical_weight(query, lex_capped) : 1.0
     acc = Dict{String,HybridHit}()
     _rrf_accumulate!(acc, sem; weight = 1.0)
-    _rrf_accumulate!(acc, _lexical_hits(word); weight = 1.0)
-    _rrf_accumulate!(acc, _lexical_hits(tri); weight = 0.9)
+    _rrf_accumulate!(acc, _lexical_hits(word); weight = w_lex)
+    _rrf_accumulate!(acc, _lexical_hits(tri); weight = w_lex * 0.9)
     hits = collect(values(acc))
     _apply_boosts!(hits, query)
     sort!(hits; by = h -> -h.rrf)
+    hits = _dedup_overlaps(hits)   # collapse identical/contained spans before the top-N cut
     if isempty(hits)
         format == "structured" && return "[]"
         msg = "No results found for query: \"$query\""
