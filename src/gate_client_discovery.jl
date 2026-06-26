@@ -195,6 +195,27 @@ end
 
 # ── Socket Discovery ─────────────────────────────────────────────────────────
 
+"""
+    _resolve_local_gate_token() -> String
+
+Auth token for connecting to a LOCALHOST gate discovered on disk: env
+`KAIMON_GATE_TOKEN`, else the active security config's first api key (non-lax).
+Mirrors `connect_tcp!`'s resolution. A localhost gate shares this machine's
+config, so this authenticates an auth-required gate and is ignored by a lax one.
+"""
+function _resolve_local_gate_token()
+    tok = get(ENV, "KAIMON_GATE_TOKEN", "")
+    isempty(tok) || return tok
+    try
+        config = load_global_config()
+        if config.mode != :lax && !isempty(config.api_keys)
+            return first(config.api_keys)
+        end
+    catch
+    end
+    return ""
+end
+
 function discover_sessions(mgr::ConnectionManager)
     isdir(mgr.sock_dir) || return REPLConnection[]
 
@@ -238,14 +259,19 @@ function discover_sessions(mgr::ConnectionManager)
         # nothing changed.  If the PID is different the process restarted:
         # don't skip so the watcher can replace the stale connection.
         session_mode = Symbol(get(meta, "mode", "ipc"))
-        # tcp_gates.json poll bookkeeping (sid "tcp-host-port") is owned by
-        # _poll_tcp_gates! — skip to avoid tokenless double-connect (#50).
-        # Localhost TCP gates advertised by serve() (e.g. Windows) are discovered here.
+        # tcp_gates.json poll bookkeeping AND connect_tcp! reconnect markers both use
+        # sid "tcp-host-port" — those gates are owned by _poll_tcp_gates!/connect_tcp!
+        # (connected WITH a token), so the file-watcher must never touch them, or it
+        # double-connects tokenless and the bad connection wins (#50). Only
+        # serve()-advertised LOCALHOST gates (real uuid sid; e.g. Windows, no ipc://)
+        # are file-discovered here.
         if session_mode == :tcp
             startswith(session_id, "tcp-") && continue
             _is_local_host(_endpoint_host(get(meta, "endpoint", ""))) || continue
         end
-        if session_mode != :tcp && haskey(known_id_pids, session_id) && known_id_pids[session_id] == pid
+        # Already tracked with the same PID → nothing changed. Applies to localhost TCP
+        # too (a stable discovered gate must not be re-emitted as a "restart" each cycle).
+        if haskey(known_id_pids, session_id) && known_id_pids[session_id] == pid
             continue
         end
 
@@ -298,6 +324,11 @@ function discover_sessions(mgr::ConnectionManager)
             pid = pid,
             spawned_by = get(meta, "spawned_by", "user"),
             server_pubkey = server_pubkey,
+            # A localhost TCP gate shares this machine's security config, so present the
+            # local token: it authenticates an auth-required gate and is ignored by a lax
+            # one — instead of failing tokenless every cycle. IPC gates are filesystem-
+            # scoped and need none. (Remote/poll TCP gates are skipped above.)
+            auth_token = session_mode == :tcp ? _resolve_local_gate_token() : "",
         )
 
         # If this session_id was already known (PID changed = process restarted),
