@@ -32,6 +32,14 @@ crush.json
 
 HANDOFF.md
 SESSION_HANDOFF.md
+# Scratch planning/handoff/spec docs — keep design notes out of the repo
+*_PLAN.md
+*_SPEC.md
+*_REPORT.md
+*_REQUEST.md
+*_HANDOFF.md
+*_NOTES.md
+**/target/
 coverage.info
 lcov.info
 .qdrant_index.json
