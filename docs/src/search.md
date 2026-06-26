@@ -1,11 +1,19 @@
 # Code Search
 
-Kaimon provides **hybrid** search over Julia codebases: it combines semantic
-(meaning-based) vector search with exact keyword/identifier matching, fuses the
-two, and returns one ranked list. Describe what you want in plain language — "function
-that handles HTTP routing" — *or* paste an exact symbol like `_eval_with_capture`,
-and the right half of the engine surfaces it. Both go through the same
-`search_code` tool; you don't have to choose.
+Kaimon gives you **two complementary tools** for finding code, both repo-scoped,
+`.gitignore`-aware, and richer than shell `grep`/`find` (every hit carries its
+enclosing function or struct):
+
+- **`search_code`** — find code by **meaning**. Describe a concept or behaviour
+  ("function that handles HTTP routing") and a hybrid semantic + lexical engine
+  returns one ranked list. Use it when you can't name what you're looking for.
+- **`grep_code`** — find an **exact pattern**. Give it a literal string or regex
+  (a symbol, a call site, a `TODO`) and it runs a real regex over the live working
+  tree, returning every match with its enclosing symbol. The "better grep than grep".
+
+Rule of thumb: if you can name it, `grep_code`; if you can only describe it,
+`search_code`. Most of this page covers `search_code` (the semantic engine);
+`grep_code` is summarized in its own section at the end.
 
 ![Kaimon search tab](./assets/kaimon_search.gif)
 
@@ -39,6 +47,26 @@ also supports FTS query syntax — phrases (`"exact phrase"`), boolean
 
 Each result is tagged with its origin: `⚯` found by both, `≈` semantic, `⚡` exact
 keyword, `⊂` substring — and lexical hits show the matched snippet.
+
+In `hybrid` mode the engine **weights the lexical arm by the shape of your query**,
+so you don't have to tune anything: a natural-language sentence leans almost fully
+semantic (keyword coincidences can't crowd out the conceptual answer), while a
+quoted `"exact phrase"`, a boolean (`AND`/`OR`/`NOT`), or a bare code-shaped symbol
+leans lexical. Overlapping hits (a sliding window that contains a definition, or the
+same span found by several methods) are **collapsed before the top-N cut**, so you
+get distinct results rather than repeats of one span — but pure exact-symbol hunts
+still belong in `grep_code`.
+
+### Structured Output and Filters
+
+`search_code` takes two more options for programmatic and scoped use:
+
+- `format="structured"` returns a JSON array of hits —
+  `{point_id, name, file, type, start_line, end_line, text, snippet, sources, score}` —
+  instead of the ranked text.
+- `filters={field: [allowed values]}` restricts results to indexed chunks whose
+  `metadata` matches (AND across fields, any-of within a field), applied in-query on
+  both the vector and lexical engines so `limit` is honoured after filtering.
 
 ### Resilience
 
@@ -210,3 +238,33 @@ The stale count shows how many files have been modified since the last indexing 
 qdrant_sync_index()
 qdrant_sync_index(collection="MyProject")
 ```
+
+## Exact-Pattern Search (grep_code)
+
+`grep_code` is the exact-pattern counterpart to `search_code`. It runs a real regex
+over the **live working tree** (no index, so it always reflects the current files),
+scoped to the bound project by default, and returns every match `file:line` **with
+its enclosing function or struct** — so it locates code, not just lines.
+
+```
+grep_code(pattern="_eval_with_capture")          # every occurrence + enclosing symbol
+grep_code(pattern="function\\s+set_\\w+")         # regex
+grep_code(pattern="TODO|FIXME", glob=["src/**/*.jl"])
+```
+
+Reach for it whenever you know the literal text or a regex — a symbol name, a call
+site, an error string, a `TODO`. It beats shell `grep`/`rg`/`find`, which aren't
+repo-scoped and don't report the enclosing symbol.
+
+Key options:
+
+| Option | Effect |
+|---|---|
+| `path` / `file` / `glob` | Narrow the scope to a subtree, one file, or ripgrep-style globs. |
+| `query` | An optional natural-language intent. Ranks the matching files by semantic relevance and expands context around the relevant hits. |
+| `ignore_case`, `word`, `fixed` | Case-insensitive, whole-word, or literal (non-regex) matching. |
+| `no_ignore` | Also search `.gitignored`/hidden/generated files — so you can grep **logs and build output** without leaving the Kaimon tools. |
+| `context` | Lines of surrounding context per hit. |
+
+Like `search_code`'s lexical arm, `grep_code` needs **no external services** — it
+works with Qdrant and Ollama down.

@@ -126,19 +126,20 @@ run_tests(project_path="/path/to/MyPackage.jl")
 
 Provide `project_path` (absolute path to the project) or `session` to identify the project. If neither is given and only one session is connected, that session's project is used. The test runner handles both `test/Project.toml` environments and legacy `[extras]/[targets]` layouts automatically.
 
-## Semantic Search (Qdrant)
+## Code Search
 
-Semantic search requires [Qdrant](https://qdrant.tech/) running locally and [Ollama](https://ollama.ai/) for embeddings. The default embedding model is `qwen3-embedding:0.6b`.
+`search_code` (by meaning) requires [Qdrant](https://qdrant.tech/) running locally and [Ollama](https://ollama.ai/) for embeddings (default model `qwen3-embedding:0.6b`); its lexical arm and `grep_code` work with no external services. The indexing/admin tools below feed `search_code`.
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `search_code` | Hybrid code search -- semantic (meaning) + lexical (exact keyword/identifier), fused and ranked. Finds exact symbols too, so you don't need grep. | `query`, `mode` ("hybrid"/"semantic"/"lexical"), `format` ("text"/"structured"), `collection`, `cross_project`, `limit`, `chunk_type` ("all"/"definitions"/"windows"), `embedding_model` |
+| `search_code` | Find code by MEANING -- semantic (vector) search with a light lexical boost, fused and ranked. Describe a concept or behaviour; for an exact symbol or pattern use `grep_code` instead. | `query`, `mode` ("hybrid"/"semantic"/"lexical"), `format` ("text"/"structured"), `filters`, `collection`, `cross_project`, `limit`, `chunk_type` ("all"/"definitions"/"windows"), `embedding_model` |
+| `grep_code` | Find an EXACT pattern/regex over the live working tree -- repo-scoped, `.gitignore`-aware, and returns each hit's enclosing function/struct. The "better grep than grep". | `pattern`, `path`/`file`/`glob` (scope), `query` (optional NL file-ranking), `ignore_case`, `word`, `fixed`, `no_ignore`, `context`, `limit` |
 | `qdrant_index_project` | Index a project's source files into a Qdrant collection. | `project_path`, `collection`, `recreate`, `extra_dirs`, `extensions` |
 | `qdrant_sync_index` | Incrementally sync an index -- reindex changed files, remove deleted ones. | `project_path`, `collection`, `verbose` |
 | `qdrant_reindex_file` | Re-index a single file (delete old chunks, index fresh). | `file_path`, `collection`, `project_path`, `verbose` |
 | `qdrant_list_collections` | List all available Qdrant collections. | (none) |
 
-`format="structured"` returns a JSON array of hits (`{point_id, name, file, type, start_line, end_line, text, snippet, sources, score}`) instead of the ranked text -- for programmatic use. The lexical half auto-normalizes Julia punctuation (`push!`, `@view`, `Base.foo` match literally; bare terms OR-joined). The raw vector-DB admin tools (`qdrant_collection_info`/`_exists`/`browse`/`create`/`delete_collection`, `qdrant_upsert`/`delete_points`, `qdrant_ensure_fts_coverage`) are gated off the default surface -- enable them in `.kaimon/tools.json` if needed.
+`search_code` and `grep_code` are the two ways to find code, and both beat shell `grep`/`find` (repo-scoped, `.gitignore`-aware, enclosing-symbol enrichment): use `search_code` when you can only *describe* what the code does, and `grep_code` when you know the literal text or a regex. `search_code` auto-tunes how much its lexical arm counts from the *shape* of the query (a natural-language sentence leans almost fully semantic; a quoted phrase, boolean, or bare symbol leans lexical), so just type what you mean. `format="structured"` returns a JSON array of hits (`{point_id, name, file, type, start_line, end_line, text, snippet, sources, score}`) instead of the ranked text -- for programmatic use; `filters={field:[vals]}` restricts to chunks carrying matching `metadata`. `grep_code` respects `.gitignore` by default; pass `no_ignore=true` to also grep logs and generated/hidden files. The raw vector-DB admin tools (`qdrant_collection_info`/`_exists`/`browse`/`create`/`delete_collection`, `qdrant_upsert`/`delete_points`, `qdrant_ensure_fts_coverage`) are gated off the default surface -- enable them in `.kaimon/tools.json` if needed.
 
 **`search_code` -- Find code by meaning**
 
@@ -147,6 +148,18 @@ search_code(query="function that handles HTTP routing")
 # => [1 0.89] handle_request(req::Request) @ src/server.jl:L42-68 (function)
 #    [2 0.81] route(path::String, handler) @ src/router.jl:L15-30 (function)
 #    ...
+```
+
+**`grep_code` -- Find an exact pattern**
+
+```
+grep_code(pattern="_eval_with_capture")
+# => src/gate_stream.jl:L224  _eval_with_capture  function _eval_with_capture(...)
+#    src/gate_eval.jl:L88     handle_eval         out = _eval_with_capture(code)
+#    ...
+
+grep_code(pattern="TODO|FIXME", glob=["src/**/*.jl"])   # scope with a glob
+grep_code(pattern="set_bind", query="apply a browser value change to a cell")  # NL-rank the matching files
 ```
 
 ## Session Management
