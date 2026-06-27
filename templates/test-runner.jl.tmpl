@@ -7,8 +7,13 @@ project_path = ARGS[1]
 pattern = length(ARGS) >= 2 ? ARGS[2] : ""
 verbose_level = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 1
 
-println("TEST_RUNNER: START project=$(basename(project_path))")
-flush(stdout)
+# Save the REAL stdout now, before any test can rebind `Base.stdout` (e.g. an eval
+# capture mux). All TEST_RUNNER control markers go through this saved handle so the
+# parent's result parser keeps receiving them regardless of what the tests do to
+# `Base.stdout` — otherwise a test that leaves stdout rebound truncates the report.
+const _RUNNER_OUT = stdout
+println(_RUNNER_OUT, "TEST_RUNNER: START project=$(basename(project_path))")
+flush(_RUNNER_OUT)
 
 # ── Activate test environment ─────────────────────────────────────────────
 # Build a throwaway temp env and `develop` the project under test into it, so its
@@ -76,8 +81,8 @@ let _w = Base.get_world_counter()
     @eval function Test.push_testset(ts::Test.DefaultTestSet)
         ts.verbose = true
         $_testset_depth[] += 1
-        println("TEST_RUNNER: TESTSET_START name=", ts.description)
-        flush(stdout)
+        println($_RUNNER_OUT, "TEST_RUNNER: TESTSET_START name=", ts.description)
+        flush($_RUNNER_OUT)
         return Base.invoke_in_world($_w, Test.push_testset, ts)
     end
 end
@@ -93,11 +98,11 @@ let _w2 = Base.get_world_counter()
         _e = getproperty(_tc, :errors) + getproperty(_tc, :cumulative_errors)
         _total = _p + _f + _e
 
-        println("TEST_RUNNER: TESTSET_DONE",
+        println($_RUNNER_OUT, "TEST_RUNNER: TESTSET_DONE",
             " pass=", _p, " fail=", _f, " error=", _e,
             " total=", _total, " depth=", _depth,
             " name=", ts.description)
-        flush(stdout)
+        flush($_RUNNER_OUT)
 
         return Base.invoke_in_world($_w2, Test.finish, ts; print_results=print_results)
     end
@@ -121,7 +126,7 @@ try
         append!(ARGS, old_args)
     end
 
-    println("TEST_RUNNER: DONE status=passed")
+    println(_RUNNER_OUT, "TEST_RUNNER: DONE status=passed")
 catch e
     global exit_code = 1
     _is_test_failure = e isa Test.TestSetException
@@ -129,12 +134,12 @@ catch e
         _is_test_failure = e.error isa Test.TestSetException
     end
     if !_is_test_failure
-        println("TEST_RUNNER: ERROR $(first(sprint(showerror, e), 500))")
+        println(_RUNNER_OUT, "TEST_RUNNER: ERROR $(first(sprint(showerror, e), 500))")
         println(stderr, sprint(showerror, e, catch_backtrace()))
     end
-    println("TEST_RUNNER: DONE status=failed")
+    println(_RUNNER_OUT, "TEST_RUNNER: DONE status=failed")
 end
 
-flush(stdout)
+flush(_RUNNER_OUT)
 flush(stderr)
 exit(exit_code)
