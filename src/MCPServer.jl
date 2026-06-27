@@ -169,6 +169,44 @@ function _persisted_workspace_root(session_id::AbstractString)
     (r isa AbstractString && !isempty(r)) ? String(r) : nothing
 end
 
+"""Persist a session's negotiated capabilities/info/protocol so they survive a
+reconnect that doesn't re-`initialize`. Without this, a client that advertised
+e.g. `elicitation` at initialize looks incapable after a restore (Claude Code
+reconnects without re-initializing), so capability-gated features silently fall
+back. Called once initialize has populated the session."""
+function _persist_session_caps!(session)
+    (isempty(session.client_capabilities) && isempty(session.client_info)) && return
+    lock(_SESSIONS_FILE_LOCK) do
+        sessions = load_persisted_sessions()
+        now_str = Dates.format(now(), "yyyy-mm-dd\\THH:MM:SS")
+        entry = get!(
+            sessions,
+            session.id,
+            Dict{String,Any}("created_at" => now_str, "last_seen" => now_str),
+        )
+        entry["client_capabilities"] = session.client_capabilities
+        entry["client_info"] = session.client_info
+        entry["protocol_version"] = session.protocol_version
+        save_persisted_sessions(sessions)
+    end
+    return nothing
+end
+
+"""Restore persisted capabilities/info/protocol onto a session reconstructed for
+a reconnect, so capability checks (elicitation, tasks, …) see what the client
+advertised at its original initialize. No-op if the entry predates this (older
+persisted sessions carry no caps until the client re-initializes once)."""
+function _restore_session_caps!(session, entry)
+    entry isa AbstractDict || return
+    caps = get(entry, "client_capabilities", nothing)
+    caps isa AbstractDict && (session.client_capabilities = Dict{String,Any}(caps))
+    info = get(entry, "client_info", nothing)
+    info isa AbstractDict && (session.client_info = Dict{String,Any}(info))
+    pv = get(entry, "protocol_version", nothing)
+    (pv isa AbstractString && !isempty(pv)) && (session.protocol_version = pv)
+    return nothing
+end
+
 """
     get_or_create_session(session_id::Union{String,Nothing}, is_initialize::Bool) -> (MCPSession, Bool)
 
@@ -220,6 +258,10 @@ function get_or_create_session(session_id::Union{String,Nothing}, is_initialize:
                     session.id = session_id
                     session.state = Session.INITIALIZED  # Auto-initialize so tool calls work immediately
                     session.initialized_at = now()
+                    # Carry the originally-advertised capabilities forward, so
+                    # capability-gated features (elicitation, …) still work for a
+                    # client that reconnects without re-initializing.
+                    _restore_session_caps!(session, persisted_sessions[session_id])
                     STANDALONE_SESSIONS[session.id] = session
                     register_persisted_session(session.id)  # Update last_seen
                     @info "Restored session from persistence file" session_id = session.id

@@ -19,6 +19,10 @@ function _rpc_initialize(request, session)
         # Use session management if available
         if session !== nothing
             init_result = initialize_session!(session, params)
+            # Persist the negotiated capabilities so a later reconnect that doesn't
+            # re-initialize (e.g. Claude Code) still sees them (issue: elicitation
+            # consent fell back to the static error on restored sessions).
+            _persist_session_caps!(session)
         else
             # Fallback without session management
             init_result = Dict(
