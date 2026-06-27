@@ -24,21 +24,33 @@ function pkg_operation_tool(operation::String, verb::String, args; session::Stri
             return "Error: packages array is required and cannot be empty"
         end
 
-        # Use Pkg operation with io=devnull to disable interactivity
-        # Also set JULIA_PKG_PRECOMPILE_AUTO=0 to avoid long precompilation waits
+        # io=devnull keeps Pkg non-interactive (no terminal/fancyprint) AND routes
+        # any precompilation away from the gate's captured streams. We deliberately
+        # let precompilation run HERE rather than deferring it to the first `using`:
+        # a `using`-triggered auto-precompile writes to stderr (the gate's capture
+        # mux) and, on Julia 1.12, trips the failed-task notice printer
+        # ("…giving up"). Doing it here with io=devnull sidesteps that entirely.
+        #
+        # Precomp was originally dropped here because it could time the tool out —
+        # so route through the streaming path (like `ex`), which auto-promotes a
+        # long precompile to a background job (poll check_eval) instead of blocking.
         pkg_names = join(["\"$p\"" for p in packages], ", ")
         code = """
         using Pkg
-        withenv("JULIA_PKG_PRECOMPILE_AUTO" => "0") do
-            Pkg.$operation([$pkg_names]; io=devnull)
-        end
+        Pkg.$operation([$pkg_names]; io=devnull)
+        $(repr("$verb packages: " * join(packages, ", ")))
         """
 
-        execute_repllike(code; silent = false, quiet = false, session = session)
-
-        return """$verb packages: $(join(packages, ", "))
-
-Note: Packages installed but not precompiled. They will precompile on first use."""
+        return if GATE_MODE[]
+            Base.invokelatest(
+                execute_via_gate_streaming, code;
+                quiet = false, silent = false, session = session,
+            )
+        else
+            Base.invokelatest(
+                execute_repllike, code; silent = false, quiet = false, session = session,
+            )
+        end
     catch e
         action = lowercase(verb) * "ing"
         return "Error $action packages: $e"
