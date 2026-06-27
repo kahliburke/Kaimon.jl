@@ -72,10 +72,23 @@ const _GATE_ENV = pkgdir(Kaimon.KaimonGate)
             @test KG._default_mirror_pref_provider() === false
         end
         withenv("KAIMON_GATE_PERSONALITY" => "🥷") do
-            @test KG._default_personality_provider() == "🥷"
+            @test KG._default_personality_provider() == "🥷"   # env wins
         end
-        withenv("KAIMON_GATE_PERSONALITY" => nothing) do
-            @test KG._default_personality_provider() == "⚡"   # falls back to default
+        # No env var: the standalone provider reads the shared config's personality
+        # NAME and maps it to an emoji (matching Kaimon's load_personality), so a
+        # bare KaimonGate gate still shows the user's personality. ⚡ only when there
+        # is no config at all.
+        mktempdir() do dir
+            cfgdir = joinpath(dir, "kaimon")
+            mkpath(cfgdir)
+            write(joinpath(cfgdir, "config.json"), "{\"personality\": \"l33t\"}")
+            withenv("KAIMON_GATE_PERSONALITY" => nothing, "XDG_CONFIG_HOME" => dir) do
+                @test KG._default_personality_provider() == "👻"   # l33t → 👻 from config
+            end
+            withenv("KAIMON_GATE_PERSONALITY" => nothing,
+                    "XDG_CONFIG_HOME" => joinpath(dir, "empty")) do
+                @test KG._default_personality_provider() == "⚡"   # no config → fallback
+            end
         end
         withenv("KAIMON_GATE_VERSION" => "9.9.9-test") do
             @test KG._default_version_provider() == "9.9.9-test"

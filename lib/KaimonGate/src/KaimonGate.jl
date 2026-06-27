@@ -85,9 +85,41 @@ _default_version_provider() = begin
     isempty(v) ? string(something(pkgversion(@__MODULE__), "unknown")) : v
 end
 _default_mirror_pref_provider() = get(ENV, "KAIMON_GATE_MIRROR_REPL", "") == "1"
+
+# Personality name → emoji. Mirrors Kaimon's `PERSONALITY_EMOTICONS` (security.jl)
+# so a standalone gate resolves the same emoji Kaimon would, without loading Kaimon.
+const _PERSONALITY_EMOTICONS = Dict("dragon" => "🐉", "butterfly" => "🦋", "l33t" => "👻")
+
+"""Path to the shared Kaimon config (`~/.config/kaimon/config.json`), XDG/Windows-aware."""
+function _kaimon_config_path()
+    dir = if Sys.iswindows()
+        joinpath(get(ENV, "APPDATA", joinpath(homedir(), "AppData", "Roaming")), "Kaimon")
+    else
+        joinpath(get(ENV, "XDG_CONFIG_HOME", joinpath(homedir(), ".config")), "kaimon")
+    end
+    return joinpath(dir, "config.json")
+end
+
+# Personality resolution for a STANDALONE gate (no Kaimon loaded). Order:
+#   1. KAIMON_GATE_PERSONALITY env — the resolved emoji Kaimon injects when it
+#      spawns a session (takes precedence).
+#   2. The shared config's `"personality"` NAME mapped to an emoji — same source
+#      and result as Kaimon's `load_personality`, but via a flat-key extraction so
+#      KaimonGate keeps its no-JSON-dep footprint.
+#   3. ⚡ fallback.
+# When full Kaimon is loaded it overrides this via `set_personality_provider!`.
 _default_personality_provider() = begin
     p = get(ENV, "KAIMON_GATE_PERSONALITY", "")
-    isempty(p) ? "⚡" : p
+    isempty(p) || return p
+    try
+        path = _kaimon_config_path()
+        if isfile(path)
+            m = match(r"\"personality\"\s*:\s*\"([^\"]*)\"", read(path, String))
+            m === nothing || return get(_PERSONALITY_EMOTICONS, m.captures[1], "⚡")
+        end
+    catch
+    end
+    return "⚡"
 end
 
 const _VERSION_PROVIDER     = Ref{Function}(_default_version_provider)
