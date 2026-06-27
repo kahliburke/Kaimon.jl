@@ -62,6 +62,7 @@ function _build_session_script(project_path::String;
     # personality, version) conveyed, via `_build_session_env`. The TUI enriches
     # the gate over the wire, so loading Kaimon here buys nothing.
     return """
+    cd($(repr(project_path)))
     try; using Revise; catch; end
     using KaimonGate
     import Pkg; Pkg.instantiate(; io=devnull)
