@@ -202,7 +202,7 @@ function get_server_instructions()
     • grep_code(pattern="…") finds an EXACT pattern/regex over the live working tree — every occurrence, with its enclosing symbol. Use it for a symbol name, a call site, a string, or a TODO; add query="…" to also rank the matching files by relevance, or no_ignore=true to also search logs and generated/gitignored files.
     So grep_code covers the same ground as shell grep; shell grep/rg/find is only needed to TRANSFORM matches (sed/awk) or pipe them into another command.
 
-    Running Julia: ex(code) evaluates in a REPL the USER SHARES live. Default q=true (suppress output); pass q=false only when you need the value back. println/print to stdout is STRIPPED — return a final expression instead. Slow evals auto-promote to background jobs (poll check_eval). Use mt=true for GLMakie/OpenGL.
+    Running Julia: ex(code) evaluates in a REPL the USER SHARES live. Default q=true (suppress output); pass q=false only when you need the value back. println/print to stdout is STRIPPED — return a final expression instead. Revise auto-reloads src/ edits before every eval, so never call Revise.revise() — it's a no-op and is stripped like println. Slow evals auto-promote to background jobs (poll check_eval); when you write code that may run long, make it cooperative so it can be watched and stopped — loop on KaimonGate.is_cancelled() (lets cancel_eval stop it), report KaimonGate.progress("…"), and stash intermediates with KaimonGate.stash(:k, v) (all visible via check_eval). Use mt=true for GLMakie/OpenGL.
 
     Sessions: each connected project is a session; when more than one is connected, pass ses=<key> to target one (ping lists them).
 

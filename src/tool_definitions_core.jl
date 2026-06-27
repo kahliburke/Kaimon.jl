@@ -354,7 +354,12 @@ usage_instructions_tool =
                     return "Error: julia_repl_workflow.md not found at $workflow_path"
                 end
 
-                return read(workflow_path, String)
+                # Compose: the always-injected server instructions are the canonical
+                # quick reference (the most important messages); this tool returns
+                # them plus the extended guide below. One source for the essentials,
+                # so the two can't drift.
+                extended = read(workflow_path, String)
+                return string(Session.get_server_instructions(), "\n\n---\n\n", extended)
             catch e
                 return "Error reading usage instructions: $e"
             end

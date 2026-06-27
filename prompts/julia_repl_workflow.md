@@ -1,5 +1,8 @@
 # Julia REPL Workflow Guide
 
+The quick reference above is the canonical summary; this guide expands each area
+with examples, edge cases, and the full tool set.
+
 ## Code Discovery Tools
 
 Kaimon provides Julia-native code discovery tools. Prefer these over grep/shell:
@@ -35,8 +38,6 @@ Full references: `tool_help("search_code", extended=true)` and
 ## Primary Execution Tool
 
 **`ex()`** is your primary tool for running code, tests, docs, loading packages.
-
-**New to Kaimon?** → `usage_quiz()` then `usage_quiz(show_sols=true)` to self-grade
 
 ## Shared REPL Model
 
@@ -135,7 +136,7 @@ Jobs **persist across a Kaimon restart** (reconciled from SQLite), so an eval ID
 
 ## Environment & Packages
 
-- **Revise.jl** auto-tracks changes in `src/`. Do not call `Revise.revise()` — it does nothing useful here. If changes aren't picked up, restart.
+- **Revise.jl** auto-reloads `src/` edits before every eval (the gate replays Revise's `revise_first` transform). Never call `Revise.revise()` yourself — it's a redundant no-op and is stripped from your code automatically, like `println`. If a change isn't picked up, restart the session.
 - **Session start:** `investigate_environment()` to see packages, dev status, Revise status
 - **Add packages:** `pkg_add(packages=["Name"])`
 

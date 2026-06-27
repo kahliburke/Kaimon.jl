@@ -45,10 +45,24 @@ function _serialize_expr(expr)
     end
 end
 
+"""Match a `Revise.revise()` / `Main.Revise.revise()` call (by callee; args
+ignored). The gate replays Revise's `revise_first` ast-transform before every
+eval, so an explicit call is always a redundant no-op — we strip it from agent
+code like `println`, so it never clutters the user's mirrored REPL."""
+function _is_revise_revise_call(func)
+    (func isa Expr && func.head == :. && length(func.args) >= 2) || return false
+    (func.args[end] isa QuoteNode && func.args[end].value == :revise) || return false
+    base = func.args[1]
+    base === :Revise && return true
+    return base isa Expr && base.head == :. && length(base.args) >= 2 &&
+           base.args[end] isa QuoteNode && base.args[end].value == :Revise
+end
+
 """
     remove_println_calls(expr, toplevel=true, strip_show=true, was_stripped=Ref(false))
 
-Strip println, print, printstyled, @show, and logging macros from an AST expression.
+Strip println, print, printstyled, @show, logging macros, and redundant
+`Revise.revise()` calls from an AST expression.
 When quiet mode is on, agents shouldn't use these to communicate since
 the user already sees code execution in their REPL.
 
@@ -67,6 +81,12 @@ function remove_println_calls(
         # Check if this is a print-related call
         if expr.head == :call
             func = expr.args[1]
+            # Strip redundant Revise.revise() — the gate replays Revise's
+            # `revise_first` ast-transform before every eval, so an explicit call
+            # is always a no-op that only clutters the mirrored REPL.
+            if _is_revise_revise_call(func)
+                return nothing
+            end
             # List of functions to remove (always, regardless of level)
             print_funcs = [:println, :print, :printstyled]
             # Check if this is a print call targeting stdout (no IO arg)
