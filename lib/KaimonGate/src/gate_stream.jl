@@ -422,35 +422,53 @@ function _sink_finish!(sink::_EvalSink, orig_out::IO, orig_err::IO)
 end
 
 # ── IO interface for the mux ─────────────────────────────────────────────────
+# IMPORTANT: this IO is installed as the process-wide Base.stdout/stderr, so the
+# Julia runtime writes its OWN diagnostics through it — notably errormonitor's
+# failed-task notice printer (base/task.jl). If any method here throws, that
+# printer's primary AND fallback attempts fail and Julia emits the opaque
+# "caught exception … while trying to print a failed Task notice; giving up",
+# swallowing the real error. So every method below must be total — never throw,
+# always fall back. (The old per-call fd `redirect_stdout` never exposed the
+# runtime to this code; the persistent custom binding does.)
 Base.isopen(::_CaptureIO) = true
 Base.iswritable(::_CaptureIO) = true
-Base.displaysize(io::_CaptureIO) = displaysize(io.orig)
+Base.displaysize(io::_CaptureIO) = try; displaysize(io.orig); catch; (24, 80); end
 function Base.get(io::_CaptureIO, key::Symbol, default)
     # Captured output must be PLAIN (the old pipe wasn't color-capable). Only
     # passthrough (no active sink → real terminal) keeps the terminal's color.
     key === :color && _current_sink() !== nothing && return false
-    return get(io.orig, key, default)
+    return try; get(io.orig, key, default); catch; default; end
 end
 function Base.flush(io::_CaptureIO)
-    _current_sink() === nothing && flush(io.orig)
+    _current_sink() === nothing && try; flush(io.orig); catch; end
     return nothing
 end
 function Base.write(io::_CaptureIO, b::UInt8)
     sink = _current_sink()
-    sink === nothing && return write(io.orig, b)
-    full  = io.kind === :stderr ? sink.err : sink.out
-    lineb = io.kind === :stderr ? sink.err_line : sink.out_line
-    write(full, b)
-    write(lineb, b)
-    b == UInt8('\n') && _sink_emit_line!(sink, io.kind, String(take!(lineb)), io.orig)
+    if sink === nothing
+        try; return write(io.orig, b); catch; return 1; end
+    end
+    try
+        full  = io.kind === :stderr ? sink.err : sink.out
+        lineb = io.kind === :stderr ? sink.err_line : sink.out_line
+        write(full, b)
+        write(lineb, b)
+        b == UInt8('\n') && _sink_emit_line!(sink, io.kind, String(take!(lineb)), io.orig)
+    catch
+    end
     return 1
 end
 function Base.unsafe_write(io::_CaptureIO, p::Ptr{UInt8}, n::UInt)
     sink = _current_sink()
-    sink === nothing && return unsafe_write(io.orig, p, n)
-    bytes = Vector{UInt8}(undef, Int(n))
-    GC.@preserve bytes unsafe_copyto!(pointer(bytes), p, n)
-    _sink_consume!(sink, io.kind, bytes, io.orig)
+    if sink === nothing
+        try; return unsafe_write(io.orig, p, n); catch; return Int(n); end
+    end
+    try
+        bytes = Vector{UInt8}(undef, Int(n))
+        GC.@preserve bytes unsafe_copyto!(pointer(bytes), p, n)
+        _sink_consume!(sink, io.kind, bytes, io.orig)
+    catch
+    end
     return Int(n)
 end
 

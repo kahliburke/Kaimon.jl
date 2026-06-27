@@ -69,3 +69,45 @@ _capture(code::AbstractString) =
         KaimonGate._restore_capture!()   # don't leave Base.stdout rebound for later test files
     end
 end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _CaptureIO must be TOTAL — it's installed as the process-wide Base.stdout/stderr,
+# so the Julia runtime writes its own diagnostics through it. In particular,
+# errormonitor (base/task.jl) prints a failed background task's notice by building
+# it into an IOContext over a PipeBuffer and then doing `write(stderr, errio)`. If
+# any _CaptureIO method throws (e.g. its captured `orig` stream is in a bad state),
+# errormonitor's primary AND fallback prints both fail and Julia emits the opaque
+# "caught exception … while trying to print a failed Task notice; giving up",
+# swallowing the real error. Regression guard: every method stays total even when
+# `orig` throws on every operation.
+# ─────────────────────────────────────────────────────────────────────────────
+
+struct _ThrowIO <: IO end
+Base.write(::_ThrowIO, ::UInt8) = error("boom-write")
+Base.unsafe_write(::_ThrowIO, ::Ptr{UInt8}, ::UInt) = error("boom-unsafe-write")
+Base.flush(::_ThrowIO) = error("boom-flush")
+Base.displaysize(::_ThrowIO) = error("boom-displaysize")
+Base.get(::_ThrowIO, ::Symbol, default) = error("boom-get")
+
+@testset "_CaptureIO is total when orig throws" begin
+    prev_sink = get(task_local_storage(), :gate_eval_sink, nothing)
+    task_local_storage(:gate_eval_sink, nothing)   # no active sink → passthrough path
+    try
+        cio = KaimonGate._CaptureIO(:stderr, _ThrowIO())
+
+        # Each IO method the notice printer touches must swallow orig failures.
+        @test write(cio, UInt8('x')) == 1
+        @test (print(cio, "multi\nbyte\noutput"); true)   # exercises unsafe_write
+        @test (flush(cio); true)
+        @test Base.displaysize(cio) == (24, 80)            # fallback, not a throw
+        @test Base.get(cio, :color, false) == false        # fallback to default
+
+        # The EXACT operation errormonitor performs (task.jl:761-764): build the
+        # notice into an IOContext over a PipeBuffer, then write it to stderr.
+        errio = IOContext(PipeBuffer(), cio)
+        print(errio, "Unhandled Task ERROR: regression\nStacktrace: …\n")
+        @test (write(cio, errio); true)                    # must not throw → no "giving up"
+    finally
+        task_local_storage(:gate_eval_sink, prev_sink)
+    end
+end
