@@ -381,15 +381,39 @@ end
 client's reply. Returns the parsed `result` (e.g. `Dict("roots"=>[...])`), or
 `nothing` on timeout / no open receive stream."""
 function request_roots(session_id::AbstractString; timeout::Float64 = 8.0)
+    return _request_from_client(session_id, "roots/list", nothing; timeout = timeout)
+end
+
+"""Send an `elicitation/create` request to `session_id` and await the user's
+reply. `requested_schema` must be a flat object of primitive properties (the MCP
+elicitation restriction — no nested objects/arrays-of-objects). Returns the
+parsed `result` (`Dict("action"=>"accept"|"decline"|"cancel", "content"=>…)`),
+or `nothing` on timeout / no open receive stream. The default timeout is generous
+because a human has to answer."""
+function request_elicitation(session_id::AbstractString, message::AbstractString,
+                             requested_schema::AbstractDict; timeout::Float64 = 120.0)
+    params = Dict{String,Any}(
+        "message" => String(message),
+        "requestedSchema" => requested_schema,
+    )
+    return _request_from_client(session_id, "elicitation/create", params; timeout = timeout)
+end
+
+"""Issue a JSON-RPC *request* to one agent over its GET SSE receive stream and
+block until the correlated response POSTs back (routed via
+`_route_server_response!`). Returns the parsed `result`, or `nothing` on timeout
+/ no open receive stream. Shared by `request_roots` / `request_elicitation`."""
+function _request_from_client(session_id::AbstractString, method::AbstractString,
+                              params; timeout::Float64)
     rid = "srv-" * string(UUIDs.uuid4())
     sink = Channel{Any}(1)
     lock(_PENDING_SERVER_REQUESTS_LOCK) do
         _PENDING_SERVER_REQUESTS[rid] = sink
     end
     try
-        _push_to_session_outbox!(session_id, Dict{String,Any}(
-            "jsonrpc" => "2.0", "id" => rid, "method" => "roots/list",
-        )) || return nothing
+        msg = Dict{String,Any}("jsonrpc" => "2.0", "id" => rid, "method" => String(method))
+        params === nothing || (msg["params"] = params)
+        _push_to_session_outbox!(session_id, msg) || return nothing
         Base.timedwait(() -> isready(sink), timeout) === :ok || return nothing
         return take!(sink)
     finally

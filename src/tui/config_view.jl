@@ -1,6 +1,13 @@
 # ── Config Tab ────────────────────────────────────────────────────────────────
 
 function view_config(m::KaimonModel, area::Rect, buf::Buffer)
+    # Reflect external changes to the allow-list — project_entries is otherwise
+    # only loaded at startup and via the in-TUI add/remove flows, so manual edits
+    # to projects.json and agent elicitation consents wouldn't show until restart.
+    # Skip while a flow overlay owns the selection to avoid clobbering its state.
+    if m.config_flow == FLOW_IDLE
+        m.project_entries = load_projects_config()
+    end
     view_config_base(m, area, buf)
     if m.config_flow != FLOW_IDLE
         view_config_flow(m, area, buf)

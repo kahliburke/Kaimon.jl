@@ -293,6 +293,30 @@ function is_project_allowed(path::String)
     return false
 end
 
+"""
+    allow_project!(path::String) -> Bool
+
+Add `path` to the projects allow-list (enabled) and persist, re-enabling a
+disabled entry if one exists. Used to remember an interactive "allow always"
+consent so the user isn't asked again. Returns `true` if the registry changed,
+`false` if the project was already allowed.
+"""
+function allow_project!(path::String)
+    norm = normalize_path(path)
+    entries = load_projects_config()
+    idx = findfirst(e -> normalize_path(e.project_path) == norm, entries)
+    if idx === nothing
+        push!(entries, ProjectEntry(norm, true))
+    elseif entries[idx].enabled
+        return false
+    else
+        old = entries[idx]
+        entries[idx] = ProjectEntry(old.project_path, true, old.launch_config)
+    end
+    save_projects_config(entries)
+    return true
+end
+
 # ── TCP Gates Registry ───────────────────────────────────────────────────────
 # Persistent list of TCP gate endpoints that Kaimon polls for connections.
 

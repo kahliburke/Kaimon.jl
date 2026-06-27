@@ -671,6 +671,49 @@ a remote (or local) machine. The PUB stream endpoint is resolved from the gate's
     end
 )
 
+"""Ask the user, via MCP elicitation, whether to allow starting a Julia session
+for `path`. Returns one of `:once`, `:always`, `:denied`, or `:unsupported`
+(client didn't advertise elicitation / no open receive stream / timeout). The
+caller maps `:unsupported` back to the static allow-list guidance."""
+function _elicit_session_consent(path::AbstractString)
+    caller = _current_mcp_caller()
+    isempty(caller) && return :unsupported
+    session = lock(STANDALONE_SESSIONS_LOCK) do
+        get(STANDALONE_SESSIONS, caller, nothing)
+    end
+    session === nothing && return :unsupported
+    caps = session.client_capabilities
+    (caps isa AbstractDict && haskey(caps, "elicitation")) || return :unsupported
+
+    # Accept/Decline (the elicitation action) IS the allow/deny decision; a single
+    # boolean checkbox handles once-vs-always. (A 3-way enum field doesn't render
+    # reliably across clients — they surface only the accept/decline buttons.)
+    schema = Dict{String,Any}(
+        "type" => "object",
+        "properties" => Dict{String,Any}(
+            "remember" => Dict{String,Any}(
+                "type" => "boolean",
+                "title" => "Always allow this project (add to the allow-list)",
+                "default" => false,
+            ),
+        ),
+    )
+    msg = "Claude wants to start a Julia session for the project:\n$path\n\n" *
+          "Accept to allow. Check \"Always allow\" to add it to your allowed-projects " *
+          "list and skip this prompt next time."
+    # Cap the wait under the client's tool-call timeout (~60s) so we always return
+    # a result over the wire rather than have the client give up mid-prompt — which
+    # would orphan-spawn the session and break the result pipe. On no answer we
+    # return :timeout (distinct from :unsupported) so the caller tells the agent to
+    # retry instead of falling back to the can't-elicit guidance.
+    res = request_elicitation(caller, msg, schema; timeout = 50.0)
+    res isa AbstractDict || return :timeout
+    get(res, "action", "") == "accept" || return :denied
+    content = get(res, "content", nothing)
+    remember = content isa AbstractDict && get(content, "remember", false) === true
+    return remember ? :always : :once
+end
+
 start_session_tool = @mcp_tool(
     :start_session,
     """Spawn a new Julia session for a project.
@@ -732,18 +775,47 @@ Call with no `project_path` to list allowed projects and their status.""",
         isfile(joinpath(path, "Project.toml")) ||
             return "Error: No Project.toml found in $path"
 
-        # Check allowed list
+        # Converge with any gate already connected for this project — whether
+        # started manually via Gate.serve() or by a previous start_session —
+        # instead of spawning a duplicate. This is the authoritative, live check
+        # (the MANAGED_SESSIONS registry below tracks only agent-spawned sessions
+        # and can go stale). No spawn happens here, so no allow-list consent is
+        # needed: the session already exists, we're just handing back its key.
+        let mgr = GATE_CONN_MGR[]
+            if mgr !== nothing
+                for conn in connected_sessions(mgr)
+                    isempty(conn.project_path) && continue
+                    if normalize_path(conn.project_path) == path
+                        return "Session already running for this project (session key: $(short_key(conn)))."
+                    end
+                end
+            end
+        end
+
+        # Check allowed list. Not yet allowed → ask the user in-band via MCP
+        # elicitation (the prompt renders in the agent's own client). "Allow
+        # always" remembers the consent; clients without elicitation fall back to
+        # the static guidance.
         if !is_project_allowed(path)
-            return "Error: Project not in allowed list. Add it via the TUI Config tab [p] or manually to ~/.config/kaimon/projects.json, or set \"allow_any_project\": true there to disable the allow-list (intended for isolated container/VM environments)."
+            decision = _elicit_session_consent(path)
+            if decision == :always
+                allow_project!(path)
+            elseif decision == :once
+                # proceed for this spawn only, without persisting
+            elseif decision == :denied
+                return "Session not started — you declined to allow a Julia session for $path."
+            elseif decision == :timeout
+                return "No response to the approval prompt within 50s, so no session was started. Call start_session again when you're ready, and approve the prompt in your client."
+            else  # :unsupported
+                return "Error: Project not in allowed list. Add it via the TUI Config tab [p] or manually to ~/.config/kaimon/projects.json, or set \"allow_any_project\": true there to disable the allow-list (intended for isolated container/VM environments)."
+            end
         end
 
-        # Check for existing running session for the same project
+        # Any MANAGED_SESSIONS entry for this path is stale at this point — a live
+        # gate would have been caught by the connection-manager check above — so
+        # drop it and respawn fresh. This closes the phantom "already running" gap
+        # where a dead managed entry's key was handed back (issue #55).
         existing = find_managed_session(path)
-        if existing !== nothing && existing.status == :running && !isempty(existing.session_key)
-            return "Session already running for this project. Session key: $(existing.session_key)"
-        end
-
-        # If there's a crashed/stopped session for this path, remove it
         if existing !== nothing
             lock(MANAGED_SESSIONS_LOCK) do
                 filter!(ms -> ms !== existing, MANAGED_SESSIONS)
