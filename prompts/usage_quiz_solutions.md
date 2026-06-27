@@ -84,12 +84,32 @@ b) `check_eval(eval_id="…")` → status, elapsed, last-activity timestamp, sta
 c) Wait **≥30 s** before the first check, then every ~60 s+; don't rapid-poll (it won't
    finish faster). "Last activity" recent ⇒ active; stale (e.g. 120 s) ⇒ possibly stuck or
    in a long stash-less stretch → decide wait-vs-cancel. (2)
-d) `Gate.stash(key, value)` (and `Gate.progress(msg)`), published via PUB/SUB and visible
-   through `check_eval`. e.g. a training loop stashing `epoch`/`loss` each iteration. (3)
+d) `KaimonGate.stash(key, value)` (and `KaimonGate.progress(msg)`), published via PUB/SUB and
+   visible through `check_eval` — e.g. a training loop stashing `epoch`/`loss` each iteration. (1)
 e) `cancel_eval(eval_id="…")` signals the gate; the running code must **cooperatively check**
-   `Gate.is_cancelled()` in its loop and `break` — Julia can't force-interrupt threads. (2)
+   `KaimonGate.is_cancelled()` in its loop and `break` — Julia can't force-interrupt threads. (1)
 f) Jobs are **persisted to SQLite**; on restart Kaimon reconciles `running` jobs against
    gate-cached results; jobs older than 1 h with no session are marked `lost`. (1)
+g) The canonical cooperative loop — progress + cancellation check + a final result expression: (3)
+
+```julia
+ex(e="""
+results = []
+for i in 1:10
+    KaimonGate.is_cancelled() && break      # honor cancel_eval — REQUIRED, or it can't be stopped
+    push!(results, heavy_step(i))
+    KaimonGate.stash(:completed, i)         # optional: inspectable mid-run via check_eval
+    KaimonGate.progress("chunk $i/10 done") # streamed status line
+end
+results                                      # final expression = the job's returned value
+""")
+```
+Then: `ex` returns the eval_id immediately (auto-promotes past ~30 s); poll
+`check_eval(eval_id="…")`; `cancel_eval(eval_id="…")` to stop it. Full credit requires all
+three — the `KaimonGate.is_cancelled()` break, a `KaimonGate.progress`/`KaimonGate.stash`
+update, and returning the value as the final expression (not `println`). The `KaimonGate.`
+qualifier matters: these are `public` but not exported, so `Gate.…`/bare `progress(…)` throw
+`UndefVarError` in a normal session. (Q7 weights: a–c = 2/2/2, d–f = 1/1/1, g = 3 → still 12.)
 
 ---
 

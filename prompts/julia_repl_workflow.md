@@ -98,6 +98,41 @@ The eval history keeps the last 64 evaluations. Use `check_eval` when:
 - You kicked off a long computation and want to poll for completion
 - You need to confirm a prior eval's result
 
+## Long-Running & Cooperative Background Evaluation
+
+Any `ex()` that runs past ~30 s **auto-promotes to a background job**: the call returns its
+eval ID immediately and the work keeps running on the gate. Poll it with
+`check_eval(eval_id="…")` — wait ≥30 s before the first check, then ~60 s apart (rapid
+polling won't make it finish faster).
+
+Write long tasks so they **cooperate** — agents routinely forget this, then can't see
+progress or stop a runaway job:
+
+- **`KaimonGate.progress("msg")`** — stream a status line (visible in `check_eval` and the Activity tab).
+- **`KaimonGate.stash(:key, value)`** — record an intermediate value you can read mid-run via `check_eval`.
+- **`KaimonGate.is_cancelled()`** — check it in your loop and `break`; `cancel_eval(eval_id="…")` sets
+  the flag. Julia can't force-interrupt a thread, so a loop that never checks **cannot be cancelled**.
+
+Qualify with `KaimonGate.` — these are `public` but **not exported**, so a bare `progress(…)`
+(or `Gate.…`, which only exists when full Kaimon is loaded) will throw `UndefVarError` in a
+normal session.
+
+```julia
+ex(e="""
+results = []
+for i in 1:10
+    KaimonGate.is_cancelled() && break      # honor cancel_eval (cooperative — required)
+    push!(results, heavy_step(i))
+    KaimonGate.stash(:completed, i)         # inspectable mid-run via check_eval
+    KaimonGate.progress("chunk $i/10 done") # streamed status line
+end
+results                                      # final expression → the job's result
+""")
+# Returns an eval_id immediately. Poll check_eval(eval_id="…"); cancel_eval(eval_id="…") to stop it.
+```
+
+Jobs **persist across a Kaimon restart** (reconciled from SQLite), so an eval ID stays checkable.
+
 ## Environment & Packages
 
 - **Revise.jl** auto-tracks changes in `src/`. Do not call `Revise.revise()` — it does nothing useful here. If changes aren't picked up, restart.

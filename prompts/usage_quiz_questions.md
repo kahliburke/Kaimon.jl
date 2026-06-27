@@ -75,9 +75,12 @@ b) An `ex()` call timed out on your side. How do you find out whether it actuall
 a) What happens automatically when an `ex()` runs longer than ~30 s?
 b) How do you check a promoted job, and what does it report?
 c) How often should you poll, and how does "last activity" guide that?
-d) How can long-running code report progress / intermediate values to you? Give an example.
+d) How can long-running code report progress / intermediate values to you?
 e) How does cancellation work — what must the running code do?
 f) What happens to background jobs across a Kaimon restart?
+g) **Write it.** Give the actual `ex(...)` call for a long task — a loop over 10 heavy chunks
+   — that (i) streams a progress update each iteration, (ii) checks for cancellation and bails
+   cleanly, and (iii) returns the collected result. Show the Julia code.
 
 ---
 
