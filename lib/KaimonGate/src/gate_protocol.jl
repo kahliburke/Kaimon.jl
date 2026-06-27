@@ -453,15 +453,24 @@ function handle_message(request::NamedTuple)
         _RUNNING[] = false
 
         @async begin
+            sleep(0.3)  # Let ZMQ reply flush through IPC buffer
+            _RESTARTING[] = false
+            # Cleanup is BEST-EFFORT: a teardown hiccup (e.g. the broadcaster
+            # wait under a busy/loaded process) must NOT abort the restart —
+            # otherwise we'd drop the user to a shell instead of relaunching.
+            # Always proceed to exec; _exec_restart has its own execvp fallback.
             try
-                sleep(0.3)  # Let ZMQ reply flush through IPC buffer
-                _RESTARTING[] = false
                 _cleanup()  # Close sockets, remove metadata files
+            catch e
+                @warn "Restart cleanup failed; proceeding to exec anyway" exception = (e, catch_backtrace())
+            end
+            try
                 _exec_restart(old_name, old_session_id, old_project)
             catch e
-                _RESTARTING[] = false
-                @error "Restart failed" exception = (e, catch_backtrace())
-                exit(1)
+                # execvp setup failed before the process could be replaced. Do NOT
+                # exit(1) — that drops to a shell. Leave the (now gate-less) REPL
+                # alive so the user can recover (e.g. call serve() again).
+                @error "Restart exec failed; session left running without a gate — call KaimonGate.serve() to recover" exception = (e, catch_backtrace())
             end
         end
 

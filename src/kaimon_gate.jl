@@ -418,6 +418,19 @@ function _format_gate_response(
         result *= "\n\n⚠️  Output truncated ($max_output of $original_length chars shown)."
     end
 
+    # Surface concurrency: when this eval ran alongside others (the gate now runs
+    # up to KAIMON_GATE_EVAL_CONCURRENCY evals at once), note it at the very top so
+    # the agent knows shared REPL state may have changed under it. Prepended AFTER
+    # truncation so it's never cut.
+    concurrent = hasproperty(response, :concurrent) ? response.concurrent : 0
+    queued = hasproperty(response, :queued) ? response.queued : 0
+    if concurrent > 0
+        note = "⚙ Ran alongside $concurrent concurrent eval$(concurrent == 1 ? "" : "s")"
+        queued > 0 && (note *= " ($queued queued)")
+        note *= " on this gate — shared REPL state may have changed concurrently.\n\n"
+        result = note * result
+    end
+
     return result
 end
 

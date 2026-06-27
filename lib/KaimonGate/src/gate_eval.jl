@@ -15,9 +15,20 @@ function _mirror_print(f::Function)
 end
 
 function gate_eval(code::String; _mod::Module = Main, display_code::String = code)
-    lock(GATE_LOCK)
+    # Bounded concurrency: acquire a slot (blocks past the cap). Each eval captures
+    # to its own task-local sink (see _eval_with_capture), so concurrent evals don't
+    # clobber each other. Snapshot peers/queued AFTER acquiring for the result note.
+    Threads.atomic_add!(_EVAL_QUEUED, 1)
+    Base.acquire(_eval_semaphore())
+    Threads.atomic_sub!(_EVAL_QUEUED, 1)
+    Threads.atomic_add!(_EVAL_INFLIGHT, 1)
+    peers  = max(0, _EVAL_INFLIGHT[] - 1)   # other evals running alongside this one
+    queued = _EVAL_QUEUED[]                  # evals still waiting for a slot
+    # Only the PRIMARY eval mirrors to the terminal (header + live output);
+    # concurrent evals run headless (captured + streamed to Activity + returned).
+    mirror_owned = _MIRROR_REPL[] && _claim_mirror!()
     try
-        if _MIRROR_REPL[]
+        if mirror_owned
             _mirror_print() do
                 printstyled("\nagent> ", color = :red, bold = true)
                 print(display_code, "\n")
@@ -45,23 +56,17 @@ function gate_eval(code::String; _mod::Module = Main, display_code::String = cod
         # via Threads.@spawn — call_on_backend would deadlock because the
         # REPL backend is occupied by the user's interactive session.
         on_interactive = Threads.threadpool(Threads.threadid()) === :interactive
-        if has_repl && on_interactive
-            result = REPL.call_on_backend(() -> _eval_with_capture(expr), backend)
+        result = if has_repl && on_interactive
+            r = REPL.call_on_backend(() -> _eval_with_capture(expr; mirror = mirror_owned), backend)
             # call_on_backend returns (value, iserr) Pair or NamedTuple
-            val = if result isa Pair
-                result.first
-            elseif result isa Tuple && length(result) == 2
-                result[1]
-            else
-                result
-            end
-            _maybe_echo_result(val)
-            return val
+            r isa Pair ? r.first : (r isa Tuple && length(r) == 2 ? r[1] : r)
         else
-            val = _eval_with_capture(expr)
-            _maybe_echo_result(val)
-            return val
+            _eval_with_capture(expr; mirror = mirror_owned)
         end
+        mirror_owned && _maybe_echo_result(result)
+        # Tag the result with how many other evals ran concurrently / were queued,
+        # so the server can surface a note when concurrency was actually in play.
+        return result isa NamedTuple ? merge(result, (concurrent = peers, queued = queued)) : result
     catch e
         return (
             stdout = "",
@@ -69,9 +74,13 @@ function gate_eval(code::String; _mod::Module = Main, display_code::String = cod
             value_repr = "",
             exception = sprint(showerror, e, catch_backtrace()),
             backtrace = sprint(Base.show_backtrace, catch_backtrace()),
+            concurrent = peers,
+            queued = queued,
         )
     finally
-        unlock(GATE_LOCK)
+        mirror_owned && _release_mirror!()
+        Threads.atomic_sub!(_EVAL_INFLIGHT, 1)
+        Base.release(_eval_semaphore())
     end
 end
 

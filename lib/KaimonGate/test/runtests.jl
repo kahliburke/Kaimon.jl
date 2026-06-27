@@ -6,6 +6,7 @@ using SafeTestsets
 @safetestset "Tool dispatch" include("src/test_dispatch.jl")
 @safetestset "Message handler" include("src/test_handle_message.jl")
 @safetestset "Capture race" include("src/test_capture_race.jl")
+@safetestset "Concurrent eval" include("src/test_eval_concurrency.jl")
 @safetestset "Debug breakpoint" include("src/test_debug.jl")
 @safetestset "ZMQ integration" include("src/test_integration.jl")
 @safetestset "CURVE transport" include("src/test_curve.jl")

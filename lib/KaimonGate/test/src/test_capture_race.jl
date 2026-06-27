@@ -66,5 +66,6 @@ _capture(code::AbstractString) =
         end
     finally
         KaimonGate._MIRROR_REPL[] = orig_mirror
+        KaimonGate._restore_capture!()   # don't leave Base.stdout rebound for later test files
     end
 end

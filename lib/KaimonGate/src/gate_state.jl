@@ -129,6 +129,38 @@ function _install_peek_report_override(session_id::String)
 end
 const GATE_LOCK = ReentrantLock()
 
+# ── Bounded concurrent eval ──────────────────────────────────────────────────
+# Evals no longer serialize on a single lock. Up to N run at once, gated by a
+# semaphore; each captures output to its OWN task-local sink (see gate_stream.jl),
+# so concurrent evals don't clobber each other. mt=true/GLMakie evals still route
+# through the single REPL backend and are effectively serial there.
+#   _EVAL_INFLIGHT — evals currently executing (after acquiring a slot)
+#   _EVAL_QUEUED   — evals blocked waiting for a slot (cap exceeded)
+# Both feed the "ran alongside N concurrent eval(s) (M queued)" note on results.
+const _EVAL_INFLIGHT = Threads.Atomic{Int}(0)
+const _EVAL_QUEUED   = Threads.Atomic{Int}(0)
+_eval_concurrency() = max(1, something(tryparse(Int, get(ENV, "KAIMON_GATE_EVAL_CONCURRENCY", "")), 4))
+const _EVAL_SEM = Ref{Union{Base.Semaphore,Nothing}}(nothing)
+const _EVAL_SEM_LOCK = ReentrantLock()
+"""The eval-concurrency semaphore, built lazily from `KAIMON_GATE_EVAL_CONCURRENCY` (default 4)."""
+function _eval_semaphore()
+    s = _EVAL_SEM[]
+    s === nothing || return s
+    lock(_EVAL_SEM_LOCK) do
+        _EVAL_SEM[] === nothing && (_EVAL_SEM[] = Base.Semaphore(_eval_concurrency()))
+        return _EVAL_SEM[]
+    end
+end
+
+# Single mirror-owner: only ONE eval at a time echoes to the user's terminal (the
+# "primary", with the `agent>` header). Concurrent evals run HEADLESS — still
+# captured, returned to the agent, and published to the Activity-tab stream, but
+# NOT written to stdout — so concurrent output never garbles the live terminal.
+const _MIRROR_BUSY = Threads.Atomic{Bool}(false)
+"""Claim the terminal-mirror slot. Returns true if this eval won it (is primary)."""
+_claim_mirror!()   = Threads.atomic_cas!(_MIRROR_BUSY, false, true) == false
+_release_mirror!() = Threads.atomic_xchg!(_MIRROR_BUSY, false)
+
 # Global state for the running gate
 const _GATE_TASK = Ref{Union{Task,Nothing}}(nothing)
 const _GATE_CONTEXT = Ref{Union{ZMQ.Context,Nothing}}(nothing)

@@ -294,74 +294,174 @@ Returns the symbols actually imported (for a one-line note to the agent)."""
 function _autoimport!(expr)::Vector{Symbol}
     _AUTO_IMPORT[] || return Symbol[]
     imported = Symbol[]
+    real_sink = _current_sink()
     for s in _qualified_ref_bases(expr)
         isdefined(Main, s) && continue
         _is_loadable_package(s) || continue
         try
-            # Load quietly — precompile/info chatter from the import must not leak to
-            # the user's mirrored terminal or the captured output. devnull temporarily,
-            # then the surrounding redirect is restored.
-            redirect_stdout(devnull) do
-                redirect_stderr(devnull) do
-                    Core.eval(Main, :(import $s))
-                end
+            # Load quietly — precompile/info chatter must not leak into the eval's
+            # captured output or the mirrored terminal. Route THIS task's output to a
+            # throwaway sink (task-local; no global redirect, so concurrent evals are
+            # unaffected). Julia-level chatter is swallowed; rare raw-fd precompile
+            # output from an uncached package may still reach the terminal.
+            task_local_storage(:gate_eval_sink, _EvalSink())
+            try
+                Core.eval(Main, :(import $s))
+            finally
+                task_local_storage(:gate_eval_sink, real_sink)
             end
             push!(imported, s)
         catch
+            task_local_storage(:gate_eval_sink, real_sink)
         end
     end
     return imported
 end
 
-function _eval_with_capture(expr)
-    orig_stdout = stdout
-    orig_stderr = stderr
+# ── Per-eval output capture (concurrent-safe) ────────────────────────────────
+# Each running eval owns a task-local `_EvalSink`; a single persistent `_CaptureIO`
+# mux (installed once as stdout/stderr) routes writes to the CURRENT task's sink,
+# so N concurrent evals capture independently. Writes with no active sink (the
+# user's own REPL) pass through to the real terminal. This replaces the old
+# per-call global `redirect_stdout()` pipe, which forced evals to serialize.
+#
+# Tradeoff (documented): capture is Julia-IO-level. Raw OS-fd writes from C
+# libraries aren't per-eval-captured (fd bytes carry no task tag) — they reach
+# the terminal instead. Virtually all agent output (println/print/@info/show/
+# error text) is Julia-level and IS captured, including the trailing no-newline
+# case the old drain-race guard protected (here it's deterministic — no pipe/EOF).
+mutable struct _EvalSink
+    out::IOBuffer
+    err::IOBuffer
+    out_line::IOBuffer   # pending partial stdout line (for mirror/publish on \n)
+    err_line::IOBuffer
+    request_id::String
+    mirror::Bool
+end
+_EvalSink(; request_id::String = "", mirror::Bool = false) =
+    _EvalSink(IOBuffer(), IOBuffer(), IOBuffer(), IOBuffer(), request_id, mirror)
 
-    stdout_read, stdout_write = redirect_stdout()
-    stderr_read, stderr_write = redirect_stderr()
+struct _CaptureIO <: IO
+    kind::Symbol   # :stdout | :stderr
+    orig::IO       # the real stream — passthrough + mirror target
+end
 
-    stdout_content = String[]
-    stderr_content = String[]
+@inline _current_sink() = get(task_local_storage(), :gate_eval_sink, nothing)
 
-    stdout_task = @async begin
+const _CAPTURE_INSTALLED = Ref{Bool}(false)
+const _CAPTURE_ORIG_OUT  = Ref{IO}(devnull)
+const _CAPTURE_ORIG_ERR  = Ref{IO}(devnull)
+
+"""Install the persistent capture mux as stdout/stderr (idempotent, gate-lifetime)."""
+function _ensure_capture_installed!()
+    _CAPTURE_INSTALLED[] && return nothing
+    lock(_EVAL_SEM_LOCK) do
+        _CAPTURE_INSTALLED[] && return nothing
+        out0 = stdout
+        err0 = stderr
+        _CAPTURE_ORIG_OUT[] = out0
+        _CAPTURE_ORIG_ERR[] = err0
+        # `redirect_stdout()` only accepts fd-backed streams (pipe/TTY/file), so it
+        # can't install a custom routing IO. Set the `Base.stdout`/`stderr` bindings
+        # directly instead — they're non-const, and print/println read them
+        # dynamically, so writes route through the mux per task. fd-level writes
+        # bypass this (documented tradeoff). The interactive REPL uses its own
+        # terminal handle (not this binding) for line-editing, so it's unaffected.
+        setglobal!(Base, :stdout, _CaptureIO(:stdout, out0))
+        setglobal!(Base, :stderr, _CaptureIO(:stderr, err0))
+        _CAPTURE_INSTALLED[] = true
+    end
+    return nothing
+end
+
+"""Uninstall the capture mux, restoring the original stdout/stderr (idempotent).
+Called on gate cleanup so a stopped gate leaves the process's streams as it found
+them; also used by tests to avoid leaving Base.stdout rebound across test files."""
+function _restore_capture!()
+    _CAPTURE_INSTALLED[] || return nothing
+    lock(_EVAL_SEM_LOCK) do
+        _CAPTURE_INSTALLED[] || return nothing
+        try; setglobal!(Base, :stdout, _CAPTURE_ORIG_OUT[]); catch; end
+        try; setglobal!(Base, :stderr, _CAPTURE_ORIG_ERR[]); catch; end
+        _CAPTURE_INSTALLED[] = false
+    end
+    return nothing
+end
+
+# Mirror one completed line to the terminal (if enabled) + publish it, tagged
+# with the eval's request_id so the client can attribute concurrent streams.
+function _sink_emit_line!(sink::_EvalSink, kind::Symbol, line::String, orig::IO)
+    if sink.mirror
         try
-            while !eof(stdout_read)
-                line = readline(stdout_read; keep = true)
-                push!(stdout_content, line)
-                if _MIRROR_REPL[]
-                    try
-                        write(orig_stdout, line)
-                        flush(orig_stdout)
-                    catch e
-                        e isa Base.IOError && (_MIRROR_REPL[] = false)
-                    end
-                end
-                _publish_stream("stdout", line)
-            end
+            write(orig, line)
+            flush(orig)
         catch e
-            e isa EOFError || @debug "stdout read error" exception = e
+            e isa Base.IOError && (_MIRROR_REPL[] = false)
         end
     end
+    _publish_stream(kind === :stderr ? "stderr" : "stdout", line; request_id = sink.request_id)
+    return nothing
+end
 
-    stderr_task = @async begin
-        try
-            while !eof(stderr_read)
-                line = readline(stderr_read; keep = true)
-                push!(stderr_content, line)
-                if _MIRROR_REPL[]
-                    try
-                        write(orig_stderr, line)
-                        flush(orig_stderr)
-                    catch e
-                        e isa Base.IOError && (_MIRROR_REPL[] = false)
-                    end
-                end
-                _publish_stream("stderr", line)
-            end
-        catch e
-            e isa EOFError || @debug "stderr read error" exception = e
-        end
+function _sink_consume!(sink::_EvalSink, kind::Symbol, bytes::AbstractVector{UInt8}, orig::IO)
+    full  = kind === :stderr ? sink.err : sink.out
+    lineb = kind === :stderr ? sink.err_line : sink.out_line
+    write(full, bytes)
+    for b in bytes
+        write(lineb, b)
+        b == UInt8('\n') && _sink_emit_line!(sink, kind, String(take!(lineb)), orig)
     end
+    return nothing
+end
+
+"""Flush a trailing partial (no-newline) line at eval end."""
+function _sink_finish!(sink::_EvalSink, orig_out::IO, orig_err::IO)
+    position(sink.out_line) > 0 && _sink_emit_line!(sink, :stdout, String(take!(sink.out_line)), orig_out)
+    position(sink.err_line) > 0 && _sink_emit_line!(sink, :stderr, String(take!(sink.err_line)), orig_err)
+    return nothing
+end
+
+# ── IO interface for the mux ─────────────────────────────────────────────────
+Base.isopen(::_CaptureIO) = true
+Base.iswritable(::_CaptureIO) = true
+Base.displaysize(io::_CaptureIO) = displaysize(io.orig)
+function Base.get(io::_CaptureIO, key::Symbol, default)
+    # Captured output must be PLAIN (the old pipe wasn't color-capable). Only
+    # passthrough (no active sink → real terminal) keeps the terminal's color.
+    key === :color && _current_sink() !== nothing && return false
+    return get(io.orig, key, default)
+end
+function Base.flush(io::_CaptureIO)
+    _current_sink() === nothing && flush(io.orig)
+    return nothing
+end
+function Base.write(io::_CaptureIO, b::UInt8)
+    sink = _current_sink()
+    sink === nothing && return write(io.orig, b)
+    full  = io.kind === :stderr ? sink.err : sink.out
+    lineb = io.kind === :stderr ? sink.err_line : sink.out_line
+    write(full, b)
+    write(lineb, b)
+    b == UInt8('\n') && _sink_emit_line!(sink, io.kind, String(take!(lineb)), io.orig)
+    return 1
+end
+function Base.unsafe_write(io::_CaptureIO, p::Ptr{UInt8}, n::UInt)
+    sink = _current_sink()
+    sink === nothing && return unsafe_write(io.orig, p, n)
+    bytes = Vector{UInt8}(undef, Int(n))
+    GC.@preserve bytes unsafe_copyto!(pointer(bytes), p, n)
+    _sink_consume!(sink, io.kind, bytes, io.orig)
+    return Int(n)
+end
+
+function _eval_with_capture(expr; mirror::Bool = false)
+    _ensure_capture_installed!()
+    sink = _EvalSink(;
+        request_id = get(task_local_storage(), :gate_request_id, ""),
+        mirror = mirror,
+    )
+    prev_sink = _current_sink()
+    task_local_storage(:gate_eval_sink, sink)
 
     value = nothing
     caught = nothing
@@ -381,38 +481,12 @@ function _eval_with_capture(expr)
         caught = e
         bt = catch_backtrace()
     finally
-        # Restore original streams. If orig_stdout/orig_stderr is a broken pipe
-        # (e.g. Tachikoma pixel renderer closed its terminal pipe), fall back to
-        # devnull rather than leaving stdout in an unusable state.
-        try
-            redirect_stdout(orig_stdout)
-        catch
-            redirect_stdout(devnull)
-        end
-        try
-            redirect_stderr(orig_stderr)
-        catch
-            redirect_stderr(devnull)
-        end
-        # Close the write ends so the drain tasks hit EOF, then wait (bounded)
-        # for them to flush the final — possibly unterminated — line into
-        # stdout_content/stderr_content before join() reads them below.
-        #
-        # The previous version closed + drained in an @async block followed by a
-        # single yield(). That dropped any output not ending in a newline:
-        # `readline` blocks until EOF, EOF only arrived after the @async close
-        # ran, and join() executed first. timedwait polls via the scheduler (so
-        # the @async drain tasks get to run through EOF) but caps the wait, so a
-        # genuinely stuck stream still can't hang the eval response.
-        try; close(stdout_write); catch; end
-        try; close(stderr_write); catch; end
-        timedwait(
-            () -> istaskdone(stdout_task) && istaskdone(stderr_task),
-            2.0;
-            pollint = 0.001,
-        )
-        try; close(stdout_read); catch; end
-        try; close(stderr_read); catch; end
+        # Flush any trailing partial (no-newline) line, then detach this eval's
+        # sink (restoring the previous one — nesting-safe). The persistent mux
+        # stays installed; nothing global is restored per-eval, so concurrent
+        # evals are unaffected.
+        _sink_finish!(sink, _CAPTURE_ORIG_OUT[], _CAPTURE_ORIG_ERR[])
+        task_local_storage(:gate_eval_sink, prev_sink)
     end
 
     # Format value representation.
@@ -443,16 +517,16 @@ function _eval_with_capture(expr)
         nothing
     end
 
+    stderr_extra = ""
     if !isempty(autoimported)
         pkgs = join(string.(autoimported), ", ")
-        push!(stderr_content,
-            "[kaimon] auto-imported $pkgs — a freshly connected session's Main starts " *
-            "empty; `using`/`import` once at session start (idempotent) to make this explicit.\n")
+        stderr_extra = "[kaimon] auto-imported $pkgs — a freshly connected session's Main starts " *
+            "empty; `using`/`import` once at session start (idempotent) to make this explicit.\n"
     end
 
     return (
-        stdout = join(stdout_content),
-        stderr = join(stderr_content),
+        stdout = String(take!(sink.out)),
+        stderr = String(take!(sink.err)) * stderr_extra,
         value_repr = value_repr,
         exception = exception_str,
         backtrace = nothing,

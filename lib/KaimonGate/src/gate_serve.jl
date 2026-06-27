@@ -595,11 +595,19 @@ function restart()
     end
 
     _RESTARTING[] = false
-    _cleanup()
+    # Best-effort cleanup — never let a teardown hiccup abort the restart.
+    try
+        _cleanup()
+    catch e
+        @warn "Restart cleanup failed; proceeding to exec anyway" exception = (e, catch_backtrace())
+    end
     _exec_restart(name, sid, proj)
 end
 
 function _cleanup()
+    # Restore the original stdout/stderr (uninstall the capture mux) so a stopped
+    # gate leaves the process's streams as it found them.
+    _restore_capture!()
     # Stop Revise watcher
     watcher = _REVISE_WATCHER_TASK[]
     if watcher !== nothing && !istaskdone(watcher)
