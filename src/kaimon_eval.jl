@@ -388,9 +388,12 @@ function execute_repllike(
                         caught = nothing
                         bt = nothing
                         try
-                            # Apply REPL ast_transforms (Revise, softscope, etc.)
+                            # Apply REPL ast_transforms (Revise, softscope, etc.).
+                            # Guard on the field: some hosts expose a REPLBackendRef
+                            # without `ast_transforms` (accessing it throws FieldError).
                             if isdefined(Base, :active_repl_backend) &&
-                               Base.active_repl_backend !== nothing
+                               Base.active_repl_backend !== nothing &&
+                               hasproperty(Base.active_repl_backend, :ast_transforms)
                                 for xf in Base.active_repl_backend.ast_transforms
                                     expr = Base.invokelatest(xf, expr)
                                 end
@@ -483,9 +486,12 @@ function execute_repllike(
                 caught = nothing
                 bt = nothing
                 try
-                    # Apply REPL ast_transforms (Revise, softscope, etc.)
+                    # Apply REPL ast_transforms (Revise, softscope, etc.).
+                    # Guard on the field: some hosts expose a REPLBackendRef
+                    # without `ast_transforms` (accessing it throws FieldError).
                     if isdefined(Base, :active_repl_backend) &&
-                       Base.active_repl_backend !== nothing
+                       Base.active_repl_backend !== nothing &&
+                       hasproperty(Base.active_repl_backend, :ast_transforms)
                         for xf in Base.active_repl_backend.ast_transforms
                             expr = xf(expr)
                         end

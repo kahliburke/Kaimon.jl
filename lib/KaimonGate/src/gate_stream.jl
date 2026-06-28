@@ -486,8 +486,15 @@ function _eval_with_capture(expr; mirror::Bool = false)
     bt = nothing
     autoimported = Symbol[]
     try
-        # Apply REPL ast_transforms (Revise, softscope, etc.)
-        if isdefined(Base, :active_repl_backend) && Base.active_repl_backend !== nothing
+        # Apply REPL ast_transforms (Revise, softscope, etc.). Guard on the field:
+        # a genuine REPL.REPLBackend carries `ast_transforms`, but some hosts (e.g.
+        # the Antigravity IDE) expose `active_repl_backend` as a bare REPLBackendRef
+        # that lacks it — accessing the field there throws FieldError and aborts the
+        # eval. When absent we simply skip the transforms (no softscope/auto-Revise on
+        # that backend, which couldn't install its hook there anyway) and eval as-is.
+        if isdefined(Base, :active_repl_backend) &&
+           Base.active_repl_backend !== nothing &&
+           hasproperty(Base.active_repl_backend, :ast_transforms)
             for xf in Base.active_repl_backend.ast_transforms
                 expr = Base.invokelatest(xf, expr)
             end
