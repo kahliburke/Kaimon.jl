@@ -264,9 +264,12 @@ function _open_event_popup!(m::KaimonModel)
     (sel < 1 || sel > length(events)) && return
     ev = events[sel]
     m.agentmon_popup = ev
-    # MarkdownPane owns its own scroll + parses once (renders a hint if markdown is
-    # unavailable). Created here so it isn't re-parsed every frame the popup is open.
-    m.agentmon_popup_pane = MarkdownPane(string(get(ev, :detail, get(ev, :summary, ""))); show_scrollbar = true)
+    # Plain-text body in a word-wrapping ScrollPane (owns its own scroll). Tool input/
+    # output keeps its line structure and long lines wrap to the pane width instead of
+    # overflowing. Start at the top (no auto-follow) so the header is visible first.
+    body = string(get(ev, :detail, get(ev, :summary, "")))
+    m.agentmon_popup_pane = ScrollPane(String.(split(body, '\n'));
+        word_wrap = true, following = false, show_scrollbar = true)
 end
 
 # ── Key handling ──────────────────────────────────────────────────────────────

@@ -270,15 +270,14 @@ const _EVENT_DETAIL_CAP = 8000
 _cap_detail(s::AbstractString) =
     length(s) <= _EVENT_DETAIL_CAP ? String(s) : first(s, _EVENT_DETAIL_CAP) * "\n… (truncated)"
 
-function _fenced_json(x)
-    s = try; JSON.json(x, 2); catch; string(x); end
-    "```json\n" * s * "\n```"
-end
+# Detail is rendered as PLAIN TEXT in a word-wrapping ScrollPane (not markdown), so a
+# line-numbered file read or JSON keeps its line structure instead of being collapsed.
+_pretty_json(x) = try; JSON.json(x, 2); catch; string(x); end
 
 _tool_content_text(c::ACP.ContentToolContent) = _txt(c.content)
 _tool_content_text(c::ACP.DiffToolContent) =
-    "```diff\n" * (c.old_text === nothing ? "" : "- " * c.old_text * "\n") * "+ " * c.new_text * "\n```"
-_tool_content_text(c::ACP.TerminalToolContent) = "terminal `" * c.terminal_id * "`"
+    (c.old_text === nothing ? "" : "- " * c.old_text * "\n") * "+ " * c.new_text
+_tool_content_text(c::ACP.TerminalToolContent) = "terminal " * c.terminal_id
 _tool_content_text(::Any) = ""
 
 # tool_call_id for tool events (used to coalesce a streamed call's two announcements)
@@ -294,14 +293,14 @@ function _event_detail(e::ACP.ToolCallStarted)
     c = e.call
     io = IOBuffer()
     print(io, "▶ ", c.title, " (", c.kind, ")")
-    isempty(c.tool_call_id) || print(io, "  `", c.tool_call_id, "`")
+    isempty(c.tool_call_id) || print(io, "  ", c.tool_call_id)
     if !isempty(c.locations)
-        print(io, "\n\nlocations:")
+        print(io, "\nlocations:")
         for l in c.locations
             print(io, "\n  • ", l.path, l.line === nothing ? "" : ":" * string(l.line))
         end
     end
-    c.raw_input === nothing || print(io, "\n\n**input**\n", _fenced_json(c.raw_input))
+    c.raw_input === nothing || print(io, "\n\ninput:\n", _pretty_json(c.raw_input))
     _cap_detail(String(take!(io)))
 end
 
@@ -309,14 +308,14 @@ function _event_detail(e::ACP.ToolCallUpdated)
     u = e.update
     io = IOBuffer()
     print(io, "↳ ", something(u.status, :update))
-    isempty(u.tool_call_id) || print(io, "  `", u.tool_call_id, "`")
+    isempty(u.tool_call_id) || print(io, "  ", u.tool_call_id)
     if u.content !== nothing
         for blk in u.content
             t = _tool_content_text(blk)
             isempty(t) || print(io, "\n\n", t)
         end
     end
-    u.raw_output === nothing || print(io, "\n\n**output**\n", _fenced_json(u.raw_output))
+    u.raw_output === nothing || print(io, "\n\noutput:\n", _pretty_json(u.raw_output))
     _cap_detail(String(take!(io)))
 end
 
