@@ -266,7 +266,7 @@ function _open_event_popup!(m::KaimonModel)
     m.agentmon_popup = ev
     # MarkdownPane owns its own scroll + parses once (renders a hint if markdown is
     # unavailable). Created here so it isn't re-parsed every frame the popup is open.
-    m.agentmon_popup_pane = MarkdownPane(string(get(ev, :summary, "")); show_scrollbar = true)
+    m.agentmon_popup_pane = MarkdownPane(string(get(ev, :detail, get(ev, :summary, ""))); show_scrollbar = true)
 end
 
 # ── Key handling ──────────────────────────────────────────────────────────────

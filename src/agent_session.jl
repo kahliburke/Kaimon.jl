@@ -261,9 +261,85 @@ _event_summary(e::ACP.AgentError)        = "error: $(e.message)"
 _event_summary(::ACP.PermissionRequested)= "permission requested"
 _event_summary(e::ACP.AgentEvent)        = string(ACP.event_kind(e))
 
+# ── Rich per-event detail (shown when a feed row is opened in the monitor) ─────
+# `summary` is the one-line the feed renders; `detail` is the full, multi-line body
+# (tool input/output, locations) surfaced in the event popup so digging into a row
+# shows what the agent actually did. Capped so a giant read/result can't bloat the ring.
+const _EVENT_DETAIL_CAP = 8000
+
+_cap_detail(s::AbstractString) =
+    length(s) <= _EVENT_DETAIL_CAP ? String(s) : first(s, _EVENT_DETAIL_CAP) * "\n… (truncated)"
+
+function _fenced_json(x)
+    s = try; JSON.json(x, 2); catch; string(x); end
+    "```json\n" * s * "\n```"
+end
+
+_tool_content_text(c::ACP.ContentToolContent) = _txt(c.content)
+_tool_content_text(c::ACP.DiffToolContent) =
+    "```diff\n" * (c.old_text === nothing ? "" : "- " * c.old_text * "\n") * "+ " * c.new_text * "\n```"
+_tool_content_text(c::ACP.TerminalToolContent) = "terminal `" * c.terminal_id * "`"
+_tool_content_text(::Any) = ""
+
+# tool_call_id for tool events (used to coalesce a streamed call's two announcements)
+_event_tcid(::ACP.AgentEvent) = ""
+_event_tcid(e::ACP.ToolCallStarted) = e.call.tool_call_id
+_event_tcid(e::ACP.ToolCallUpdated) = e.update.tool_call_id
+
+# Full body for the popup. Defaults to the summary; tool events expand to their
+# input / output.
+_event_detail(ev::ACP.AgentEvent) = _event_summary(ev)
+
+function _event_detail(e::ACP.ToolCallStarted)
+    c = e.call
+    io = IOBuffer()
+    print(io, "▶ ", c.title, " (", c.kind, ")")
+    isempty(c.tool_call_id) || print(io, "  `", c.tool_call_id, "`")
+    if !isempty(c.locations)
+        print(io, "\n\nlocations:")
+        for l in c.locations
+            print(io, "\n  • ", l.path, l.line === nothing ? "" : ":" * string(l.line))
+        end
+    end
+    c.raw_input === nothing || print(io, "\n\n**input**\n", _fenced_json(c.raw_input))
+    _cap_detail(String(take!(io)))
+end
+
+function _event_detail(e::ACP.ToolCallUpdated)
+    u = e.update
+    io = IOBuffer()
+    print(io, "↳ ", something(u.status, :update))
+    isempty(u.tool_call_id) || print(io, "  `", u.tool_call_id, "`")
+    if u.content !== nothing
+        for blk in u.content
+            t = _tool_content_text(blk)
+            isempty(t) || print(io, "\n\n", t)
+        end
+    end
+    u.raw_output === nothing || print(io, "\n\n**output**\n", _fenced_json(u.raw_output))
+    _cap_detail(String(take!(io)))
+end
+
 function _push_recent!(s::AgentSession, ev::ACP.AgentEvent)
-    entry = (t = time(), kind = ACP.event_kind(ev), summary = _event_summary(ev))
+    kind = ACP.event_kind(ev)
+    tcid = _event_tcid(ev)
+    entry = (t = time(), kind = kind, summary = _event_summary(ev),
+             detail = _event_detail(ev), tcid = tcid)
     lock(s.lock) do
+        # A streamed tool call is announced twice (first with no input, then the
+        # authoritative copy with full input — same toolCallId). Coalesce them into
+        # one feed row, keeping the richer detail, so the popup always has the input.
+        if kind === :tool_use && !isempty(tcid)
+            i = findlast(e -> get(e, :kind, nothing) === :tool_use &&
+                              get(e, :tcid, "") == tcid, s.recent)
+            if i !== nothing
+                old = s.recent[i]
+                detail = length(entry.detail) >= length(old.detail) ? entry.detail : old.detail
+                s.recent[i] = (t = old.t, kind = kind, summary = entry.summary,
+                               detail = detail, tcid = tcid)
+                return
+            end
+        end
         push!(s.recent, entry)
         n = length(s.recent)
         n > 200 && deleteat!(s.recent, 1:(n - 200))
