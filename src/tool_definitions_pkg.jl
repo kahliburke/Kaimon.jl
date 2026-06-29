@@ -70,12 +70,37 @@ function _project_has_retest(project_path::String)::Bool
     return false
 end
 
+"""
+    _pattern_likely_honored(project_path::String) -> Bool
+
+Best-effort check for whether a `pattern=` will actually filter this project's tests.
+Kaimon forwards the pattern through `ARGS`, so only a `runtests.jl` that reads `ARGS`
+can honor it — the ReTest `retest(ARGS...)` convention, or any script that consults
+`ARGS`. Plain `Test.jl`, `SafeTestsets`, and `TestItemRunner` ignore `ARGS` (so a
+`retest()` with no args, or a bare `@testset` suite, runs everything regardless of the
+pattern). We key off the actual mechanism (a literal `ARGS` reference) rather than a
+ReTest *dependency*, since a project can depend on ReTest yet not forward the pattern.
+"""
+function _pattern_likely_honored(project_path::String)::Bool
+    runtests = joinpath(project_path, "test", "runtests.jl")
+    isfile(runtests) || return false
+    try
+        return occursin(r"\bARGS\b", read(runtests, String))
+    catch
+        return false
+    end
+end
+
 run_tests_tool = @mcp_tool(
     :run_tests,
     """Run tests and optionally generate coverage reports.
 
 Spawns a subprocess with correct test environment. Streams results in real-time.
-Pattern uses ReTest regex syntax to filter tests.
+
+Pattern filtering is forwarded via ARGS, so it only applies to suites whose
+runtests.jl reads ARGS — the ReTest `retest(ARGS...)` convention. Plain Test.jl,
+SafeTestsets, and TestItemRunner ignore it (the whole suite runs); when a pattern
+can't be applied you get an explicit warning rather than a silently-unfiltered run.
 
 Provide either `project_path` (absolute path to the project) or `session`
 (gate session key) to identify the project. If neither is given and only
@@ -85,7 +110,7 @@ one session is connected, that session's project is used.""",
         "properties" => Dict(
             "pattern" => Dict(
                 "type" => "string",
-                "description" => "Optional test regex to filter tests (ReTest pattern syntax, e.g., 'security' or 'generate'). Leave empty to run all tests.",
+                "description" => "Optional test regex to filter tests (ReTest pattern syntax, e.g., 'security' or 'generate'). Only honored by suites whose runtests.jl forwards ARGS (ReTest's retest(ARGS...)); ignored with a warning by plain Test.jl/SafeTestsets/TestItemRunner. Leave empty to run all tests.",
             ),
             "coverage" => Dict(
                 "type" => "boolean",
@@ -147,6 +172,11 @@ one session is connected, that session's project is used.""",
             end
         end
 
+        # Honesty check: a pattern only filters if runtests.jl forwards ARGS (ReTest's
+        # retest(ARGS...) convention). Otherwise it's silently ignored and the whole
+        # suite runs — warn rather than imply the run was filtered.
+        pattern_ignored = !isempty(pattern) && !_pattern_likely_honored(project_path)
+
         on_progress !== nothing &&
             on_progress("Spawning test subprocess for $(basename(project_path))...")
 
@@ -193,8 +223,13 @@ one session is connected, that session's project is used.""",
         end
         _parse_raw_summary!(run)
 
-        # Return focused summary (not raw output dump)
-        return format_test_summary(run)
+        # Return focused summary (not raw output dump), prefixed with the
+        # pattern-ignored warning when the filter could not be applied.
+        warning = pattern_ignored ?
+            "⚠️  pattern \"$pattern\" was NOT applied — the whole suite ran. Only a " *
+            "runtests.jl that reads ARGS (ReTest's `retest(ARGS...)`) filters by " *
+            "pattern; Test.jl / SafeTestsets / TestItemRunner ignore it.\n\n" : ""
+        return warning * format_test_summary(run)
     end
 )
 

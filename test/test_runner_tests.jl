@@ -22,4 +22,27 @@ using Kaimon
             @test any(r -> r.name == "Version Info Tests", run.results)
         end
     end
+
+    @testset "_pattern_likely_honored detects ARGS forwarding" begin
+        # The pattern reaches tests via ARGS, so only a runtests.jl that reads ARGS
+        # (ReTest's retest(ARGS...)) can honor it; otherwise run_tests warns.
+        dir = mktempdir()
+        mkpath(joinpath(dir, "test"))
+        rt = joinpath(dir, "test", "runtests.jl")
+
+        write(rt, "using Test\n@testset \"a\" begin; @test true; end\n")
+        @test Kaimon._pattern_likely_honored(dir) == false          # plain Test.jl
+
+        write(rt, "using ReTest\n@testset \"a\" begin; @test true; end\nretest(ARGS...)\n")
+        @test Kaimon._pattern_likely_honored(dir) == true           # forwards ARGS
+
+        write(rt, "using SafeTestsets\n@safetestset \"a\" begin; @test true; end\n")
+        @test Kaimon._pattern_likely_honored(dir) == false          # SafeTestsets
+
+        write(rt, "using TestItemRunner\n@run_package_tests\n")
+        @test Kaimon._pattern_likely_honored(dir) == false          # TestItemRunner
+
+        # No runtests.jl at all → not honored.
+        @test Kaimon._pattern_likely_honored(mktempdir()) == false
+    end
 end
