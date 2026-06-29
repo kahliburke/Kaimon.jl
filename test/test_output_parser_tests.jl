@@ -275,7 +275,35 @@ using Kaimon:
         @test run.failures[1].expression == "mul2(2, 3) == 999"
         @test run.failures[1].evaluated == "6 == 999"
 
+        # The failing per-testset row has a BLANK Pass column (0 passes); numbers must
+        # right-align so Fail isn't mis-read as Pass.
+        beta = findfirst(r -> r.name == "beta", run.results)
+        @test beta !== nothing
+        @test run.results[beta].pass_count == 0
+        @test run.results[beta].fail_count == 1
+
         delete!(_PARSER_STATES, 109)
+    end
+
+    @testset "ReTest pattern-filtered single testset with interrupting noise" begin
+        # A pattern-filtered ReTest run shows only a nested testset (no depth-0
+        # aggregate), and stdout from the test itself (e.g. a Pkg.activate) can break
+        # the summary block. The indented row must still be parsed so the runner's
+        # results-fallback can total it; previously it was dropped → "Pass: 0".
+        run = TestRun(; id = 111, project_path = "/tmp/test_project")
+        for line in [
+            "                      Pass  ",
+            "Main.MyTests:",
+            "  Activating new project at `/tmp/whatever`",
+            "  Filtered Set     |     13  ",
+        ]
+            parse_test_line!(run, line)
+        end
+        i = findfirst(r -> r.name == "Filtered Set", run.results)
+        @test i !== nothing
+        @test run.results[i].pass_count == 13
+
+        delete!(_PARSER_STATES, 111)
     end
 
     @testset "ReTest passing summary still parses (no regression)" begin

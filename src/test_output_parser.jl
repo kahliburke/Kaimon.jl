@@ -226,20 +226,6 @@ function _parse_test_line_inner!(run::TestRun, line::String)::Bool
         return _parse_summary_line!(run, state, line)
     end
 
-    # ── ReTest final aggregate after an interrupted summary ──────────────
-    # On failure ReTest interleaves the failure detail between the per-testset rows
-    # and the final "Main…|" grand-total row; the blank lines around that detail end
-    # summary mode, so the authoritative aggregate (the only depth-0 row, carrying the
-    # real totals) arrived with in_summary=false and was dropped. Re-enter summary to
-    # parse this root row (column-0 name | numbers) with the last header we saw.
-    # Scoped to ReTest via the synthetic "ReTest Summary" header prefix.
-    if startswith(state.summary_header, "ReTest Summary") &&
-       !state.in_failure_block &&
-       match(r"^[A-Za-z_][\w.]*\s*\|\s*[\d ]+$", line) !== nothing
-        state.in_summary = true
-        return _parse_summary_line!(run, state, line)
-    end
-
     # ── Track current testset name ───────────────────────────────────────
     m_testset = match(r"^(\s*)Test set:\s*(.+)", line)
     if m_testset !== nothing
@@ -376,17 +362,23 @@ function _parse_summary_line!(run::TestRun, state::_ParserState, line::String)::
         return true
     end
 
+    # ReTest's summary is NOT contiguous: a failing run interleaves the failure detail
+    # before the final "Main…|" aggregate, and a pattern-filtered run can interleave
+    # Pkg/test stdout (e.g. "Activating new project…") between the header and its rows.
+    # Keep a ReTest summary open across blanks and unrecognized lines so those trailing
+    # rows still parse (otherwise the totals — or a filtered single testset — are lost).
+    # Test.jl tables are contiguous, so they keep the original end-on-blank behavior.
+    retest_mode = startswith(state.summary_header, "ReTest Summary")
+
     # Detect header row (contains column names like "Pass", "Fail", etc.)
     if isempty(state.summary_header) && contains(line, "|")
         state.summary_header = line
         return true
     end
 
-    # Empty or separator line ends summary
+    # Empty or separator line ends a Test.jl summary; a ReTest summary stays open.
     if isempty(stripped) || all(c -> c in ('-', '=', ' ', '─', '━'), stripped)
-        if isempty(stripped)
-            state.in_summary = false
-        end
+        (isempty(stripped) && !retest_mode) && (state.in_summary = false)
         return true
     end
 
@@ -425,18 +417,26 @@ function _parse_summary_line!(run::TestRun, state::_ParserState, line::String)::
                     push!(col_names, lowercase(m.match))
                 end
 
+                # Right-align numbers to columns. ReTest leaves LEADING columns blank
+                # for zeros (a failing testset with 0 passes prints only Fail/Total),
+                # so a row with fewer numbers than header columns fills the RIGHTMOST
+                # columns — left-aligning would mis-read Fail as Pass. Rows with all
+                # columns present (the common case, incl. Test.jl) get offset 0.
+                offset = max(0, length(col_names) - length(nums))
                 for (i, col_name) in enumerate(col_names)
-                    i > length(nums) && break
+                    ni = i - offset
+                    (ni < 1 || ni > length(nums)) && continue
+                    val = nums[ni]
                     if col_name in ("pass", "passed")
-                        pass = nums[i]
+                        pass = val
                     elseif col_name in ("fail", "failed")
-                        fail = nums[i]
+                        fail = val
                     elseif col_name in ("error", "errors")
-                        err = nums[i]
+                        err = val
                     elseif col_name == "broken"
-                        broken = nums[i]
+                        broken = val
                     elseif col_name == "total"
-                        total = nums[i]
+                        total = val
                     end
                 end
             end
@@ -473,7 +473,10 @@ function _parse_summary_line!(run::TestRun, state::_ParserState, line::String)::
         return true  # skip module header, stay in summary mode
     end
 
-    # Non-pipe line while in summary — might be end of summary
+    # Non-pipe line while in summary. For ReTest, skip interleaved noise (Pkg
+    # "Activating…", test prints, the trailing ERROR line) and stay open — the run's
+    # TEST_RUNNER markers reset summary state. For Test.jl, this ends the summary.
+    retest_mode && return true
     state.in_summary = false
     return false
 end
