@@ -239,4 +239,60 @@ using Kaimon:
 
         delete!(_PARSER_STATES, 108)
     end
+
+    @testset "ReTest multi-table failing summary (regression)" begin
+        # Ground truth captured from a failing `retest(ARGS...)` run (see
+        # /tmp/TestFrameworkLab lab). ReTest emits a bare column header that VARIES
+        # per testset (just "Pass" for a clean block, "Pass Fail Total" once a block
+        # fails) and prints the failure detail BETWEEN the per-testset rows and the
+        # final "Main…|" grand-total row. The parser used to exit summary mode on the
+        # second header and on the blank lines, dropping the failing rows and the
+        # authoritative aggregate → headline "Fail: 0" on a genuinely failing run.
+        run = TestRun(; id = 109, project_path = "/tmp/test_project")
+        for line in [
+            "            Pass  ",
+            "Main:  ",
+            "  alpha |      1  ",
+            "            Pass    Fail   Total",
+            "  beta  |              1       1",
+            "",
+            "beta: Test Failed at /tmp/test_project/test/runtests.jl:7",
+            "  Expression: mul2(2, 3) == 999",
+            "   Evaluated: 6 == 999",
+            "",
+            "",
+            "Main    |      1       1       2",
+        ]
+            parse_test_line!(run, line)
+        end
+
+        # Totals come from the depth-0 "Main" aggregate, not the indented per-set rows.
+        @test run.total_pass == 1
+        @test run.total_fail == 1
+        @test run.total_tests == 2
+        # The interleaved failure block is still captured.
+        @test length(run.failures) == 1
+        @test run.failures[1].expression == "mul2(2, 3) == 999"
+        @test run.failures[1].evaluated == "6 == 999"
+
+        delete!(_PARSER_STATES, 109)
+    end
+
+    @testset "ReTest passing summary still parses (no regression)" begin
+        run = TestRun(; id = 110, project_path = "/tmp/test_project")
+        for line in [
+            "            Pass  ",
+            "Main:  ",
+            "  alpha |      2  ",
+            "  beta  |      2  ",
+            "Main    |      4  ",
+        ]
+            parse_test_line!(run, line)
+        end
+        @test run.total_pass == 4
+        @test run.total_fail == 0
+        @test run.total_tests == 4
+
+        delete!(_PARSER_STATES, 110)
+    end
 end

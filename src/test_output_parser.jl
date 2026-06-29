@@ -203,11 +203,13 @@ function _parse_test_line_inner!(run::TestRun, line::String)::Bool
     end
 
     # ── ReTest summary header detection ──────────────────────────────────
-    # ReTest prints a header line like "                            Pass  "
-    # (column names only, no pipe, no "Test Summary:" prefix)
-    # followed by "Module.Name:" and then indented rows with |
-    if !state.in_summary
-        retest_header = match(
+    # ReTest prints a bare column-name header (no pipe, no "Test Summary:" prefix)
+    # before each testset block — and the columns VARY: a clean block shows only
+    # "Pass", a block with failures adds "Fail"/"Total". Re-detect it even while
+    # already in_summary and UPDATE the header. (Previously this only fired when NOT
+    # in_summary, so the second header fell through to the end-of-summary path and
+    # the failing rows + final aggregate were dropped → "Fail: 0" on a failing run.)
+    let retest_header = match(
             r"^\s+(Pass|Fail|Error|Broken|Total)(\s+(Pass|Fail|Error|Broken|Total))*\s*$",
             line,
         )
@@ -221,6 +223,20 @@ function _parse_test_line_inner!(run::TestRun, line::String)::Bool
     end
 
     if state.in_summary
+        return _parse_summary_line!(run, state, line)
+    end
+
+    # ── ReTest final aggregate after an interrupted summary ──────────────
+    # On failure ReTest interleaves the failure detail between the per-testset rows
+    # and the final "Main…|" grand-total row; the blank lines around that detail end
+    # summary mode, so the authoritative aggregate (the only depth-0 row, carrying the
+    # real totals) arrived with in_summary=false and was dropped. Re-enter summary to
+    # parse this root row (column-0 name | numbers) with the last header we saw.
+    # Scoped to ReTest via the synthetic "ReTest Summary" header prefix.
+    if startswith(state.summary_header, "ReTest Summary") &&
+       !state.in_failure_block &&
+       match(r"^[A-Za-z_][\w.]*\s*\|\s*[\d ]+$", line) !== nothing
+        state.in_summary = true
         return _parse_summary_line!(run, state, line)
     end
 
