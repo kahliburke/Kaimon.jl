@@ -181,7 +181,8 @@ one session is connected, that session's project is used.""",
             on_progress("Spawning test subprocess for $(basename(project_path))...")
 
         # Spawn ephemeral test subprocess
-        run = spawn_test_run(project_path; pattern = pattern, verbose = verbose)
+        run = spawn_test_run(project_path; pattern = pattern, verbose = verbose,
+                             coverage = coverage_enabled === true)
 
         # Push to TUI buffer so the Tests tab picks it up
         _push_test_update!(:update, run)
@@ -229,7 +230,16 @@ one session is connected, that session's project is used.""",
             "⚠️  pattern \"$pattern\" was NOT applied — the whole suite ran. Only a " *
             "runtests.jl that reads ARGS (ReTest's `retest(ARGS...)`) filters by " *
             "pattern; Test.jl / SafeTestsets / TestItemRunner ignore it.\n\n" : ""
-        return warning * format_test_summary(run)
+        coverage = ""
+        if coverage_enabled === true
+            cov = try
+                _collect_coverage(project_path)
+            catch e
+                "Coverage: collection failed ($(first(sprint(showerror, e), 120)))."
+            end
+            coverage = "\n" * cov * "\n"
+        end
+        return warning * format_test_summary(run) * coverage
     end
 )
 

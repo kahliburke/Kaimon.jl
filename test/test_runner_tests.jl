@@ -45,4 +45,25 @@ using Kaimon
         # No runtests.jl at all → not honored.
         @test Kaimon._pattern_likely_honored(mktempdir()) == false
     end
+
+    @testset "_collect_coverage parses and summarizes .cov files" begin
+        dir = mktempdir()
+        src = joinpath(dir, "src")
+        mkpath(src)
+        # Synthetic .cov: '-' = non-executable, a number = coverable (covered if >0).
+        write(joinpath(src, "Foo.jl.12345.cov"), """
+                - module Foo
+                5 foo() = 1
+                0 bar() = 2
+                - end
+        """)
+        summary = Kaimon._collect_coverage(dir)
+        @test occursin("1/2 lines (50.0%)", summary)
+        @test occursin("src/Foo.jl", summary)
+        # .cov files are cleaned up after collection.
+        @test isempty(filter(f -> endswith(f, ".cov"), readdir(src)))
+
+        # No .cov data → clear message, no crash.
+        @test occursin("no .cov data", Kaimon._collect_coverage(mktempdir()))
+    end
 end

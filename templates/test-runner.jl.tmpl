@@ -88,23 +88,29 @@ let _w = Base.get_world_counter()
 end
 
 let _w2 = Base.get_world_counter()
-    @eval function Test.finish(ts::Test.DefaultTestSet; print_results::Bool=true)
-        _depth = max(0, $_testset_depth[] - 1)
+    # Forward arbitrary kwargs (e.g. `print_results`) instead of hardcoding a
+    # signature — Test.finish's keywords have drifted across Julia versions, and we
+    # must match whatever the caller passes and hand it straight to the original.
+    @eval function Test.finish(ts::Test.DefaultTestSet; kwargs...)
+        # Always keep depth balanced (push_testset incremented it); only the marker
+        # emission is guarded, so a drift in Test's count internals can't break the
+        # actual run — the summary-table scraper still recovers the totals.
         $_testset_depth[] -= 1
+        _depth = max(0, $_testset_depth[])
+        try
+            _tc = Test.get_test_counts(ts)
+            _p = getproperty(_tc, :passes) + getproperty(_tc, :cumulative_passes)
+            _f = getproperty(_tc, :fails) + getproperty(_tc, :cumulative_fails)
+            _e = getproperty(_tc, :errors) + getproperty(_tc, :cumulative_errors)
+            println($_RUNNER_OUT, "TEST_RUNNER: TESTSET_DONE",
+                " pass=", _p, " fail=", _f, " error=", _e,
+                " total=", _p + _f + _e, " depth=", _depth,
+                " name=", ts.description)
+            flush($_RUNNER_OUT)
+        catch
+        end
 
-        _tc = Test.get_test_counts(ts)
-        _p = getproperty(_tc, :passes) + getproperty(_tc, :cumulative_passes)
-        _f = getproperty(_tc, :fails) + getproperty(_tc, :cumulative_fails)
-        _e = getproperty(_tc, :errors) + getproperty(_tc, :cumulative_errors)
-        _total = _p + _f + _e
-
-        println($_RUNNER_OUT, "TEST_RUNNER: TESTSET_DONE",
-            " pass=", _p, " fail=", _f, " error=", _e,
-            " total=", _total, " depth=", _depth,
-            " name=", ts.description)
-        flush($_RUNNER_OUT)
-
-        return Base.invoke_in_world($_w2, Test.finish, ts; print_results=print_results)
+        return Base.invoke_in_world($_w2, Test.finish, ts; kwargs...)
     end
 end
 
