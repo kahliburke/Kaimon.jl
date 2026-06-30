@@ -246,11 +246,17 @@ function _resolve_gate_conn(session::String; allow_stalled::Bool = false)
         if isempty(available)
             return (
                 nothing,
-                "ERROR: No REPL sessions connected. Start a gate in your Julia REPL:\n" *
-                "  using KaimonGate; KaimonGate.serve()   # or, in a full Kaimon session: Gate.serve()",
+                "ERROR: No REPL sessions connected. Start one yourself with " *
+                "start_session(project_path=\"/abs/path\") — call start_session() with no args to " *
+                "list allowed projects. (Or start a gate manually in a Julia REPL: " *
+                "`using KaimonGate; KaimonGate.serve()`, or `Gate.serve()` in a full Kaimon session.)",
             )
         end
-        return (nothing, "ERROR: No session matched '$(session)'. Available: $available")
+        return (
+            nothing,
+            "ERROR: No session matched '$(session)'. Available: $available. " *
+            "If the project you need isn't listed, start it with start_session(project_path=…).",
+        )
     end
 
     # Default-session tracking: caller-less global fallback + per-agent binding, so

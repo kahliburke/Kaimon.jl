@@ -574,7 +574,8 @@ and `tool_args` directly for a custom gate tool call.
             if conn === nothing
                 conns = connected_sessions(mgr)
                 available = join(["$(short_key(c)) ($(c.name))" for c in conns], ", ")
-                return "ERROR: No session matched '$(session)'. Available: $available"
+                return "ERROR: No session matched '$(session)'. Available: $available. " *
+                       "If the project you need isn't listed, start it with start_session(project_path=…)."
             end
             resolved_conn = conn
             short_key(conn)

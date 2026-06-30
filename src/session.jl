@@ -204,7 +204,7 @@ function get_server_instructions()
 
     Running Julia: ex(code) evaluates in a REPL the USER SHARES live. Default q=true (suppress output); pass q=false only when you need the value back. println/print to stdout is STRIPPED — return a final expression instead. Revise auto-reloads src/ edits before every eval, so never call Revise.revise() — it's a no-op and is stripped like println. Slow evals auto-promote to background jobs (poll check_eval); when you write code that may run long, make it cooperative so it can be watched and stopped — loop on KaimonGate.is_cancelled() (lets cancel_eval stop it), report KaimonGate.progress("…"), and stash intermediates with KaimonGate.stash(:k, v) (all visible via check_eval). Use mt=true for GLMakie/OpenGL.
 
-    Sessions: each connected project is a session; when more than one is connected, pass ses=<key> to target one (ping lists them).
+    Sessions: each connected project is a session; when more than one is connected, pass ses=<key> to target one (ping lists them). Need a project that isn't connected? Start it yourself — start_session(project_path="/abs/path") spawns a REPL for it right away (that's the normal way to get a session, not something to wait for the user to do); start_session() with no args lists the allowed projects.
 
     New here? Call usage_quiz (then usage_quiz(show_sols=true) to self-grade) and usage_instructions before starting.
     """

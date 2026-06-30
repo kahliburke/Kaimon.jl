@@ -39,7 +39,7 @@ the bug) · d) `q=true` (definition) · e) `q=false` (you need to read the signa
 
 ---
 
-## Q4: Sessions & routing (12 — 3 each)
+## Q4: Sessions & routing (12)
 
 a) A separate Julia REPL process (a connected gate) with its own state, packages, and
    project, identified by an 8-char key.
@@ -50,6 +50,12 @@ d) You get an **error** asking which session to use — it won't guess. This mat
    **safety**: the user often runs MANY sessions for different projects at once, so a blind
    default could execute your code in the WRONG project. Confirm your session before you
    mutate state.
+e) Don't wait — **start it yourself** with `start_session(project_path="/abs/path")`, which
+   spawns a REPL for that project and hands back its 8-char session key (call `start_session()`
+   with no args to list the allowed projects). The project must be on the allowed-projects
+   list; if it isn't, the error tells you how to add it.
+
+(a–d ~2.5 each, e ~2 — award partial credit for the key ideas.)
 
 ---
 

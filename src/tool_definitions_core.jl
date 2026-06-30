@@ -735,6 +735,10 @@ start_session_tool = @mcp_tool(
     :start_session,
     """Spawn a new Julia session for a project.
 
+Reach for this the moment you need a REPL for a project that has no connected
+session — `ping` shows none for it, or a tool returned "No session matched". You
+can create one immediately; don't wait for the user to start it.
+
 Starts a background Julia process that activates the given project, runs
 Pkg.instantiate, and connects back as a gate session. The project must be
 in the allowed-projects list (configured in the TUI Config tab or

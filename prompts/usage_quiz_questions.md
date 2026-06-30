@@ -47,6 +47,8 @@ b) How do you discover the connected sessions?
 c) When and how do you use `ses=` on `ex` and other tools?
 d) What happens if you omit `ses` while several sessions are connected — and why does this
    matter for *safety*?
+e) You need to run code in a project that ISN'T in the connected list. Can you get a session
+   for it yourself, or must you wait for the user — and how?
 
 ---
 
