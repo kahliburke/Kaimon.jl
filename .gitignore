@@ -46,6 +46,11 @@ lcov.info
 LocalPreferences.toml
 test/SuppositionDB/
 
+# Scratch — standalone repro scripts (not part of the test suite) and WIP experiments
+test/mwe_*.jl
+test/*_torture.jl
+lib/KaimonRustGate/
+
 # Documentation build output
 docs/build/
 docs/node_modules/
