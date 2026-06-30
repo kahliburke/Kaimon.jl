@@ -375,7 +375,8 @@ end
 
 """Return a PID that is guaranteed dead (a short process we wait on, then reap)."""
 function _dead_pid()
-    proc = open(`sleep 0.01`)
+    julia = joinpath(Sys.BINDIR, Base.julia_exename())
+    proc = open(Cmd([julia, "-e", "sleep(0.01)"]))
     pid = Int(getpid(proc))   # getpid returns Int32 on some platforms; pid field is Int
     wait(proc)  # reap — process is now gone (not a zombie)
     return pid

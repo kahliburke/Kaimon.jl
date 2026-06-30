@@ -1,6 +1,7 @@
 # Tests for the project allow-list and the `allow_any_project` opt-in (#46).
 
 using ReTest
+using JSON
 using Kaimon
 
 @testset "Project allow-list + allow_any_project (#46)" begin
@@ -15,19 +16,19 @@ using Kaimon
             other   = mktempdir(); write(joinpath(other, "Project.toml"), "name = \"Y\"\n")
 
             # Without the flag: only the listed, enabled project is allowed.
-            write(pjson, """{"projects":[{"project_path":"$allowed","enabled":true}]}""")
+            write(pjson, JSON.json(Dict("projects" => [Dict("project_path" => allowed, "enabled" => true)])))
             @test Kaimon.projects_allow_any() == false
             @test Kaimon.is_project_allowed(allowed)
             @test !Kaimon.is_project_allowed(other)
 
             # With the flag: any path is allowed (the allow-list is bypassed).
-            write(pjson, """{"allow_any_project":true,"projects":[]}""")
+            write(pjson, JSON.json(Dict("allow_any_project" => true, "projects" => [])))
             @test Kaimon.projects_allow_any() == true
             @test Kaimon.is_project_allowed(other)
             @test Kaimon.is_project_allowed("/nonexistent/whatever")
 
             # Explicit false behaves like absent.
-            write(pjson, """{"allow_any_project":false,"projects":[]}""")
+            write(pjson, JSON.json(Dict("allow_any_project" => false, "projects" => [])))
             @test Kaimon.projects_allow_any() == false
             @test !Kaimon.is_project_allowed(other)
         finally

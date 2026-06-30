@@ -10,9 +10,12 @@
 Cross-platform check whether a process with the given PID exists.
 Uses signal 0 (no actual signal sent) via libuv.
 """
-function _is_pid_alive(pid::Int)
+function _is_pid_alive(pid::Integer)
+    pid = Int(pid)
     pid > 0 || return false
     ccall(:uv_kill, Cint, (Cint, Cint), pid, 0) == 0 || return false
+    # Windows has no `ps -o state=`; uv_kill(signal 0) is sufficient there.
+    Sys.iswindows() && return true
     # Zombie processes (defunct) still respond to signal 0.
     # Check the process state to filter them out.
     try
@@ -235,15 +238,12 @@ function discover_sessions(mgr::ConnectionManager)
         # nothing changed.  If the PID is different the process restarted:
         # don't skip so the watcher can replace the stale connection.
         session_mode = Symbol(get(meta, "mode", "ipc"))
-        # TCP gates are owned exclusively by _poll_tcp_gates!, which connects them
-        # via connect_tcp! with the auth token from tcp_gates.json. The file-watcher
-        # must NOT connect them: it has no token, so its connection is rejected with
-        # "Authentication required". And on a successful poll-connect the gate drops a
-        # mode=:tcp marker into sock_dir (for reconnect bookkeeping) — which the
-        # watcher would otherwise pick up and double-connect tokenless, the bad
-        # connection winning. So ignore TCP markers here entirely. (#50)
+        # tcp_gates.json poll bookkeeping (sid "tcp-host-port") is owned by
+        # _poll_tcp_gates! — skip to avoid tokenless double-connect (#50).
+        # Localhost TCP gates advertised by serve() (e.g. Windows) are discovered here.
         if session_mode == :tcp
-            continue
+            startswith(session_id, "tcp-") && continue
+            _is_local_host(_endpoint_host(get(meta, "endpoint", ""))) || continue
         end
         if session_mode != :tcp && haskey(known_id_pids, session_id) && known_id_pids[session_id] == pid
             continue

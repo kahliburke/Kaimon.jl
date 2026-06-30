@@ -125,23 +125,47 @@ end
         # No sleep needed — sockets are already bound
     else
         session_id = "test-async-$(bytes2hex(rand(UInt8, 4)))"
-        Kaimon.KaimonGate._serve(name = "test", session_id = session_id, force = true, tools = [tool])
-        # Give the gate a moment to bind its IPC sockets
+        if Sys.iswindows()
+            Kaimon.KaimonGate._serve(
+                name = "test",
+                session_id = session_id,
+                force = true,
+                tools = [tool],
+                mode = :tcp,
+                host = "127.0.0.1",
+                port = 0,
+            )
+        else
+            Kaimon.KaimonGate._serve(
+                name = "test",
+                session_id = session_id,
+                force = true,
+                tools = [tool],
+            )
+        end
+        # Give the gate a moment to bind its sockets
         sleep(0.15)
     end
 
-    sock_dir = Kaimon.KaimonGate.sock_dir()
-    rep_path = joinpath(sock_dir, "$session_id.sock")
-    pub_path = joinpath(sock_dir, "$session_id-stream.sock")
+    if Sys.iswindows()
+        rep_path = rstrip(ZMQ._get_last_endpoint(Kaimon.KaimonGate._GATE_SOCKET[]), '\0')
+        pub_path = Kaimon.KaimonGate._STREAM_ENDPOINT[]
+    else
+        sock_dir = Kaimon.KaimonGate.sock_dir()
+        rep_path = "ipc://" * joinpath(sock_dir, "$session_id.sock")
+        pub_path = "ipc://" * joinpath(sock_dir, "$session_id-stream.sock")
+    end
 
     ctx = Context()
     req = Socket(ctx, REQ)
     sub = Socket(ctx, SUB)
     req.rcvtimeo = 5_000   # ms
     sub.rcvtimeo = 5_000
+    req.linger = 0
+    sub.linger = 0
 
-    connect(req, "ipc://$rep_path")
-    connect(sub, "ipc://$pub_path")
+    connect(req, rep_path)
+    connect(sub, pub_path)
     subscribe(sub, "")   # subscribe to all topics
     sleep(0.1)           # let SUB handshake with PUB before the tool runs
 

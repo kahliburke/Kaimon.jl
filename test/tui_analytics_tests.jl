@@ -773,22 +773,12 @@ end
     end
 
     @testset "Analytics view never crashes on any terminal size" begin
-        @check function analytics_render_any_size(
-            w = Data.Integers(20, 300),
-            h = Data.Integers(5, 100),
-        )
-            db_path = tempname() * ".db"
-            Database.init_db!(db_path)
-            try
-                m = Kaimon.KaimonModel(server_port = 19998)
-                m.db_initialized = true
-                m.server_started = true
-                m.activity_mode = :analytics
-                Kaimon.set_theme!(:kokaku)
-
-                # Push a few results so there's data to render
-                for i = 1:3
-                    r = Kaimon.ToolCallResult(
+        db_path = tempname() * ".db"
+        Database.init_db!(db_path)
+        try
+            for _ = 1:3
+                persist_tool_call!(
+                    Kaimon.ToolCallResult(
                         now(),
                         "prop_test",
                         "{}",
@@ -796,19 +786,35 @@ end
                         "10ms",
                         true,
                         "",
-                    )
-                    persist_tool_call!(r)
-                end
-                Kaimon._refresh_analytics!(m; force = true)
+                    ),
+                )
+            end
+            analytics_fixture = (
+                tool_summary = Database.get_tool_summary(),
+                error_hotspots = Database.get_error_hotspots(),
+                recent_execs = Database.get_tool_executions(; days = 1),
+            )
+            Kaimon.set_theme!(:kokaku)
+
+            @check max_examples=1000 function analytics_render_any_size(
+                w = Data.Integers(20, 300),
+                h = Data.Integers(5, 100),
+            )
+                m = Kaimon.KaimonModel(server_port = 19998)
+                m.db_initialized = true
+                m.server_started = true
+                m.activity_mode = :analytics
+                m.analytics_cache = analytics_fixture
+                m.analytics_last_refresh = time()
 
                 area = Tachikoma.Rect(0, 0, w, h)
                 buf = Tachikoma.Buffer(area)
                 Kaimon._view_analytics(m, area, buf)
                 true  # didn't throw
-            finally
-                Database.close_db!()
-                rm(db_path; force = true)
             end
+        finally
+            Database.close_db!()
+            rm(db_path; force = true)
         end
     end
 
