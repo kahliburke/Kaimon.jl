@@ -622,15 +622,43 @@ function _kwarg_types(handler::Function)::Dict{Symbol,Any}
 end
 
 """
+    _is_dict_handler(handler) -> Bool
+
+True only when `handler`'s first positional parameter is *explicitly* typed to
+receive the raw args Dict (e.g. `f(args::Dict{String,Any})`).
+
+`hasmethod(handler, Tuple{Dict{String,Any}})` alone is too loose: a handler whose
+first positional is untyped (`::Any`, the common case — e.g. `f(cells; kw...)`)
+also matches it, because a Dict satisfies `::Any`. Taking the fast path there
+binds the *entire* args Dict to that one positional and silently drops every
+other argument (positional and kwarg) to its default. We require the declared
+type `T` to actually be a Dict supertype (and not `Any`) before short-circuiting.
+"""
+function _is_dict_handler(handler::Function)
+    hasmethod(handler, Tuple{Dict{String,Any}}) || return false
+    m = which(handler, Tuple{Dict{String,Any}})
+    sig = m.sig
+    while sig isa UnionAll
+        sig = sig.body
+    end
+    params = sig.parameters
+    length(params) >= 2 || return false
+    T = params[2]
+    return T !== Any && Dict{String,Any} <: T
+end
+
+"""
     _dispatch_tool_call(handler, args::Dict{String,Any})
 
 Dispatch a tool call to the handler with properly typed arguments.
-If the handler accepts a Dict, calls directly. Otherwise, reflects on
+If the handler explicitly accepts a Dict, calls directly. Otherwise, reflects on
 the method signature to reconstruct typed positional and keyword arguments.
 """
 function _dispatch_tool_call(handler::Function, args::Dict{String,Any})
-    # Fast path: handler accepts a Dict directly
-    if hasmethod(handler, Tuple{Dict{String,Any}})
+    # Fast path: handler explicitly declares a single raw-Dict argument. Must be
+    # an explicit Dict-typed param — an untyped (::Any) first positional also
+    # accepts a Dict but would swallow all args into one param (see _is_dict_handler).
+    if _is_dict_handler(handler)
         return handler(args)
     end
 

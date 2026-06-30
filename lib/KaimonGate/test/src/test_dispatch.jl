@@ -22,6 +22,16 @@ function _dict_handler(args::Dict{String,Any})
     return "raw:$(args["key"])"
 end
 
+"""Handler with an UNTYPED first positional + kwargs, taking a structured value.
+
+Mirrors a real worker tool like `__slate_eval_batch(cells; run_id, npool)`: `cells`
+is untyped (`::Any`) so a Dict satisfies it. This must NOT trigger the Dict fast
+path — doing so would bind the whole args Dict to `batch` and drop the kwargs.
+"""
+function _batch_handler(batch; run_id::String="", npool::Int=0)
+    return (batch=batch, run_id=run_id, npool=npool)
+end
+
 """Handler with enum and struct args."""
 function _task_handler(
     title::String,
@@ -108,6 +118,32 @@ end
     dispatch = KaimonGate._dispatch_tool_call
     result = dispatch(_dict_handler, Dict{String,Any}("key" => "treasure"))
     @test result == "raw:treasure"
+
+    # Only an EXPLICIT Dict-typed first positional is a Dict handler; an untyped
+    # (::Any) first positional is not, even though hasmethod(.., Tuple{Dict}) is true.
+    @test KaimonGate._is_dict_handler(_dict_handler)
+    @test !KaimonGate._is_dict_handler(_batch_handler)
+    @test !KaimonGate._is_dict_handler(_greet)
+end
+
+# ── _dispatch_tool_call: structured args through an untyped positional ─────────
+# Regression: an untyped first positional (`batch`) must reflect, not fast-path.
+# Previously hasmethod(handler, Tuple{Dict}) was true for ::Any, so the whole
+# args Dict was bound to `batch` and run_id/npool silently reverted to defaults.
+
+@testset "_dispatch_tool_call structured untyped positional" begin
+    dispatch = KaimonGate._dispatch_tool_call
+
+    cells = [Dict("id" => "a"), Dict("id" => "b")]
+    result = dispatch(
+        _batch_handler,
+        Dict{String,Any}("batch" => cells, "run_id" => "7", "npool" => 0),
+    )
+    @test result.batch == cells          # the Vector{Dict}, NOT the whole args Dict
+    @test result.batch isa Vector
+    @test length(result.batch) == 2
+    @test result.run_id == "7"           # kwarg delivered, not its "" default
+    @test result.npool == 0
 end
 
 # ── _kwarg_types ──────────────────────────────────────────────────────────────
