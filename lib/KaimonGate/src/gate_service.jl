@@ -46,7 +46,10 @@ function _service_request(request)
         endpoint = "tcp://127.0.0.1:$(_SERVICE_TCP_PORT[])"
     else
         sock_path = joinpath(sock_dir(), "kaimon-service.sock")
-        ispath(sock_path) || error("Kaimon service endpoint not available. Is the Kaimon TUI running?")
+        ispath(sock_path) || error(
+            "Kaimon service endpoint not available — no socket at $sock_path. " *
+            "Either the Kaimon server isn't running, or its service endpoint was torn " *
+            "down (check the server log for 'Service endpoint stopping' / 'stale … socket').")
         endpoint = "ipc://$(sock_path)"
     end
 

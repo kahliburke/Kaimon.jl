@@ -109,8 +109,12 @@ function start_service_endpoint!()
     else
         endpoint = "ipc://$(KaimonGate.sock_dir())/kaimon-service.sock"
         sock_path = replace(endpoint, "ipc://" => "")
-        # Clean up stale socket file
-        ispath(sock_path) && rm(sock_path)
+        # Clean up stale socket file. A leftover here means a prior endpoint wasn't
+        # stopped cleanly (crash/kill) — log it so an unclean prior shutdown is visible.
+        if ispath(sock_path)
+            @warn "Removing stale service-endpoint socket before bind" sock_path
+            rm(sock_path)
+        end
     end
 
     RateGovernor.init!()   # admission control for agent turns
@@ -193,6 +197,19 @@ end
 Stop the service endpoint and clean up resources.
 """
 function stop_service_endpoint!()
+    # Log every teardown WITH its caller. A stop here removes kaimon-service.sock and
+    # leaves the gate's reverse channel dead ("service endpoint not available") until
+    # the next bind — previously silent, so a disappearing socket while the TUI kept
+    # running was very hard to correlate with anything. The caller frame distinguishes
+    # TUI cleanup from a _stop_gate_services!/restart path.
+    caller = try
+        fr = stacktrace()
+        length(fr) >= 2 ? string(fr[2]) : "?"
+    catch
+        "?"
+    end
+    @info "Service endpoint stopping" endpoint = _SERVICE_ENDPOINT[] running = _SERVICE_RUNNING[] caller
+
     _SERVICE_RUNNING[] = false
 
     task = _SERVICE_TASK[]
@@ -215,7 +232,10 @@ function stop_service_endpoint!()
         endpoint = _SERVICE_ENDPOINT[]
         if !isempty(endpoint)
             sock_path = replace(endpoint, "ipc://" => "")
-            ispath(sock_path) && rm(sock_path; force = true)
+            if ispath(sock_path)
+                rm(sock_path; force = true)
+                @info "Service endpoint socket removed" sock_path
+            end
         end
     end
 

@@ -427,6 +427,7 @@ end
 """Stop gate services started by `_start_gate_services!`."""
 function _stop_gate_services!()
     GATE_MODE[] || return
+    @info "Stopping gate services (service endpoint, sessions, extensions, agents)"
 
     _stop_housekeeping!()
 
