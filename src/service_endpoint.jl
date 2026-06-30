@@ -134,6 +134,35 @@ function start_service_endpoint!()
     _SERVICE_TASK[] = @async begin
         cur_rcvtimeo = -1   # tracked so setsockopt only fires on a transition
         while _SERVICE_RUNNING[]
+            # 0. Self-heal: this is a critical service. If our ipc socket FILE is
+            #    removed out from under us (a crash/kill leaving a stale path, an
+            #    external rm, or a stray process binding the shared path), the bound
+            #    socket is orphaned — peers can no longer connect — yet we keep running
+            #    with no error. While idle, detect the missing file and rebind in place
+            #    so the endpoint recovers on its own (within ~RCVTIMEO_IDLE) instead of
+            #    needing a restart. The owner task is the only socket toucher, so the
+            #    close + rebind here is race-free. A legitimate stop flips _SERVICE_RUNNING
+            #    first and rm's the file only after this task exits, so we never fight it.
+            if !Sys.iswindows() && _INFLIGHT[] == 0 && !isready(_OUTBOX)
+                spath = replace(_SERVICE_ENDPOINT[], "ipc://" => "")
+                if !isempty(spath) && !ispath(spath)
+                    @warn "Service-endpoint socket vanished — rebinding (self-heal)" sock_path = spath
+                    try; close(sock); catch; end
+                    try
+                        sock = _zmq_socket(ctx, ROUTER)
+                        sock.sndtimeo = 5000
+                        sock.linger = 0
+                        bind(sock, _SERVICE_ENDPOINT[])
+                        _SERVICE_SOCKET[] = sock
+                        cur_rcvtimeo = -1   # force rcvtimeo re-apply at step 2b
+                        @info "Service endpoint rebound (self-heal)" endpoint = _SERVICE_ENDPOINT[]
+                    catch e
+                        @error "Service-endpoint self-heal rebind failed" exception = e
+                        sleep(1)            # back off before retrying
+                        continue
+                    end
+                end
+            end
             # 1. drain any ready worker replies (non-blocking) — owner-only socket access
             while isready(_OUTBOX)
                 (identity, reply) = take!(_OUTBOX)

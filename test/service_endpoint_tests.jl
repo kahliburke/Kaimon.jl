@@ -35,6 +35,32 @@ const ZMQt = Kaimon.ZMQ
         end
     end
 
+    @testset "self-heal rebinds a vanished socket" begin
+        # The suite runs with an isolated XDG_CACHE_HOME (see runtests.jl), so this
+        # binds a throwaway kaimon-service.sock, never the live one. Windows uses TCP
+        # (no socket file), so there's nothing to vanish there.
+        if Sys.iswindows()
+            @test_skip "self-heal is ipc-only (Windows uses TCP)"
+        else
+            res = Kaimon.start_service_endpoint!()
+            try
+                spath = replace(res.endpoint, "ipc://" => "")
+                @test ispath(spath)
+                rm(spath; force = true)            # simulate the socket vanishing
+                @test !ispath(spath)
+                # The owner loop checks on idle (~200ms); poll up to 5s for the rebind.
+                ok = false
+                for _ in 1:50
+                    if ispath(spath); ok = true; break; end
+                    sleep(0.1)
+                end
+                @test ok
+            finally
+                Kaimon.stop_service_endpoint!()
+            end
+        end
+    end
+
     @testset "two REQ clients are routed back by identity" begin
         dir = mktempdir()
         path = joinpath(dir, "svc-multi.sock")
