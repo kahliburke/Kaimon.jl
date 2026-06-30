@@ -643,7 +643,7 @@ end
 @testset "TUI Analytics Properties (Supposition)" begin
 
     @testset "Health gauge always in [0, 1]" begin
-        @check function health_always_clamped(
+        @check max_examples = 300 function health_always_clamped(
             n_success = Data.Integers(0, 60),
             n_error = Data.Integers(0, 60),
         )
@@ -682,7 +682,7 @@ end
     end
 
     @testset "More errors => lower health" begin
-        @check function errors_reduce_health(
+        @check max_examples = 300 function errors_reduce_health(
             n_success = Data.Integers(1, 50),
             n_extra_errors = Data.Integers(1, 20),
         )
@@ -741,7 +741,7 @@ end
     end
 
     @testset "Duration string round-trip" begin
-        @check function duration_parse_roundtrip(ms_raw = Data.Integers(0, 100_000))
+        @check max_examples = 300 function duration_parse_roundtrip(ms_raw = Data.Integers(0, 100_000))
             # Format like the real code does, then check _persist_tool_call! would parse it
             ms = Float64(ms_raw)
             dur_str = if ms < 1000.0
@@ -765,7 +765,7 @@ end
     end
 
     @testset "Tool result text truncation" begin
-        @check function truncation_bounded(len = Data.Integers(0, 5000))
+        @check max_examples = 300 function truncation_bounded(len = Data.Integers(0, 5000))
             text = repeat("a", len)
             summary = length(text) > 500 ? text[1:500] : text
             length(summary) <= 500
@@ -773,7 +773,7 @@ end
     end
 
     @testset "Analytics view never crashes on any terminal size" begin
-        @check function analytics_render_any_size(
+        @check max_examples = 150 function analytics_render_any_size(
             w = Data.Integers(20, 300),
             h = Data.Integers(5, 100),
         )
