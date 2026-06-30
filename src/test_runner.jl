@@ -80,8 +80,9 @@ function spawn_test_run(
     env = Dict(k => v for (k, v) in ENV)
     delete!(env, "JULIA_LOAD_PATH")
     delete!(env, "JULIA_PROJECT")
-    # `--code-coverage=user` makes the subprocess emit <src>.jl.<pid>.cov files for
-    # user code on exit; _collect_coverage parses and removes them afterward.
+    # `--code-coverage=user` makes the subprocess emit <src>.jl.<pid>.cov files for user
+    # code on exit (the suite runs in-process via include); _collect_coverage parses and
+    # removes them afterward.
     cov_flag = coverage ? `--code-coverage=user` : ``
     cmd = pipeline(
         setenv(`$julia_exe --startup-file=no $cov_flag $script_path $project_path $pattern $verbose`, env);
@@ -131,13 +132,18 @@ function spawn_test_run(
                 # (the Test Summary may have been printed but not caught by structured lines)
                 _parse_raw_summary!(run)
 
-                # When pattern-filtered runs produce only nested testsets (depth > 0),
-                # the summary parser never populates total_pass. Derive from results.
-                if run.total_pass == 0 && run.total_fail == 0 && !isempty(run.results)
-                    run.total_pass = sum(r.pass_count for r in run.results)
-                    run.total_fail = sum(r.fail_count for r in run.results)
-                    run.total_error = sum(r.error_count for r in run.results)
-                    run.total_tests = sum(r.total_count for r in run.results)
+                # When a run produced results but no headline totals (e.g. a pattern-filtered
+                # run with only nested testsets and no depth-0 aggregate), derive totals from
+                # the SHALLOWEST results — their counts are cumulative over their children, so
+                # summing only those avoids double-counting parent + child.
+                if run.total_pass == 0 && run.total_fail == 0 && run.total_error == 0 &&
+                   !isempty(run.results)
+                    mind = minimum(r.depth for r in run.results)
+                    roots = filter(r -> r.depth == mind, run.results)
+                    run.total_pass = sum(r.pass_count for r in roots)
+                    run.total_fail = sum(r.fail_count for r in roots)
+                    run.total_error = sum(r.error_count for r in roots)
+                    run.total_tests = sum(r.total_count for r in roots)
                 end
 
             catch e

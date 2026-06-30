@@ -1,5 +1,10 @@
-# Kaimon test runner — spawned as a subprocess, prints structured output for parser.
-# Args: project_path [pattern] [verbose_level]
+# Kaimon test runner — spawned as a subprocess. Resolves the test environment the SAME way
+# `julia --project=test` does: it activates the project's OWN test/ env, so its
+# test/Project.toml [sources] (e.g. unreleased branch pins), [compat], and deps are honored
+# by construction — and the cached test/Manifest + precompiled deps make repeat runs fast.
+# Patches Test.jl IN-PROCESS to stream structured TESTSET markers. (No Pkg.test sandbox, so
+# no per-run rebuild; no `--load`, so no precompile-worker hazards.)
+# Args: project_path [pattern] [verbose]
 import Pkg
 import TOML
 
@@ -7,72 +12,77 @@ project_path = ARGS[1]
 pattern = length(ARGS) >= 2 ? ARGS[2] : ""
 verbose_level = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 1
 
-# Save the REAL stdout now, before any test can rebind `Base.stdout` (e.g. an eval
-# capture mux). All TEST_RUNNER control markers go through this saved handle so the
-# parent's result parser keeps receiving them regardless of what the tests do to
-# `Base.stdout` — otherwise a test that leaves stdout rebound truncates the report.
+# Save the REAL stdout now, before any test can rebind `Base.stdout` (e.g. an eval-capture
+# mux). All TEST_RUNNER control markers go through this saved handle so the parent's parser
+# keeps receiving them regardless of what the tests do to `Base.stdout`.
 const _RUNNER_OUT = stdout
 println(_RUNNER_OUT, "TEST_RUNNER: START project=$(basename(project_path))")
 flush(_RUNNER_OUT)
 
-# ── Activate test environment ─────────────────────────────────────────────
-# Build a throwaway temp env and `develop` the project under test into it, so its
-# FULL dependency tree resolves into the manifest — including path dependencies
-# and THEIR transitive deps. A bare `push!(LOAD_PATH, project_path)` only makes the
-# main package importable; it does NOT record a path-dep's deps in the active
-# manifest, so a path-dep that gains a new (e.g. stdlib) dependency fails to
-# precompile in the test subprocess. (Regression from git 996cd1c, which dropped
-# the `develop`; restored here without mutating the tracked test/Project.toml.)
-main_toml = TOML.parsefile(joinpath(project_path, "Project.toml"))
-test_project = joinpath(project_path, "test", "Project.toml")
-
-Pkg.activate(mktempdir())
-try
-    Pkg.develop(Pkg.PackageSpec(path = project_path); io = devnull)
-catch e
-    println("TEST_RUNNER: WARN develop failed: $(first(sprint(showerror, e), 120))")
-end
-
-# Test-only deps: prefer test/Project.toml [deps]; else the legacy
-# [extras]/[targets] layout in the main Project.toml.
-test_deps = Dict{String,Any}()
-if isfile(test_project)
-    merge!(test_deps, get(TOML.parsefile(test_project), "deps", Dict()))
+# ── Activate the test environment ─────────────────────────────────────────
+# Prefer the project's OWN test/ env (modern layout). Activating it directly IS
+# `julia --project=test`: [sources]/[compat]/deps are honored, and the resolved
+# test/Manifest + precompiled deps are reused across runs (fast). Fall back to a built temp
+# env (develop + add test-target deps) for legacy [extras]/[targets] suites with no
+# test/Project.toml.
+test_env = joinpath(project_path, "test")
+if isfile(joinpath(test_env, "Project.toml"))
+    Pkg.activate(test_env; io = devnull)
+    try
+        # Resolve first so a stale test/Manifest picks up changes in PATH deps — when the
+        # package-under-test (a `{path=".."}` source) gains a new dependency, a bare
+        # instantiate won't notice and precompile fails ("X does not have Y in its deps").
+        # Cheap when the manifest is already consistent; this is what keeps repeat runs fast
+        # without going stale.
+        Pkg.resolve(; io = devnull)
+        Pkg.instantiate(; io = devnull)
+    catch e
+        println(_RUNNER_OUT, "TEST_RUNNER: WARN resolve/instantiate failed: $(first(sprint(showerror, e), 200))")
+    end
 else
+    # Legacy: no test/Project.toml. Build a temp env from [extras]/[targets] (no [sources]
+    # to honor there anyway, since sources need a Project.toml).
+    main_toml = TOML.parsefile(joinpath(project_path, "Project.toml"))
+    Pkg.activate(mktempdir())
+    try
+        Pkg.develop(Pkg.PackageSpec(path = project_path); io = devnull)
+    catch e
+        println(_RUNNER_OUT, "TEST_RUNNER: WARN develop failed: $(first(sprint(showerror, e), 120))")
+    end
+    test_deps = Dict{String,Any}()
     extras = get(main_toml, "extras", Dict())
     for name in get(get(main_toml, "targets", Dict()), "test", String[])
         test_deps[name] = get(extras, name, nothing)
     end
-end
-delete!(test_deps, get(main_toml, "name", ""))   # never re-add the project itself
-
-for (name, uuid) in test_deps
-    try
-        if uuid isa AbstractString
-            Pkg.add(Pkg.PackageSpec(; name, uuid = Base.UUID(uuid)); io = devnull)
-        else
-            Pkg.add(name; io = devnull)
+    delete!(test_deps, get(main_toml, "name", ""))
+    for (name, uuid) in test_deps
+        try
+            if uuid isa AbstractString
+                Pkg.add(Pkg.PackageSpec(; name, uuid = Base.UUID(uuid)); io = devnull)
+            else
+                Pkg.add(name; io = devnull)
+            end
+        catch e
+            println(_RUNNER_OUT, "TEST_RUNNER: WARN could not add $name: $(first(sprint(showerror, e), 120))")
         end
+    end
+    try
+        Pkg.instantiate(; io = devnull)
     catch e
-        println("TEST_RUNNER: WARN could not add $name: $(first(sprint(showerror, e), 120))")
+        println(_RUNNER_OUT, "TEST_RUNNER: WARN instantiate failed: $(first(sprint(showerror, e), 120))")
     end
 end
 
-try
-    Pkg.instantiate(; io = devnull)
-catch e
-    println("TEST_RUNNER: WARN instantiate failed: $(first(sprint(showerror, e), 120))")
-end
-
-# Keep the main project on LOAD_PATH so test files can `using` its own direct deps
-# (e.g. ReTest) that aren't declared in the test environment.
-push!(LOAD_PATH, project_path)
+# Make the package-under-test and its OWN direct deps loadable from runtests.jl even when
+# they aren't declared test deps (e.g. `using ReTest`). Appended AFTER the active test env,
+# so a [sources]-pinned DECLARED test dep still wins (the test env is searched first).
+project_path in LOAD_PATH || push!(LOAD_PATH, project_path)
 
 flush(stdout)
 
 # ── Patch Test.jl for structured output ───────────────────────────────────
-# Force verbose=true and emit TESTSET_START / TESTSET_DONE lines so the
-# TUI can show real-time incremental results.
+# Force verbose=true and emit TESTSET_START / TESTSET_DONE so the parser streams real-time
+# incremental results. Runs in THIS process (not a precompile worker), so patching is safe.
 import Test
 
 _testset_depth = Ref(0)
@@ -88,13 +98,9 @@ let _w = Base.get_world_counter()
 end
 
 let _w2 = Base.get_world_counter()
-    # Forward arbitrary kwargs (e.g. `print_results`) instead of hardcoding a
-    # signature — Test.finish's keywords have drifted across Julia versions, and we
-    # must match whatever the caller passes and hand it straight to the original.
+    # Forward arbitrary kwargs — Test.finish's keywords have drifted across Julia versions;
+    # match whatever the caller passes and hand it straight to the original.
     @eval function Test.finish(ts::Test.DefaultTestSet; kwargs...)
-        # Always keep depth balanced (push_testset incremented it); only the marker
-        # emission is guarded, so a drift in Test's count internals can't break the
-        # actual run — the summary-table scraper still recovers the totals.
         $_testset_depth[] -= 1
         _depth = max(0, $_testset_depth[])
         try
@@ -109,7 +115,6 @@ let _w2 = Base.get_world_counter()
             flush($_RUNNER_OUT)
         catch
         end
-
         return Base.invoke_in_world($_w2, Test.finish, ts; kwargs...)
     end
 end
