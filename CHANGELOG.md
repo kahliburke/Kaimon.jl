@@ -57,7 +57,11 @@ whole system markedly more stable and quieter at idle.
 - **Headless parity** — analytics DB, housekeeping loop, periodic indexing, clean
   Ctrl-Q/Ctrl-C shutdown.
 - **TUI** — Agents/Clients tab overhaul (status icons, event & transcript views,
-  inline user prompts), CURVE link indicators, and a key-management modal.
+  inline user prompts), CURVE link indicators, and a key-management modal. The
+  Agents-tab event popup shows an event's **full tool input/output** (call args +
+  result content), word-wrapped and scrollable, rather than a one-line summary.
+- **`run_tests` coverage** — `coverage=true` now collects `--code-coverage=user`
+  data into a per-file summary (the flag was previously accepted but ignored).
 - **`usage_quiz`** behavioral primer and two-tool search documentation.
 
 ### Changed
@@ -73,6 +77,10 @@ whole system markedly more stable and quieter at idle.
 - **`usage_instructions` composes** the always-on server instructions plus the
   extended guide, so the essential guidance has a single source.
 - Agent sessions spawn the lightweight **KaimonGate** rather than full Kaimon (#47).
+- **`run_tests` pattern filtering is now honest** — a `pattern` only reaches tests
+  via `ARGS`, so when a suite can't honor it (plain Test.jl / SafeTestsets /
+  TestItemRunner, vs. ReTest's `retest(ARGS...)`) the result carries an explicit
+  warning instead of silently running the whole suite.
 
 ### Performance
 
@@ -99,6 +107,12 @@ whole system markedly more stable and quieter at idle.
 - **Infiltrator** — post-stop hang, Ctrl-C release, and a self-debug routing toggle
   (#34).
 - **Headless** — eval results are returned and TCP no longer double-connects (#50).
+- **ReTest result parsing** — failing suites reported `Fail: 0` and pattern-filtered
+  suites `Pass: 0` (ReTest's varying-header, blank-column, non-contiguous summary
+  tables broke the scraper); counts are now correct. The `Test.finish` instrumentation
+  forwards kwargs and guards its emission, so it survives Julia-version signature drift.
+- **Gate eval no longer crashes with a `FieldError`** on REPL backends that lack
+  `ast_transforms` (e.g. the Antigravity IDE); it degrades gracefully instead (#56).
 - XDG cache-dir handling (#42); a failed session now writes its logfile; stale
   VS Code references in the README (#36); Qdrant volume-persistence docs (#37).
 
@@ -114,7 +128,8 @@ whole system markedly more stable and quieter at idle.
 ### Acknowledgments
 
 Thanks to **@jonalm** for the detailed report behind much of the session/routing
-hardening (#55), and to everyone who filed issues that shaped this release
-(#34, #36, #37, #41, #42, #46, #47, #50, #51).
+hardening (#55), to **@Eben60** for the GLMakie/IDE-REPL investigation (#56), and to
+everyone who filed issues that shaped this release
+(#34, #36, #37, #41, #42, #46, #47, #50, #51, #56).
 
 <!-- DRAFT: generated from `git log main..2.0-integration`; trim/reword before release. -->
