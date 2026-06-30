@@ -16,7 +16,13 @@ mutable struct TestResult
     error_count::Int
     total_count::Int
     depth::Int   # nesting level in testset hierarchy
+    block::Int   # which summary block (Test.jl table / ReTest module) this row belongs to
 end
+
+# Back-compat constructor: callers that don't track a block (e.g. tests, the marker path)
+# default it to 0.
+TestResult(name, status, pass, fail, err, total, depth) =
+    TestResult(name, status, pass, fail, err, total, depth, 0)
 
 mutable struct TestFailure
     file::String
@@ -25,7 +31,12 @@ mutable struct TestFailure
     evaluated::String    # "Evaluated: 1 == 2"
     testset::String
     backtrace::String    # captured stack trace lines
+    exception::String    # actual exception type+message for an errored test (vs a failed @test)
 end
+
+# Back-compat constructor: callers predating the `exception` field default it to empty.
+TestFailure(file, line, expression, evaluated, testset, backtrace) =
+    TestFailure(file, line, expression, evaluated, testset, backtrace, "")
 
 @enum TestRunStatus RUN_RUNNING RUN_PASSED RUN_FAILED RUN_ERROR RUN_CANCELLED
 
@@ -80,13 +91,25 @@ mutable struct _ParserState
     failure_evaluated::String
     failure_testset::String
     failure_backtrace_lines::Vector{String}
+    in_error_block::Bool       # the current block is an ERROR (capture exception text), not a @test Fail
+    failure_exception::String  # accumulated exception type+message lines (errors only)
     in_summary::Bool          # inside "Test Summary:" table
-    summary_header::String    # header row of summary table
+    summary_header::String    # header row of summary table (RAW line — column positions preserved)
+    retest_mode::Bool         # current summary table is ReTest's (non-contiguous, blank columns)
     current_testset::String   # last seen testset name for context
     has_testset_done::Bool    # true if we've seen TESTSET_DONE lines (skip summary parsing)
+    # Current summary block: one Test.jl table or one ReTest module. Each parsed row is
+    # tagged with it; totals are then the per-block sum of the SHALLOWEST rows (whose
+    # counts are cumulative over their children) — never relying on a depth-0 aggregate
+    # row existing, which ReTest omits for some modules but not others within one run.
+    block_id::Int
 end
 
-_ParserState() = _ParserState(false, "", 0, "", "", "", String[], false, "", "", false)
+_ParserState() = _ParserState(
+    false, "", 0, "", "", "", String[], false, "",
+    false, "", false, "", false,
+    0,
+)
 
 # Global parser state per TestRun (keyed by run id)
 const _PARSER_STATES = Dict{Int,_ParserState}()
@@ -141,16 +164,18 @@ function _parse_test_line_inner!(run::TestRun, line::String)::Bool
         # Flush any previous failure block
         _flush_failure!(run, state)
         state.in_failure_block = true
+        state.in_error_block = false
         state.failure_file = m_fail.captures[1]
         state.failure_line = parse(Int, m_fail.captures[2])
         state.failure_expression = ""
         state.failure_evaluated = ""
+        state.failure_exception = ""
         state.failure_testset = state.current_testset
         empty!(state.failure_backtrace_lines)
         return true
     end
 
-    # Accumulate failure block lines
+    # Accumulate failure / error block lines
     if state.in_failure_block
         stripped = lstrip(line)
         if startswith(stripped, "Expression:")
@@ -159,6 +184,10 @@ function _parse_test_line_inner!(run::TestRun, line::String)::Bool
         elseif startswith(stripped, "Evaluated:")
             state.failure_evaluated = strip(stripped[length("Evaluated:")+1:end])
             return true
+        elseif startswith(stripped, "Test threw exception") ||
+               startswith(stripped, "Got exception outside of a @test")
+            # Error-block preamble line — consume; the real exception message follows.
+            return true
         elseif startswith(stripped, "Stacktrace:") || startswith(stripped, "[")
             push!(state.failure_backtrace_lines, line)
             return true
@@ -166,6 +195,16 @@ function _parse_test_line_inner!(run::TestRun, line::String)::Bool
             startswith(stripped, "@") || startswith(stripped, "[") || startswith(line, " ")
         )
             push!(state.failure_backtrace_lines, line)
+            return true
+        elseif state.in_error_block &&
+               isempty(state.failure_backtrace_lines) &&
+               !isempty(stripped)
+            # Lines between "Expression:" and "Stacktrace:" in an error block are the
+            # ACTUAL exception type + message (e.g. "UndefVarError: `x` not defined")
+            # plus any continuation (world-age hints, etc.). Surface these instead of a
+            # generic "error happened" placeholder.
+            state.failure_exception = isempty(state.failure_exception) ?
+                strip(stripped) : state.failure_exception * "\n" * strip(stripped)
             return true
         else
             # End of failure block
@@ -179,10 +218,14 @@ function _parse_test_line_inner!(run::TestRun, line::String)::Bool
     if m_err !== nothing
         _flush_failure!(run, state)
         state.in_failure_block = true
+        state.in_error_block = true
         state.failure_file = m_err.captures[1]
         state.failure_line = parse(Int, m_err.captures[2])
-        state.failure_expression = "Error during test"
+        # Leave expression empty — the real "Expression:" line fills it, and the actual
+        # exception text is captured separately (no generic "Error during test" filler).
+        state.failure_expression = ""
         state.failure_evaluated = ""
+        state.failure_exception = ""
         state.failure_testset = state.current_testset
         empty!(state.failure_backtrace_lines)
         return true
@@ -191,7 +234,9 @@ function _parse_test_line_inner!(run::TestRun, line::String)::Bool
     # ── Test Summary table ───────────────────────────────────────────────
     if contains(line, "Test Summary:")
         _flush_failure!(run, state)
+        state.block_id += 1   # each Test.jl summary table is its own block
         state.in_summary = true
+        state.retest_mode = false
         # The "Test Summary:" line often contains the header columns after |
         # e.g. "Test Summary:  | Pass  Fail  Error  Total"
         if contains(line, "|")
@@ -215,9 +260,14 @@ function _parse_test_line_inner!(run::TestRun, line::String)::Bool
         )
         if retest_header !== nothing
             _flush_failure!(run, state)
+            # NOTE: do NOT start a new block here — ReTest reprints this column header
+            # WITHIN a module when the columns change (clean → failing), so it recurs
+            # inside one block. Blocks advance on module headers ("Main.X:") only.
             state.in_summary = true
-            # Build a synthetic header with | so our parser can map columns
-            state.summary_header = "ReTest Summary | " * strip(line)
+            state.retest_mode = true
+            # Keep the RAW header line — its column character positions are matched
+            # against the data rows' numbers (right-edge alignment).
+            state.summary_header = line
             return true
         end
     end
@@ -238,8 +288,11 @@ end
 
 """Flush a pending failure block into run.failures."""
 function _flush_failure!(run::TestRun, state::_ParserState)
-    if state.in_failure_block &&
-       (!isempty(state.failure_file) || !isempty(state.failure_expression))
+    if state.in_failure_block && (
+        !isempty(state.failure_file) ||
+        !isempty(state.failure_expression) ||
+        !isempty(state.failure_exception)
+    )
         push!(
             run.failures,
             TestFailure(
@@ -249,14 +302,17 @@ function _flush_failure!(run::TestRun, state::_ParserState)
                 state.failure_evaluated,
                 state.failure_testset,
                 join(state.failure_backtrace_lines, "\n"),
+                state.failure_exception,
             ),
         )
     end
     state.in_failure_block = false
+    state.in_error_block = false
     state.failure_file = ""
     state.failure_line = 0
     state.failure_expression = ""
     state.failure_evaluated = ""
+    state.failure_exception = ""
     empty!(state.failure_backtrace_lines)
 end
 
@@ -336,6 +392,62 @@ function _parse_runner_line!(run::TestRun, state::_ParserState, line::String)::B
     return false
 end
 
+"""Recompute run totals from the parsed summary-table results. A block's grand total is
+the sum of its SHALLOWEST rows (cumulative over their children); totals sum that across
+blocks. This avoids both double-counting (parent + child) and the ReTest case where some
+modules print a depth-0 aggregate row and others don't. Idempotent — safe to call after
+every parsed row, so totals are correct even without an end-of-run marker."""
+function _recompute_totals!(run::TestRun)
+    min_depth = Dict{Int,Int}()
+    for r in run.results
+        min_depth[r.block] = haskey(min_depth, r.block) ?
+            min(min_depth[r.block], r.depth) : r.depth
+    end
+    p = f = e = t = 0
+    for r in run.results
+        if r.depth == min_depth[r.block]
+            p += r.pass_count
+            f += r.fail_count
+            e += r.error_count
+            t += r.total_count
+        end
+    end
+    run.total_pass = p
+    run.total_fail = f
+    run.total_error = e
+    run.total_tests = t
+end
+
+"""Right-edge character position of each known column label in a summary header line,
+in header order. Summary tables are ASCII, so a byte offset is the character column."""
+function _header_column_edges(header::AbstractString)::Vector{Tuple{Symbol,Int}}
+    edges = Tuple{Symbol,Int}[]
+    for m in eachmatch(r"Passed|Pass|Failed|Fail|Errors|Error|Broken|Total"i, header)
+        name = lowercase(m.match)
+        sym = startswith(name, "pass") ? :pass :
+              startswith(name, "fail") ? :fail :
+              startswith(name, "error") ? :error :
+              name == "broken" ? :broken : :total
+        push!(edges, (sym, m.offset + length(m.match) - 1))
+    end
+    return edges
+end
+
+"""The column whose right edge is closest to `redge` (a data number's right-edge
+column). Right-edge alignment is how Test.jl/ReTest lay out their numeric columns."""
+function _nearest_column(edges::Vector{Tuple{Symbol,Int}}, redge::Int)::Symbol
+    best = :none
+    bestd = typemax(Int)
+    for (sym, e) in edges
+        d = abs(e - redge)
+        if d < bestd
+            bestd = d
+            best = sym
+        end
+    end
+    return best
+end
+
 """
 Parse a Test Summary table line.
 
@@ -368,7 +480,7 @@ function _parse_summary_line!(run::TestRun, state::_ParserState, line::String)::
     # Keep a ReTest summary open across blanks and unrecognized lines so those trailing
     # rows still parse (otherwise the totals — or a filtered single testset — are lost).
     # Test.jl tables are contiguous, so they keep the original end-on-blank behavior.
-    retest_mode = startswith(state.summary_header, "ReTest Summary")
+    retest_mode = state.retest_mode
 
     # Detect header row (contains column names like "Pass", "Fail", etc.)
     if isempty(state.summary_header) && contains(line, "|")
@@ -406,42 +518,26 @@ function _parse_summary_line!(run::TestRun, state::_ParserState, line::String)::
         broken = 0
         total = 0
 
-        # Map numbers to columns using the header
-        if !isempty(state.summary_header)
-            hdr_pipe_pos = findfirst('|', state.summary_header)
-            if hdr_pipe_pos !== nothing
-                hdr_values = state.summary_header[hdr_pipe_pos+1:end]
-                # Extract column names in order from header
-                col_names = String[]
-                for m in eachmatch(r"[A-Za-z]+", hdr_values)
-                    push!(col_names, lowercase(m.match))
-                end
-
-                # Right-align numbers to columns. ReTest leaves LEADING columns blank
-                # for zeros (a failing testset with 0 passes prints only Fail/Total),
-                # so a row with fewer numbers than header columns fills the RIGHTMOST
-                # columns — left-aligning would mis-read Fail as Pass. Rows with all
-                # columns present (the common case, incl. Test.jl) get offset 0.
-                offset = max(0, length(col_names) - length(nums))
-                for (i, col_name) in enumerate(col_names)
-                    ni = i - offset
-                    (ni < 1 || ni > length(nums)) && continue
-                    val = nums[ni]
-                    if col_name in ("pass", "passed")
-                        pass = val
-                    elseif col_name in ("fail", "failed")
-                        fail = val
-                    elseif col_name in ("error", "errors")
-                        err = val
-                    elseif col_name == "broken"
-                        broken = val
-                    elseif col_name == "total"
-                        total = val
-                    end
-                end
+        # Map each number to a column by RIGHT-EDGE character position. ReTest omits
+        # zero columns ANYWHERE — leading, middle, or trailing (e.g. a row with only
+        # Pass and Total prints two numbers, the Error column left blank). Count-based
+        # alignment mis-reads such rows (reading a Pass count as Error); right-edge
+        # matching against the header is robust because Test.jl/ReTest right-align both
+        # the header labels and the data numbers to the same column edges.
+        col_edges = _header_column_edges(state.summary_header)
+        if !isempty(col_edges)
+            for m in eachmatch(r"\d+", values_part)
+                redge = pipe_pos + m.offset + length(m.match) - 1
+                col = _nearest_column(col_edges, redge)
+                val = parse(Int, m.match)
+                col === :pass && (pass = val)
+                col === :fail && (fail = val)
+                col === :error && (err = val)
+                col === :broken && (broken = val)
+                col === :total && (total = val)
             end
         else
-            # No header — try positional: Pass, Fail, Error, Total
+            # No recognizable header — positional fallback: Pass, Fail, Error, Total
             length(nums) >= 1 && (pass = nums[1])
             length(nums) >= 2 && (fail = nums[2])
             length(nums) >= 3 && (err = nums[3])
@@ -454,22 +550,19 @@ function _parse_summary_line!(run::TestRun, state::_ParserState, line::String)::
 
         status = (fail > 0 || err > 0) ? TEST_FAIL : TEST_PASS
 
-        push!(run.results, TestResult(name_part, status, pass, fail, err, total, depth))
+        push!(run.results, TestResult(name_part, status, pass, fail, err, total, depth, state.block_id))
 
-        # Update running totals from top-level results (depth 0)
-        # Accumulate across multiple summary tables (Test.jl + ReTest)
-        if depth == 0
-            run.total_pass += pass
-            run.total_fail += fail
-            run.total_error += err
-            run.total_tests += total
-        end
+        # Totals = per-block sum of the shallowest rows (cumulative over their children).
+        # Recompute from results so it stays correct mid-stream, with no end-of-run marker.
+        _recompute_totals!(run)
 
         return true
     end
 
-    # ReTest module header line: "Main.ModuleName:" (no pipe, ends with colon)
+    # ReTest module header line: "Main.ModuleName:" (no pipe, ends with colon).
+    # Each module is an independent block, so advance the block id.
     if match(r"^[A-Za-z_][\w.]*:\s*$", stripped) !== nothing
+        state.block_id += 1
         return true  # skip module header, stay in summary mode
     end
 
@@ -584,15 +677,24 @@ function format_test_summary(run::TestRun)::String
             !isempty(f.testset)    && println(buf, "     Testset:    $(f.testset)")
             !isempty(f.expression) && println(buf, "     Expression: $(f.expression)")
             !isempty(f.evaluated)  && println(buf, "     Evaluated:  $(f.evaluated)")
+            if !isempty(f.exception)
+                exlines = split(f.exception, '\n')
+                println(buf, "     Error:      $(exlines[1])")
+                for el in exlines[2:end]
+                    println(buf, "                 $el")
+                end
+            end
             println(buf)
         end
 
         if !isempty(tier2)
-            println(buf, "  Further failures (location + expression only):")
+            println(buf, "  Further failures (location + the error / expression):")
             for (i, f) in enumerate(tier2)
                 loc = "$(f.file):$(f.line)"
-                expr = isempty(f.expression) ? "" : "  $(f.expression)"
-                println(buf, "    $(i + 3)) $loc$expr")
+                # Prefer the real exception message for an errored test; fall back to the expression.
+                detail = !isempty(f.exception) ? "  " * first(split(f.exception, '\n')) :
+                         (isempty(f.expression) ? "" : "  $(f.expression)")
+                println(buf, "    $(i + 3)) $loc$detail")
             end
             println(buf)
         end

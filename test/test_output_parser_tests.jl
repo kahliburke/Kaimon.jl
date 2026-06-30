@@ -42,20 +42,76 @@ using Kaimon:
         delete!(_PARSER_STATES, 100)
     end
 
-    @testset "Error during test detection" begin
+    @testset "Error during test surfaces the real exception" begin
         run = TestRun(; id = 101, project_path = "/tmp/test_project")
 
+        # A real Test.jl "Error During Test" block: the actual exception type+message
+        # sits between "Expression:" and "Stacktrace:" and must be captured — NOT replaced
+        # with a generic "Error during test" placeholder.
         parse_test_line!(run, "Error During Test at /tmp/test_project/test/runtests.jl:55")
-        parse_test_line!(run, "  some error details")
+        parse_test_line!(run, "  Test threw exception")
+        parse_test_line!(run, "  Expression: foo(x)")
+        parse_test_line!(run, "  UndefVarError: `bar` not defined in `Main`")
+        parse_test_line!(run, "  The binding may be too new.")
+        parse_test_line!(run, "  Stacktrace:")
+        parse_test_line!(run, "   [1] foo(x) @ Main ./file.jl:1")
         parse_test_line!(run, "")
 
         @test length(run.failures) == 1
         f = run.failures[1]
         @test f.file == "/tmp/test_project/test/runtests.jl"
         @test f.line == 55
-        @test f.expression == "Error during test"
+        @test f.expression == "foo(x)"                 # the real Expression line, not a placeholder
+        @test f.expression != "Error during test"      # the old generic message is gone
+        @test occursin("UndefVarError: `bar` not defined", f.exception)
+        @test occursin("binding may be too new", f.exception)  # continuation lines captured too
+        @test !occursin("Stacktrace", f.exception)      # stops before the backtrace
+
+        # format_test_summary must surface the captured exception.
+        run.status = RUN_FAILED
+        summary = format_test_summary(run)
+        @test occursin("UndefVarError: `bar` not defined", summary)
 
         delete!(_PARSER_STATES, 101)
+    end
+
+    @testset "ReTest blank-middle column + multi-module totals (regression)" begin
+        # ReTest omits ZERO columns anywhere — a row with Pass+Total but a blank Error
+        # column used to be mis-read (the Pass count counted as Error → phantom errors).
+        # And totals only summed depth-0 rows, but ReTest prints a depth-0 aggregate for
+        # SOME modules and not others within one run, so an entire module (and its error)
+        # was dropped → headline "Error: 0" on a genuinely erroring run. Right-edge column
+        # mapping + per-block (per-module) shallowest-row totals fix both. Fixture verified
+        # against the real KaimonSlate ReTest output.
+        run = TestRun(; id = 112, project_path = "/tmp/test_project")
+        for line in [
+            "            Pass",                  # module A header (clean: Pass only)
+            "Main.A:",
+            "  a1      |    10",                 # depth 1
+            "Main.A    |    10",                 # depth-0 aggregate present for A
+            "            Pass   Error   Total",  # module B header (has Error column)
+            "Main.B:",
+            "  outer   |    20       1      21", # depth 1 — B's root (no depth-0 aggregate)
+            "    blank |     5               5", # depth 2, BLANK Error column → must be 0, not 5
+            "    errd  |     0       1       1", # depth 2, the one real error
+        ]
+            parse_test_line!(run, line)
+        end
+
+        # The blank-Error row is a pass, not a phantom error.
+        ib = findfirst(r -> r.name == "blank", run.results)
+        @test ib !== nothing
+        @test run.results[ib].pass_count == 5
+        @test run.results[ib].error_count == 0
+
+        # Totals: A's depth-0 aggregate (10) + B's shallowest row "outer" (20 pass, 1 error,
+        # cumulative over its children) — never double-counting parent + children.
+        @test run.total_pass == 30
+        @test run.total_error == 1
+        @test run.total_fail == 0
+        @test run.total_tests == 31
+
+        delete!(_PARSER_STATES, 112)
     end
 
     @testset "Test Summary table parsing" begin
