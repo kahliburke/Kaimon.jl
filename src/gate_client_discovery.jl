@@ -353,6 +353,14 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
     end
     existing !== nothing && error("Already connected to $endpoint")
 
+    # Fast-fail if nothing is even accepting TCP on the port: a downed gate refuses
+    # instantly, so this avoids building sockets and then burning the multi-second ZMQ
+    # ping on an unreachable endpoint (a real gate's port accepts at the TCP layer before
+    # the ZMQ/CURVE handshake, so this never false-negatives a live gate).
+    if !_tcp_port_open(host, port)
+        error("TCP gate at $endpoint is not reachable (connection refused or timed out)")
+    end
+
     # Resolve auth token: explicit > env var > security config
     if isempty(token)
         token = get(ENV, "KAIMON_GATE_TOKEN", "")
@@ -445,6 +453,10 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
     conn.julia_version = string(get(pong, :julia_version, ""))
     conn.pid = Int(get(pong, :pid, 0))
 
+    # Now that the gate answered and project_path is known, apply the mirror pref (deferred
+    # from connect! for TCP — see there). A dead gate already bailed at the ping above.
+    _apply_mirror_pref!(conn)
+
     lock(mgr.lock) do
         push!(mgr.connections, conn)
     end
@@ -513,6 +525,19 @@ function _poll_tcp_gates!(mgr::ConnectionManager)
     end
 end
 
+"""Apply the persisted mirror_repl preference to a connected gate: per-session override >
+per-project pref > global default. Best-effort — a failure is non-fatal to the connection."""
+function _apply_mirror_pref!(conn::REPLConnection)
+    try
+        session_prefs = load_session_prefs()
+        mirror_val = resolve_session_pref(session_prefs, conn.project_path, :mirror_repl)
+        mirror_enabled = mirror_val !== nothing ? mirror_val : get_gate_mirror_repl_preference()
+        set_mirror_repl!(conn, mirror_enabled)
+    catch e
+        @debug "Failed to apply mirror_repl preference to gate" exception = e
+    end
+end
+
 function connect!(mgr::ConnectionManager, conn::REPLConnection)
     conn.status = :connecting
     try
@@ -548,15 +573,13 @@ function connect!(mgr::ConnectionManager, conn::REPLConnection)
 
         conn.status = :connected
         conn.last_seen = now()
-        # Apply runtime gate options from persisted preferences,
-        # with per-session overrides taking priority.
-        try
-            session_prefs = load_session_prefs()
-            mirror_val = resolve_session_pref(session_prefs, conn.project_path, :mirror_repl)
-            mirror_enabled = mirror_val !== nothing ? mirror_val : get_gate_mirror_repl_preference()
-            set_mirror_repl!(conn, mirror_enabled)
-        catch e
-            @debug "Failed to apply mirror_repl preference to gate" exception = e
+        # Apply runtime gate options from persisted preferences, with per-session
+        # overrides taking priority. TCP sessions defer this to connect_tcp! AFTER the
+        # reachability pong: (1) a dead gate then fails fast on the ping instead of first
+        # burning the set_option timeout here, and (2) conn.project_path is only known
+        # once the pong populates it, so resolving a per-project pref is correct only then.
+        if !_is_tcp(conn)
+            _apply_mirror_pref!(conn)
         end
         return true
     catch e
