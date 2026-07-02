@@ -186,6 +186,15 @@ function _serve(;
         return nothing
     end
 
+    # ZMQ has no IPC transport on Windows (`bind` throws "Protocol not supported"). Coerce
+    # IPC → TCP for the actual bind, AFTER the interactive-skip check above so skip
+    # semantics are unchanged. The ephemeral TCP port is recorded in the session metadata,
+    # so discovery/reconnect works the same as an IPC socket path does elsewhere.
+    if Sys.iswindows() && mode === :ipc
+        @debug "KaimonGate: IPC unsupported on Windows — binding TCP instead"
+        mode = :tcp
+    end
+
     # Restart gate: if KAIMON_RESTART_SESSION is set the current process was
     # launched by _exec_restart.  Any serve() call — whether from startup.jl,
     # app code (force=true), or our injected -e fallback — picks up the
