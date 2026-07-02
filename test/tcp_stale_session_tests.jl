@@ -342,13 +342,28 @@ const TEST_REQ_PORT = 39_876
                 @test resp2.ok
                 @test get(resp2.response, :type, nothing) == :accepted
 
-                # Wait for gate2 to publish eval_complete, then drain
-                sleep(0.5)
-                Kaimon.drain_stream_messages!(mgr)
-
-                # FIX: After health pong reconnects the SUB socket, the eval
-                # result should arrive from gate2's PUB port.
-                @test isready(inbox)  # eval result arrives via new SUB socket
+                # FIX: after the health pong reconnects the SUB socket, the eval result
+                # should arrive from gate2's PUB port. The mock gate uses a plain PUB, so
+                # there is a slow-joiner race — it may publish before our newly-reconnected
+                # SUB's subscription reaches it, dropping THAT result. A single send + fixed
+                # sleep is flaky under load; instead poll (draining each round) and re-issue
+                # the eval until a result lands on the reconnected SUB.
+                got = false
+                deadline = time() + 8.0
+                while !got && time() < deadline
+                    for _ = 1:10
+                        Kaimon.drain_stream_messages!(mgr)
+                        if isready(inbox)
+                            got = true
+                            break
+                        end
+                        sleep(0.05)
+                    end
+                    got || Kaimon._req_send_recv(conn,
+                        (type = :eval_async, code = "2+2", request_id = rid2);
+                        caller_timeout = 2.0)
+                end
+                @test got  # eval result arrives via the reconnected SUB socket
 
                 # Clean up inbox
                 lock(conn._eval_inboxes_lock) do
