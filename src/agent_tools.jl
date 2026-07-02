@@ -7,7 +7,7 @@ const agent_open_tool = @mcp_tool :agent_open "Spawn a Kaimon-owned AI agent (he
     "type" => "object",
     "properties" => Dict(
         "cwd" => Dict("type" => "string", "description" => "Working directory for the agent (must exist)."),
-        "model" => Dict("type" => "string", "description" => "Model alias or id (default 'sonnet' — the family alias, which resolves to the CLI's latest Sonnet; pass a pinned id like 'claude-sonnet-5' for reproducibility). Prefix with 'ollama:<tag>' for a local Ollama model, or 'vmlx:<tag>' for a local MLX model via vmlx (Apple Silicon, default host :8000)."),
+        "model" => Dict("type" => "string", "description" => "Model alias or id (default 'sonnet' — the family alias, which resolves to the CLI's latest Sonnet; pass a pinned id like 'claude-sonnet-5' for reproducibility). Optional inline effort suffix for Claude models: 'claude-sonnet-5/high' or 'sonnet/low' (an explicit 'effort' arg overrides it). Prefix with 'ollama:<tag>' for a local Ollama model, or 'vmlx:<tag>' for a local MLX model via vmlx (Apple Silicon, default host :8000)."),
         "permission" => Dict("type" => "string", "enum" => ["default", "lab", "auto", "bypass"], "description" => "Permission preset: default (edits only) | lab (allow Kaimon tools: slate.*/ex/...) | auto (model classifier) | bypass (no checks; sandbox/trusted only). Composes with allowed_tools; recursion guard always on."),
         "permission_mode" => Dict("type" => "string", "description" => "Override the preset's claude permission-mode: default | acceptEdits | plan | auto | bypassPermissions."),
         "allowed_tools" => Dict("type" => "array", "items" => Dict("type" => "string"), "description" => "Optional allowlist of tool names."),

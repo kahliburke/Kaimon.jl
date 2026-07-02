@@ -72,6 +72,16 @@ function _permission_preset(p::AbstractString)
                      ("acceptEdits", String[], false)              # "default": edits only
 end
 
+"""Split an optional inline effort suffix off a Claude model string:
+`"claude-sonnet-5/high"` → `("claude-sonnet-5", "high")`; `"sonnet"` → `("sonnet", nothing)`.
+Claude ids/aliases never contain `/`, so the last `/` (if any) delimits the effort level.
+Claude-only — ollama:/vmlx: tags can contain `/`, so callers apply this in the Claude path."""
+function _split_model_effort(model::AbstractString)
+    occursin('/', model) || return (String(model), nothing)
+    base, eff = rsplit(model, '/'; limit = 2)
+    return (String(base), isempty(eff) ? nothing : String(eff))
+end
+
 function agent_open(; cwd::String,
                     model::String = "sonnet",   # family alias → the CLI's latest Sonnet
                     permission::String = "default",
@@ -111,10 +121,14 @@ function agent_open(; cwd::String,
                       allowed_tools = final_allowed, disallowed_tools = disallowed_tools,
                       system_prompt = system_prompt)
     else
-        ClaudeBackend(; model = model, permission_mode = final_mode,
+        # Optional inline effort suffix, e.g. "claude-sonnet-5/high" or "sonnet/low".
+        # An explicit `effort=` arg wins over the suffix.
+        base_model, suffix_effort = _split_model_effort(model)
+        ClaudeBackend(; model = base_model, permission_mode = final_mode,
                       allowed_tools = final_allowed, disallowed_tools = disallowed_tools,
                       mcp_config = mcp_config, system_prompt = system_prompt,
-                      effort = effort, dangerously_skip = dangerous)
+                      effort = effort !== nothing ? effort : suffix_effort,
+                      dangerously_skip = dangerous)
     end
     handle = backend_start(backend; cwd = cwd, agent_id = aid)
     apid = backend_pid(handle)                       # nothing for process-less backends

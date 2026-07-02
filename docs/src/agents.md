@@ -91,7 +91,7 @@ extensions via the service endpoint. Returns are JSON strings.
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `agent_open` | `cwd` (req), `model`, `permission`, `permission_mode`, `allowed_tools`, `disallowed_tools`, `mcp_config`, `system_prompt`, `id` | `{"agent_id": "<id>"}` -- spawns & owns the process |
+| `agent_open` | `cwd` (req), `model`, `effort`, `permission`, `permission_mode`, `allowed_tools`, `disallowed_tools`, `mcp_config`, `system_prompt`, `id` | `{"agent_id": "<id>"}` -- spawns & owns the process |
 | `agent_send` | `agent_id` (req), `text` (req) | `{"turn": <n>}` -- writes a user turn (async); events stream on `agent:<id>` |
 | `agent_run` | `agent_id` (req), `text` (req), `timeout` | `{"text": "…"}` -- sends a turn and **blocks** until it ends, returning the assistant text |
 | `agent_output` | `agent_id` (req), `turn`, `which` ("last_message"/"full_turn"/"all"), `include_tools`, `max_chars` | `{agent_id, turn, status, done, text, truncated, dropped_chars, usage}` -- **non-blocking** read of an agent's output (partial while still working). Pair with `agent_send` to dispatch-then-poll instead of blocking on `agent_run` |
@@ -105,7 +105,8 @@ extensions via the service endpoint. Returns are JSON strings.
 | Option | Default | Description |
 |---|---|---|
 | `cwd` | *(required)* | Working directory for the agent. Must exist. |
-| `model` | `sonnet` | Model alias or id. The `sonnet` alias tracks the latest Sonnet; pin (e.g. `claude-sonnet-5`) for reproducibility. |
+| `model` | `sonnet` | Model alias or id. The `sonnet` alias tracks the latest Sonnet; pin (e.g. `claude-sonnet-5`) for reproducibility. A Claude model may carry an inline effort suffix, e.g. `claude-sonnet-5/high` or `sonnet/low`. |
+| `effort` | *(CLI default)* | Claude thinking/effort level (`low \| medium \| high`) → `claude --effort`. Lower = less thinking, faster turns. Overrides a `model` suffix if both are given. |
 | `permission` | `default` | Permission **preset** (see below): `default \| lab \| auto \| bypass`. |
 | `permission_mode` | *(from preset)* | Override the preset's raw claude permission-mode: `default \| acceptEdits \| plan \| auto \| bypassPermissions`. |
 | `allowed_tools` | `[]` | Extra tool allowlist. Composes with the preset. |
