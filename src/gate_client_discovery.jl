@@ -215,6 +215,16 @@ function discover_sessions(mgr::ConnectionManager)
         Set((c.name, c.pid) for c in mgr.connections)
     end
 
+    # host:port of TCP gates explicitly REGISTERED in tcp_gates.json — those are owned by
+    # _poll_tcp_gates! (it holds their auth tokens), so the watcher must not touch them.
+    # Everything else that's TCP + localhost is a locally-spawned, tokenless session (the
+    # only kind possible on Windows, which has no ZMQ IPC) and IS the watcher's job.
+    registered_tcp = try
+        Set(string(e.host, ":", e.port) for e in load_tcp_gates_config())
+    catch
+        Set{String}()
+    end
+
     for f in readdir(mgr.sock_dir)
         endswith(f, ".json") || continue
         session_id = replace(f, ".json" => "")
@@ -235,15 +245,21 @@ function discover_sessions(mgr::ConnectionManager)
         # nothing changed.  If the PID is different the process restarted:
         # don't skip so the watcher can replace the stale connection.
         session_mode = Symbol(get(meta, "mode", "ipc"))
-        # TCP gates are owned exclusively by _poll_tcp_gates!, which connects them
-        # via connect_tcp! with the auth token from tcp_gates.json. The file-watcher
-        # must NOT connect them: it has no token, so its connection is rejected with
-        # "Authentication required". And on a successful poll-connect the gate drops a
-        # mode=:tcp marker into sock_dir (for reconnect bookkeeping) — which the
-        # watcher would otherwise pick up and double-connect tokenless, the bad
-        # connection winning. So ignore TCP markers here entirely. (#50)
+        # TCP markers for REGISTERED or REMOTE gates are owned by _poll_tcp_gates! (it
+        # holds the auth token from tcp_gates.json). The watcher has no token, so a
+        # tokenless connect there is rejected ("Authentication required") — and a
+        # poll-connect drops its own mode=:tcp marker that the watcher would otherwise
+        # double-connect. So skip those. But a LOCAL, UNREGISTERED TCP session — the only
+        # kind possible on Windows (no ZMQ IPC), a locally-spawned tokenless gate on
+        # 127.0.0.1 — must be discovered and connected here exactly like an IPC session,
+        # else nothing connects it. (#50, Windows)
         if session_mode == :tcp
-            continue
+            _tcp_host = _endpoint_host(get(meta, "endpoint", ""))
+            _tcp_m = match(r"tcp://(?:\[[^\]]+\]|[^:/]+):(\d+)", get(meta, "endpoint", ""))
+            _tcp_key = string(_tcp_host, ":", _tcp_m === nothing ? "" : _tcp_m.captures[1])
+            if _tcp_key in registered_tcp || !_is_local_host(_tcp_host)
+                continue
+            end
         end
         if session_mode != :tcp && haskey(known_id_pids, session_id) && known_id_pids[session_id] == pid
             continue

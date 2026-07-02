@@ -7,7 +7,11 @@
 function _json_value(v)
     v isa Bool && return v ? "true" : "false"
     v isa Number && return string(v)
-    return "\"$v\""
+    # Proper JSON string escaping (via KaimonGate's dependency-free `_json_str`). CRITICAL
+    # on Windows: `project_path` is like `C:\Users\…`, and unescaped backslashes make the
+    # metadata invalid JSON — the client's `JSON.parsefile` then throws and the session is
+    # silently never discovered.
+    return _json_str(string(v))
 end
 
 function write_metadata(
