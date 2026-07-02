@@ -46,7 +46,7 @@ using Kaimon
     @testset "_grep_resolve_root" begin
         dir = mktempdir()
         root, _, err = Kaimon._grep_resolve_root(Dict("path" => dir))
-        @test err === nothing && root == dir
+        @test err === nothing && root == realpath(dir)   # canonicalized (symlinks resolved)
         root2, _, err2 = Kaimon._grep_resolve_root(Dict("path" => "/no/such/path/xyz123"))
         @test err2 !== nothing && root2 === nothing
         rm(dir; recursive = true)
@@ -65,6 +65,35 @@ using Kaimon
             @test occursin("L2", out)
             @test occursin("No matches", Kaimon._grep_code(Dict("pattern" => "zzz_absent_qqq", "path" => dir)))
             rm(dir; recursive = true)
+        end
+    end
+
+    @testset "slash-anchored globs match regardless of process cwd" begin
+        # Regression: ripgrep anchors slash-containing globs (`sub/*.jl`) to the PROCESS
+        # CWD, not the search-path argument. The long-lived server runs with a cwd that is
+        # not the searched repo, so before the cwd-pin fix every `-g dir/…` glob silently
+        # matched nothing. Reproduce by searching from a foreign cwd.
+        if Kaimon._rg_argv() === nothing
+            @test_skip "ripgrep not available"
+        else
+            dir = mktempdir()
+            mkpath(joinpath(dir, "sub"))
+            write(joinpath(dir, "sub", "deep.jl"), "function g()\n    tok_glob_zz = 1\nend\n")
+            write(joinpath(dir, "top.jl"), "tok_glob_zz = 2\n")
+            foreign = mktempdir()
+            orig = pwd()
+            try
+                cd(foreign)   # cwd ≠ searched root — the server's condition
+                star = Kaimon._grep_code(Dict("pattern" => "tok_glob_zz", "path" => dir, "glob" => ["sub/*.jl"]))
+                @test occursin("deep.jl", star)      # slash glob now matches
+                @test !occursin("top.jl", star)      # and correctly excludes the top-level file
+                globstar = Kaimon._grep_code(Dict("pattern" => "tok_glob_zz", "path" => dir, "glob" => ["sub/**/*.jl"]))
+                @test occursin("deep.jl", globstar)
+            finally
+                cd(orig)
+            end
+            rm(dir; recursive = true)
+            rm(foreign; recursive = true)
         end
     end
 

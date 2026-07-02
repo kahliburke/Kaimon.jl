@@ -44,22 +44,31 @@ function _rg_argv()
     return p === nothing ? nothing : String[p]
 end
 
+# Canonicalize a path (resolve symlinks). rg anchors slash-globs to the search root
+# STRING, but reports canonicalized file paths — if the root we pass still contains a
+# symlink (e.g. macOS `/var` → `/private/var`), the prefixes disagree and every slash
+# glob silently fails. Canonicalizing root + base up front keeps them aligned with what
+# rg emits (and with each other, so relative-path display stays correct). Falls back to
+# the raw path if it can't be resolved.
+_grep_canon(p::AbstractString) = try; realpath(p); catch; String(p); end
+
 # The project root to search: the caller's bound session project (per-agent binding,
-# same source `search_code` defaults to), else the cwd.
+# same source `search_code` defaults to), else the cwd. Canonicalized (see `_grep_canon`).
 function _grep_base_root()
     p = try; _last_session_project_path(); catch; ""; end
-    (!isempty(p) && isdir(p)) ? p : pwd()
+    _grep_canon((!isempty(p) && isdir(p)) ? p : pwd())
 end
 
 # Resolve the search root + base (for relative display). `file`/`path` narrow the scan;
 # both resolve relative to the bound project (or absolute). Returns (root, base, err).
+# Both are canonical so rg's slash-globs anchor correctly (see `_grep_canon`).
 function _grep_resolve_root(args)
     base = _grep_base_root()
     target = something(_grep_str(args, "file"), _grep_str(args, "path"), Some(nothing))
     target === nothing && return (base, base, nothing)
     abs = isabspath(target) ? target : abspath(joinpath(base, target))
     ispath(abs) || return (nothing, base, "Error: path not found: $(target) (resolved to $abs)")
-    return (abs, base, nothing)
+    return (_grep_canon(abs), base, nothing)
 end
 
 # Collection name for semantic ranking: explicit `collection` arg, else the scope
@@ -295,9 +304,15 @@ function _grep_code(args)
 
     # `--` terminates flags so a pattern starting with `-` is taken literally.
     argv = String[rg...; "--json"; flags...; "--"; pattern; root]
+    # ripgrep anchors slash-containing globs (`src/**/*.jl`) to the PROCESS CWD, not to
+    # the search-path argument. This server is long-lived and its CWD is not the searched
+    # repo, so without pinning rg's cwd to the root every `-g dir/…` glob silently matches
+    # nothing — including this tool's own advertised `['src/**/*.jl']` example. Run rg from
+    # the root (its containing dir when the root resolved to a single file).
+    rg_cwd = isdir(root) ? root : dirname(root)
     errbuf = IOBuffer()
     out = try
-        read(pipeline(ignorestatus(Cmd(argv)), stderr = errbuf), String)
+        read(pipeline(ignorestatus(Cmd(Cmd(argv); dir = rg_cwd)), stderr = errbuf), String)
     catch e
         return "Error running ripgrep: $(sprint(showerror, e))"
     end
