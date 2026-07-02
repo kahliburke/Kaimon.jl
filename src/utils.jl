@@ -39,4 +39,27 @@ end
 
 export process_running
 
+"""
+    terminate_process(pid::Int; force::Bool=false) -> Nothing
+
+Best-effort terminate a process by raw PID, cross-platform: `taskkill` on Windows,
+`kill` (SIGTERM, or SIGKILL when `force`) elsewhere. Never throws — a missing process
+or missing tool is ignored. Use for reaping PIDs we tracked in a file (no live
+`Base.Process` handle); for a spawned handle prefer `kill(::Base.Process, signum)`.
+"""
+function terminate_process(pid::Integer; force::Bool = false)
+    try
+        if Sys.iswindows()
+            cmd = force ? `taskkill /F /PID $pid` : `taskkill /PID $pid`
+            run(pipeline(cmd; stdout = devnull, stderr = devnull); wait = false)
+        else
+            run(pipeline(`kill $(force ? "-9" : "-15") $pid`; stderr = devnull); wait = false)
+        end
+    catch
+    end
+    return nothing
+end
+
+export terminate_process
+
 end # module Utils

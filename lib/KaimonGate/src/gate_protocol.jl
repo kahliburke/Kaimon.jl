@@ -257,6 +257,21 @@ function _exec_restart(name::String, session_id::String, project_path::String)
 
     # execvp replaces the process image — same PID, same terminal
     argv = map(String, args)
+
+    # Windows has no execvp (a process can't replace its own image). Spawn a fresh,
+    # DETACHED instance with the same argv and exit — it re-registers under the same
+    # session_id (KAIMON_RESTART_SESSION, set above, is inherited), so the client
+    # reconnects through the session metadata. New PID, but discover_sessions already
+    # handles a session_id whose PID changed on restart.
+    if Sys.iswindows()
+        try
+            run(detach(Cmd(argv)); wait = false)
+        catch e
+            @error "Windows restart: spawn failed" exception = e
+        end
+        exit(0)
+    end
+
     ptrs = Ptr{UInt8}[pointer(s) for s in argv]
     push!(ptrs, Ptr{UInt8}(0))  # NULL terminator
     GC.@preserve argv ccall(:execvp, Cint, (Cstring, Ptr{Ptr{UInt8}}), argv[1], ptrs)

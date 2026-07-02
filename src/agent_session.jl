@@ -680,18 +680,14 @@ function reap_orphan_agents!()
     d = _read_pid_file()
     isempty(d) && return
     for (id, pid) in d
-        try
-            run(pipeline(`kill -0 $pid`; stderr = devnull))    # alive?
-            _push_log!(:info, "Reaping orphan agent '$id' (pid=$pid)")
-            run(pipeline(`kill $pid`; stderr = devnull); wait = false)
-            sleep(0.5)
-            try
-                run(pipeline(`kill -0 $pid`; stderr = devnull))
-                run(pipeline(`kill -9 $pid`; stderr = devnull); wait = false)
-            catch; end
-        catch
-            # not running — nothing to reap
-        end
+        # Cross-platform (Windows had `kill -0`/`kill` throw → caught → never reaped, so
+        # orphan `claude` children leaked across restarts). The PIDs are ours (from the
+        # pid file), so identity is certain — just check liveness and terminate.
+        Utils.process_running(pid) || continue
+        _push_log!(:info, "Reaping orphan agent '$id' (pid=$pid)")
+        Utils.terminate_process(pid)
+        sleep(0.5)
+        Utils.process_running(pid) && Utils.terminate_process(pid; force = true)
     end
     _write_pid_file(Dict{String,Int}())
 end
