@@ -13,8 +13,11 @@ Uses signal 0 (no actual signal sent) via libuv.
 function _is_pid_alive(pid::Int)
     pid > 0 || return false
     ccall(:uv_kill, Cint, (Cint, Cint), pid, 0) == 0 || return false
-    # Zombie processes (defunct) still respond to signal 0.
-    # Check the process state to filter them out.
+    # Zombie processes (defunct) still respond to signal 0; filter them via process state.
+    # Windows has no `ps` and no Unix zombies, so the uv_kill existence check suffices —
+    # WITHOUT this the `ps` call below throws, the catch returns false, and EVERY live
+    # process reads as dead (reaping live local sessions during discovery).
+    Sys.iswindows() && return true
     try
         state = strip(read(pipeline(`ps -o state= -p $pid`; stderr=devnull), String))
         !startswith(state, "Z")

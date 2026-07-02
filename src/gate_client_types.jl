@@ -247,6 +247,10 @@ stderr. Waits briefly for the file to appear, then reads and returns it.
 Returns the backtrace text, or `nothing` if the file doesn't appear in time.
 """
 function trigger_backtrace(conn::REPLConnection)::Union{String,Nothing}
+    # POSIX-only: signals the running gate (SIGINFO/SIGUSR1) to dump a profile backtrace.
+    # Windows has neither those signals nor `kill(2)` — a bare `ccall(:kill,…)` there throws
+    # (no such symbol), so the peek feature is simply unavailable on Windows.
+    Sys.iswindows() && return nothing
     bt_path = joinpath(KaimonGate.sock_dir(), "$(conn.session_id)-backtrace.txt")
     # Remove stale file from previous trigger
     rm(bt_path; force=true)
