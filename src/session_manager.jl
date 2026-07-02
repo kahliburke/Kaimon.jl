@@ -88,9 +88,12 @@ console shows agent eval activity by default), personality emoji, and the Kaimon
 version reported in the session's pong. KaimonGate's default providers read these.
 """
 function _build_session_env()
-    base = "@:@v#.#:@stdlib"
     gate_env = pkgdir(KaimonGate)
-    load_path = gate_env === nothing ? base : "$base:$gate_env"
+    # OS-correct separator (`;` on Windows) — a hardcoded `:` breaks Windows drive
+    # letters and drops @stdlib, so the spawned session can't find its stdlibs/gate.
+    load_path = gate_env === nothing ?
+        _join_load_path("@", "@v#.#", "@stdlib") :
+        _join_load_path("@", "@v#.#", "@stdlib", gate_env)
 
     mirror = try
         get_gate_mirror_repl_preference()

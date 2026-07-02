@@ -225,7 +225,9 @@ function spawn_extension!(ext::ManagedExtension)
         # global env (@v#.#), stdlib.  Adding Kaimon's project path ensures extensions can
         # always find Kaimon and its deps without requiring them in their own Project.toml.
         kaimon_project = pkgdir(@__MODULE__)
-        env["JULIA_LOAD_PATH"] = "@:$(kaimon_project):@v#.#:@stdlib"
+        # OS-correct separator (`;` on Windows) — a hardcoded `:` breaks Windows drive
+        # letters and drops @stdlib, so the extension can't even find Pkg/Kaimon.
+        env["JULIA_LOAD_PATH"] = _join_load_path("@", kaimon_project, "@v#.#", "@stdlib")
         delete!(env, "JULIA_PROJECT")
         # Mark this process as Kaimon-spawned so we can identify orphans
         env["KAIMON_EXTENSION"] = ext.config.manifest.namespace

@@ -97,6 +97,15 @@ function kaimon_config_dir()
     return dir
 end
 
+# ── LOAD_PATH assembly ────────────────────────────────────────────────────────
+# `JULIA_LOAD_PATH` is parsed like `PATH`: entries are split on the OS path-list
+# separator — `;` on Windows, `:` elsewhere. A hardcoded `:` corrupts Windows (drive
+# letters like `C:\…` split, and the whole string collapses to one bad entry, dropping
+# `@stdlib`), so ALWAYS build it with this. (#42/#41 Windows compat.)
+
+"""Join `JULIA_LOAD_PATH` entries with the OS path-list separator (`;` on Windows)."""
+_join_load_path(entries::AbstractString...) = join(entries, Sys.iswindows() ? ";" : ":")
+
 # ── Path normalization ────────────────────────────────────────────────────────
 
 """
