@@ -73,7 +73,7 @@ function _permission_preset(p::AbstractString)
 end
 
 function agent_open(; cwd::String,
-                    model::String = "claude-sonnet-4-6",
+                    model::String = "sonnet",   # family alias → the CLI's latest Sonnet
                     permission::String = "default",
                     permission_mode::Union{String,Nothing} = nothing,
                     allowed_tools::Vector{String} = String[],

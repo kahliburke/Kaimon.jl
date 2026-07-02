@@ -51,7 +51,7 @@ const AGENT_SELF_TOOLS = ["mcp__kaimon__agent_open", "mcp__kaimon__agent_send",
 
 Base.@kwdef struct ClaudeBackend <: AgentBackend
     claude_path::String = _find_claude()
-    model::String = "claude-sonnet-4-6"
+    model::String = "sonnet"                          # family alias → the CLI's latest Sonnet (auto-tracks new releases)
     permission_mode::String = "acceptEdits"           # default|acceptEdits|plan|bypassPermissions
     allowed_tools::Vector{String} = String[]
     disallowed_tools::Vector{String} = copy(AGENT_SELF_TOOLS)  # recursion guard (see above)

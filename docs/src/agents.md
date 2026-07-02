@@ -57,8 +57,9 @@ flowchart LR
     free. A per-session **dollar** figure is **work in progress**: claude's reported
     `total_cost_usd` is unreliable (especially on subscription plans), so `costUsd` is
     held at `0.0` for now rather than shown — token usage *is* tracked and surfaced in
-    `agent_status`. The default model is the cheaper
-    `claude-sonnet-4-6`. Images returned in tool results are the biggest credit burner
+    `agent_status`. The default model is the `sonnet` family alias, which resolves to
+    the CLI's latest Sonnet (pass a pinned id like `claude-sonnet-5` for
+    reproducibility). Images returned in tool results are the biggest credit burner
     (billed roughly `width × height / 750` tokens), so tool-result PNGs are
     box-downsampled to a max long edge before they reach the agent --
     `agent_image_max_long_edge` in `~/.config/kaimon/config.json` (default 1568 px, the
@@ -71,7 +72,7 @@ Open an agent with `agent_open`, giving it a working directory. It returns an
 
 ```jsonc
 // agent_open
-{ "cwd": "/path/to/project", "model": "claude-sonnet-4-6", "permission": "default" }
+{ "cwd": "/path/to/project", "model": "sonnet", "permission": "default" }
 // → {"agent_id": "9f3a1c20"}
 ```
 
@@ -104,7 +105,7 @@ extensions via the service endpoint. Returns are JSON strings.
 | Option | Default | Description |
 |---|---|---|
 | `cwd` | *(required)* | Working directory for the agent. Must exist. |
-| `model` | `claude-sonnet-4-6` | Model alias or id. |
+| `model` | `sonnet` | Model alias or id. The `sonnet` alias tracks the latest Sonnet; pin (e.g. `claude-sonnet-5`) for reproducibility. |
 | `permission` | `default` | Permission **preset** (see below): `default \| lab \| auto \| bypass`. |
 | `permission_mode` | *(from preset)* | Override the preset's raw claude permission-mode: `default \| acceptEdits \| plan \| auto \| bypassPermissions`. |
 | `allowed_tools` | `[]` | Extra tool allowlist. Composes with the preset. |
