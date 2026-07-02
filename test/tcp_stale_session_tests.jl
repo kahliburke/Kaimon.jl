@@ -503,3 +503,120 @@ end
     end
 
 end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Windows path: a gate on a platform without ZMQ IPC (Windows) is coerced to a
+# local TCP bind. It must still ADVERTISE itself for file discovery — write session
+# metadata with mode=tcp + a tcp://127.0.0.1:<port> endpoint — so the server finds
+# and connects it exactly like an IPC session. Before the fix the coerced gate wrote
+# no metadata and was never discovered, so extension/session startup timed out.
+#
+# We flip `KaimonGate._NO_IPC_TRANSPORT` on this POSIX host to drive the same
+# coerce-and-advertise branch Windows takes, start a real local TCP gate, and run the
+# actual discover → connect → health-check → eval flow the server uses.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "Windows-coerced local TCP gate is discovered via file (#41)" begin
+    KG = Kaimon.KaimonGate
+    if KG._RUNNING[]
+        @info "Skipping — a gate is already running in this process"
+        @test_skip false
+    else
+        mktempdir() do cache
+            withenv("XDG_CACHE_HOME" => cache) do
+                orig_no_ipc = KG._NO_IPC_TRANSPORT[]
+                KG._NO_IPC_TRANSPORT[] = true    # simulate Windows: no IPC transport
+                sid = "slate-ext-$(bytes2hex(rand(UInt8, 4)))"
+                mgr = Kaimon.ConnectionManager(sock_dir = KG.sock_dir())
+                try
+                    # Boot the extension's gate the way its subprocess does: a default
+                    # (IPC-requested) serve, namespaced "slate", with a tool. On the
+                    # simulated-Windows host this is coerced to a local TCP bind.
+                    KG._serve(name = "KaimonSlate", session_id = sid, force = true,
+                              mode = :ipc, host = "127.0.0.1", port = 0,
+                              namespace = "slate", spawned_by = "extension",
+                              tools = [KG.GateTool("noop", a -> "ok")])
+                    sleep(0.3)
+
+                    @test KG._MODE[] == :tcp                    # coerced IPC → TCP
+
+                    # The fix: it advertised discovery metadata despite being TCP.
+                    metafile = joinpath(KG.sock_dir(), "$sid.json")
+                    @test isfile(metafile)
+                    metatxt = read(metafile, String)
+                    @test occursin("\"mode\": \"tcp\"", metatxt)
+                    @test occursin("tcp://127.0.0.1:", metatxt)
+                    @test occursin("\"spawned_by\": \"extension\"", metatxt)
+
+                    # Discovery half: the server scans the dir and builds a connection for
+                    # the local, unregistered TCP gate (a remote/registered one is skipped).
+                    new_conns = Kaimon.discover_sessions(mgr)
+                    idx = findfirst(c -> c.session_id == sid, new_conns)
+                    @test idx !== nothing
+                    conn = new_conns[idx]
+                    @test startswith(conn.endpoint, "tcp://127.0.0.1:")
+                    @test conn.spawned_by == "extension"
+
+                    # Connect + health-check, exactly as the watcher / health loop do.
+                    Kaimon.connect!(mgr, conn)
+                    @test conn.status == :connected
+                    lock(mgr.lock) do
+                        push!(mgr.connections, conn)
+                    end
+
+                    pong = Kaimon.ping(conn)
+                    @test pong !== nothing
+                    @test string(get(pong, :namespace, "")) == "slate"
+
+                    # The extension monitor matches on conn.namespace — prove the health
+                    # path sets it (this is what flips the extension to :running).
+                    Kaimon._process_health_result!(mgr, conn, pong, Kaimon.REPLConnection[])
+                    @test conn.namespace == "slate"
+
+                    # And it's a live, usable gate: an eval round-trips through it. The gate's
+                    # XPUB is a slow joiner, so poll (draining each round) and re-issue until
+                    # the result lands on the freshly-connected SUB.
+                    rid = "disc-eval-$(rand(UInt16))"
+                    inbox = Channel{Any}(Inf)
+                    lock(conn._eval_inboxes_lock) do
+                        conn._eval_inboxes[rid] = inbox
+                    end
+                    resp = Kaimon._req_send_recv(conn,
+                        (type = :eval_async, code = "6*7", request_id = rid);
+                        caller_timeout = 5.0)
+                    @test resp.ok
+
+                    got = false
+                    deadline = time() + 8.0
+                    while !got && time() < deadline
+                        for _ = 1:10
+                            Kaimon.drain_stream_messages!(mgr)
+                            if isready(inbox)
+                                got = true
+                                break
+                            end
+                            sleep(0.05)
+                        end
+                        got || Kaimon._req_send_recv(conn,
+                            (type = :eval_async, code = "6*7", request_id = rid);
+                            caller_timeout = 2.0)
+                    end
+                    @test got   # discovered gate answered an eval
+
+                    lock(conn._eval_inboxes_lock) do
+                        delete!(conn._eval_inboxes, rid)
+                    end
+                finally
+                    lock(mgr.lock) do
+                        for c in mgr.connections
+                            Kaimon.disconnect!(c)
+                        end
+                    end
+                    KG._NO_IPC_TRANSPORT[] = orig_no_ipc
+                    KG.stop()
+                    sleep(0.1)
+                end
+            end
+        end
+    end
+end

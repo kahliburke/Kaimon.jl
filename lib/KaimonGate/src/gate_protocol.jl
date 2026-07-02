@@ -15,11 +15,11 @@ function _json_value(v)
 end
 
 function write_metadata(
-    session_id::String,
-    name::String,
-    endpoint::String,
-    stream_endpoint::String = "";
-    spawned_by::String = "user",
+    session_id::AbstractString,
+    name::AbstractString,
+    endpoint::AbstractString,
+    stream_endpoint::AbstractString = "";
+    spawned_by::AbstractString = "user",
     mode::Symbol = :ipc,
 )
     meta_path = joinpath(sock_dir(),"$(session_id).json")

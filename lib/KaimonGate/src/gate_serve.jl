@@ -186,11 +186,19 @@ function _serve(;
         return nothing
     end
 
+    # A gate the caller asked to be LOCAL (IPC). On Windows we bind it over TCP (no IPC
+    # transport), but it stays a local, tokenless, file-discoverable gate — as opposed to
+    # an EXPLICIT `mode=:tcp`, which is a remote gate connected via `connect_tcp!` and not
+    # file-advertised. Captured before the coercion below so the metadata gate can tell
+    # the two apart.
+    local_gate = (mode === :ipc)
+
     # ZMQ has no IPC transport on Windows (`bind` throws "Protocol not supported"). Coerce
     # IPC → TCP for the actual bind, AFTER the interactive-skip check above so skip
     # semantics are unchanged. The ephemeral TCP port is recorded in the session metadata,
     # so discovery/reconnect works the same as an IPC socket path does elsewhere.
-    if Sys.iswindows() && mode === :ipc
+    # `_NO_IPC_TRANSPORT` is the platform flag (overridable in tests).
+    if _NO_IPC_TRANSPORT[] && mode === :ipc
         @debug "KaimonGate: IPC unsupported on Windows — binding TCP instead"
         mode = :tcp
     end
@@ -388,12 +396,15 @@ function _serve(;
     _STREAM_SOCKET[] = pub_socket
     _STREAM_ENDPOINT[] = stream_endpoint
 
-    # Write metadata file for session discovery (IPC only — TCP sessions
-    # are connected manually via connect_tcp! and don't use file-based discovery).
-    # `discoverable=false` serves the gate but does NOT advertise it in the discovery
-    # registry — for embedded/private gates that clients reach via explicit endpoints
-    # (the Kaimon TUI / MCP server won't list it or import its tools).
-    if mode != :tcp && discoverable
+    # Write metadata file for session discovery. Written for every LOCAL gate: real IPC
+    # gates, and Windows gates that were coerced IPC → TCP (`local_gate`) — the server
+    # finds those by file and connects to the recorded `tcp://127.0.0.1:<port>` exactly as
+    # it would an IPC socket path (see `discover_sessions`). Without this a Windows gate
+    # advertises nothing and is never discovered — the extension/session startup then times
+    # out. An EXPLICIT `mode=:tcp` gate is remote (connected via connect_tcp!) and writes no
+    # file. `discoverable=false` serves the gate but keeps it out of the registry entirely
+    # (embedded/private gates reached via explicit endpoints).
+    if discoverable && (mode != :tcp || local_gate)
         write_metadata(sid, name, endpoint, stream_endpoint; spawned_by, mode)
     end
 

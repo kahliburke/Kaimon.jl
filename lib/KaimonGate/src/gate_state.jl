@@ -177,6 +177,11 @@ const _SESSION_NAMESPACE = Ref{String}("")
 const _ALLOW_RESTART = Ref{Bool}(true)
 const _ORIGINAL_ARGV = Ref{Vector{String}}(String[])
 const _MODE = Ref{Symbol}(:ipc)
+# Whether this platform lacks a ZMQ IPC transport (Windows). When true, `serve`
+# coerces a requested `:ipc` gate to a local TCP bind and still advertises it for
+# file discovery. Defaults to the compile-time platform; tests override it to exercise
+# the Windows coerce-and-advertise path on a POSIX host.
+const _NO_IPC_TRANSPORT = Ref{Bool}(Sys.iswindows())
 const _TCP_HOST = Ref{String}("127.0.0.1")
 const _TCP_PORT = Ref{Int}(0)          # actual bound port (resolved from ephemeral)
 const _TCP_STREAM_PORT = Ref{Int}(0)   # actual bound PUB port
