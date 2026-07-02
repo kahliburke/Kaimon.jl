@@ -447,7 +447,9 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
     # Prefer pre-set stream_endpoint (from stream_port config) over pong value
     pong_stream = !isempty(conn.stream_endpoint) ? conn.stream_endpoint :
         string(get(pong, :stream_endpoint, ""))
-    if !isempty(pong_stream)
+    # Skip if connect! already wired the SUB (a fixed stream_port sets stream_endpoint
+    # before connect!, so it connects there); only ephemeral gates reach it via the pong.
+    if !isempty(pong_stream) && conn.sub_socket === nothing
         conn.stream_endpoint = pong_stream
         try
             # On the conn's own context (dedicated for TCP — see connect!).
@@ -571,14 +573,18 @@ function connect!(mgr::ConnectionManager, conn::REPLConnection)
         conn.req_channel = RequestChannel(ctx, conn.endpoint;
             curve! = sock -> _apply_curve_client!(sock, conn))
 
-        # IPC: connect the stream SUB now. TCP: its PUB port may be ephemeral, so
-        # the SUB is created after the pong in connect_tcp! (on this same context).
-        if !_is_tcp(conn) && !isempty(conn.stream_endpoint)
+        # Connect the stream SUB when the endpoint is already known: IPC always, and TCP
+        # when it came from session metadata (the watcher/discovery path — a locally-spawned
+        # TCP gate on Windows). For an ephemeral TCP gate reached via connect_tcp!,
+        # stream_endpoint is empty here and the SUB is wired after the pong instead
+        # (idempotent — that path checks sub_socket first).
+        if conn.sub_socket === nothing && !isempty(conn.stream_endpoint)
             try
                 sub = _zmq_socket(ctx, SUB)
                 sub.rcvtimeo = 0  # non-blocking recv
                 sub.linger = 0    # don't block on close
                 sub.rcvhwm = 0    # unlimited receive buffer — never drop messages
+                _apply_curve_client!(sub, conn)   # no-op unless CURVE (TCP + pinned server key)
                 subscribe(sub, "")  # receive all messages
                 connect(sub, conn.stream_endpoint)
                 conn.sub_socket = sub
