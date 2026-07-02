@@ -187,6 +187,23 @@ end
 Replace the current process with a fresh Julia via `execvp`. Same PID, same
 terminal, fresh Julia state. The `-i` flag keeps the REPL interactive.
 """
+# The `mode=:tcp, host, port, …` kwargs to replay on restart so the gate rebinds the SAME
+# endpoint a client is connected to. Only for an EXPLICIT remote TCP gate. A gate coerced
+# IPC→TCP on Windows (`coerced`) must instead restart as a plain :ipc gate (empty kwargs)
+# so it re-coerces, binds a fresh ephemeral port, and re-writes discovery metadata — else
+# the restarted gate advertises nothing and is never rediscovered (orphaned session).
+function _restart_tcp_kwargs(mode::Symbol, coerced::Bool, host::AbstractString,
+                             port::Integer, stream_port::Integer,
+                             curve_enabled::Bool, curve_allow_any::Bool)
+    (mode == :tcp && !coerced) || return ""
+    base = ", mode=:tcp, host=$(repr(String(host))), port=$port, stream_port=$stream_port"
+    # CURVE: replay the flag; the server secret + allow-list persist on disk (curve/ dir)
+    # so the gate rebinds with the same identity.
+    curve_kw = curve_enabled ?
+        ", curve=true" * (curve_allow_any ? ", allow_any=true" : "") : ""
+    return base * curve_kw
+end
+
 function _exec_restart(name::String, session_id::String, project_path::String)
     # Signal to all serve() callers in the new process (startup.jl, app code,
     # or our injected -e fallback) that this is a restart and they should
@@ -211,20 +228,8 @@ function _exec_restart(name::String, session_id::String, project_path::String)
         ns_kwarg      = isempty(ns) ? "" : ", namespace=$(repr(ns))"
         mirror_kwarg  = mirror  ? "" : ", allow_mirror=false"
         restart_kwarg = restart ? "" : ", allow_restart=false"
-        # TCP mode: replay host, port, stream_port so the gate rebinds on the same address
-        tcp_kwargs = if mode == :tcp
-            host = _TCP_HOST[]
-            port = _TCP_PORT[]
-            sp   = _TCP_STREAM_PORT[]
-            base = ", mode=:tcp, host=$(repr(host)), port=$port, stream_port=$sp"
-            # CURVE: replay the flag; the server secret + allow-list persist on
-            # disk (curve/ dir) so the gate rebinds with the same identity.
-            curve_kw = _CURVE_ENABLED[] ?
-                ", curve=true" * (_CURVE_ALLOW_ANY[] ? ", allow_any=true" : "") : ""
-            base * curve_kw
-        else
-            ""
-        end
+        tcp_kwargs = _restart_tcp_kwargs(mode, _LOCAL_TCP_COERCED[], _TCP_HOST[],
+            _TCP_PORT[], _TCP_STREAM_PORT[], _CURVE_ENABLED[], _CURVE_ALLOW_ANY[])
         # The injected -e code runs after startup.jl.  If startup.jl already
         # called serve() and picked up KAIMON_RESTART_SESSION, the gate
         # will already be running with the correct session_id; our serve() call

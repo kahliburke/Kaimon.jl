@@ -202,6 +202,10 @@ function _serve(;
         @debug "KaimonGate: IPC unsupported on Windows — binding TCP instead"
         mode = :tcp
     end
+    # Remember whether this TCP gate is a coerced-local one (vs an explicit remote gate),
+    # so restart can reproduce the coercion instead of pinning it to mode=:tcp (which would
+    # drop discovery metadata and orphan the restarted session).
+    _LOCAL_TCP_COERCED[] = local_gate && mode === :tcp
 
     # Restart gate: if KAIMON_RESTART_SESSION is set the current process was
     # launched by _exec_restart.  Any serve() call — whether from startup.jl,
@@ -720,6 +724,7 @@ function _cleanup()
     _SESSION_TOOLS[] = GateTool[]
     _SESSION_NAMESPACE[] = ""
     _MODE[] = :ipc
+    _LOCAL_TCP_COERCED[] = false
     _ON_SHUTDOWN[] = nothing
 end
 

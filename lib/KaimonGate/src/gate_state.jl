@@ -182,6 +182,11 @@ const _MODE = Ref{Symbol}(:ipc)
 # file discovery. Defaults to the compile-time platform; tests override it to exercise
 # the Windows coerce-and-advertise path on a POSIX host.
 const _NO_IPC_TRANSPORT = Ref{Bool}(Sys.iswindows())
+# True when the current gate is TCP only because a requested :ipc gate was coerced
+# (Windows) — i.e. a LOCAL, file-discoverable gate, not an explicit remote one. Restart
+# keys off this: a coerced gate must restart as :ipc (re-coerce + re-advertise), whereas
+# an explicit remote gate replays its mode/host/port to rebind the same endpoint.
+const _LOCAL_TCP_COERCED = Ref{Bool}(false)
 const _TCP_HOST = Ref{String}("127.0.0.1")
 const _TCP_PORT = Ref{Int}(0)          # actual bound port (resolved from ephemeral)
 const _TCP_STREAM_PORT = Ref{Int}(0)   # actual bound PUB port

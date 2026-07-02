@@ -10,3 +10,4 @@ using SafeTestsets
 @safetestset "Debug breakpoint" include("src/test_debug.jl")
 @safetestset "ZMQ integration" include("src/test_integration.jl")
 @safetestset "CURVE transport" include("src/test_curve.jl")
+@safetestset "Restart replay" include("src/test_restart_replay.jl")

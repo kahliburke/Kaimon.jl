@@ -539,6 +539,7 @@ end
                     sleep(0.3)
 
                     @test KG._MODE[] == :tcp                    # coerced IPC → TCP
+                    @test KG._LOCAL_TCP_COERCED[]               # flagged local (so restart re-coerces, not pins :tcp)
 
                     # The fix: it advertised discovery metadata despite being TCP.
                     metafile = joinpath(KG.sock_dir(), "$sid.json")
