@@ -54,10 +54,66 @@ end
     _kill_orphan_extension_processes!(project_path, namespace)
 
 Find and kill any Julia processes marked as Kaimon extensions for the same
-namespace. Uses the KAIMON_EXTENSION env var set on spawned processes to
-positively identify Kaimon-owned processes (won't accidentally kill user processes).
+namespace — orphans from a previous Kaimon instance whose Process handle was lost.
+Positively identifies our own processes so it won't kill user processes: Linux by the
+`KAIMON_EXTENSION` env var (`/proc/<pid>/environ`), macOS and Windows by the boot-script
+markers in the command line (`spawned_by="extension"` + `namespace=…`), since neither
+exposes another process's environment. No-op on platforms without a supported probe.
 """
+# Positively identify one of OUR extension boot processes from its command line, by the
+# markers baked into the `-e` script (see `_build_extension_script`): `spawned_by=`
+# "extension" and the `namespace=` assignment. Windows escapes embedded quotes when it
+# builds the command line (`namespace="x"` → `namespace=\"x\"`), so we match that escaped
+# form — the closing escaped-quote also pins the namespace exactly (so `"sla"` can't match
+# a `"slate"` gate). All markers must be present; a plain `julia` process won't match.
+function _extension_cmdline_matches(cmdline::AbstractString, namespace::AbstractString)
+    isempty(cmdline) && return false
+    ns_marker = "namespace=\\\"$(namespace)\\\""
+    return occursin("spawned_by=", cmdline) &&
+           occursin("extension", cmdline) &&
+           occursin(ns_marker, cmdline)
+end
+
+# Windows has no `/proc`, no readable per-process environment, and no `pgrep`/`kill`. Use
+# PowerShell/CIM to enumerate `julia.exe` processes and their command lines, then match ours
+# in Julia (testable) via `_extension_cmdline_matches`. Records are NUL-delimited (PID and
+# command line split by US, 0x1F) because the boot script is multi-line — a newline-delimited
+# format would split one process's record across lines.
+function _kill_orphan_extension_processes_windows!(namespace::String)
+    my_pid = getpid()
+    ps = """
+    \$us = [char]0x1F; \$nul = [char]0
+    Get-CimInstance Win32_Process -Filter "Name = 'julia.exe'" | ForEach-Object {
+        [Console]::Out.Write("\$(\$_.ProcessId)\$us\$(\$_.CommandLine)\$nul")
+    }
+    """
+    out = try
+        read(pipeline(`powershell -NoProfile -NonInteractive -Command $ps`; stderr = devnull), String)
+    catch
+        return   # PowerShell/CIM unavailable — best-effort, leave orphans rather than throw
+    end
+    for record in split(out, '\0'; keepempty = false)
+        us = findfirst('\x1f', record)
+        us === nothing && continue
+        pid = tryparse(Int, strip(record[1:prevind(record, us)]))
+        (pid === nothing || pid == my_pid) && continue
+        cmdline = record[nextind(record, us):end]
+        _extension_cmdline_matches(cmdline, namespace) || continue
+        _push_log!(:info, "Killing orphan extension '$namespace' (PID=$pid)")
+        Utils.terminate_process(pid; force = true)
+    end
+    return
+end
+
 function _kill_orphan_extension_processes!(project_path::String, namespace::String)
+    if Sys.iswindows()
+        try
+            _kill_orphan_extension_processes_windows!(namespace)
+        catch e
+            @debug "Windows orphan-extension reap failed" exception = e
+        end
+        return
+    end
     Sys.isunix() || return
     my_pid = getpid()
     try

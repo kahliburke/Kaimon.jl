@@ -32,5 +32,6 @@ include("zmq_socket_concurrency_tests.jl")
 include("request_channel_tests.jl")
 include("xpub_presence_tests.jl")
 include("projects_config_tests.jl")
+include("extension_manager_tests.jl")
 
 end # module
