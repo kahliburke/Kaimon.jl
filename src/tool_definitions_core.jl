@@ -692,6 +692,16 @@ a remote (or local) machine. The PUB stream endpoint is resolved from the gate's
 for `path`. Returns one of `:once`, `:always`, `:denied`, or `:unsupported`
 (client didn't advertise elicitation / no open receive stream / timeout). The
 caller maps `:unsupported` back to the static allow-list guidance."""
+# Whether to ATTEMPT elicitation given a caller's advertised capabilities. Only a client that
+# advertised a non-empty capability set WITHOUT `elicitation` is treated as incapable;
+# empty/unknown caps are attempted anyway. This matters because most caller sessions arrive
+# capless — Claude Code reconnects onto on-the-fly session ids whose initialize capabilities
+# were never captured (see `get_or_create_session`), yet it DOES support elicitation. Empty
+# caps are therefore not proof of no support. A client with no open receive stream fails fast
+# downstream (`request_elicitation` returns `nothing`), so an optimistic attempt is cheap and,
+# on failure, surfaces `:timeout` (agent retries) instead of a dead-end error.
+_caps_may_elicit(caps) = (caps isa AbstractDict && !isempty(caps)) ? haskey(caps, "elicitation") : true
+
 function _elicit_session_consent(path::AbstractString)
     caller = _current_mcp_caller()
     isempty(caller) && return :unsupported
@@ -699,8 +709,7 @@ function _elicit_session_consent(path::AbstractString)
         get(STANDALONE_SESSIONS, caller, nothing)
     end
     session === nothing && return :unsupported
-    caps = session.client_capabilities
-    (caps isa AbstractDict && haskey(caps, "elicitation")) || return :unsupported
+    _caps_may_elicit(session.client_capabilities) || return :unsupported
 
     # Accept/Decline (the elicitation action) IS the allow/deny decision; a single
     # boolean checkbox handles once-vs-always. (A 3-way enum field doesn't render

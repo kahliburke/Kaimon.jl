@@ -17,6 +17,16 @@ using Kaimon.Session: UNINITIALIZED, INITIALIZING, INITIALIZED, CLOSED
         @test !isempty(session.server_capabilities)
     end
 
+    @testset "elicitation capability gate is optimistic on empty caps" begin
+        # Advertised elicitation → attempt.
+        @test Kaimon._caps_may_elicit(Dict{String,Any}("elicitation" => Dict(), "roots" => Dict()))
+        # Empty / unknown caps → attempt anyway (capless reconnect sessions still support it).
+        @test Kaimon._caps_may_elicit(Dict{String,Any}())
+        @test Kaimon._caps_may_elicit(nothing)
+        # Non-empty caps that explicitly omit elicitation → the only real "no".
+        @test !Kaimon._caps_may_elicit(Dict{String,Any}("roots" => Dict()))
+    end
+
     @testset "Session Initialization - Success" begin
         session = MCPSession()
 
