@@ -476,13 +476,15 @@ function handle_message(request::NamedTuple)
                 task_local_storage(:gate_progress, true)
                 task_local_storage(:gate_caller, caller)
 
-                result = _dispatch_tool_call(tool.handler, tool_args)
+                result = _dispatch_tool_call(tool.handler, tool_args; tool_name = tool.name)
                 _stderr_finish!()
                 _publish_stream("tool_complete", string(result); request_id)
             catch e
+                # A parameter mismatch is a usage mistake, not a runtime fault — publish the
+                # concise explanation alone. Genuine errors keep their backtrace for debugging.
                 _publish_stream(
                     "tool_error",
-                    sprint(showerror, e, catch_backtrace());
+                    e isa ToolArgumentError ? e.msg : sprint(showerror, e, catch_backtrace());
                     request_id,
                 )
             end

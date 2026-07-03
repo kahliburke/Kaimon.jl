@@ -27,6 +27,15 @@ end
 
 const _SESSION_TOOLS = Ref{Vector{GateTool}}(GateTool[])
 
+"""Raised by the tool dispatcher when a call's arguments don't fit the handler's
+parameters (missing required, unknown/misnamed). Its `msg` is a concise, agent-facing
+explanation; the gate publishes it WITHOUT a backtrace (unlike a genuine runtime error),
+since a stacktrace only adds noise to a plain usage mistake."""
+struct ToolArgumentError <: Exception
+    msg::String
+end
+Base.showerror(io::IO, e::ToolArgumentError) = print(io, e.msg)
+
 # ── Rich tool results (images) ────────────────────────────────────────────────
 # MCP tool results are otherwise plain text. A handler that wants to return an
 # image returns this sentinel-tagged JSON envelope as its String result; the
@@ -648,13 +657,62 @@ function _is_dict_handler(handler::Function)
 end
 
 """
-    _dispatch_tool_call(handler, args::Dict{String,Any})
+    _tool_param_names(handler) -> (positional::Vector{Symbol}, n_required::Int, keyword::Vector{Symbol})
+
+Reflect the handler's parameters for validation/error messages: all positional names
+(from the highest-arity method), how many are REQUIRED (the lowest-arity method, minus a
+trailing vararg), and its declared keyword names (slurps like `kw...` dropped).
+"""
+function _tool_param_names(handler::Function)
+    ms = collect(methods(handler))
+    isempty(ms) && return (Symbol[], 0, Symbol[])
+    nargs = [Int(m.nargs) for m in ms]
+    mmax = ms[argmax(nargs)]
+    mmin = ms[argmin(nargs)]
+    all_names = Base.method_argnames(mmax)
+    pos = length(all_names) > 1 ? all_names[2:end] : Symbol[]
+    n_required = clamp(Int(mmin.nargs) - 1 - (mmin.isva ? 1 : 0), 0, length(pos))
+    kw = try
+        Symbol[k for k in Base.kwarg_decl(mmax) if !occursin("...", string(k))]
+    catch
+        Symbol[]
+    end
+    return (pos, n_required, kw)
+end
+
+"""Build a concise, agent-facing explanation of why `args` don't fit `handler` —
+missing required params, unrecognized/misnamed ones, a did-you-mean for a 1:1 swap,
+and the full expected-parameter list."""
+function _tool_arg_error(tool_name::AbstractString, handler::Function, args::Dict{String,Any})
+    pos, n_required, kw = _tool_param_names(handler)
+    accepted = Set{String}(string(p) for p in pos)
+    union!(accepted, (string(k) for k in kw))
+    unknown = sort!(String[k for k in keys(args) if !(k in accepted)])
+    missing_req = String[string(pos[i]) for i = 1:n_required if !(string(pos[i]) in keys(args))]
+    tn = isempty(tool_name) ? "This tool" : "Tool '$tool_name'"
+    parts = String[]
+    push!(parts, isempty(missing_req) ?
+        "$tn was called with parameters that don't match its signature." :
+        "$tn is missing required parameter(s): $(join(missing_req, ", ")).")
+    isempty(unknown) || push!(parts, "Unrecognized parameter(s) (ignored): $(join(unknown, ", ")).")
+    length(missing_req) == 1 && length(unknown) == 1 &&
+        push!(parts, "Did you mean '$(missing_req[1])' instead of '$(unknown[1])'?")
+    expected = String[i <= n_required ? string(pos[i]) : string(pos[i]) * " (optional)" for i in eachindex(pos)]
+    append!(expected, string(k) * " (keyword)" for k in kw)
+    isempty(expected) || push!(parts, "Expected: $(join(expected, ", ")).")
+    return join(parts, " ")
+end
+
+"""
+    _dispatch_tool_call(handler, args::Dict{String,Any}; tool_name="")
 
 Dispatch a tool call to the handler with properly typed arguments.
 If the handler explicitly accepts a Dict, calls directly. Otherwise, reflects on
-the method signature to reconstruct typed positional and keyword arguments.
+the method signature to reconstruct typed positional and keyword arguments. A
+parameter mismatch (missing required, wrong name) raises a `ToolArgumentError` with
+a concise message instead of a cryptic `MethodError`.
 """
-function _dispatch_tool_call(handler::Function, args::Dict{String,Any})
+function _dispatch_tool_call(handler::Function, args::Dict{String,Any}; tool_name::AbstractString = "")
     # Fast path: handler explicitly declares a single raw-Dict argument. Must be
     # an explicit Dict-typed param — an untyped (::Any) first positional also
     # accepts a Dict but would swallow all args into one param (see _is_dict_handler).
@@ -704,6 +762,25 @@ function _dispatch_tool_call(handler::Function, args::Dict{String,Any})
         end
     end
 
-    return handler(pos_args...; kwargs...)
+    # Up-front check for a missing required positional — the common "wrong param name"
+    # mistake (the loop above silently skips an unmatched positional, so the handler would
+    # otherwise fail with a cryptic MethodError). Give a tailored message instead.
+    pos_all, n_required, _ = _tool_param_names(handler)
+    for i = 1:n_required
+        haskey(args, string(pos_all[i])) ||
+            throw(ToolArgumentError(_tool_arg_error(tool_name, handler, args)))
+    end
+
+    try
+        return handler(pos_args...; kwargs...)
+    catch e
+        # Only re-explain a mismatch on THIS handler's own call (e.g. an uncoercible type
+        # left an arg wrong-typed); an inner MethodError from the handler's body must
+        # surface as the real error, not be masked as a usage mistake.
+        if e isa MethodError && e.f === handler
+            throw(ToolArgumentError(_tool_arg_error(tool_name, handler, args)))
+        end
+        rethrow()
+    end
 end
 

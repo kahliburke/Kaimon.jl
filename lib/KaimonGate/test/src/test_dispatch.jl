@@ -165,6 +165,49 @@ end
     @test isempty(kt(_no_kwargs))
 end
 
+# ── _dispatch_tool_call: tailored argument-error messages ─────────────────────
+
+@testset "_dispatch_tool_call argument errors" begin
+    dispatch = KaimonGate._dispatch_tool_call
+
+    # Reflection the messages build on.
+    pos, nreq, kw = KaimonGate._tool_param_names(_greet)
+    @test string.(pos) == ["name", "count"]
+    @test nreq == 2
+    @test Set(string.(kw)) == Set(["loud", "prefix"])
+
+    # Wrong positional name (the reported case): `path` where `name` was expected.
+    err = try
+        dispatch(_greet, Dict{String,Any}("path" => "x", "count" => "3"); tool_name = "greet")
+        nothing
+    catch e
+        e
+    end
+    @test err isa KaimonGate.ToolArgumentError
+    m = err.msg
+    @test occursin("greet", m)
+    @test occursin("missing required", lowercase(m))
+    @test occursin("name", m)
+    @test occursin("path", m)                                   # flags the unrecognized param
+    @test occursin("Did you mean 'name' instead of 'path'", m)
+    @test occursin("Expected:", m)
+    @test !occursin("MethodError", m) && !occursin("Stacktrace", m)   # concise, no raw dump
+
+    # Missing required with no unknowns → still a clear message.
+    err2 = try; dispatch(_greet, Dict{String,Any}("count" => "3")); nothing; catch e; e end
+    @test err2 isa KaimonGate.ToolArgumentError && occursin("name", err2.msg)
+
+    # Extra/unknown param but every required one present → call SUCCEEDS (extra ignored).
+    @test dispatch(_greet, Dict{String,Any}("name" => "Al", "count" => "1", "bogus" => "z")) ==
+          "Hi Al (×1)"
+
+    # A genuine error INSIDE the handler must surface as-is, never masked as a usage error.
+    _boom(x::Int) = error("kaboom-$x")
+    err3 = try; dispatch(_boom, Dict{String,Any}("x" => "5")); nothing; catch e; e end
+    @test err3 isa ErrorException && occursin("kaboom", err3.msg)
+    @test !(err3 isa KaimonGate.ToolArgumentError)
+end
+
 # ── GateTool struct basics ────────────────────────────────────────────────────
 
 @testset "GateTool basics" begin
