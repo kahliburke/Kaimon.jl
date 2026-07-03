@@ -621,3 +621,39 @@ end
         end
     end
 end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Local TCP discovery must not FLAP an already-connected session. connect_tcp!
+# writes a `tcp-HOST-PORT.json` reconnection-cache file; discover_sessions now
+# connects local unregistered TCP gates (#50), so it must skip that cache file
+# when the session is already tracked — else it reconnects + replaces the live
+# connection every sweep (the KaimonSlate-worker flap).
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "tracked local TCP session is not re-discovered (flap regression)" begin
+    dir = mktempdir()
+    function write_tcp_meta(port, name)
+        meta = Dict{String,Any}(
+            "session_id" => "tcp-127.0.0.1-$port", "name" => name, "pid" => getpid(),
+            "mode" => "tcp", "endpoint" => "tcp://127.0.0.1:$port",
+            "stream_endpoint" => "tcp://127.0.0.1:$(port + 1)", "spawned_by" => "user",
+            "project_path" => @__DIR__, "julia_version" => string(VERSION))
+        open(joinpath(dir, "tcp-127.0.0.1-$port.json"), "w") do io
+            Kaimon.JSON.print(io, meta)
+        end
+    end
+    write_tcp_meta(9100, "worker-tracked")   # already connected
+    write_tcp_meta(9200, "worker-new")       # never seen
+
+    mgr = Kaimon.ConnectionManager(sock_dir = dir)
+    lock(mgr.lock) do
+        push!(mgr.connections, Kaimon.REPLConnection(
+            session_id = "tcp-127.0.0.1-9100", endpoint = "tcp://127.0.0.1:9100",
+            name = "worker-tracked", spawned_by = "user", pid = Int(getpid())))
+    end
+
+    ids = [c.session_id for c in Kaimon.discover_sessions(mgr)]
+    @test !("tcp-127.0.0.1-9100" in ids)   # already tracked → skipped (no reconnect/flap)
+    @test "tcp-127.0.0.1-9200" in ids       # untracked local TCP → still discovered
+    rm(dir; recursive = true)
+end

@@ -260,7 +260,16 @@ function discover_sessions(mgr::ConnectionManager)
             _tcp_host = _endpoint_host(get(meta, "endpoint", ""))
             _tcp_m = match(r"tcp://(?:\[[^\]]+\]|[^:/]+):(\d+)", get(meta, "endpoint", ""))
             _tcp_key = string(_tcp_host, ":", _tcp_m === nothing ? "" : _tcp_m.captures[1])
-            if _tcp_key in registered_tcp || !_is_local_host(_tcp_host)
+            # Skip registered/remote TCP (owned by _poll_tcp_gates!), AND any local TCP session
+            # we ALREADY track: its `tcp-*.json` is the reconnection cache `connect_tcp!` wrote,
+            # not a new gate. Re-discovering it makes the watcher reconnect + replace the live
+            # connection every 2s sweep — a flap that churns session-list / list_changed
+            # notifications (the KaimonSlate-worker flap). Skip by session_id regardless of PID:
+            # a TCP session_id is stable per host:port, a same-port restart is adopted by the
+            # health checker via its pong, and a different-port restart has a new session_id that
+            # IS still discovered.
+            if _tcp_key in registered_tcp || !_is_local_host(_tcp_host) ||
+               haskey(known_id_pids, session_id)
                 continue
             end
         end
