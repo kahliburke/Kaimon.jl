@@ -535,7 +535,7 @@ function _detect_claude_configured()::Bool
     # Check CLI first (most authoritative).
     if Sys.which("claude") !== nothing
         try
-            out = read(pipeline(`claude mcp list`; stderr = devnull), String)
+            out = read(pipeline(Utils.launch_cmd(`claude mcp list`); stderr = devnull), String)
             for ln in split(out, '\n')
                 s = strip(lowercase(ln))
                 startswith(s, "kaimon:") && return true

@@ -488,7 +488,7 @@ end
 
 function _remove_claude(m::KaimonModel)
     for s in ("project", "user", "local")
-        try read(pipeline(`claude mcp remove --scope $s kaimon`; stderr = devnull), String) catch end
+        try read(pipeline(Utils.launch_cmd(`claude mcp remove --scope $s kaimon`); stderr = devnull), String) catch end
     end
     m.flow_message = "Removed kaimon from Claude Code"
     m.flow_success = true
@@ -496,7 +496,7 @@ end
 
 function _remove_gemini(m::KaimonModel)
     for s in ("project", "user")
-        try read(pipeline(`gemini mcp remove --scope $s kaimon`; stderr = devnull), String) catch end
+        try read(pipeline(Utils.launch_cmd(`gemini mcp remove --scope $s kaimon`); stderr = devnull), String) catch end
     end
     m.flow_message = "Removed kaimon from Gemini CLI"
     m.flow_success = true
@@ -520,7 +520,7 @@ end
 
 function _remove_codex(m::KaimonModel)
     try
-        read(pipeline(`codex mcp remove kaimon`; stderr = devnull), String)
+        read(pipeline(Utils.launch_cmd(`codex mcp remove kaimon`); stderr = devnull), String)
     catch
     end
     _codex_env_remove!("MCPREPL_API_KEY")
@@ -667,13 +667,13 @@ function _install_claude(m::KaimonModel, port::Int, api_key)
     url = "http://localhost:$port/mcp"
     scope = string(m.client_scope)
     for s in ("project", "user", "local")
-        try read(pipeline(`claude mcp remove --scope $s kaimon`; stderr = devnull), String) catch end
+        try read(pipeline(Utils.launch_cmd(`claude mcp remove --scope $s kaimon`); stderr = devnull), String) catch end
     end
     args = `claude mcp add --transport http --scope $scope kaimon $url`
     if api_key !== nothing
         args = `$args -H "Authorization: Bearer $api_key"`
     end
-    read(pipeline(args; stderr = stderr), String)
+    read(pipeline(Utils.launch_cmd(args); stderr = stderr), String)
     m.flow_message = "Added kaimon to Claude Code\n(scope: $scope)"
     m.flow_success = true
 end
@@ -717,13 +717,13 @@ function _install_gemini(m::KaimonModel, port::Int, api_key)
     url = "http://localhost:$port/mcp"
     scope = string(m.client_scope)
     for s in ("project", "user")
-        try read(pipeline(`gemini mcp remove --scope $s kaimon`; stderr = devnull), String) catch end
+        try read(pipeline(Utils.launch_cmd(`gemini mcp remove --scope $s kaimon`); stderr = devnull), String) catch end
     end
     args = `gemini mcp add --transport http --scope $scope kaimon $url`
     if api_key !== nothing
         args = `$args -H "Authorization: Bearer $api_key"`
     end
-    read(pipeline(args; stderr = devnull), String)
+    read(pipeline(Utils.launch_cmd(args); stderr = devnull), String)
     m.flow_message = "Added kaimon to Gemini CLI\n(scope: $scope)"
     m.flow_success = true
 end
@@ -781,7 +781,7 @@ end
 function _install_codex(m::KaimonModel, port::Int, api_key)
     url = "http://localhost:$port/mcp"
     try
-        read(pipeline(`codex mcp remove kaimon`; stderr = devnull), String)
+        read(pipeline(Utils.launch_cmd(`codex mcp remove kaimon`); stderr = devnull), String)
     catch
     end
     # Current Codex CLI expects `codex mcp add <NAME> [COMMAND]...`, not
@@ -794,7 +794,7 @@ function _install_codex(m::KaimonModel, port::Int, api_key)
     else
         `codex mcp add kaimon npx -y mcp-remote $url --allow-http --silent`
     end
-    read(pipeline(args; stderr = devnull), String)
+    read(pipeline(Utils.launch_cmd(args); stderr = devnull), String)
     m.flow_message = "Added kaimon to Codex CLI\n(~/.codex/config.toml)"
     m.flow_success = true
 end

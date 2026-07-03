@@ -236,6 +236,25 @@ end
         @test Kaimon._spawn_argv(String[], true) == String[]      # empty argv is a no-op
     end
 
+    @testset "Utils.launch_argv resolves bare CLI names via which" begin
+        U = Kaimon.Utils
+        # Bare name → resolved by `which` to a .cmd shim → launched through cmd.exe.
+        @test U.launch_argv(["claude", "mcp", "list"]; iswin = true,
+            which = _ -> "C:\\npm\\claude.cmd") ==
+            ["cmd.exe", "/d", "/c", "C:\\npm\\claude.cmd", "mcp", "list"]
+        # Resolves to a native .exe → run the resolved path unwrapped.
+        @test U.launch_argv(["claude"]; iswin = true, which = _ -> "C:\\bin\\claude.exe") ==
+            ["C:\\bin\\claude.exe"]
+        # .ps1 shim → PowerShell -File.
+        @test U.launch_argv(["x"]; iswin = true, which = _ -> "C:\\x.ps1")[1:5] ==
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]
+        # Not found on PATH → keep the bare name (run() then errors/handled as before).
+        @test U.launch_argv(["nope", "a"]; iswin = true, which = _ -> nothing) == ["nope", "a"]
+        # Non-Windows → never touched, regardless of what which would return.
+        @test U.launch_argv(["claude", "x"]; iswin = false, which = _ -> "C:\\claude.cmd") ==
+            ["claude", "x"]
+    end
+
     @testset "image downscale (tool-result PNG)" begin
         PF = Kaimon.PNGFiles
         B64 = Kaimon.Base64

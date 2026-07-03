@@ -62,4 +62,47 @@ end
 
 export terminate_process
 
+"""
+    launch_argv(argv; iswin=Sys.iswindows(), which=Sys.which) -> Vector{String}
+
+Return an argv that will actually execute on this platform. `argv[1]` is the executable
+(a bare name or a path). On Windows a bare name is resolved via `PATHEXT` (`Sys.which`), and
+a resulting `.cmd`/`.bat`/`.ps1` shim — which `CreateProcess` (what `run`/libuv use) cannot
+execute directly — is launched through its interpreter (`cmd.exe /d /c`, or
+`powershell -File`). A native `.exe`, or any non-Windows target, is returned unchanged apart
+from name→path resolution. `iswin`/`which` are injectable so the rewrite is unit-testable
+off-Windows.
+
+Known edge: `cmd.exe` re-parses the command line, so an argv VALUE containing cmd
+metacharacters (`% ! & | < >`) can mis-quote — rare for CLI flag values.
+"""
+function launch_argv(argv::AbstractVector{<:AbstractString};
+                     iswin::Bool = Sys.iswindows(), which = Sys.which)
+    a = String[String(x) for x in argv]
+    (iswin && !isempty(a)) || return a
+    exe = a[1]
+    resolved = isfile(exe) ? exe : something(which(exe), exe)
+    rest = @view a[2:end]
+    ext = lowercase(splitext(resolved)[2])
+    if ext == ".cmd" || ext == ".bat"
+        # /d skips AutoRun; per-arg quotes from run()'s C-escaping carry through cmd's re-parse
+        # for the common cases (paths/flags with spaces).
+        return String["cmd.exe", "/d", "/c", resolved, rest...]
+    elseif ext == ".ps1"
+        return String["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                      resolved, rest...]
+    end
+    return String[resolved, rest...]
+end
+
+"""
+    launch_cmd(cmd::Base.Cmd) -> Base.Cmd
+
+`launch_argv` for a `Cmd`: resolve/wrap its argv so a Windows shim CLI actually runs. Wrap a
+backtick command at the call site, e.g. `run(launch_cmd(\`claude mcp list\`))`.
+"""
+launch_cmd(cmd::Base.Cmd) = Base.Cmd(launch_argv(cmd.exec))
+
+export launch_argv, launch_cmd
+
 end # module Utils
