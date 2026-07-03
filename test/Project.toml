@@ -1,17 +1,40 @@
+# Dedicated test environment. NOTE: because this file exists, `Pkg.test` (and CI) use it
+# as THE test env — so EVERY package a test file `using`s directly must be listed here,
+# including Kaimon's own deps (ReTest/ZMQ/JSON/SQLite/Tachikoma/DBInterface/KaimonGate).
+# The classic [extras]/[targets] mechanism exposed the package's deps for free; a
+# test/Project.toml does not. Kaimon (and KaimonGate/GateToolTest) are path `[sources]`
+# so their compat pins the shared registered deps.
 [deps]
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
+DBInterface = "a10d1c49-ce27-4219-8d33-6db1a4562965"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+FileWatching = "7b1f6079-737a-58dc-b8bc-7a2ca5c1b5ee"
+GateToolTest = "2d4483d8-a6b7-4336-b117-cd02e23f7d9e"
 HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
+Infiltrator = "5903a43b-9cc3-4c30-8d17-598619ec4e9b"
 JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 Kaimon = "d3856c55-31fd-4246-b7e8-380411123c01"
+KaimonGate = "5ee84a8c-75bd-412f-a7b8-4e6463aa635f"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
+REPL = "3fa0cd96-eef1-5676-8a61-b3b8758bbffb"
+ReTest = "e0db7c4e-2690-44b9-bad6-7687da720f89"
+SQLite = "0aa819cd-b072-5ff4-a722-6bc24af294d9"
+Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 Supposition = "5a0628fe-1738-4658-9b6d-0b7605a9755b"
+TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
+Tachikoma = "468859d6-42d8-48b7-8ad9-1d312e0e3b0a"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+ZMQ = "c2297ded-f4af-51ae-bb23-16f91089e4e1"
 
-# Load the package under test as a real dependency (not just via the runner's LOAD_PATH
-# leniency) so `Kaimon.<Submodule>` access resolves — Julia 1.12 doesn't expose a
+# Load the packages under test as REAL deps (not just via the runner's LOAD_PATH leniency)
+# so `Kaimon.<Submodule>` / `using KaimonGate` resolve — Julia 1.12 doesn't expose a
 # LOAD_PATH-loaded package's submodules as external properties.
 [sources]
 Kaimon = {path = ".."}
+KaimonGate = {path = "../lib/KaimonGate"}
+GateToolTest = {path = "GateToolTest.jl"}
 
 [compat]
 Aqua = "0.8"
