@@ -55,3 +55,16 @@ end
         @test Kaimon._extension_startup_timeout() >= 120.0
     end
 end
+
+@testset "extension gate advertise probe (timeout diagnostic)" begin
+    dir = mktempdir()
+    @test !Kaimon._extension_gate_advertised(dir)              # empty → nothing advertised
+    # A normal (user) session gate must not count as an extension advertising.
+    write(joinpath(dir, "u.json"), "{\"spawned_by\": \"user\", \"mode\": \"tcp\"}")
+    @test !Kaimon._extension_gate_advertised(dir)
+    # An extension gate's metadata → detected.
+    write(joinpath(dir, "e.json"), "{\"spawned_by\": \"extension\", \"mode\": \"tcp\"}")
+    @test Kaimon._extension_gate_advertised(dir)
+    @test !Kaimon._extension_gate_advertised(joinpath(dir, "nope"))   # missing dir → false
+    rm(dir; recursive = true)
+end

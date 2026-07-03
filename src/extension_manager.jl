@@ -507,6 +507,24 @@ function _extension_startup_timeout()
     (v === nothing || v <= 0) ? 300.0 : v
 end
 
+# Diagnostic for a startup timeout: did ANY extension gate write discovery metadata into the
+# sock dir the server scans? Metadata present ⇒ the gate served but the server couldn't
+# discover/connect it (a discovery/connect bug); absent ⇒ serve() never ran or wrote nothing
+# (the extension boot never reached the gate). Splits the two failure modes in the log.
+function _extension_gate_advertised(sock_dir::AbstractString)
+    isdir(sock_dir) || return false
+    for f in readdir(sock_dir)
+        endswith(f, ".json") || continue
+        meta = try
+            JSON.parsefile(joinpath(sock_dir, f))
+        catch
+            continue
+        end
+        get(meta, "spawned_by", "") == "extension" && return true
+    end
+    return false
+end
+
 """
     _monitor_extensions!(conn_mgr)
 
@@ -554,8 +572,17 @@ function _monitor_extensions!(conn_mgr)
                 timeout = _extension_startup_timeout()
                 if ext.status == :starting && time() - ext.started_at > timeout
                     ext.status = :crashed
-                    _push_error!(ext, "Startup timeout ($(round(Int, timeout))s) at $(Dates.now())")
-                    _push_log!(:warn, "Extension '$ns' startup timed out after $(round(Int, timeout))s")
+                    # Split the failure mode: did the extension's gate advertise at all?
+                    advertised = try
+                        _extension_gate_advertised(conn_mgr.sock_dir)
+                    catch
+                        false
+                    end
+                    diag = advertised ?
+                        "gate metadata WAS found — the gate served but discovery/connect never completed" :
+                        "no gate metadata found — serve() never ran or wrote nothing (extension boot didn't reach the gate)"
+                    _push_error!(ext, "Startup timeout ($(round(Int, timeout))s) at $(Dates.now()); $diag")
+                    _push_log!(:warn, "Extension '$ns' startup timed out after $(round(Int, timeout))s — $diag")
                 end
             end
 

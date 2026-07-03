@@ -409,7 +409,11 @@ function _serve(;
     # file. `discoverable=false` serves the gate but keeps it out of the registry entirely
     # (embedded/private gates reached via explicit endpoints).
     if discoverable && (mode != :tcp || local_gate)
-        write_metadata(sid, name, endpoint, stream_endpoint; spawned_by, mode)
+        mpath = write_metadata(sid, name, endpoint, stream_endpoint; spawned_by, mode)
+        # Diagnostic (visible in an extension's own log): confirms serve() reached the
+        # advertise step and WHERE it wrote — so a "never connected" failure can be split
+        # into "gate never advertised" vs "advertised but the server didn't discover it".
+        @info "Kaimon gate advertised for discovery at $endpoint (mode=$mode, metadata: $mpath)"
     end
 
     # Register cleanup
