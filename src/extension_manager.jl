@@ -494,6 +494,19 @@ end
 
 const _EXTENSION_RESTART_BACKOFF = [5.0, 10.0, 30.0, 60.0]  # seconds
 
+# How long an extension may sit in :starting (process alive, gate not yet connected) before
+# the monitor gives up and marks it crashed. A DEAD process is detected immediately and
+# separately — this budget is purely for "alive but not serving yet," which on a cold machine
+# is dominated by first-run precompilation of the extension's dep tree (Kaimon + e.g.
+# KaimonSlate's web stack). That can take minutes, worst on Windows (slow FS + precompile);
+# too short a budget kills the process mid-precompile and force-restarts it, so the cache
+# never completes and it loops until "max restarts, giving up" — the extension never connects.
+# Generous default; override with KAIMON_EXTENSION_STARTUP_TIMEOUT (seconds).
+function _extension_startup_timeout()
+    v = tryparse(Float64, get(ENV, "KAIMON_EXTENSION_STARTUP_TIMEOUT", ""))
+    (v === nothing || v <= 0) ? 300.0 : v
+end
+
 """
     _monitor_extensions!(conn_mgr)
 
@@ -536,11 +549,13 @@ function _monitor_extensions!(conn_mgr)
                     end
                 end
 
-                # Timeout: if starting for >60s, mark as crashed
-                if ext.status == :starting && time() - ext.started_at > 60.0
+                # Timeout: give up only after a generous, precompile-aware budget (a dead
+                # process is caught above; this is the "alive but not serving yet" case).
+                timeout = _extension_startup_timeout()
+                if ext.status == :starting && time() - ext.started_at > timeout
                     ext.status = :crashed
-                    _push_error!(ext, "Startup timeout at $(Dates.now())")
-                    _push_log!(:warn, "Extension '$ns' startup timed out")
+                    _push_error!(ext, "Startup timeout ($(round(Int, timeout))s) at $(Dates.now())")
+                    _push_log!(:warn, "Extension '$ns' startup timed out after $(round(Int, timeout))s")
                 end
             end
 

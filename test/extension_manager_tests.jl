@@ -37,3 +37,21 @@ using Kaimon
 
     @test !Kaimon._extension_cmdline_matches("", "slate")        # empty command line
 end
+
+@testset "extension startup timeout is generous + configurable" begin
+    # Default must comfortably exceed a cold first-run precompile (minutes), so a slow
+    # start isn't killed and force-restarted mid-precompile.
+    withenv("KAIMON_EXTENSION_STARTUP_TIMEOUT" => nothing) do
+        @test Kaimon._extension_startup_timeout() >= 120.0
+    end
+    # Explicit override honored; junk / non-positive fall back to the default.
+    withenv("KAIMON_EXTENSION_STARTUP_TIMEOUT" => "45") do
+        @test Kaimon._extension_startup_timeout() == 45.0
+    end
+    withenv("KAIMON_EXTENSION_STARTUP_TIMEOUT" => "0") do
+        @test Kaimon._extension_startup_timeout() >= 120.0
+    end
+    withenv("KAIMON_EXTENSION_STARTUP_TIMEOUT" => "notanumber") do
+        @test Kaimon._extension_startup_timeout() >= 120.0
+    end
+end
