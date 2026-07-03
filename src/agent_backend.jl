@@ -68,6 +68,27 @@ function _find_claude()
     p === nothing ? "claude" : p
 end
 
+# Rewrite an argv so a Windows shim SCRIPT is launched through its interpreter. npm installs
+# `claude` as a `.cmd` shim (and `.ps1`), and Windows `CreateProcess` — what libuv/`run` use
+# — cannot execute `.cmd`/`.bat`/`.ps1` directly (only real images), so a bare
+# `Cmd([claude.cmd, …])` fails with "%1 is not a valid Win32 application". A native `claude.exe`
+# (or any non-Windows path) runs as-is. `argv[1]` is the executable. Pure + `iswin`-injectable
+# so the rewrite is unit-testable off-Windows.
+_spawn_argv(argv::Vector{String}) = _spawn_argv(argv, Sys.iswindows())
+function _spawn_argv(argv::Vector{String}, iswin::Bool)
+    (iswin && !isempty(argv)) || return argv
+    ext = lowercase(splitext(argv[1])[2])
+    if ext == ".cmd" || ext == ".bat"
+        # /d skips AutoRun; cmd re-parses, so per-arg quotes from run()'s C-escaping carry
+        # through for the common cases (paths/flags with spaces). Values containing cmd
+        # metacharacters (% ! & | < >) are a known edge — rare in agent argv.
+        return String["cmd.exe", "/d", "/c", argv...]
+    elseif ext == ".ps1"
+        return String["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", argv...]
+    end
+    return argv
+end
+
 mutable struct ClaudeHandle <: AgentHandle
     backend::ClaudeBackend
     proc::Base.Process
@@ -141,7 +162,7 @@ function backend_start(b::ClaudeBackend; cwd::String, agent_id::String,
     log_file = joinpath(log_dir, "$(agent_id).log")
     log_io = open(log_file, "a")
 
-    cmd = setenv(Cmd(args), env; dir = cwd)
+    cmd = setenv(Cmd(_spawn_argv(args)), env; dir = cwd)   # wrap a Windows .cmd/.ps1 shim in its interpreter
     proc = open(pipeline(cmd; stderr = log_io), "r+")   # proc.in = write, proc.out = read
 
     events = Channel{ACP.AgentEvent}(Inf)

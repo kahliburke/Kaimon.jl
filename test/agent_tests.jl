@@ -218,6 +218,24 @@ end
         @test "--include-partial-messages" in Kaimon._claude_args(Kaimon.ClaudeBackend(), ".")
     end
 
+    @testset "_spawn_argv wraps Windows shim scripts, not native exes" begin
+        args = ["--model", "sonnet", "--add-dir", "C:\\a b"]
+        # Windows npm shim (.cmd) → launched via cmd.exe /d /c (CreateProcess can't exec it).
+        cmd = Kaimon._spawn_argv(["C:\\npm\\claude.cmd", args...], true)
+        @test cmd[1:4] == ["cmd.exe", "/d", "/c", "C:\\npm\\claude.cmd"]
+        @test cmd[5:end] == args                                  # original argv preserved after
+        # .bat treated the same; .ps1 → PowerShell -File.
+        @test Kaimon._spawn_argv(["x.bat"], true)[1:3] == ["cmd.exe", "/d", "/c"]
+        @test Kaimon._spawn_argv(["x.ps1"], true)[1:5] ==
+              ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]
+        # Native .exe on Windows → run as-is (no wrapper).
+        @test Kaimon._spawn_argv(["C:\\bin\\claude.exe", args...], true) == ["C:\\bin\\claude.exe", args...]
+        # Non-Windows → never wrapped, even for a .cmd-looking name.
+        @test Kaimon._spawn_argv(["/usr/bin/claude", args...], false) == ["/usr/bin/claude", args...]
+        @test Kaimon._spawn_argv(["weird.cmd"], false) == ["weird.cmd"]
+        @test Kaimon._spawn_argv(String[], true) == String[]      # empty argv is a no-op
+    end
+
     @testset "image downscale (tool-result PNG)" begin
         PF = Kaimon.PNGFiles
         B64 = Kaimon.Base64
