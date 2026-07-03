@@ -206,6 +206,17 @@ end
     err3 = try; dispatch(_boom, Dict{String,Any}("x" => "5")); nothing; catch e; e end
     @test err3 isa ErrorException && occursin("kaboom", err3.msg)
     @test !(err3 isa KaimonGate.ToolArgumentError)
+
+    # Uncoercible value → names the parameter + expected type, not a bare parse error.
+    err4 = try
+        dispatch(_greet, Dict{String,Any}("name" => "A", "count" => "NaN-ish"); tool_name = "greet")
+        nothing
+    catch e
+        e
+    end
+    @test err4 isa KaimonGate.ToolArgumentError
+    @test occursin("count", err4.msg) && occursin("Int", err4.msg) && occursin("NaN-ish", err4.msg)
+    @test !occursin("invalid base", err4.msg)   # the raw ArgumentError text is gone
 end
 
 # ── GateTool struct basics ────────────────────────────────────────────────────

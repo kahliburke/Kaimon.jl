@@ -703,6 +703,19 @@ function _tool_arg_error(tool_name::AbstractString, handler::Function, args::Dic
     return join(parts, " ")
 end
 
+"""Coerce one argument value, turning a conversion failure into a `ToolArgumentError`
+that names the parameter and its expected type — instead of a bare parse/convert error
+(e.g. `invalid base 10 digit 'N'`) that doesn't say which parameter was wrong."""
+function _coerce_arg(value, T, param::AbstractString, tool_name::AbstractString)
+    try
+        return _coerce_value(value, T)
+    catch
+        tn = isempty(tool_name) ? "This tool" : "Tool '$tool_name'"
+        throw(ToolArgumentError(
+            "$tn: parameter '$param' expects $(T), but $(repr(value)) can't be converted to it."))
+    end
+end
+
 """
     _dispatch_tool_call(handler, args::Dict{String,Any}; tool_name="")
 
@@ -742,7 +755,7 @@ function _dispatch_tool_call(handler::Function, args::Dict{String,Any}; tool_nam
         name = string(arg_names[i])
         T = i <= length(arg_types) ? arg_types[i] : Any
         if haskey(args, name)
-            push!(pos_args, _coerce_value(args[name], T))
+            push!(pos_args, _coerce_arg(args[name], T, name, tool_name))
         end
     end
 
@@ -758,7 +771,7 @@ function _dispatch_tool_call(handler::Function, args::Dict{String,Any}; tool_nam
         kw_str = string(kw)
         if haskey(args, kw_str)
             T = get(kw_types, kw, Any)
-            push!(kwargs, kw => _coerce_value(args[kw_str], T))
+            push!(kwargs, kw => _coerce_arg(args[kw_str], T, kw_str, tool_name))
         end
     end
 
