@@ -1,7 +1,7 @@
 name = "Kaimon"
 uuid = "d3856c55-31fd-4246-b7e8-380411123c01"
 keywords = ["mcp", "ai", "agents", "llm", "julia", "repl", "code-execution", "debugging"]
-version = "1.3.1"
+version = "2.0.0"
 authors = ["Kahli Burke <kahli@kahliburke.com>"]
 description = "MCP (Model Context Protocol) server for Julia — gives AI agents full access to Julia's runtime for code execution, introspection, debugging, testing, and semantic code search"
 
@@ -66,7 +66,7 @@ HTTP = "2"
 InteractiveUtils = "1.10"
 JET = "0.11"
 JSON = "1"
-KaimonGate = "0.1"
+KaimonGate = "1"
 Logging = "1.11.0"
 LoggingExtras = "1.2.0"
 Match = "2.4.1"

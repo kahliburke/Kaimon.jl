@@ -1,6 +1,6 @@
 name = "KaimonGate"
 uuid = "5ee84a8c-75bd-412f-a7b8-4e6463aa635f"
-version = "0.1.0"
+version = "1.0.0"
 authors = ["Kahli Burke <kahli@kahliburke.com>", "Eben60"]
 
 [deps]
