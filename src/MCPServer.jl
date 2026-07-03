@@ -207,6 +207,31 @@ function _restore_session_caps!(session, entry)
     return nothing
 end
 
+"""Borrow capabilities from the most-recently-seen client when THIS session has none of
+its own. Claude Code presents session ids it believes are connected (after a server
+restart / dropped stream) without re-`initialize`-ing, so the exact id often never stored
+caps — but a client's advertised caps (elicitation, roots) are stable across its sessions.
+Reusing the latest known set keeps capability-gated features working instead of silently
+degrading to "unsupported". No-op if the session already has caps or nothing is known yet.
+Single-client setups (the norm) borrow their own caps; a wrong borrow is self-correcting —
+elicitation to a client that can't receive it just fails fast."""
+function _borrow_recent_caps!(session)
+    isempty(session.client_capabilities) || return nothing
+    best = nothing
+    best_seen = ""
+    for (_, entry) in load_persisted_sessions()
+        caps = get(entry, "client_capabilities", nothing)
+        (caps isa AbstractDict && !isempty(caps)) || continue
+        seen = string(get(entry, "last_seen", ""))
+        if best === nothing || seen > best_seen
+            best = entry
+            best_seen = seen
+        end
+    end
+    best === nothing || _restore_session_caps!(session, best)
+    return nothing
+end
+
 """
     get_or_create_session(session_id::Union{String,Nothing}, is_initialize::Bool) -> (MCPSession, Bool)
 
@@ -262,6 +287,10 @@ function get_or_create_session(session_id::Union{String,Nothing}, is_initialize:
                     # capability-gated features (elicitation, …) still work for a
                     # client that reconnects without re-initializing.
                     _restore_session_caps!(session, persisted_sessions[session_id])
+                    # The stored entry may predate caps-capture (only workspace_root, no
+                    # caps) — a session whose id we've seen but never initialized. Fall back
+                    # to the latest known client caps so elicitation etc. still work.
+                    _borrow_recent_caps!(session)
                     STANDALONE_SESSIONS[session.id] = session
                     register_persisted_session(session.id)  # Update last_seen
                     @info "Restored session from persistence file" session_id = session.id
@@ -275,6 +304,10 @@ function get_or_create_session(session_id::Union{String,Nothing}, is_initialize:
                     session.id = session_id
                     session.state = Session.INITIALIZED
                     session.initialized_at = now()
+                    # An id the client presents as already-connected but that never
+                    # initialized here — reuse the latest known client caps so
+                    # capability-gated features work instead of degrading to "unsupported".
+                    _borrow_recent_caps!(session)
                     STANDALONE_SESSIONS[session.id] = session
                     register_persisted_session(session.id)
                     @warn "Accepted unknown session ID (client did not re-initialize)" session_id =

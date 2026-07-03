@@ -27,6 +27,32 @@ using Kaimon.Session: UNINITIALIZED, INITIALIZING, INITIALIZED, CLOSED
         @test !Kaimon._caps_may_elicit(Dict{String,Any}("roots" => Dict()))
     end
 
+    @testset "capless session borrows the latest known client caps" begin
+        mktempdir() do cache
+            withenv("XDG_CACHE_HOME" => cache) do
+                mkpath(joinpath(cache, "kaimon"))
+                Kaimon.save_persisted_sessions(Dict{String,Dict}(
+                    "capped" => Dict("created_at" => "2026-07-02T10:00:00",
+                        "last_seen" => "2026-07-02T12:00:00",
+                        "client_capabilities" => Dict("elicitation" => Dict(), "roots" => Dict()),
+                        "client_info" => Dict("name" => "claude-code")),
+                    "capless" => Dict("created_at" => "2026-07-02T11:00:00",
+                        "last_seen" => "2026-07-02T11:30:00", "workspace_root" => "/x"),
+                ))
+                # A fresh (capless) session inherits the most-recent client's caps.
+                s = MCPSession()
+                @test isempty(s.client_capabilities)
+                Kaimon._borrow_recent_caps!(s)
+                @test haskey(s.client_capabilities, "elicitation")
+                # A session that already advertised caps is left untouched.
+                s2 = MCPSession()
+                s2.client_capabilities = Dict{String,Any}("roots" => Dict())
+                Kaimon._borrow_recent_caps!(s2)
+                @test !haskey(s2.client_capabilities, "elicitation")
+            end
+        end
+    end
+
     @testset "Session Initialization - Success" begin
         session = MCPSession()
 
