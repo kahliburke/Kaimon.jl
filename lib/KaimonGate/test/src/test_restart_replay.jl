@@ -33,3 +33,18 @@ using KaimonGate
     # Plain IPC gate → nothing to replay.
     @test KG._restart_tcp_kwargs(:ipc, false, "", 0, 0, false, false) == ""
 end
+
+@testset "utf16 wide-string conversion (Windows argv capture)" begin
+    KG = KaimonGate
+    # _capture_original_argv on Windows reads argv as NUL-terminated UTF-16 wide strings
+    # (GetCommandLineW/CommandLineToArgvW). The ccalls are Windows-only, but the wide→String
+    # conversion is testable anywhere by synthesizing a NUL-terminated UTF-16 buffer.
+    for s in ("julia", "C:\\Program Files\\Julia\\bin\\julia.exe", "café ☕", "")
+        units = transcode(UInt16, s)
+        push!(units, 0x0000)                       # NUL-terminate like a real wide string
+        GC.@preserve units begin
+            @test KG._utf16_ptr_to_string(pointer(units)) == s
+        end
+    end
+    @test KG._utf16_ptr_to_string(Ptr{UInt16}(C_NULL)) == ""   # null pointer → empty
+end

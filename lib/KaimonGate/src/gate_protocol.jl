@@ -69,6 +69,21 @@ function _serialize_result(result)::String
     return String(take!(io))
 end
 
+# Convert a NUL-terminated UTF-16 (wide) string at `p` into a Julia String. Windows APIs
+# (GetCommandLineW / CommandLineToArgvW) return wide strings; `transcode` does UTF-16→UTF-8.
+function _utf16_ptr_to_string(p::Ptr{UInt16})
+    p == C_NULL && return ""
+    len = 0
+    while unsafe_load(p, len + 1) != 0x0000
+        len += 1
+    end
+    units = Vector{UInt16}(undef, len)
+    @inbounds for i in 1:len
+        units[i] = unsafe_load(p, i)
+    end
+    return transcode(String, units)
+end
+
 """
     _capture_original_argv()
 
@@ -86,6 +101,23 @@ function _capture_original_argv()
         elseif Sys.islinux()
             parts = split(read("/proc/self/cmdline", String), '\0'; keepempty = false)
             _ORIGINAL_ARGV[] = String.(parts)
+        elseif Sys.iswindows()
+            # No argc/argv globals on Windows — recover argv from the OS command line via
+            # GetCommandLineW → CommandLineToArgvW (which the C runtime itself uses). Without
+            # this _ORIGINAL_ARGV stays empty and restart loses the launch flags + can't detect
+            # an app/-e launch, falling back to a reconstructed command.
+            p_cmd = ccall((:GetCommandLineW, "kernel32"), Ptr{UInt16}, ())
+            argc = Ref{Cint}(0)
+            p_argv = ccall((:CommandLineToArgvW, "shell32"), Ptr{Ptr{UInt16}},
+                           (Ptr{UInt16}, Ptr{Cint}), p_cmd, argc)
+            if p_argv != C_NULL
+                try
+                    _ORIGINAL_ARGV[] =
+                        String[_utf16_ptr_to_string(unsafe_load(p_argv, i)) for i in 1:argc[]]
+                finally
+                    ccall((:LocalFree, "kernel32"), Ptr{Cvoid}, (Ptr{Cvoid},), p_argv)
+                end
+            end
         end
     catch e
         @debug "Failed to capture original argv" exception = e
