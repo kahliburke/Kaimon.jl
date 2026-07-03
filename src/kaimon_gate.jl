@@ -121,6 +121,13 @@ function _last_session_project_path()
             get(_SESSION_WORKSPACE_ROOT, caller, "")
         end
         isempty(wr) || return wr
+        # In-memory root missing — the bound gate may have died (step 1 fell through) or the
+        # caller reconnected/was restored onto a session whose in-memory root wasn't
+        # repopulated (`_ensure_session_binding!` early-returns when a stale target is still
+        # set). Fall back to the caller's OWN persisted workspace root — its real project, not
+        # a guess. Without this, grep_code/search_code silently scope to the server's cwd.
+        pr = _persisted_workspace_root(caller)
+        pr === nothing || return pr
     end
     key = _LAST_SESSION_KEY[]
     if !isempty(key) && mgr !== nothing

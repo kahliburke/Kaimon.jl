@@ -53,6 +53,25 @@ using Kaimon.Session: UNINITIALIZED, INITIALIZING, INITIALIZED, CLOSED
         end
     end
 
+    @testset "project path falls back to persisted workspace root" begin
+        mktempdir() do cache
+            withenv("XDG_CACHE_HOME" => cache) do
+                mkpath(joinpath(cache, "kaimon"))
+                caller = "test-caller-$(rand(UInt32))"
+                Kaimon.save_persisted_sessions(Dict{String,Dict}(
+                    caller => Dict("created_at" => "2026-07-03T10:00:00",
+                        "last_seen" => "2026-07-03T10:00:00",
+                        "workspace_root" => "/some/proj")))
+                # No in-memory workspace root and no bound gate for this caller → the
+                # resolver must fall back to the caller's OWN persisted workspace root
+                # (not "", which would scope grep_code/search_code to the server cwd).
+                task_local_storage(:mcp_caller, caller) do
+                    @test Kaimon._last_session_project_path() == "/some/proj"
+                end
+            end
+        end
+    end
+
     @testset "Session Initialization - Success" begin
         session = MCPSession()
 
