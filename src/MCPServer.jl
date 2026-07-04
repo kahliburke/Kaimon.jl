@@ -521,7 +521,21 @@ function _request_from_client(session_id::AbstractString, method::AbstractString
         msg = Dict{String,Any}("jsonrpc" => "2.0", "id" => rid, "method" => String(method))
         params === nothing || (msg["params"] = params)
         _push_to_session_outbox!(session_id, msg) || return nothing
-        Base.timedwait(() -> isready(sink), timeout) === :ok || return nothing
+        if Base.timedwait(() -> isready(sink), timeout) !== :ok
+            # Timed out waiting for the user. Cancel the request client-side so a
+            # lingering prompt (e.g. an elicitation dialog) is dismissed instead of
+            # outliving our wait and firing a side effect on a late answer.
+            _push_to_session_outbox!(
+                session_id,
+                Dict{String,Any}(
+                    "jsonrpc" => "2.0",
+                    "method" => "notifications/cancelled",
+                    "params" =>
+                        Dict{String,Any}("requestId" => rid, "reason" => "timeout"),
+                ),
+            )
+            return nothing
+        end
         return take!(sink)
     finally
         lock(_PENDING_SERVER_REQUESTS_LOCK) do

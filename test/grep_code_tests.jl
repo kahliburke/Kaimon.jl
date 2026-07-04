@@ -61,7 +61,8 @@ using Kaimon
             # A relative path can't be anchored without a project → also refused.
             r2, _, e2 = Kaimon._grep_resolve_root(Dict{String,Any}("path" => "sub/dir"))
             @test r2 === nothing && e2 !== nothing
-            # But an explicit ABSOLUTE path is always honored.
+            # An explicit ABSOLUTE path resolves here — resolution doesn't guess a
+            # project; confinement is enforced separately in _grep_enforce_scope.
             d = mktempdir()
             r3, _, e3 = Kaimon._grep_resolve_root(Dict{String,Any}("path" => d))
             @test e3 === nothing && r3 == realpath(d)
@@ -70,6 +71,185 @@ using Kaimon
         # Caller-less (REPL/self) calls still fall back to cwd — no error.
         rootless, _, errless = Kaimon._grep_resolve_root(Dict{String,Any}())
         @test errless === nothing && rootless !== nothing
+    end
+
+    @testset "_grep_enforce_scope confines an agent to project + whitelist" begin
+        mktempdir() do cache
+            withenv(
+                "XDG_CACHE_HOME" => cache,
+                "XDG_CONFIG_HOME" => joinpath(cache, "config"),
+            ) do
+                mkpath(joinpath(cache, "kaimon"))
+                proj = mktempdir()
+                outside = mktempdir()
+                caller = "grep-scope-$(rand(UInt32))"
+                Kaimon.save_persisted_sessions(
+                    Dict{String,Dict}(
+                        caller => Dict(
+                            "created_at" => "2026-07-04T10:00:00",
+                            "last_seen" => "2026-07-04T10:00:00",
+                            "project_path" => proj,
+                        ),
+                    ),
+                )
+                task_local_storage(:mcp_caller, caller) do
+                    # Inside the bound project → allowed.
+                    @test Kaimon._grep_enforce_scope(realpath(proj)) === nothing
+                    # Outside, with no live session to elicit through → refused.
+                    e = Kaimon._grep_enforce_scope(realpath(outside))
+                    @test e !== nothing && occursin("scope", e)
+                    # Whitelisting it (what an "always allow" consent persists) → allowed.
+                    @test Kaimon.allow_grep_path!(outside)
+                    @test !isempty(Kaimon.grep_allowed_paths())
+                    @test Kaimon._grep_enforce_scope(realpath(outside)) === nothing
+                    # Adding the same path again is a no-op.
+                    @test Kaimon.allow_grep_path!(outside) == false
+                end
+                rm(proj; recursive = true)
+                rm(outside; recursive = true)
+            end
+        end
+        # Caller-less (REPL/self) is unconfined.
+        @test Kaimon._grep_enforce_scope("/etc") === nothing
+    end
+
+    @testset "_grep_enforce_scope consent outcomes (once/always/decline/timeout)" begin
+        mktempdir() do cache
+            withenv(
+                "XDG_CACHE_HOME" => cache,
+                "XDG_CONFIG_HOME" => joinpath(cache, "config"),
+            ) do
+                mkpath(joinpath(cache, "kaimon"))
+                proj = mktempdir()
+                out1 = mktempdir()
+                out2 = mktempdir()
+                caller = "grep-consent-$(rand(UInt32))"
+                Kaimon.save_persisted_sessions(
+                    Dict{String,Dict}(
+                        caller => Dict(
+                            "created_at" => "2026-07-04T10:00:00",
+                            "last_seen" => "2026-07-04T10:00:00",
+                            "project_path" => proj,
+                        ),
+                    ),
+                )
+                task_local_storage(:mcp_caller, caller) do
+                    # Decline → refused.
+                    ed = Kaimon._grep_enforce_scope(realpath(out1); consent = _ -> :denied)
+                    @test ed !== nothing && occursin("scope", ed)
+                    # Timeout → distinct retry message, still refused.
+                    et = Kaimon._grep_enforce_scope(realpath(out1); consent = _ -> :timeout)
+                    @test et !== nothing && occursin("within", et)
+                    # Approve once → allowed, and NOT persisted.
+                    @test Kaimon._grep_enforce_scope(realpath(out1); consent = _ -> :once) ===
+                          nothing
+                    @test isempty(Kaimon.grep_allowed_paths())
+                    # Approve always → allowed AND persisted to the whitelist.
+                    @test Kaimon._grep_enforce_scope(realpath(out2); consent = _ -> :always) ===
+                          nothing
+                    @test Kaimon.normalize_path(realpath(out2)) in Kaimon.grep_allowed_paths()
+                    # Now out2 is in scope — a declining consent isn't even consulted.
+                    @test Kaimon._grep_enforce_scope(realpath(out2); consent = _ -> :denied) ===
+                          nothing
+                    # ...but out1 (approved only once) still refuses.
+                    @test Kaimon._grep_enforce_scope(realpath(out1); consent = _ -> :denied) !==
+                          nothing
+                end
+                rm(proj; recursive = true)
+                rm(out1; recursive = true)
+                rm(out2; recursive = true)
+            end
+        end
+    end
+
+    @testset "a symlink inside the project can't escape scope" begin
+        mktempdir() do cache
+            withenv(
+                "XDG_CACHE_HOME" => cache,
+                "XDG_CONFIG_HOME" => joinpath(cache, "config"),
+            ) do
+                mkpath(joinpath(cache, "kaimon"))
+                proj = mktempdir()
+                outside = mktempdir()
+                symlink(outside, joinpath(proj, "escape"))
+                caller = "grep-symlink-$(rand(UInt32))"
+                Kaimon.save_persisted_sessions(
+                    Dict{String,Dict}(
+                        caller => Dict(
+                            "created_at" => "2026-07-04T10:00:00",
+                            "last_seen" => "2026-07-04T10:00:00",
+                            "project_path" => proj,
+                        ),
+                    ),
+                )
+                task_local_storage(:mcp_caller, caller) do
+                    # `proj/escape` looks in-project by name, but realpath follows the
+                    # symlink out, so resolution returns the real (outside) path...
+                    root, _, err = Kaimon._grep_resolve_root(
+                        Dict{String,Any}("path" => joinpath(proj, "escape")),
+                    )
+                    @test err === nothing && root == realpath(outside)
+                    # ...and confinement refuses it (no consent available).
+                    e = Kaimon._grep_enforce_scope(root; consent = _ -> :unsupported)
+                    @test e !== nothing && occursin("scope", e)
+                end
+                rm(joinpath(proj, "escape"))
+                rm(proj; recursive = true)
+                rm(outside; recursive = true)
+            end
+        end
+    end
+
+    @testset "grep is allowed within a broader declared workspace root" begin
+        mktempdir() do cache
+            withenv(
+                "XDG_CACHE_HOME" => cache,
+                "XDG_CONFIG_HOME" => joinpath(cache, "config"),
+            ) do
+                mkpath(joinpath(cache, "kaimon"))
+                parent = mktempdir()
+                sibling = joinpath(parent, "other")
+                mkpath(sibling)
+                caller = "grep-ws-$(rand(UInt32))"
+                # The caller's declared MCP workspace root is the parent directory.
+                Kaimon.save_persisted_sessions(
+                    Dict{String,Dict}(
+                        caller => Dict(
+                            "created_at" => "2026-07-04T10:00:00",
+                            "last_seen" => "2026-07-04T10:00:00",
+                            "workspace_root" => parent,
+                        ),
+                    ),
+                )
+                task_local_storage(:mcp_caller, caller) do
+                    # A sibling under the workspace root is in scope without a prompt.
+                    @test Kaimon._grep_enforce_scope(
+                        realpath(sibling);
+                        consent = _ -> :denied,
+                    ) === nothing
+                end
+                rm(parent; recursive = true)
+            end
+        end
+    end
+
+    @testset "allow_grep_path! preserves other config keys" begin
+        mktempdir() do cache
+            withenv("XDG_CONFIG_HOME" => joinpath(cache, "config")) do
+                cfgdir = joinpath(cache, "config", "kaimon")
+                mkpath(cfgdir)
+                write(
+                    joinpath(cfgdir, "projects.json"),
+                    """{"allow_any_project":true,"projects":[{"project_path":"/x","enabled":true}]}""",
+                )
+                @test Kaimon.allow_grep_path!("/some/dir")
+                # The new key is added...
+                @test Kaimon.normalize_path("/some/dir") in Kaimon.grep_allowed_paths()
+                # ...without dropping pre-existing top-level keys.
+                @test Kaimon.projects_allow_any() == true
+                @test length(Kaimon.load_projects_config()) == 1
+            end
+        end
     end
 
     @testset "_grep_code end-to-end (rg)" begin

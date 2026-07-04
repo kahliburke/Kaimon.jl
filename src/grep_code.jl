@@ -53,11 +53,10 @@ end
 _grep_canon(p::AbstractString) = try; realpath(p); catch; String(p); end
 
 const _GREP_NO_PROJECT_MSG =
-    "Error: no project is bound to your MCP session, so there's nothing to scope the " *
-    "search to. This usually means your session hasn't reassociated with its project " *
-    "after a Kaimon server restart. Pass an absolute `path=\"/abs/project\"` to scope " *
-    "the search explicitly, or reconnect the session. (Refusing to default to the " *
-    "server's own working directory, which would search the wrong repo.)"
+    "Error: no project is bound to your MCP session, so grep_code has nothing to scope " *
+    "to. This usually means the session hasn't reassociated with its project after a " *
+    "Kaimon server restart. Reconnect the session and try again. (Refusing to default " *
+    "to the server's own working directory, which would search the wrong repo.)"
 
 # The project root to search: the caller's bound session project (per-agent binding,
 # same source `search_code` defaults to). Returns "" for an AGENT caller with no bound
@@ -70,9 +69,127 @@ function _grep_base_root()
     return _grep_canon(pwd())
 end
 
+# ── Path confinement ─────────────────────────────────────────────────────────
+# grep_code runs in the Kaimon server process with full filesystem access, and no
+# MCP client enforces a file-access scope for a custom tool. So we confine it here:
+# a resolved path outside the session's allowed roots (the bound project, the caller's
+# declared MCP workspace roots, and the persisted grep whitelist) is not read until
+# the user approves it, via the same elicitation flow project approval uses. This
+# stops an agent from reading arbitrary files (e.g. ~/.ssh) through an absolute path.
+# Confinement is lifted for caller-less REPL/self calls (the human is driving) and in
+# `allow_any_project` container mode (the environment is the boundary).
+
+# The absolute roots grep may read for the current caller: the resolved project, the
+# caller's declared MCP workspace roots (the dirs the user opened in their client), and
+# the persisted grep whitelist — canonicalized (realpath) so `..`/symlinks can't slip
+# the fence. NOTE: allowed *projects* are intentionally NOT included; approving a
+# project for a session doesn't make it grep-readable — that needs its own opt-in.
+function _grep_allowed_roots()
+    raw = String[]
+    p = try; _last_session_project_path(); catch; ""; end
+    isempty(p) || push!(raw, p)
+    caller = try; _current_mcp_caller(); catch; ""; end
+    if !isempty(caller)
+        wr = try
+            lock(_SESSION_WORKSPACE_ROOT_LOCK) do
+                get(_SESSION_WORKSPACE_ROOT, caller, "")
+            end
+        catch
+            ""
+        end
+        isempty(wr) || push!(raw, wr)
+        for f in (_persisted_workspace_root, _persisted_session_project)
+            v = try; f(caller); catch; nothing; end
+            v === nothing || push!(raw, v)
+        end
+    end
+    append!(raw, try; grep_allowed_paths(); catch; String[]; end)   # persisted whitelist
+    out = String[]
+    for r in raw
+        isempty(r) && continue
+        c = _grep_canon(r)
+        (isdir(c) && !(c in out)) && push!(out, c)
+    end
+    return out
+end
+
+_grep_path_within(abs::AbstractString, roots::Vector{String}) = any(roots) do r
+    a = rstrip(String(abs), '/')
+    rr = rstrip(r, '/')
+    a == rr || startswith(a, rr * "/")
+end
+
+_grep_out_of_scope_msg(abs::AbstractString, roots::Vector{String}) =
+    "Error: `$abs` is outside this session's allowed scope. grep_code is confined to " *
+    (isempty(roots) ? "the bound project (none is bound to this session)" :
+     "the project and workspace (" * join(roots, ", ") * ")") *
+    ". Reading elsewhere requires the user's approval, which was not given (no prompt " *
+    "shown, or declined). If you need this path, ask the user to approve it — don't try " *
+    "to grant it yourself."
+
+# Ask the user (via MCP elicitation) to approve grep reading an out-of-scope `path`.
+# Mirrors `_elicit_session_consent`: accept allows this call; the "remember" checkbox
+# adds it to the persisted grep whitelist. Returns :always / :once / :denied /
+# :timeout / :unsupported (no caller, no session, or a client that can't elicit).
+function _elicit_grep_path_consent(path::AbstractString)
+    caller = _current_mcp_caller()
+    isempty(caller) && return :unsupported
+    session = lock(STANDALONE_SESSIONS_LOCK) do
+        get(STANDALONE_SESSIONS, caller, nothing)
+    end
+    session === nothing && return :unsupported
+    _caps_may_elicit(session.client_capabilities) || return :unsupported
+    schema = Dict{String,Any}(
+        "type" => "object",
+        "properties" => Dict{String,Any}(
+            "remember" => Dict{String,Any}(
+                "type" => "boolean",
+                "title" => "Always allow grep to read this path (add to the allow-list)",
+                "default" => false,
+            ),
+        ),
+    )
+    msg =
+        "Claude wants grep_code to search files under:\n$path\n\nThis is outside the " *
+        "current project and workspace. Accept to allow this search. Check \"Always " *
+        "allow\" to add it to your grep allow-list and skip this prompt next time."
+    res = request_elicitation(caller, msg, schema; timeout = elicitation_timeout())
+    res isa AbstractDict || return :timeout
+    get(res, "action", "") == "accept" || return :denied
+    content = get(res, "content", nothing)
+    remember = content isa AbstractDict && get(content, "remember", false) === true
+    return remember ? :always : :once
+end
+
+# Confine an AGENT caller's resolved search root to its allowed roots. Caller-less and
+# container-mode calls are unconfined. An out-of-scope root triggers the consent prompt;
+# "always" persists the directory to the grep whitelist. Returns an error string to
+# abort, or `nothing` to proceed.
+function _grep_enforce_scope(root::AbstractString; consent = _elicit_grep_path_consent)
+    caller = try; _current_mcp_caller(); catch; ""; end
+    isempty(caller) && return nothing
+    (try; projects_allow_any(); catch; false; end) && return nothing
+    roots = _grep_allowed_roots()
+    _grep_path_within(root, roots) && return nothing
+    decision = try; consent(root); catch; :unsupported; end
+    if decision === :always
+        try; allow_grep_path!(isdir(root) ? root : dirname(root)); catch; end
+        return nothing
+    elseif decision === :once
+        return nothing
+    elseif decision === :timeout
+        return "Error: no answer to the grep access prompt within " *
+               "$(round(Int, elicitation_timeout()))s. Retry when you're ready to " *
+               "approve reading `$root`."
+    else  # :denied / :unsupported
+        return _grep_out_of_scope_msg(root, roots)
+    end
+end
+
 # Resolve the search root + base (for relative display). `file`/`path` narrow the scan;
 # both resolve relative to the bound project (or absolute). Returns (root, base, err).
-# Both are canonical so rg's slash-globs anchor correctly (see `_grep_canon`).
+# Both are canonical so rg's slash-globs anchor correctly (see `_grep_canon`). Path
+# CONFINEMENT is enforced separately in `_grep_enforce_scope` (it may prompt the user).
 function _grep_resolve_root(args)
     base = _grep_base_root()
     target = something(_grep_str(args, "file"), _grep_str(args, "path"), Some(nothing))
@@ -83,9 +200,9 @@ function _grep_resolve_root(args)
     end
     # A relative path needs a project to anchor to; without one we can't resolve it.
     (!isabspath(target) && isempty(base)) && return (nothing, "", _GREP_NO_PROJECT_MSG)
-    abs = isabspath(target) ? target : abspath(joinpath(base, target))
+    abs = _grep_canon(isabspath(target) ? target : abspath(joinpath(base, target)))
     ispath(abs) || return (nothing, base, "Error: path not found: $(target) (resolved to $abs)")
-    return (_grep_canon(abs), base, nothing)
+    return (abs, base, nothing)
 end
 
 # Collection name for semantic ranking: explicit `collection` arg, else the scope
@@ -300,6 +417,9 @@ function _grep_code(args)
 
     root, base, err = _grep_resolve_root(args)
     root === nothing && return err
+    # Path confinement (may prompt the user to approve an out-of-scope read).
+    scope_err = _grep_enforce_scope(root)
+    scope_err === nothing || return scope_err
 
     limit = Int(get(args, "limit", 40))
     ctx_arg = max(0, Int(get(args, "context", 0)))

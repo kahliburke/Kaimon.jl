@@ -317,6 +317,66 @@ function allow_project!(path::String)
     return true
 end
 
+# ── Grep path allow-list ─────────────────────────────────────────────────────
+# grep_code is confined to the bound project + the caller's declared workspace
+# roots. Reading anywhere else needs an explicit, persisted opt-in (granted via the
+# elicitation "always" consent, or hand-edited), stored as a flat list of absolute
+# directories under `grep_paths` in projects.json. This is a per-path whitelist,
+# NOT a blanket switch, and it is deliberately separate from the project allow-list
+# (approving a project for a session does not make it grep-readable).
+
+"""
+    grep_allowed_paths() -> Vector{String}
+
+The persisted list of extra directories `grep_code` may read (`grep_paths` in
+projects.json), normalized. Empty when unset.
+"""
+function grep_allowed_paths()::Vector{String}
+    path = get_projects_config_path()
+    isfile(path) || return String[]
+    try
+        raw = get(JSON.parsefile(path), "grep_paths", nothing)
+        raw isa AbstractVector || return String[]
+        out = String[]
+        for p in raw
+            (p isa AbstractString && !isempty(p)) && push!(out, normalize_path(String(p)))
+        end
+        return out
+    catch
+        return String[]
+    end
+end
+
+"""
+    allow_grep_path!(path::AbstractString) -> Bool
+
+Add `path` to the grep allow-list (`grep_paths` in projects.json) and persist,
+preserving all other config keys (read-then-merge). Used to remember an interactive
+"always allow" consent. Returns `true` if the list changed, `false` if already present.
+"""
+function allow_grep_path!(path::AbstractString)::Bool
+    norm = normalize_path(String(path))
+    isempty(norm) && return false
+    cfg = get_projects_config_path()
+    mkpath(dirname(cfg))
+    data =
+        isfile(cfg) ? (try; JSON.parsefile(cfg); catch; Dict{String,Any}(); end) :
+        Dict{String,Any}()
+    raw = get(data, "grep_paths", nothing)
+    list = String[]
+    raw isa AbstractVector && for p in raw
+        p isa AbstractString && push!(list, String(p))
+    end
+    any(p -> normalize_path(p) == norm, list) && return false
+    push!(list, norm)
+    data["grep_paths"] = list
+    open(cfg, "w") do io
+        JSON.print(io, data, 2)
+        println(io)
+    end
+    return true
+end
+
 # ── TCP Gates Registry ───────────────────────────────────────────────────────
 # Persistent list of TCP gate endpoints that Kaimon polls for connections.
 

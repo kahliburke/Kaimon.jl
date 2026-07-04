@@ -268,6 +268,34 @@ function set_tui_fps!(fps::Integer)
     return fps
 end
 
+# ── Elicitation prompt timeout ───────────────────────────────────────────────
+const _ELICITATION_TIMEOUT_DEFAULT = 50.0
+
+"""
+    elicitation_timeout() -> Float64
+
+Seconds to wait for the user to answer an MCP elicitation prompt (grep out-of-scope
+access, `start_session` project approval). Resolution: env `KAIMON_ELICITATION_TIMEOUT`
+> config.json `"elicitation_timeout"` > default $(_ELICITATION_TIMEOUT_DEFAULT). Keep it
+at or under your MCP client's per-tool-call timeout, or the client abandons the call
+(and, until it is cancelled, the prompt lingers) before you can answer.
+"""
+function elicitation_timeout()::Float64
+    env = tryparse(Float64, strip(get(ENV, "KAIMON_ELICITATION_TIMEOUT", "")))
+    (env !== nothing && env > 0) && return env
+    t = _ELICITATION_TIMEOUT_DEFAULT
+    try
+        p = get_global_config_path()
+        if isfile(p)
+            data = JSON.parse(read(p, String); dicttype = Dict{String,Any})
+            v = get(data, "elicitation_timeout", nothing)
+            (v isa Real && v > 0) && (t = Float64(v))
+        end
+    catch
+    end
+    return t
+end
+
 """
     _get_global_install_dismissed() -> Bool
 
