@@ -98,6 +98,16 @@ function _bind_caller_session!(gate_key::AbstractString)
         s = get(STANDALONE_SESSIONS, caller, nothing)
         s === nothing || (s.target_julia_session_id = String(gate_key))
     end
+    # Persist the bound gate's project so a reconnect to a restarted server can
+    # reassociate this MCP session id with its project — even when MCP roots were
+    # never captured (they arrive via an async roots/list over the SSE stream).
+    mgr = GATE_CONN_MGR[]
+    if mgr !== nothing
+        conn = get_connection_by_key(mgr, String(gate_key))
+        if conn !== nothing && !isempty(conn.project_path)
+            try; _persist_session_project!(caller, conn.project_path); catch; end
+        end
+    end
     return nothing
 end
 
@@ -124,8 +134,11 @@ function _last_session_project_path()
         # In-memory root missing — the bound gate may have died (step 1 fell through) or the
         # caller reconnected/was restored onto a session whose in-memory root wasn't
         # repopulated (`_ensure_session_binding!` early-returns when a stale target is still
-        # set). Fall back to the caller's OWN persisted workspace root — its real project, not
-        # a guess. Without this, grep_code/search_code silently scope to the server's cwd.
+        # set). Fall back to the caller's OWN persisted project (recorded when it bound to a
+        # gate), then its persisted MCP workspace root — its real project, not a guess.
+        # Without this, grep_code/search_code silently scope to the server's cwd.
+        pp = _persisted_session_project(caller)
+        pp === nothing || return pp
         pr = _persisted_workspace_root(caller)
         pr === nothing || return pr
     end
@@ -205,7 +218,13 @@ function _ensure_session_binding!(session)
         get(_SESSION_WORKSPACE_ROOT, session.id, "")
     end
     if isempty(root)
-        pr = _persisted_workspace_root(session.id)
+        # Prefer the persisted resolved project (recorded on gate bind — reliable),
+        # else the roots-derived workspace root (async, often absent).
+        pr = something(
+            _persisted_session_project(session.id),
+            _persisted_workspace_root(session.id),
+            Some(nothing),
+        )
         pr === nothing && return
         root = pr
         lock(_SESSION_WORKSPACE_ROOT_LOCK) do

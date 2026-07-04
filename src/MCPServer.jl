@@ -169,6 +169,38 @@ function _persisted_workspace_root(session_id::AbstractString)
     (r isa AbstractString && !isempty(r)) ? String(r) : nothing
 end
 
+"""
+    _persist_session_project!(session_id, project_path)
+
+Persist the RESOLVED gate project for a session. Unlike `workspace_root` (which is
+only known after the async MCP `roots/list` round-trip over the SSE stream, so it's
+often never captured), the project is known the moment an agent binds to a gate via
+`ex(ses=…)` or a roots auto-match. Recording it here lets a reconnect after a server
+restart reassociate the id with its project even when roots were never captured.
+"""
+function _persist_session_project!(session_id::AbstractString, project_path::AbstractString)
+    isempty(project_path) && return
+    lock(_SESSIONS_FILE_LOCK) do
+        sessions = load_persisted_sessions()
+        now_str = Dates.format(now(), "yyyy-mm-dd\\THH:MM:SS")
+        entry = get!(
+            sessions,
+            String(session_id),
+            Dict("created_at" => now_str, "last_seen" => now_str),
+        )
+        entry["project_path"] = String(project_path)
+        save_persisted_sessions(sessions)
+    end
+end
+
+"""The persisted resolved gate project for a session, or `nothing`."""
+function _persisted_session_project(session_id::AbstractString)
+    entry = get(load_persisted_sessions(), String(session_id), nothing)
+    entry === nothing && return nothing
+    r = get(entry, "project_path", nothing)
+    (r isa AbstractString && !isempty(r)) ? String(r) : nothing
+end
+
 """Persist a session's negotiated capabilities/info/protocol so they survive a
 reconnect that doesn't re-`initialize`. Without this, a client that advertised
 e.g. `elicitation` at initialize looks incapable after a restore (Claude Code

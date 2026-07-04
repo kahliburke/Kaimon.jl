@@ -52,11 +52,22 @@ end
 # the raw path if it can't be resolved.
 _grep_canon(p::AbstractString) = try; realpath(p); catch; String(p); end
 
+const _GREP_NO_PROJECT_MSG =
+    "Error: no project is bound to your MCP session, so there's nothing to scope the " *
+    "search to. This usually means your session hasn't reassociated with its project " *
+    "after a Kaimon server restart. Pass an absolute `path=\"/abs/project\"` to scope " *
+    "the search explicitly, or reconnect the session. (Refusing to default to the " *
+    "server's own working directory, which would search the wrong repo.)"
+
 # The project root to search: the caller's bound session project (per-agent binding,
-# same source `search_code` defaults to), else the cwd. Canonicalized (see `_grep_canon`).
+# same source `search_code` defaults to). Returns "" for an AGENT caller with no bound
+# project — the caller then errors rather than silently scoping to the server's cwd
+# (the wrong-repo bug). Caller-less (REPL/self) calls still fall back to cwd as before.
 function _grep_base_root()
     p = try; _last_session_project_path(); catch; ""; end
-    _grep_canon((!isempty(p) && isdir(p)) ? p : pwd())
+    (!isempty(p) && isdir(p)) && return _grep_canon(p)
+    isempty(_current_mcp_caller()) || return ""   # agent with no project → signal error
+    return _grep_canon(pwd())
 end
 
 # Resolve the search root + base (for relative display). `file`/`path` narrow the scan;
@@ -65,7 +76,13 @@ end
 function _grep_resolve_root(args)
     base = _grep_base_root()
     target = something(_grep_str(args, "file"), _grep_str(args, "path"), Some(nothing))
-    target === nothing && return (base, base, nothing)
+    if target === nothing
+        # No explicit path and no bound project (agent caller) → refuse, don't guess.
+        isempty(base) && return (nothing, "", _GREP_NO_PROJECT_MSG)
+        return (base, base, nothing)
+    end
+    # A relative path needs a project to anchor to; without one we can't resolve it.
+    (!isabspath(target) && isempty(base)) && return (nothing, "", _GREP_NO_PROJECT_MSG)
     abs = isabspath(target) ? target : abspath(joinpath(base, target))
     ispath(abs) || return (nothing, base, "Error: path not found: $(target) (resolved to $abs)")
     return (_grep_canon(abs), base, nothing)

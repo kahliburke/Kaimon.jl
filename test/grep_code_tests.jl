@@ -52,6 +52,26 @@ using Kaimon
         rm(dir; recursive = true)
     end
 
+    @testset "_grep_resolve_root refuses server-cwd fallback for an unbound agent" begin
+        caller = "grep-guard-$(rand(UInt32))"
+        task_local_storage(:mcp_caller, caller) do
+            # Agent caller, no bound project, no explicit path → error, not server cwd.
+            root, _, err = Kaimon._grep_resolve_root(Dict{String,Any}())
+            @test root === nothing && err !== nothing && occursin("no project", err)
+            # A relative path can't be anchored without a project → also refused.
+            r2, _, e2 = Kaimon._grep_resolve_root(Dict{String,Any}("path" => "sub/dir"))
+            @test r2 === nothing && e2 !== nothing
+            # But an explicit ABSOLUTE path is always honored.
+            d = mktempdir()
+            r3, _, e3 = Kaimon._grep_resolve_root(Dict{String,Any}("path" => d))
+            @test e3 === nothing && r3 == realpath(d)
+            rm(d; recursive = true)
+        end
+        # Caller-less (REPL/self) calls still fall back to cwd — no error.
+        rootless, _, errless = Kaimon._grep_resolve_root(Dict{String,Any}())
+        @test errless === nothing && rootless !== nothing
+    end
+
     @testset "_grep_code end-to-end (rg)" begin
         if Kaimon._rg_argv() === nothing
             @test_skip "ripgrep not available"

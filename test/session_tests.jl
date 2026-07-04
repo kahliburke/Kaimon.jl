@@ -72,6 +72,33 @@ using Kaimon.Session: UNINITIALIZED, INITIALIZING, INITIALIZED, CLOSED
         end
     end
 
+    @testset "persisted gate project is recorded and preferred for reassociation" begin
+        mktempdir() do cache
+            withenv("XDG_CACHE_HOME" => cache) do
+                mkpath(joinpath(cache, "kaimon"))
+                caller = "bind-caller-$(rand(UInt32))"
+                # Nothing recorded yet.
+                @test Kaimon._persisted_session_project(caller) === nothing
+                # Binding to a gate records the RESOLVED project (reliable, non-SSE).
+                Kaimon._persist_session_project!(caller, "/home/dev/KaimonSlate.jl")
+                @test Kaimon._persisted_session_project(caller) == "/home/dev/KaimonSlate.jl"
+                # Empty project is ignored (no spurious overwrite/entry).
+                Kaimon._persist_session_project!(caller, "")
+                @test Kaimon._persisted_session_project(caller) == "/home/dev/KaimonSlate.jl"
+                # On reconnect, resolution prefers the gate project over a broader
+                # workspace root — it's the project the agent actually worked in.
+                Kaimon.save_persisted_sessions(Dict{String,Dict}(
+                    caller => Dict("created_at" => "2026-07-04T10:00:00",
+                        "last_seen" => "2026-07-04T10:00:00",
+                        "workspace_root" => "/home/dev",
+                        "project_path" => "/home/dev/KaimonSlate.jl")))
+                task_local_storage(:mcp_caller, caller) do
+                    @test Kaimon._last_session_project_path() == "/home/dev/KaimonSlate.jl"
+                end
+            end
+        end
+    end
+
     @testset "Session Initialization - Success" begin
         session = MCPSession()
 
