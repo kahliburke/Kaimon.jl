@@ -468,8 +468,12 @@ function connected_sessions(mgr::ConnectionManager)
     end
 end
 
-"""Short unique session key — first 8 chars for UUIDs, full ID for TCP sessions."""
-short_key(conn::REPLConnection) = startswith(conn.session_id, "tcp-") ? conn.session_id : first(conn.session_id, 8)
+"""Short unique session key — first 8 chars for UUIDs, full ID for TCP sessions.
+The 8-char truncation collides for local TCP ids (`tcp-127.0.0.1-9100`, `…-9102` all
+start with `tcp-127.`), so anything keying per-session (ECG, health) must use this,
+not a raw `session_id[1:8]`."""
+short_key(sid::AbstractString) = startswith(sid, "tcp-") ? String(sid) : first(sid, 8)
+short_key(conn::REPLConnection) = short_key(conn.session_id)
 
 """Look up a connection by its 8-char short key. Returns nothing if not found.
 Includes stalled sessions so tools can still interact with them."""

@@ -99,6 +99,20 @@ using Kaimon.Session: UNINITIALIZED, INITIALIZING, INITIALIZED, CLOSED
         end
     end
 
+    @testset "short_key is unique per session (no TCP 8-char collision)" begin
+        # UUID-style ids → first 8 chars.
+        @test Kaimon.short_key("477cca57deadbeef") == "477cca57"
+        @test Kaimon.short_key("aaaaaaaa") == "aaaaaaaa"
+        # TCP ids → the FULL id, so distinct ports stay distinct. A raw session_id[1:8]
+        # truncation would collapse both to "tcp-127." and merge their ECG/health —
+        # the duplicated-heartbeat bug across local TCP (KaimonSlate) sessions.
+        a = Kaimon.short_key("tcp-127.0.0.1-9100")
+        b = Kaimon.short_key("tcp-127.0.0.1-9102")
+        @test a == "tcp-127.0.0.1-9100"
+        @test a != b
+        @test first("tcp-127.0.0.1-9100", 8) == first("tcp-127.0.0.1-9102", 8)  # the trap
+    end
+
     @testset "Session Initialization - Success" begin
         session = MCPSession()
 

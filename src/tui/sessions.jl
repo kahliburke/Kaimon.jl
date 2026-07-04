@@ -147,8 +147,11 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
             y_virtual = advance(y_virtual)
         end
 
-        # Health gauge (error-rate, per-session)
-        conn_key = conn.session_id[1:min(8, length(conn.session_id))]
+        # Health gauge (error-rate, per-session). Key by short_key, NOT a raw
+        # session_id[1:8] — the latter collides for local TCP ids (all "tcp-127."),
+        # which merges every TCP session's ECG/health into one (issue: duplicated
+        # heartbeat traces across KaimonSlate notebooks).
+        conn_key = short_key(conn)
         y_virtual = advance(y_virtual)  # blank separator
         health, _ = _compute_health(m, conn_key)
         in_view(y_virtual) && set_string!(buf, x, y_virtual, "Health", tstyle(:text_dim))

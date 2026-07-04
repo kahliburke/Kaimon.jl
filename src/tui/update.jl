@@ -360,9 +360,11 @@ function Tachikoma.update!(m::KaimonModel, evt::TaskEvent)
             end
         end
     elseif evt.id == :session_pong
-        # Health check pong arrived — trigger ECG blip for this session
+        # Health check pong arrived — trigger ECG blip for this session. Key by
+        # short_key (full id for TCP), matching the render side — a raw session_id[1:8]
+        # collides for local TCP ids and blips every session's ECG onto one trace.
         info = evt.value
-        key = info.session_id[1:min(8, length(info.session_id))]
+        key = short_key(info.session_id)
         ecg = _get_ecg!(m, key)
         ecg.pending_blips += 1
     elseif evt.id == :mcp_server_started
