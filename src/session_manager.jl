@@ -382,6 +382,19 @@ function _monitor_managed_sessions!(conn_mgr)
             end
         end
 
+        # Reflect the user-provided session name (from `start_session(name=…)`)
+        # in the linked connection's display name, so the Sessions table shows
+        # "iocap-repro" rather than the name derived from the project directory.
+        # Runs every tick so it also converges an already-connected session, and
+        # _derive_display_name won't clobber it (it only fills an empty name).
+        if !isempty(ms.name) && !isempty(ms.session_key)
+            for conn in conns
+                if short_key(conn) == ms.session_key && conn.display_name != ms.name
+                    conn.display_name = ms.name
+                end
+            end
+        end
+
         if ms.status == :starting
             # Look for a matching gate session by project_path
             norm_path = try
