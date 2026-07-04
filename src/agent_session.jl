@@ -90,6 +90,15 @@ servers are kept (no `--strict-mcp-config`). Returns the file path, or `nothing`
 server port isn't up yet (the agent then uses its default config, uncorrelated)."""
 function _agent_mcp_config(agent_id::AbstractString)::Union{String,Nothing}
     port = MCP_SERVER_PORT[]
+    if port == 0
+        # Fallback for a server whose start predates MCP_SERVER_PORT[] (Revise reloads
+        # code, not start-time state): the running TUI model carries the live port.
+        try
+            m = TUI_MODEL[]
+            m === nothing || (port = m.server_port)
+        catch
+        end
+    end
     port == 0 && return nothing
     headers = Dict{String,Any}("X-Kaimon-Agent-Id" => String(agent_id))
     key = try; _get_api_key(); catch; nothing; end

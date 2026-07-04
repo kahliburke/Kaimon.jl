@@ -1014,6 +1014,7 @@ function start_mcp_server(
     security_config::Union{SecurityConfig,Nothing} = nothing,
     session_uuid::Union{String,Nothing} = nothing,
 )
+    MCP_SERVER_PORT[] = port   # publish the live port for agent MCP-config generation
     # Use provided UUID or generate a new one (persists across reconnections)
     session_uuid = session_uuid !== nothing ? session_uuid : string(UUIDs.uuid4())
 
