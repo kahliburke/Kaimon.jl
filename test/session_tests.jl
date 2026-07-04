@@ -113,6 +113,46 @@ using Kaimon.Session: UNINITIALIZED, INITIALIZING, INITIALIZED, CLOSED
         @test first("tcp-127.0.0.1-9100", 8) == first("tcp-127.0.0.1-9102", 8)  # the trap
     end
 
+    @testset "agent-id: session map + header extraction" begin
+        sid = "sess-$(rand(UInt32))"
+        @test Kaimon._session_agent_id(sid) == ""
+        Kaimon._set_session_agent_id!(sid, "agent-abcd")
+        @test Kaimon._session_agent_id(sid) == "agent-abcd"
+        # Empty inputs are ignored (no clobber, no spurious entry).
+        Kaimon._set_session_agent_id!(sid, "")
+        @test Kaimon._session_agent_id(sid) == "agent-abcd"
+        Kaimon._set_session_agent_id!("", "x")
+        @test Kaimon._session_agent_id("") == ""
+        # Header extraction is case-insensitive; "" when absent.
+        with = (headers = ["Content-Type" => "application/json", "X-Kaimon-Agent-Id" => "aid-1"],)
+        none = (headers = ["Content-Type" => "application/json"],)
+        @test Kaimon.extract_agent_id(with) == "aid-1"
+        @test Kaimon.extract_agent_id(none) == ""
+    end
+
+    @testset "agent-id: generated MCP config carries the header" begin
+        mktempdir() do cache
+            withenv(
+                "XDG_CACHE_HOME" => cache,
+                "XDG_CONFIG_HOME" => joinpath(cache, "config"),
+            ) do
+                old = Kaimon.MCP_SERVER_PORT[]
+                try
+                    Kaimon.MCP_SERVER_PORT[] = 0
+                    @test Kaimon._agent_mcp_config("aid-x") === nothing  # no port → no config
+                    Kaimon.MCP_SERVER_PORT[] = 12345
+                    p = Kaimon._agent_mcp_config("aid-x")
+                    @test p !== nothing && isfile(p)
+                    k = Kaimon.JSON.parse(read(p, String))["mcpServers"]["kaimon"]
+                    @test occursin("12345", k["url"])
+                    @test k["headers"]["X-Kaimon-Agent-Id"] == "aid-x"
+                finally
+                    Kaimon.MCP_SERVER_PORT[] = old
+                end
+            end
+        end
+    end
+
     @testset "Session Initialization - Success" begin
         session = MCPSession()
 

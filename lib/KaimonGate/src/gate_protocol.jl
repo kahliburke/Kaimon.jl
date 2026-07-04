@@ -439,9 +439,12 @@ function handle_message(request::NamedTuple)
         # bare 2-arg setter would leak the caller into the next request handled on
         # that task. Scoping clears it on return. current_caller() reads :gate_caller.
         caller = string(get(request, :caller, ""))
+        agent_id = string(get(request, :agent_id, ""))
         try
             result = task_local_storage(:gate_caller, caller) do
-                _dispatch_tool_call(tool.handler, tool_args)
+                task_local_storage(:gate_agent_id, agent_id) do
+                    _dispatch_tool_call(tool.handler, tool_args)
+                end
             end
             return (type = :result, value = result)
         catch e
@@ -466,6 +469,7 @@ function handle_message(request::NamedTuple)
         # spawn so the captured `request` value is used). This path spawns a fresh
         # task per call, so the bare 2-arg setter below is already naturally scoped.
         caller = string(get(request, :caller, ""))
+        agent_id = string(get(request, :agent_id, ""))
 
         # Run tool handler on a default-pool thread so the interactive message
         # loop stays responsive to pings during CPU-intensive tool calls.
@@ -475,6 +479,7 @@ function handle_message(request::NamedTuple)
                 task_local_storage(:gate_request_id, request_id)
                 task_local_storage(:gate_progress, true)
                 task_local_storage(:gate_caller, caller)
+                task_local_storage(:gate_agent_id, agent_id)
 
                 result = _dispatch_tool_call(tool.handler, tool_args; tool_name = tool.name)
                 _stderr_finish!()

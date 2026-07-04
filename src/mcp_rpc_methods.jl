@@ -546,12 +546,15 @@ function _rpc_tools_call(request, tools, name_to_id, session = nothing)
                     # Session-tool handlers (gate_client_tools.jl) read :mcp_caller
                     # and forward it over the wire as the request's :caller field.
                     caller = session === nothing ? "" : session.id
+                    agent_id = _session_agent_id(caller)   # "" unless a Kaimon-owned agent
 
                     # Non-streaming mode (streaming handled in hybrid_handler)
                     # Use invokelatest to pick up Revise changes to tool handlers
                     result_text = try
                         task_local_storage(:mcp_caller, caller) do
-                            Base.invokelatest(tool.handler, args)
+                            task_local_storage(:mcp_agent_id, agent_id) do
+                                Base.invokelatest(tool.handler, args)
+                            end
                         end
                     catch
                         tool_ok = false

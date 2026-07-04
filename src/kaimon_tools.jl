@@ -267,6 +267,9 @@ function start!(;
         end
     end
 
+    # Publish the resolved port so agent_open can build a spawned agent's MCP config.
+    MCP_SERVER_PORT[] = actual_port
+
     # Override security mode if specified
     if security_mode !== nothing
         if !(security_mode in [:strict, :relaxed, :lax])

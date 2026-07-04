@@ -375,6 +375,15 @@ function extract_mcp_session_id(req)
     return nothing
 end
 
+"""Extract the `X-Kaimon-Agent-Id` header, present on requests from a Kaimon-spawned
+agent (injected into its generated MCP config). Empty string when absent."""
+function extract_agent_id(req)
+    for (name, value) in req.headers
+        lowercase(name) == "x-kaimon-agent-id" && return String(value)
+    end
+    return ""
+end
+
 # Import Prompts module
 include("prompts.jl")
 using .Prompts
@@ -917,9 +926,11 @@ function _handle_gate_tool_sse(
     # handler via a task-local, scoped to this dispatch. Session-tool handlers
     # (gate_client_tools.jl) read :mcp_caller and forward it as request :caller.
     caller = session === nothing ? "" : session.id
+    agent_id = _session_agent_id(caller)   # "" unless a Kaimon-owned agent
 
     result_text = try
       task_local_storage(:mcp_caller, caller) do
+       task_local_storage(:mcp_agent_id, agent_id) do
         # Call tool handler with progress callback piped through
         # The tool handler calls execute_via_gate_streaming which accepts on_progress
         # We inject on_progress into the args dict as a special key that execute_via_gate_streaming
@@ -949,6 +960,7 @@ function _handle_gate_tool_sse(
             args["_on_progress"] = send_progress
             Base.invokelatest(tool.handler, args)
         end
+       end  # task_local_storage(:mcp_agent_id) do
       end  # task_local_storage(:mcp_caller) do
     catch e
         tool_ok = false
@@ -1098,6 +1110,12 @@ function start_mcp_server(
             # Update activity timestamp so the reaper doesn't kill active sessions
             if session !== nothing
                 Session.update_activity!(session)
+                # Record the owning Kaimon agent (from the X-Kaimon-Agent-Id header the
+                # agent's generated MCP config carries), so tool dispatch can tag this
+                # session's extension calls with the agent_id.
+                let aid = try; extract_agent_id(req); catch; ""; end
+                    isempty(aid) || _set_session_agent_id!(session.id, aid)
+                end
                 # Restore the agent→gate binding for a session brought back from
                 # persistence after a restart (no re-initialize). Fast no-op once bound.
                 if !is_new_session

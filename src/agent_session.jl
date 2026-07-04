@@ -82,6 +82,38 @@ function _split_model_effort(model::AbstractString)
     return (String(base), isempty(eff) ? nothing : String(eff))
 end
 
+"""Generate a temporary MCP config for a spawned agent that points at this Kaimon
+server with an `X-Kaimon-Agent-Id: <agent_id>` header, so the agent's tool calls
+(including extension `slate_*` calls) are attributable to it. Merges over the agent's
+default `claude` config — the `kaimon` server entry is overridden by name, other MCP
+servers are kept (no `--strict-mcp-config`). Returns the file path, or `nothing` if the
+server port isn't up yet (the agent then uses its default config, uncorrelated)."""
+function _agent_mcp_config(agent_id::AbstractString)::Union{String,Nothing}
+    port = MCP_SERVER_PORT[]
+    port == 0 && return nothing
+    headers = Dict{String,Any}("X-Kaimon-Agent-Id" => String(agent_id))
+    key = try; _get_api_key(); catch; nothing; end
+    key === nothing || (headers["Authorization"] = "Bearer $key")
+    cfg = Dict(
+        "mcpServers" => Dict(
+            "kaimon" => Dict(
+                "type" => "http",
+                "url" => "http://localhost:$port/mcp",
+                "headers" => headers,
+            ),
+        ),
+    )
+    try
+        dir = joinpath(kaimon_cache_dir(), "agents")
+        mkpath(dir)
+        path = joinpath(dir, "$(agent_id)-mcp.json")
+        write(path, JSON.json(cfg))
+        return path
+    catch
+        return nothing
+    end
+end
+
 function agent_open(; cwd::String,
                     model::String = "sonnet",   # family alias → the CLI's latest Sonnet
                     permission::String = "default",
@@ -124,9 +156,12 @@ function agent_open(; cwd::String,
         # Optional inline effort suffix, e.g. "claude-sonnet-5/high" or "sonnet/low".
         # An explicit `effort=` arg wins over the suffix.
         base_model, suffix_effort = _split_model_effort(model)
+        # No explicit mcp_config → generate one that points at this Kaimon server with
+        # this agent's id header, so its tool calls are attributable (_agent_mcp_config).
+        agent_mcp = mcp_config === nothing ? _agent_mcp_config(aid) : mcp_config
         ClaudeBackend(; model = base_model, permission_mode = final_mode,
                       allowed_tools = final_allowed, disallowed_tools = disallowed_tools,
-                      mcp_config = mcp_config, system_prompt = system_prompt,
+                      mcp_config = agent_mcp, system_prompt = system_prompt,
                       effort = effort !== nothing ? effort : suffix_effort,
                       dangerously_skip = dangerous)
     end

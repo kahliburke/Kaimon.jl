@@ -101,14 +101,18 @@ function _call_session_tool(conn::REPLConnection, tool_name::String, args::Dict)
         return "Error: Gate not connected (session=$(conn.session_id))"
     end
 
-    # Caller identity: the invoking agent's Mcp-Session-Id, set as a task-local
-    # by the MCP server around tool dispatch (empty for a self/nested call).
+    # Caller identity: the invoking agent's Mcp-Session-Id, set as a task-local by
+    # the MCP server around tool dispatch (empty for a self/nested call). The owning
+    # Kaimon agent_id (if any) rides alongside so an extension can tell a built-in
+    # agent's calls from an external client's.
     caller_id = string(get(task_local_storage(), :mcp_caller, ""))
+    agent_id = string(get(task_local_storage(), :mcp_agent_id, ""))
     request = (
         type = :tool_call,
         name = tool_name,
         arguments = Dict{String,Any}(string(k) => v for (k, v) in args),
         caller = caller_id,
+        agent_id = agent_id,
     )
     result = _req_send_recv(conn, request; caller_timeout = 30.0)
     if result.ok
@@ -159,9 +163,11 @@ function _call_session_tool_async(
         conn._eval_inboxes[request_id] = my_inbox
     end
 
-    # Caller identity: the invoking agent's Mcp-Session-Id, set as a task-local
-    # by the MCP server around tool dispatch (empty for a self/nested call).
+    # Caller identity: the invoking agent's Mcp-Session-Id, set as a task-local by the
+    # MCP server around tool dispatch (empty for a self/nested call); the owning Kaimon
+    # agent_id (if any) rides alongside.
     caller_id = string(get(task_local_storage(), :mcp_caller, ""))
+    agent_id = string(get(task_local_storage(), :mcp_agent_id, ""))
 
     # Phase 1: Send tool_call_async request via REQ worker (non-blocking)
     request = (
@@ -170,6 +176,7 @@ function _call_session_tool_async(
         arguments = Dict{String,Any}(string(k) => v for (k, v) in args),
         request_id = request_id,
         caller = caller_id,
+        agent_id = agent_id,
     )
     hs_result = _req_send_recv(conn, request; caller_timeout = 10.0)
 

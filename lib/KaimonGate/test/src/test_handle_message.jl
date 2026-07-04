@@ -90,6 +90,43 @@ end
     end
 end
 
+# ── agent_id threading (built-in vs external caller identification) ────────────
+
+@testset ":tool_call threads agent_id → current_agent_id()" begin
+    tool = KaimonGate.GateTool(
+        "whoami",
+        (marker::String) -> "$marker:" * something(KaimonGate.current_agent_id(), "NONE"),
+    )
+    with_gate_state(tools=[tool]) do
+        r = KaimonGate.handle_message((
+            type=:tool_call,
+            name="whoami",
+            arguments=Dict{String,Any}("marker" => "x"),
+            caller="s1",
+            agent_id="agent-7",
+        ))
+        @test r.type == :result && r.value == "x:agent-7"
+        # A call with no agent_id field (external client) → current_agent_id() is nothing.
+        r2 = KaimonGate.handle_message((
+            type=:tool_call,
+            name="whoami",
+            arguments=Dict{String,Any}("marker" => "x"),
+            caller="s1",
+        ))
+        @test r2.value == "x:NONE"
+    end
+end
+
+@testset "current_agent_id outside dispatch" begin
+    @test KaimonGate.current_agent_id() === nothing
+    task_local_storage(:gate_agent_id, "agent-9") do
+        @test KaimonGate.current_agent_id() == "agent-9"
+    end
+    task_local_storage(:gate_agent_id, "") do
+        @test KaimonGate.current_agent_id() === nothing
+    end
+end
+
 # ── TCP auth: IPC mode skips auth ─────────────────────────────────────────────
 # Adapted from Kaimon gate_async_tests "IPC mode skips auth"
 

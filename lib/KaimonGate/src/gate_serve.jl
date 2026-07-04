@@ -851,3 +851,17 @@ lock) to the implicit caller session rather than a model-threaded token.
 """
 current_caller() = let v = get(task_local_storage(), :gate_caller, ""); isempty(v) ? nothing : v end
 
+"""
+    current_agent_id() -> Union{String,Nothing}
+
+The id of the Kaimon-owned agent (`agent_open`) that invoked the currently-running
+`GateTool` handler, or `nothing` for an external MCP client or a self/nested call.
+Threaded through the gate as the request's `:agent_id` field (populated only when the
+caller's MCP session carries the `X-Kaimon-Agent-Id` header its generated config sets).
+
+A tool can use this to distinguish a built-in agent's calls from an external client's
+(e.g. KaimonSlate suppressing its own relay envelopes for built-in agent calls, which
+Kaimon already streams).
+"""
+current_agent_id() = let v = get(task_local_storage(), :gate_agent_id, ""); isempty(v) ? nothing : v end
+
