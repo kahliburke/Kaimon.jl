@@ -737,7 +737,7 @@ function _elicit_session_consent(path::AbstractString)
     # would orphan-spawn the session and break the result pipe. On no answer we
     # return :timeout (distinct from :unsupported) so the caller tells the agent to
     # retry instead of falling back to the can't-elicit guidance.
-    res = request_elicitation(caller, msg, schema; timeout = 50.0)
+    res = request_elicitation(caller, msg, schema; timeout = elicitation_timeout())
     res isa AbstractDict || return :timeout
     get(res, "action", "") == "accept" || return :denied
     content = get(res, "content", nothing)
@@ -783,7 +783,7 @@ Call with no `project_path` to list allowed projects and their status.""",
         # No path → list allowed projects
         if isempty(raw_path)
             entries = load_projects_config()
-            isempty(entries) && return "No allowed projects configured. Add projects via the TUI Config tab [p] or manually to ~/.config/kaimon/projects.json"
+            isempty(entries) && return "No allowed projects are configured. Ask the user to add one from the Kaimon TUI Config tab [p]."
             managed = get_managed_sessions()
             lines = String["Allowed projects:"]
             for entry in entries
@@ -840,9 +840,9 @@ Call with no `project_path` to list allowed projects and their status.""",
             elseif decision == :denied
                 return "Session not started — you declined to allow a Julia session for $path."
             elseif decision == :timeout
-                return "No response to the approval prompt within 50s, so no session was started. Call start_session again when you're ready, and approve the prompt in your client."
+                return "No response to the approval prompt within $(round(Int, elicitation_timeout()))s, so no session was started. Call start_session again when you're ready, and approve the prompt in your client."
             else  # :unsupported
-                return "Error: Project not in allowed list. Add it via the TUI Config tab [p] or manually to ~/.config/kaimon/projects.json, or set \"allow_any_project\": true there to disable the allow-list (intended for isolated container/VM environments)."
+                return "Error: this project isn't in the allowed list, and your client couldn't show an approval prompt. Ask the user to allow it from the Kaimon TUI Config tab [p] (or to reconnect with a client that can show approval prompts)."
             end
         end
 
