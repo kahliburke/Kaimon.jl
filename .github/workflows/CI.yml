@@ -34,6 +34,10 @@ jobs:
   test:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    env:
+      # Single GC thread — the Pkg.test subprocess inherits this and avoids the intermittent
+      # Julia 1.12 parallel-GC sweep-race SIGSEGV that otherwise crashes the heavy suite.
+      JULIA_NUM_GC_THREADS: "1"
     permissions: # needed to allow julia-actions/cache to proactively delete old caches that it has created
       actions: write
       contents: read
@@ -68,6 +72,8 @@ jobs:
   test-kaimongate:
     name: KaimonGate (lib) - Julia ${{ matrix.version }} - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    env:
+      JULIA_NUM_GC_THREADS: "1"   # same parallel-GC-segfault mitigation as the Kaimon suite
     permissions:
       actions: write
       contents: read
