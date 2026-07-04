@@ -58,6 +58,17 @@ end
 
 The `name` field becomes the MCP tool name (potentially prefixed by the session namespace). The `handler` is any Julia function whose signature will be introspected.
 
+### Internal (hidden) tools
+
+A tool whose `name` starts with a double underscore (`__`) is treated as **internal**: it is registered and fully callable, but omitted from the agent-facing `tools/list` by default. This is for worker tools that an intermediary session relays to behind the scenes (for example, a notebook extension that exposes one clean `run`/`eval` tool to the agent and drives per-cell `__`-prefixed workers under the hood) — the plumbing stays out of the agent's tool list without losing any capability.
+
+To reveal them, pass `include_hidden=true`:
+
+- MCP `tools/list` request: `params.include_hidden = true`.
+- From the REPL: `Kaimon.list_tools(include_hidden=true)`.
+
+`tool_help` resolves against the full registry, so a hidden tool remains documentable by name whether or not it is listed.
+
 ## serve()
 
 Start the gate from any Julia REPL:

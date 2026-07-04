@@ -183,13 +183,16 @@ function _rpc_session_info(request, session)
 end
 
 function _rpc_tools_list(request, tools)
+    # Internal worker tools (relayed to by intermediary sessions) are hidden by
+    # default; a client can pass params.include_hidden=true to see them.
+    include_hidden = get(get(request, "params", Dict()), "include_hidden", false) === true
     tool_list = [
         Dict(
             "name" => tool.name,
             "title" => tool.title,
             "description" => tool.description,
             "inputSchema" => tool.parameters,
-        ) for tool in values(tools)
+        ) for tool in values(tools) if include_hidden || !tool.hidden
     ]
 
     response = Dict(

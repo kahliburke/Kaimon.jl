@@ -94,6 +94,8 @@ Extension tools are namespaced with the extension's `namespace` value to avoid c
 
 When a gate session connects, the TUI registers its tools into the MCP server's tool registry and sends `notifications/tools/list_changed` so clients refresh their tool list. When the session disconnects, the tools are unregistered.
 
+Tools whose name starts with `__` are registered as **internal**: still callable (an extension can relay to them behind the scenes), but hidden from the agent-facing `tools/list` by default. See [Internal (hidden) tools](gate.md#Internal-hidden-tools).
+
 ## Managing Extensions in the TUI
 
 ![Extensions tab](assets/kaimon_extensions.gif)

@@ -277,7 +277,14 @@ function _create_session_tools(conn::REPLConnection)::Vector{MCPTool}
         end
 
         tool_title = get(tool_meta, "title", join(titlecase.(split(raw_name, "_")), " "))
-        push!(tools, MCPTool(tool_id, tool_name, tool_title, description, schema, handler))
+        # A `__`-prefixed gate tool is an internal worker tool: an intermediary
+        # session relays to it behind the scenes, so it stays registered and
+        # callable but is kept off the agent's tools/list by default.
+        hidden = startswith(raw_name, "__")
+        push!(
+            tools,
+            MCPTool(tool_id, tool_name, tool_title, description, schema, handler, hidden),
+        )
     end
 
     return tools

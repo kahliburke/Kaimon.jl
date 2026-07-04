@@ -440,13 +440,17 @@ function call_tool(tool_id::Symbol, args::Pair{Symbol,String}...)
 end
 
 """
-    list_tools()
+    list_tools(; include_hidden=false)
 
 List all available MCP tools with their names and descriptions.
 
+Internal worker tools (relayed to by intermediary sessions, e.g. a notebook
+extension's `__`-prefixed tools) are omitted by default; pass
+`include_hidden=true` to include them.
+
 Returns a dictionary mapping tool names to their descriptions.
 """
-function list_tools()
+function list_tools(; include_hidden::Bool = false)
     if SERVER[] === nothing
         error("MCP server is not running. Start it with Kaimon.start!()")
     end
@@ -455,6 +459,7 @@ function list_tools()
     tools_info = Dict{Symbol,String}()
 
     for (id, tool) in server.tools
+        (include_hidden || !tool.hidden) || continue
         tools_info[id] = tool.description
     end
 

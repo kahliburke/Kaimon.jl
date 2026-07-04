@@ -53,6 +53,10 @@ whole system markedly more stable and quieter at idle.
 - **Local-model agent backends** — `vmlx:` (MLX) and an in-process Ollama ReAct
   loop; `claude --effort` passthrough.
 - **`manage_extension`** tool and extension-callable Qdrant/Ollama building blocks.
+- **Internal (hidden) gate tools** — a session/extension tool whose name starts with
+  `__` stays registered and callable (an intermediary session relays to it) but is kept
+  off the agent-facing `tools/list` by default; pass `include_hidden=true` (on
+  `tools/list` or `list_tools`) to reveal them.
 - **Windows support** via an IPC→TCP transport switch (#41).
 - **Headless parity** — analytics DB, housekeeping loop, periodic indexing, clean
   Ctrl-Q/Ctrl-C shutdown.
@@ -142,5 +146,3 @@ Thanks to **@jonalm** for the detailed report behind much of the session/routing
 hardening (#55), to **@Eben60** for the GLMakie/IDE-REPL investigation (#56), and to
 everyone who filed issues that shaped this release
 (#34, #36, #37, #41, #42, #46, #47, #50, #51, #56).
-
-<!-- DRAFT: generated from `git log main..2.0-integration`; trim/reword before release. -->
