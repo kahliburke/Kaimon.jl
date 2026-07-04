@@ -111,3 +111,87 @@ Base.get(::_ThrowIO, ::Symbol, default) = error("boom-get")
         task_local_storage(:gate_eval_sink, prev_sink)
     end
 end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Package loading gets byte-safe streams.
+#
+# `using`/`import` triggers Pkg precompilation, which writes its progress bar and
+# the runtime's failed-task notice as raw BYTES through the process-wide
+# Base.stdout/stderr at a PINNED (loading-time) world age — one below the world in
+# which _CaptureIO's byte methods became active. So the dispatch can't see them and
+# falls to Base's `write(::IO,::UInt8) = error("… does not support byte I/O")`,
+# which then kills the notice printer too ("… giving up"). _with_uncaptured_streams
+# restores the real fd-backed streams (byte-safe at any world) for the load, and
+# _eval_with_capture wraps a `using`/`import` eval in it.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "package-loading evals get byte-safe streams" begin
+    P = Base.parse_input_line
+    @test KaimonGate._expr_uses_packages(P("using Foo"))
+    @test KaimonGate._expr_uses_packages(P("import Foo.Bar as B"))
+    @test KaimonGate._expr_uses_packages(P("begin; x = 1; using Foo; end"))
+    @test !KaimonGate._expr_uses_packages(P("1 + 1"))
+    @test !KaimonGate._expr_uses_packages(P("f(x) = x + 1"))
+
+    # Stand in for the installed capture with buffers as the "real" streams, so the
+    # test asserts on them without perturbing the test process's own stdout.
+    real_out = IOBuffer()
+    real_err = IOBuffer()
+    prev_installed = KaimonGate._CAPTURE_INSTALLED[]
+    prev_out = getglobal(Base, :stdout)
+    prev_err = getglobal(Base, :stderr)
+    prev_oorig = KaimonGate._CAPTURE_ORIG_OUT[]
+    prev_eorig = KaimonGate._CAPTURE_ORIG_ERR[]
+    try
+        KaimonGate._CAPTURE_ORIG_OUT[] = real_out
+        KaimonGate._CAPTURE_ORIG_ERR[] = real_err
+        cio_out = KaimonGate._CaptureIO(:stdout, real_out)
+        setglobal!(Base, :stdout, cio_out)
+        setglobal!(Base, :stderr, KaimonGate._CaptureIO(:stderr, real_err))
+        KaimonGate._CAPTURE_INSTALLED[] = true
+
+        # A world just below where _CaptureIO's byte method activated — what the
+        # loading machinery dispatches at.
+        m = which(write, Tuple{typeof(cio_out), UInt8})
+        oldw = m.primary_world > 1 ? UInt(m.primary_world) - UInt(1) : UInt(1)
+
+        # Baseline: the capture can't serve a byte write at that world → the exact
+        # error precompilation hits.
+        err = nothing
+        try
+            Base.invoke_in_world(oldw, write, getglobal(Base, :stdout), UInt8('A'))
+        catch e
+            err = e
+        end
+        @test err !== nothing
+        @test occursin("does not support byte I/O", sprint(showerror, err))
+
+        # Fixed: inside the helper the real fd stream is restored, so the same
+        # old-world byte write succeeds and lands in the real buffer.
+        ok = KaimonGate._with_uncaptured_streams() do
+            Base.invoke_in_world(oldw, write, getglobal(Base, :stdout), UInt8('A'))
+            true
+        end
+        @test ok === true
+        @test getglobal(Base, :stdout) === cio_out           # capture restored after
+        @test String(take!(real_out)) == "A"                 # byte reached real stream
+
+        # Nesting keeps streams restored until the OUTERMOST exit (else an inner
+        # load re-installs the capture while an outer load is still precompiling).
+        KaimonGate._with_uncaptured_streams() do
+            @test getglobal(Base, :stdout) === real_out
+            KaimonGate._with_uncaptured_streams() do
+                @test getglobal(Base, :stdout) === real_out
+            end
+            @test getglobal(Base, :stdout) === real_out       # inner exit didn't re-capture
+        end
+        @test getglobal(Base, :stdout) === cio_out
+    finally
+        setglobal!(Base, :stdout, prev_out)
+        setglobal!(Base, :stderr, prev_err)
+        KaimonGate._CAPTURE_ORIG_OUT[] = prev_oorig
+        KaimonGate._CAPTURE_ORIG_ERR[] = prev_eorig
+        KaimonGate._CAPTURE_INSTALLED[] = prev_installed
+        KaimonGate._UNCAPTURE_DEPTH[] = 0
+    end
+end

@@ -24,16 +24,21 @@ function pkg_operation_tool(operation::String, verb::String, args; session::Stri
             return "Error: packages array is required and cannot be empty"
         end
 
-        # io=devnull keeps Pkg non-interactive (no terminal/fancyprint) AND routes
-        # any precompilation away from the gate's captured streams. We deliberately
-        # let precompilation run HERE rather than deferring it to the first `using`:
-        # a `using`-triggered auto-precompile writes to stderr (the gate's capture
-        # mux) and, on Julia 1.12, trips the failed-task notice printer
-        # ("…giving up"). Doing it here with io=devnull sidesteps that entirely.
+        # Two things keep this byte-safe under the gate's capture mux:
+        #  1. io=devnull keeps Pkg non-interactive (no terminal/fancyprint).
+        #  2. The leading `using Pkg` makes the gate's `_eval_with_capture` wrap this
+        #     whole block in `KaimonGate._with_uncaptured_streams`, restoring the real
+        #     fd streams for the load. THAT is what prevents the Julia 1.12 failed-task
+        #     notice printer from writing bytes through `_CaptureIO` at a pinned
+        #     loading-time world age → "does not support byte I/O" → "…giving up".
+        #     io=devnull alone does NOT (the notice targets stderr, not Pkg's io —
+        #     which is why "giving up" used to leak here). Keep the `using Pkg` line:
+        #     it's load-bearing — dropping it removes the wrap and the crash returns.
         #
-        # Precomp was originally dropped here because it could time the tool out —
-        # so route through the streaming path (like `ex`), which auto-promotes a
-        # long precompile to a background job (poll check_eval) instead of blocking.
+        # We deliberately precompile HERE rather than deferring to the first `using`.
+        # Precomp was originally dropped because it could time the tool out — so route
+        # through the streaming path (like `ex`), which auto-promotes a long precompile
+        # to a background job (poll check_eval) instead of blocking.
         pkg_names = join(["\"$p\"" for p in packages], ", ")
         code = """
         using Pkg

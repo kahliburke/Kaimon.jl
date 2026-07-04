@@ -294,25 +294,21 @@ Returns the symbols actually imported (for a one-line note to the agent)."""
 function _autoimport!(expr)::Vector{Symbol}
     _AUTO_IMPORT[] || return Symbol[]
     imported = Symbol[]
-    real_sink = _current_sink()
     for s in _qualified_ref_bases(expr)
         isdefined(Main, s) && continue
         _is_loadable_package(s) || continue
         try
-            # Load quietly — precompile/info chatter must not leak into the eval's
-            # captured output or the mirrored terminal. Route THIS task's output to a
-            # throwaway sink (task-local; no global redirect, so concurrent evals are
-            # unaffected). Julia-level chatter is swallowed; rare raw-fd precompile
-            # output from an uncached package may still reach the terminal.
-            task_local_storage(:gate_eval_sink, _EvalSink())
-            try
+            # Loading an uncached package here triggers precompilation, whose raw
+            # byte-writes would crash the `_CaptureIO` mux (see the note on
+            # _with_uncaptured_streams). Restore the real fd streams for the import
+            # so it's byte-safe: cached packages import silently; an uncached one
+            # shows its precompile progress on the terminal rather than aborting the
+            # eval with "does not support byte I/O".
+            _with_uncaptured_streams() do
                 Core.eval(Main, :(import $s))
-            finally
-                task_local_storage(:gate_eval_sink, real_sink)
             end
             push!(imported, s)
         catch
-            task_local_storage(:gate_eval_sink, real_sink)
         end
     end
     return imported
@@ -387,6 +383,65 @@ function _restore_capture!()
     end
     return nothing
 end
+
+# ── Byte-safe streams for package loading / precompilation ───────────────────
+# Package loading (`using`/`import`, and `Pkg` precompilation triggered by it)
+# prints its progress bar and — critically — the runtime's *failed-task notice*
+# as raw BYTES through the process-wide Base.stdout/stderr. That machinery runs
+# at a pinned (loading-time) world age BELOW the world in which `_CaptureIO`'s
+# `write(::UInt8)`/`unsafe_write` methods became active, so the dispatch can't see
+# them and falls to Base's `write(::IO,::UInt8) = error("… does not support byte
+# I/O")`. That throw then kills the notice printer too, yielding the opaque
+# "caught exception … while trying to print a failed Task notice; giving up" that
+# swallows the real error. (Passing `io=devnull` to Pkg only diverts the progress
+# bar — the notice still targets Base.stderr, which is why it leaks around pkg ops.)
+#
+# The original fd-backed streams handle bytes at ANY world (their methods live in
+# the sysimage), so we temporarily restore them for the duration of a load. A
+# depth counter under a lock keeps them restored until the LAST concurrent load
+# finishes — otherwise an inner load could re-install the capture while an outer
+# load (blocked on Base's require lock) is still about to precompile. Tradeoff:
+# while streams are restored, any *concurrent* non-loading eval's output goes to
+# the terminal uncaptured; loads are infrequent and brief, so this is acceptable
+# versus crashing the eval and losing the true error.
+const _UNCAPTURE_LOCK      = ReentrantLock()
+const _UNCAPTURE_DEPTH     = Ref{Int}(0)
+const _UNCAPTURE_SAVED_OUT = Ref{IO}(devnull)
+const _UNCAPTURE_SAVED_ERR = Ref{IO}(devnull)
+
+"""Run `f()` with Base.stdout/stderr temporarily pointed at the real fd-backed
+streams instead of the `_CaptureIO` mux, so precompilation byte-writes are safe.
+No-op (just calls `f`) when the capture isn't installed. Depth-counted + locked so
+overlapping loads keep the streams restored until all have finished."""
+function _with_uncaptured_streams(f)
+    _CAPTURE_INSTALLED[] || return f()
+    lock(_UNCAPTURE_LOCK) do
+        if _UNCAPTURE_DEPTH[] == 0
+            _UNCAPTURE_SAVED_OUT[] = getglobal(Base, :stdout)
+            _UNCAPTURE_SAVED_ERR[] = getglobal(Base, :stderr)
+            try; setglobal!(Base, :stdout, _CAPTURE_ORIG_OUT[]); catch; end
+            try; setglobal!(Base, :stderr, _CAPTURE_ORIG_ERR[]); catch; end
+        end
+        _UNCAPTURE_DEPTH[] += 1
+    end
+    try
+        return f()
+    finally
+        lock(_UNCAPTURE_LOCK) do
+            _UNCAPTURE_DEPTH[] -= 1
+            if _UNCAPTURE_DEPTH[] == 0
+                try; setglobal!(Base, :stdout, _UNCAPTURE_SAVED_OUT[]); catch; end
+                try; setglobal!(Base, :stderr, _UNCAPTURE_SAVED_ERR[]); catch; end
+            end
+        end
+    end
+end
+
+# `using`/`import` (which trigger precompilation) can only appear at top level, so
+# their presence anywhere in the eval's AST means this eval may load a package.
+_expr_uses_packages(@nospecialize(x)) =
+    x isa Expr && (x.head === :using || x.head === :import ||
+                   any(_expr_uses_packages, x.args))
 
 # Mirror one completed line to the terminal (if enabled) + publish it, tagged
 # with the eval's request_id so the client can attribute concurrent streams.
@@ -501,7 +556,17 @@ function _eval_with_capture(expr; mirror::Bool = false)
         end
         # Blank-session convenience: import qualified package refs before evaluating.
         autoimported = _autoimport!(expr)
-        value = Core.eval(Main, expr)
+        # A top-level `using`/`import` triggers precompilation, whose progress bar and
+        # failed-task notices are written as raw bytes through Base.stdout/stderr and
+        # would crash the `_CaptureIO` mux (see _with_uncaptured_streams). Run those
+        # evals with the real fd-backed streams restored so loading is byte-safe.
+        value = if _expr_uses_packages(expr)
+            _with_uncaptured_streams() do
+                Core.eval(Main, expr)
+            end
+        else
+            Core.eval(Main, expr)
+        end
     catch e
         caught = e
         bt = catch_backtrace()
