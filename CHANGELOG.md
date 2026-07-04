@@ -100,6 +100,17 @@ whole system markedly more stable and quieter at idle.
 - **`_CaptureIO` is now total** — a failed background task's notice can no longer
   throw through the gate's stdout/stderr and produce "…giving up" (regression from
   the concurrent-eval work).
+- **Package loads are byte-safe under the capture** — `using`/`import` (and the Pkg
+  precompilation it triggers) no longer aborts with `_CaptureIO does not support byte
+  I/O` / "…giving up". Precompilation writes its progress bar and the runtime's
+  failed-task notice as raw bytes at a pinned loading-time world age below the
+  capture's byte methods, so the load now runs on the real fd-backed streams.
+- **Session → project survives a server restart** — an agent that reconnects with its
+  established MCP session id reassociates to its project (persisted the moment it binds
+  to a gate), so `search_code`/`grep_code` no longer silently scope to the server's own
+  directory. An unbound agent gets a clear error instead of a wrong-repo search.
+- **Named sessions show their name** — `start_session(name=…)` is now reflected in the
+  Sessions table rather than the name derived from the project directory.
 - A class of **intermittent `gc_sweep_pool` segfaults** from ZMQ races — socket
   creation, SUB recv/close, event-PUB sends, and unbounded weakref growth (#51).
 - **Dropped eval output** — bounded-wait drain so an unterminated final line isn't
