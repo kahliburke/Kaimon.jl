@@ -371,11 +371,12 @@ function _map_claude_event(obj, session_id::Base.RefValue{String},
 end
 
 # ── Image downscaling (tool-result PNGs) ──────────────────────────────────────
-# Vision tool-results (Makie plots, etc.) are the biggest Agent-SDK-credit burner.
-# Anthropic bills images ≈ (w×h)/750 tokens and auto-downscales anything over ~1568px
+# Vision tool-results (Makie plots, etc.) are the biggest token consumer of an agent turn
+# (usage counts against the CLI's own subscription — see agent_acp_types costUsd note).
+# Images cost ≈ (w×h)/750 tokens and the model auto-downscales anything over ~1568px
 # long edge / ~1.15 MP — so we cap the long edge to a configurable max (default 1568,
 # the model's own effective resolution: never ship more than it uses; lower it to trade
-# image quality for credit). Box-average downscale via PNGFiles — no heavy image stack.
+# image quality for token usage). Box-average downscale via PNGFiles — no heavy image stack.
 
 """Max image long-edge (px) before tool-result PNGs are downsampled. Global config key
 `agent_image_max_long_edge` in `~/.config/kaimon/config.json`; default 1568."""

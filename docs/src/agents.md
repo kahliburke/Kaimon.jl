@@ -53,17 +53,20 @@ flowchart LR
     keys are required.
 
 !!! warning "Cost"
-    Agent usage draws against your Claude **Agent SDK monthly credit** -- it is *not*
-    free. A per-session **dollar** figure is **work in progress**: claude's reported
-    `total_cost_usd` is unreliable (especially on subscription plans), so `costUsd` is
-    held at `0.0` for now rather than shown — token usage *is* tracked and surfaced in
-    `agent_status`. The default model is the `sonnet` family alias, which resolves to
-    the CLI's latest Sonnet (pass a pinned id like `claude-sonnet-5` for
-    reproducibility). Images returned in tool results are the biggest credit burner
-    (billed roughly `width × height / 750` tokens), so tool-result PNGs are
-    box-downsampled to a max long edge before they reach the agent --
-    `agent_image_max_long_edge` in `~/.config/kaimon/config.json` (default 1568 px, the
-    model's own effective cap; lower it to trade image quality for credit).
+    Agent turns run through your logged-in `claude` CLI, so their usage counts against
+    **whatever that CLI is authenticated with** -- normally your Claude **subscription**
+    (Pro/Max/Team), exactly like driving Claude Code interactively, and subject to the
+    same plan usage limits. It is *not* separate Agent-SDK / per-token API billing (unless
+    you've pointed the CLI at an API key yourself). A per-session **dollar** figure is
+    **work in progress**: claude's reported `total_cost_usd` is unreliable on subscription
+    plans, so `costUsd` is held at `0.0` rather than shown — token usage *is* tracked and
+    surfaced in `agent_status`. The default model is the `sonnet` family alias, which
+    resolves to the CLI's latest Sonnet (pass a pinned id like `claude-sonnet-5` for
+    reproducibility). Images returned in tool results are the biggest token consumer
+    (roughly `width × height / 750` tokens), so tool-result PNGs are box-downsampled to a
+    max long edge before they reach the agent -- `agent_image_max_long_edge` in
+    `~/.config/kaimon/config.json` (default 1568 px, the model's own effective cap; lower
+    it to trade image quality for usage).
 
 ## Opening an Agent
 

@@ -144,8 +144,10 @@ end
 # ── Usage / cost (schema: Usage; augmented with Claude result cost fields) ─────
 
 """Token usage + cost for a turn. ACP carries a Usage; Claude's `result` event adds
-`total_cost_usd`. Both surface here so the gate can track per-session spend against
-the post-June-15 Agent SDK credit (see plan §Cost model)."""
+`total_cost_usd`. Both surface here so the gate can track per-session token usage. NB:
+agent turns run through the host's `claude` CLI, so usage counts against whatever that
+CLI is authenticated with (normally a Claude subscription), not separate SDK/API billing;
+`total_cost_usd` is unreliable on subscription plans, so `cost_usd` stays 0.0 for now."""
 Base.@kwdef struct Usage
     input_tokens::Int = 0
     output_tokens::Int = 0
