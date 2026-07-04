@@ -109,5 +109,5 @@ On first launch, a setup wizard will guide you through security configuration an
 ## Next Steps
 
 - [Getting Started](getting-started.md) -- Configure your MCP client and connect to the server
-- [Tool Catalog](tools.md) -- Browse all 32+ available tools
+- [Tool Catalog](tools.md) -- Browse the available tools
 - [Security](security.md) -- Set up API keys and choose a security mode

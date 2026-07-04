@@ -13,8 +13,8 @@
 
 Kaimon is an MCP (Model Context Protocol) server that gives AI agents full access to
 Julia's runtime. Connect Claude Code, Cursor, or any MCP client to a live Julia session
-with 32+ tools for code execution, introspection, debugging, testing, and semantic
-code search.
+with a focused default surface of 49 tools for code execution, introspection, debugging,
+testing, and code search.
 
 ## Key Features
 
@@ -67,7 +67,7 @@ From the dashboard:
 | Debugging | `debug_ctrl`, `debug_eval`, `debug_exfiltrate`, `debug_safehouse` | Infiltrator.jl breakpoint debugging |
 | Packages | `pkg_add`, `pkg_rm` | Add/remove packages |
 | Testing | `run_tests`, `stress_test` | Test execution, load testing |
-| Search | `search_code`, `qdrant_index_project`, `qdrant_sync_index`, `qdrant_reindex_file`, `qdrant_list_collections` | Hybrid (semantic + lexical) code search |
+| Search | `search_code`, `grep_code`, `qdrant_index_project`, `qdrant_sync_index`, `qdrant_reindex_file`, `qdrant_list_collections` | `search_code` finds code by meaning (hybrid semantic + lexical); `grep_code` runs an exact pattern/regex over the live tree and returns each hit's enclosing symbol |
 | Agents | `agent_open`, `agent_send`, `agent_run`, `agent_output`, `agent_status`, `agent_list`, `agent_interrupt`, `agent_close` | Spawn & drive headless `claude` agents |
 | Extensions | `extension_info`, `manage_extension` | Inspect & control extension lifecycle |
 | Info | `ping`, `usage_instructions`, `usage_quiz`, `tool_help` | Server status and documentation |

@@ -32,7 +32,7 @@ registry as its own package, separate from `Kaimon`. One repo, two registered pa
   - root `Project.toml`: `KaimonGate = {path = "lib/KaimonGate"}`
   - `test/GateToolTest.jl/Project.toml`: same
   Pkg will then resolve KaimonGate from the registry.
-- Keep the root `Kaimon` `[compat]` pin `KaimonGate = "0.1"`; bump it when you release a
+- Keep the root `Kaimon` `[compat]` pin `KaimonGate = "1"`; bump it when you release a
   breaking KaimonGate version.
 - The CLI's global install (`_install_gate_global`) already prefers `Pkg.add("KaimonGate")`
   and only falls back to the bundled path, so it works before and after registration.

@@ -22,8 +22,8 @@ features:
     title: MCP Server
     details: Full Model Context Protocol implementation over stdio and SSE transports, compatible with Claude Code, Cursor, and any MCP-capable client.
   - icon: <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-    title: 50+ Tools
-    details: Code execution, type introspection, macro expansion, profiling, test running with coverage, VS Code debugging, package management, and more.
+    title: 49 Tools
+    details: Code execution, type introspection, exact + semantic code search, test running with coverage, VS Code debugging, package management, and more — a focused default surface, with advanced introspection gated on per project.
   - icon: <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
     title: The Gate
     details: ZMQ bridge that connects external Julia processes to the MCP server, allowing packages to register custom tools with full schema and documentation. Ships as the lightweight, separately installable KaimonGate package (ZMQ + stdlib only).

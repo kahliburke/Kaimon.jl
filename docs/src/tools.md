@@ -1,6 +1,6 @@
 # Tool Catalog
 
-Kaimon exposes 50+ MCP tools organized into categories. Each tool is available to any MCP client (Claude Code, Claude Desktop, etc.) connected to a running Kaimon server.
+Kaimon exposes 49 MCP tools on its default surface, organized into the categories below (plus a handful of advanced/infra tools gated off by default — enable them per project in `.kaimon/tools.json`). Each default tool is available to any MCP client (Claude Code, Claude Desktop, etc.) connected to a running Kaimon server.
 
 Most tools accept an optional `session` parameter (8-character session key) for routing when multiple Julia processes are connected.
 
