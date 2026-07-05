@@ -472,7 +472,7 @@ const _GREP_CODE_PARAMS = Dict(
         "word" => Dict("type" => "boolean", "description" => "Match whole words only (default: false)."),
         "fixed" => Dict("type" => "boolean", "description" => "Treat the pattern as a literal string, not a regex (default: false)."),
         "no_ignore" => Dict("type" => "boolean", "description" => "Also search .gitignored and hidden files — logs, build/generated output, dotfiles (default: false, which keeps code search free of build noise). Use this to grep logs or generated text without falling back to shell grep."),
-        "limit" => Dict("type" => "integer", "description" => "Max matches to return (default: 40); more are reported as truncated."),
+        "limit" => Dict("type" => "integer", "description" => "Max matches to return (default: 20); more are reported as truncated. Total output is also capped (~8 KB) — a broad search is truncated with guidance to narrow it."),
     ),
     "required" => ["pattern"],
 )

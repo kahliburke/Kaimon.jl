@@ -325,6 +325,44 @@ using Kaimon
         @test Kaimon._hook_nudge_payload("/hook/nudge", "not json") == ""
     end
 
+    @testset "_grep_enclosing_span + collapse grouping" begin
+        dir = mktempdir()
+        f = joinpath(dir, "x.jl")
+        write(f, "function outer(a)\n    a + 1\n    a + 2\nend\n\nstruct Pt\n    x\nend\n")
+        _, defs = Kaimon._grep_file_ctx(f, Dict{String,Any}())
+        @test Kaimon._grep_enclosing_span(2, defs) == (1, 4)     # inside `outer`
+        @test Kaimon._grep_enclosing_span(5, defs) === nothing   # blank line between defs
+        # Two hits sharing an enclosing def collapse into one group (rep + rest); a hit in
+        # a different def is its own group; encounter order preserved.
+        hits = Any[(file = f, line = 2, text = "a + 1", subs = String[]),
+                   (file = f, line = 3, text = "a + 2", subs = String[]),
+                   (file = f, line = 6, text = "x", subs = String[])]
+        groups = Kaimon._grep_group_by_enclosing(hits, defs)
+        @test length(groups) == 2
+        @test groups[1][1].line == 2 && [h.line for h in groups[1][2]] == [3]   # outer: rep L2 (+L3)
+        @test groups[2][1].line == 6 && isempty(groups[2][2])                    # Pt: standalone
+        # Empty defs (what a forced context= request passes) → no collapsing.
+        solo = Kaimon._grep_group_by_enclosing(hits, Tuple{Int,Int,String,String}[])
+        @test length(solo) == 3 && all(isempty(g[2]) for g in solo)
+        rm(dir; recursive = true)
+    end
+
+    @testset "_grep_code collapses repeats in one function" begin
+        if Kaimon._rg_argv() === nothing
+            @test_skip "ripgrep not available"
+        else
+            dir = mktempdir()
+            write(joinpath(dir, "a.jl"), "function many()\n    z = 1\n    z = 2\n    z = 3\nend\n")
+            out = Kaimon._grep_code(Dict("pattern" => "z =", "path" => dir))
+            @test occursin("many", out)          # enclosing symbol shown once
+            @test occursin("(+2 more", out)       # 3 hits in one fn → rep + "(+2 more: L3, L4)"
+            # A forced context= renders every hit instead of collapsing.
+            ctxout = Kaimon._grep_code(Dict("pattern" => "z =", "path" => dir, "context" => 1))
+            @test !occursin("(+2 more", ctxout) && occursin("L4", ctxout)
+            rm(dir; recursive = true)
+        end
+    end
+
     @testset "no_ignore covers ignored / non-code files" begin
         @test Kaimon._grep_is_code_file("foo.jl")
         @test Kaimon._grep_is_code_file("Bar.TS")          # case-insensitive

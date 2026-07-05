@@ -288,6 +288,18 @@ function _grep_enclosing(line::Int, defs::Vector{Tuple{Int,Int,String,String}})
     return (best[3], best[4])
 end
 
+# Smallest enclosing definition SPAN (start, end) containing `line`, or nothing — the
+# identity hits are grouped by when collapsing repeats within one function.
+function _grep_enclosing_span(line::Int, defs::Vector{Tuple{Int,Int,String,String}})
+    best = nothing
+    for (s, e, _, _) in defs
+        if s <= line <= e && (best === nothing || (e - s) < (best[2] - best[1]))
+            best = (s, e)
+        end
+    end
+    return best
+end
+
 # ── semantic windows (Stage 2/3): rank files + flag context-worthy hits ────────
 
 # Semantically-ranked windows for `query`, scoped to a collection: (file, start, end,
@@ -360,6 +372,29 @@ function _grep_render_hit(h, lines::Vector, defs, ctx::Int)
     return out
 end
 
+# Output-shaping budgets (keep a single grep result token-cheap):
+const _GREP_OUT_BUDGET = 8192          # ~8 KB total-output cap; overflow is truncated with guidance
+const _GREP_RANK_EXPAND_TOPN = 5       # only the top-N ranked files get context expansion
+
+# Collapse a file's hits that share one enclosing definition: the first hit represents
+# the function, the rest fold into a single "(+N more)" line. Hits with no enclosing def
+# (or distinct spans) each form their own group. First-encounter order is preserved.
+# Returns a vector of (representative_hit, other_hits).
+function _grep_group_by_enclosing(hits::Vector, defs::Vector{Tuple{Int,Int,String,String}})
+    groups = Vector{Any}[]
+    index = Dict{Tuple{Int,Int},Int}()   # enclosing span → group index
+    for h in hits
+        span = _grep_enclosing_span(h.line, defs)
+        if span === nothing
+            push!(groups, Any[h])                                  # ungrouped line
+        else
+            gi = get(index, span, 0)
+            gi == 0 ? (push!(groups, Any[h]); index[span] = length(groups)) : push!(groups[gi], h)
+        end
+    end
+    return [(g[1], @view g[2:end]) for g in groups]
+end
+
 function _grep_format(pattern, scope_label, hits, more, base, query, sem_windows, ctx_arg::Int)
     # Group hits by file (encounter order).
     files = String[]
@@ -378,6 +413,9 @@ function _grep_format(pattern, scope_label, hits, more, base, query, sem_windows
         end
         files = sort(files; by = f -> -get(best, f, -Inf), alg = Base.Sort.MergeSort)  # stable
     end
+    # Context expansion is confined to the top-N ranked files — a broad `query` that
+    # overlaps windows across many files can't balloon the output; the rest stay tight.
+    expandable = ranked ? Set(files[1:min(length(files), _GREP_RANK_EXPAND_TOPN)]) : Set{String}()
 
     nh = length(hits)
     out = "🔎 /$pattern/ in $scope_label — $nh match$(nh == 1 ? "" : "es") in " *
@@ -387,15 +425,38 @@ function _grep_format(pattern, scope_label, hits, more, base, query, sem_windows
     out *= ":\n"
 
     cache = Dict{String,Any}()
+    shown = 0                 # hits represented so far (rendered or folded into a +N line)
+    budget_hit = false
     for f in files
         lines, defs = _grep_file_ctx(f, cache)
-        out *= "\n$(_grep_relfile(f, base))\n"
-        for h in byfile[f]
+        header_written = false
+        # Respect an explicit context= request by rendering every hit (empty defs → no
+        # collapsing); otherwise collapse repeats that share an enclosing function.
+        groups = _grep_group_by_enclosing(byfile[f],
+            ctx_arg > 0 ? Tuple{Int,Int,String,String}[] : defs)
+        for (rep, rest) in groups
+            if sizeof(out) >= _GREP_OUT_BUDGET
+                budget_hit = true
+                break
+            end
+            header_written || (out *= "\n$(_grep_relfile(f, base))\n"; header_written = true)
             # Stage 3: expand context where a semantic window overlaps the hit (or the
-            # caller forced it); otherwise stay tight to one line.
-            ctx = max(ctx_arg, (ranked && _grep_in_window(f, h.line, sem_windows)) ? 2 : 0)
-            out *= _grep_render_hit(h, lines, defs, ctx)
+            # caller forced it), but only in the top-N ranked files; else stay tight.
+            ctx = max(ctx_arg, (f in expandable && _grep_in_window(f, rep.line, sem_windows)) ? 2 : 0)
+            out *= _grep_render_hit(rep, lines, defs, ctx)
+            shown += 1
+            if !isempty(rest)
+                out *= "      (+$(length(rest)) more: $(join(("L$(h.line)" for h in rest), ", ")))\n"
+                shown += length(rest)
+            end
         end
+        budget_hit && break
+    end
+    if budget_hit && shown < nh
+        left = nh - shown
+        out *= "\n… output truncated at ~$(_GREP_OUT_BUDGET ÷ 1024) KB; $left more " *
+               "match$(left == 1 ? "" : "es") not shown — narrow with glob=/path=, a lower " *
+               "limit=, or a tighter pattern.\n"
     end
     return out
 end
@@ -421,7 +482,7 @@ function _grep_code(args)
     scope_err = _grep_enforce_scope(root)
     scope_err === nothing || return scope_err
 
-    limit = Int(get(args, "limit", 40))
+    limit = Int(get(args, "limit", 20))
     ctx_arg = max(0, Int(get(args, "context", 0)))
     query = _grep_str(args, "query")
 
