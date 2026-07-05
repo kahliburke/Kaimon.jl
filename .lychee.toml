@@ -8,6 +8,9 @@ exclude = [
   # VitePress plugin (docs/src/.vitepress/config.mts) to point at the
   # docs-assets GitHub Release at build time; lychee can't see that rewrite.
   "docs/src/assets/kaimon_.*\\.gif$",
+  # KaimonSlate.jl is not public yet — the URL is correct and ships in the 2.0
+  # release notes. Remove this exclusion once the repository is made public.
+  "^https://github\\.com/kahliburke/KaimonSlate\\.jl",
 ]
 
 exclude_path = ["docs/build"]
