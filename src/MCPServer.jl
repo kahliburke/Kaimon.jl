@@ -106,8 +106,20 @@ function save_persisted_sessions(sessions::Dict{String,Dict})
 
     try
         data = Dict("sessions" => sessions)
-        open(sessions_file, "w") do f
-            JSON.print(f, data, 2)
+        # Atomic write: serialize to a temp file in the same directory, then rename it
+        # over the target. rename(2) is atomic on POSIX, so a concurrent reader (e.g. a
+        # session-init `load_persisted_sessions()`, which does not hold the RMW lock)
+        # always sees either the complete old file or the complete new one — never the
+        # 0-byte truncation window that `open(path, "w")` would expose.
+        tmp, io = mktemp(dirname(sessions_file))
+        try
+            JSON.print(io, data, 2)
+            close(io)
+            mv(tmp, sessions_file; force = true)
+        catch
+            close(io)
+            isfile(tmp) && rm(tmp; force = true)
+            rethrow()
         end
         @debug "Saved persisted sessions" count = length(sessions) path = sessions_file
     catch e
