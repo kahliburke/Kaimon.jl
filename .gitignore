@@ -39,6 +39,7 @@ SESSION_HANDOFF.md
 *_REQUEST.md
 *_HANDOFF.md
 *_NOTES.md
+RELEASE_NOTES*.md
 **/target/
 coverage.info
 lcov.info
