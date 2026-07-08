@@ -13,7 +13,7 @@ KaimonGate = {path = "../../lib/KaimonGate"}
 
 [compat]
 Infiltrator = "1.9.8"
-Tachikoma = "2.1.0"
+Tachikoma = "2.3.2"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
