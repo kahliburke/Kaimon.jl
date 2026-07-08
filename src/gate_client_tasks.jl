@@ -266,6 +266,18 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
             tools = length(get(result, :tools, [])),
         ))
 
+        # Worker-reported display label (e.g. a notebook filename) is authoritative — it names the session
+        # regardless of the project (several notebooks share one project), so it wins over project derivation.
+        pong_label = string(get(result, :label, ""))
+        if !isempty(pong_label) && pong_label != conn.label
+            conn.label = pong_label
+            existing = lock(mgr.lock) do
+                [c.display_name for c in mgr.connections if c !== conn]
+            end
+            conn.display_name = _derive_display_name(conn.project_path, conn.julia_version, existing; label = pong_label)
+            _fire_sessions_changed(mgr)
+        end
+
         # Update project_path from pong
         new_path = get(result, :project_path, "")
         if !isempty(new_path) && new_path != conn.project_path
@@ -276,7 +288,7 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
                 end
                 conn.display_name = _derive_display_name(
                     new_path, conn.julia_version, existing;
-                    namespace = conn.namespace,
+                    namespace = conn.namespace, label = conn.label,
                 )
             end
             _fire_sessions_changed(mgr)
@@ -301,7 +313,7 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
                         end
                         conn.display_name = _derive_display_name(
                             conn.project_path, conn.julia_version, existing;
-                            namespace = pong_ns,
+                            namespace = pong_ns, label = conn.label,
                         )
                     end
                 end

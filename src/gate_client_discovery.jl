@@ -370,7 +370,7 @@ Returns the connected `REPLConnection`, or throws on failure.
 """
 function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
                       name::String = "", token::String = "", stream_port::Int = 0,
-                      server_key::String = "")
+                      server_key::String = "", label::String = "")
     endpoint = "tcp://$(host):$(port)"
     stream_endpoint = stream_port > 0 ? "tcp://$(host):$(stream_port)" : ""
     sid = "tcp-$(host)-$(port)"
@@ -414,7 +414,7 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
         pinned === nothing || (server_key = pinned)
     end
 
-    display_name = isempty(name) ? "$(host):$(port)" : name
+    display_name = !isempty(label) ? label : (isempty(name) ? "$(host):$(port)" : name)
     conn = REPLConnection(
         session_id = sid,
         name = isempty(name) ? "tcp" : name,
@@ -428,6 +428,7 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
         spawned_by = "user",
         auth_token = token,
         server_pubkey = server_key,
+        label = label,
     )
 
     if !connect!(mgr, conn)

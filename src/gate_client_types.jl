@@ -63,6 +63,7 @@ mutable struct REPLConnection
     auth_token::String           # TCP auth token (empty = no auth)
     server_pubkey::String        # CURVE server public key to pin (empty = plain TCP/IPC)
     stall_reason::Symbol         # why stalled (TCP): :none|:offline|:key_changed|:unresponsive
+    label::String                # client-provided display label (e.g. a notebook filename) — wins over the project basename
 end
 
 function REPLConnection(;
@@ -82,6 +83,7 @@ function REPLConnection(;
     spawned_by::String = "user",
     auth_token::String = "",
     server_pubkey::String = "",
+    label::String = "",
 )
     t = now()
     REPLConnection(
@@ -121,6 +123,7 @@ function REPLConnection(;
         auth_token,
         server_pubkey,
         :none,  # stall_reason
+        label,
     )
 end
 
@@ -192,6 +195,7 @@ end
 
 Derive a short display name from the project path, deduplicating against
 already-assigned names.  Rules:
+  - Non-empty `label` → use it directly (a client-provided name, e.g. a notebook filename)
   - Non-empty `namespace` → use it directly (e.g. extension "smlabnotes")
   - Non-empty project_path → `basename(project_path)` (e.g. "MyApp")
   - Global env or empty path → `@v<julia_version>` (e.g. "@v1.12")
@@ -202,8 +206,11 @@ function _derive_display_name(
     julia_version::String,
     existing_names::Vector{String};
     namespace::String = "",
+    label::String = "",
 )::String
-    base = if !isempty(namespace)
+    base = if !isempty(label)
+        label
+    elseif !isempty(namespace)
         namespace
     elseif isempty(project_path) || project_path == homedir()
         # Global environment — use Julia version

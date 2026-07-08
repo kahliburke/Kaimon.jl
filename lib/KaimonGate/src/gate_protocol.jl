@@ -411,6 +411,7 @@ function handle_message(request::NamedTuple)
             protocol_version = PROTOCOL_VERSION,
             kaimon_version = _kv,
             project_path = dirname(Base.active_project()),
+            label = get(ENV, "KAIMON_SESSION_LABEL", ""),   # client-provided display label (e.g. a notebook filename)
             tools = [_reflect_tool(t) for t in _SESSION_TOOLS[]],
             namespace = _SESSION_NAMESPACE[],
             allow_restart = _ALLOW_RESTART[],

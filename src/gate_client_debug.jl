@@ -26,10 +26,15 @@ end
     drain_stream_messages!(mgr::ConnectionManager) -> Vector{NamedTuple}
 
 Non-blocking drain of all pending streaming messages from connected gates.
-Returns a vector of `(channel, data, session_name)` tuples.
+Returns a vector of `(channel, data, session_name, conn_name)` tuples. `session_name` is the
+human DISPLAY label (`display_name`, falling back to `name`) — it can be re-derived/deduped over
+a connection's life, so it is NOT a stable key. `conn_name` is the connection's STABLE connect-time
+`name`; route on it (a consumer keying a per-session map, e.g. KaimonSlate's reactive refresh
+routing, must use `conn_name` — keying on the mutable `session_name` silently drops events once a
+label diverges from the name).
 """
 function drain_stream_messages!(mgr::ConnectionManager)
-    messages = NamedTuple{(:channel, :data, :session_name),Tuple{String,String,String}}[]
+    messages = NamedTuple{(:channel, :data, :session_name, :conn_name),Tuple{String,String,String,String}}[]
     pub_events = Tuple{String,String,String}[]  # (channel, data, session_name) for global PUB re-broadcast
     lock(mgr.lock) do
         for conn in mgr.connections
@@ -166,7 +171,7 @@ function drain_stream_messages!(mgr::ConnectionManager)
 
                 if !routed
                     dname = isempty(conn.display_name) ? conn.name : conn.display_name
-                    push!(messages, (channel = ch, data = data, session_name = dname))
+                    push!(messages, (channel = ch, data = data, session_name = dname, conn_name = conn.name))
                 end
 
                 # Forward stdout/stderr/breakpoint_hit to all active inboxes during
