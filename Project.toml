@@ -46,9 +46,6 @@ ripgrep_jll = "e10fc14b-37cd-5cbc-b289-ad01b12ebaad"
 PDFIO = "4d0d745f-9d9a-592e-8d18-1ad8a0f42b92"
 Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
 
-[sources]
-KaimonGate = {path = "lib/KaimonGate"}
-
 [extensions]
 KaimonPDFIOExt = "PDFIO"
 
