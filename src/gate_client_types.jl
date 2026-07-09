@@ -151,21 +151,34 @@ gate (connection refused) from one that's up but failing our ZMQ/CURVE handshake
 — a distinction that is invisible in-band (a wrong CURVE key just goes silent).
 Returns false on refusal, unreachability, or timeout."""
 function _tcp_port_open(host::AbstractString, port::Integer; timeout::Float64 = 1.5)
-    done = Ref(false)
-    ok = Ref(false)
-    @async begin
-        try
-            s = Sockets.connect(host, port)
-            close(s)
-            ok[] = true
-        catch
-            ok[] = false
-        finally
-            done[] = true
-        end
+    # Resolve to ALL address families and succeed if ANY accepts. A name like "localhost" resolves
+    # to ::1 first on macOS, but a gate bound to 0.0.0.0 is IPv4-only — probing just ::1 would
+    # false-negative a live gate (and bail connect_tcp! before the real ZMQ dial). Fall back to the
+    # raw host string when resolution fails (host is already an IP, etc.).
+    targets = try
+        addrs = Sockets.getalladdrinfo(String(host))
+        isempty(addrs) ? Any[String(host)] : Any[addrs...]
+    catch
+        Any[String(host)]
     end
-    Base.timedwait(() -> done[], timeout; pollint = 0.05)
-    return ok[]
+    for tgt in targets
+        done = Ref(false)
+        ok = Ref(false)
+        @async begin
+            try
+                s = Sockets.connect(tgt, port)
+                close(s)
+                ok[] = true
+            catch
+                ok[] = false
+            finally
+                done[] = true
+            end
+        end
+        Base.timedwait(() -> done[], timeout; pollint = 0.05)
+        ok[] && return true
+    end
+    return false
 end
 
 """Classify why a session just went stalled. TCP only (IPC stays `:none`):
