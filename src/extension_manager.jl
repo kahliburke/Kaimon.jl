@@ -557,15 +557,69 @@ function _extension_gate_advertised(sock_dir::AbstractString)
     return false
 end
 
+# extensions.json watch state: the registry mtime we last reconciled against.
+# `nothing` = not yet seeded (start_extensions! hasn't loaded a registry), so the
+# watch stays dormant until extensions are actually managed — a bare `using Kaimon`
+# or a headless run that never loads extensions won't spontaneously start any.
+const _ext_registry_mtime = Ref{Union{Nothing,Float64}}(nothing)
+const _EXT_REGISTRY_CHECK_SECS = 5.0      # how often the tick stats the registry
+const _ext_registry_last_check = Ref(0.0)
+
+_registry_mtime() = try
+    p = get_extensions_config_path()
+    isfile(p) ? mtime(p) : 0.0
+catch
+    0.0
+end
+
+# Throttled dispatch for the registry watch: at most once per _EXT_REGISTRY_CHECK_SECS
+# (the tick itself may run every render frame), a cheap `stat`; only on an actual change
+# do we reconcile off-thread (a removed extension's stop can block up to 5s and must not
+# stall a render/housekeeping tick). Mirrors the `*_last_check` throttles elsewhere.
+function _maybe_reconcile_registry!()
+    _ext_registry_mtime[] === nothing && return
+    now_t = time()
+    now_t - _ext_registry_last_check[] < _EXT_REGISTRY_CHECK_SECS && return
+    _ext_registry_last_check[] = now_t
+    _registry_mtime() == _ext_registry_mtime[] && return
+    Threads.@spawn try
+        _rescan_registry_if_changed!()
+    catch e
+        _push_log!(:warn,
+            "extension registry rescan failed: $(first(sprint(showerror, e), 200))")
+    end
+    return
+end
+
+# Reconcile iff extensions.json changed since we last looked (and the watch has been
+# seeded). Returns true if a reconcile ran. Synchronous — the caller decides threading.
+# This is the auto-pick-up of a manually-edited registry: it rides the existing
+# `_monitor_extensions!` tick rather than a watcher of its own.
+function _rescan_registry_if_changed!()
+    baseline = _ext_registry_mtime[]
+    baseline === nothing && return false
+    mt = _registry_mtime()
+    mt == baseline && return false
+    _ext_registry_mtime[] = mt
+    r = rescan_extensions!()
+    (isempty(r.added) && isempty(r.removed)) ||
+        _push_log!(:info,
+            "extensions.json changed → rescan (added=$(r.added) removed=$(r.removed))")
+    return true
+end
+
 """
     _monitor_extensions!(conn_mgr)
 
-Called periodically from the TUI view tick. Checks extension health:
+The extension tick, driven both by the TUI view loop and the headless housekeeping
+loop (`kaimon_lifecycle.jl`). Checks extension health:
 - Matches gate sessions to extensions by namespace
 - Detects crashed processes and restarts with backoff
 - Updates status from :starting to :running when gate connects
+- Reconciles a manually-edited extensions.json (auto-pick-up of added/removed)
 """
 function _monitor_extensions!(conn_mgr)
+    _maybe_reconcile_registry!()   # throttled auto-pick-up of extensions.json edits
     conn_mgr === nothing && return
     lock(MANAGED_EXTENSIONS_LOCK) do
         for ext in MANAGED_EXTENSIONS
@@ -681,6 +735,57 @@ function start_extensions!()
         names = join([c.manifest.namespace for c in configs], ", ")
         _push_log!(:info, "Loaded $(length(configs)) extension(s): $names ($n_auto auto-starting)")
     end
+    # Seed the registry watch (see `_monitor_extensions!`) so it reconciles only edits
+    # made AFTER this initial load, and only once extensions are actually managed.
+    _ext_registry_mtime[] = _registry_mtime()
+end
+
+"""
+    rescan_extensions!() -> (; added, removed, kept)
+
+Reconcile `MANAGED_EXTENSIONS` against `extensions.json` on disk at runtime, so a
+newly-added (or removed) extension is picked up WITHOUT restarting Kaimon — and
+WITHOUT bouncing extensions that are unchanged. Newly-configured extensions are
+added (and spawned when enabled + auto_start); extensions dropped from disk are
+stopped and removed; existing ones keep running with their current state. Returns
+the namespaces in each bucket. Runs in the main Kaimon process, where the
+extension processes live (not a gate session).
+"""
+function rescan_extensions!()
+    configs = load_extension_configs()
+    disk_ns = Set(c.manifest.namespace for c in configs)
+
+    # In memory but gone from disk → stop (outside the lock; stop_extension! blocks
+    # up to 5s) then drop. This is the ordering fix: unlike a bare start_extensions!,
+    # we terminate the process before removing it, so nothing is orphaned.
+    to_remove = lock(MANAGED_EXTENSIONS_LOCK) do
+        [e for e in MANAGED_EXTENSIONS if !(e.config.manifest.namespace in disk_ns)]
+    end
+    for e in to_remove
+        try; stop_extension!(e); catch; end
+    end
+
+    added = String[]
+    kept = String[]
+    lock(MANAGED_EXTENSIONS_LOCK) do
+        filter!(e -> e.config.manifest.namespace in disk_ns, MANAGED_EXTENSIONS)
+        known = Set(e.config.manifest.namespace for e in MANAGED_EXTENSIONS)
+        for config in configs
+            ns = config.manifest.namespace
+            if ns in known
+                push!(kept, ns)
+                continue
+            end
+            ext = ManagedExtension(config)
+            push!(MANAGED_EXTENSIONS, ext)
+            push!(added, ns)
+            config.entry.enabled && config.entry.auto_start && spawn_extension!(ext)
+        end
+    end
+
+    removed = String[e.config.manifest.namespace for e in to_remove]
+    _push_log!(:info, "Extension rescan: added=$(added) removed=$(removed) kept=$(kept)")
+    return (; added, removed, kept)
 end
 
 """

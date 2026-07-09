@@ -110,6 +110,105 @@ end
     @test occursin("⋯", out)
 end
 
+@testset "rescan_extensions! reconciles the registry without bouncing the rest" begin
+    # Isolate config so we write a THROWAWAY extensions.json, never the real one.
+    withenv("XDG_CONFIG_HOME" => mktempdir()) do
+        # A minimal on-disk extension; auto_start=false so rescan never spawns a proc.
+        make_ext = function (ns)
+            dir = mktempdir()
+            write(joinpath(dir, "kaimon.toml"),
+                "[extension]\nnamespace = \"$ns\"\nmodule = \"Mod_$ns\"\n" *
+                "tools_function = \"get_tools\"\n")
+            dir
+        end
+        a = make_ext("rescan_a")
+        b = make_ext("rescan_b")
+        reg(paths...) = Kaimon.save_extensions_config(
+            [Kaimon.ExtensionEntry(p, true, false) for p in paths])
+        live() = [e.config.manifest.namespace for e in Kaimon.get_managed_extensions()]
+
+        # Snapshot/clear the shared registry (empty in this subprocess, but be safe).
+        saved = lock(Kaimon.MANAGED_EXTENSIONS_LOCK) do
+            s = copy(Kaimon.MANAGED_EXTENSIONS)
+            empty!(Kaimon.MANAGED_EXTENSIONS)
+            s
+        end
+        try
+            # Register A → picked up as ADDED.
+            reg(a)
+            r1 = Kaimon.rescan_extensions!()
+            @test Set(r1.added) == Set(["rescan_a"])
+            @test isempty(r1.removed) && isempty(r1.kept)
+            @test "rescan_a" in live()
+
+            # No disk change → A is KEPT (not re-added, not bounced).
+            r2 = Kaimon.rescan_extensions!()
+            @test isempty(r2.added) && isempty(r2.removed)
+            @test Set(r2.kept) == Set(["rescan_a"])
+
+            # Add B → B added, A kept (the whole point: existing ones aren't disturbed).
+            reg(a, b)
+            r3 = Kaimon.rescan_extensions!()
+            @test Set(r3.added) == Set(["rescan_b"])
+            @test Set(r3.kept) == Set(["rescan_a"])
+            @test isempty(r3.removed)
+
+            # Drop A from disk → A removed (and stopped), B kept.
+            reg(b)
+            r4 = Kaimon.rescan_extensions!()
+            @test Set(r4.removed) == Set(["rescan_a"])
+            @test Set(r4.kept) == Set(["rescan_b"])
+            @test live() == ["rescan_b"]
+        finally
+            lock(Kaimon.MANAGED_EXTENSIONS_LOCK) do
+                empty!(Kaimon.MANAGED_EXTENSIONS)
+                append!(Kaimon.MANAGED_EXTENSIONS, saved)
+            end
+            rm(a; recursive = true, force = true)
+            rm(b; recursive = true, force = true)
+        end
+    end
+end
+
+@testset "extensions.json watch reconciles only after seeding, on change" begin
+    withenv("XDG_CONFIG_HOME" => mktempdir()) do
+        dir = mktempdir()
+        write(joinpath(dir, "kaimon.toml"),
+            "[extension]\nnamespace = \"watch_x\"\nmodule = \"M\"\ntools_function = \"t\"\n")
+        live() = [e.config.manifest.namespace for e in Kaimon.get_managed_extensions()]
+
+        saved = lock(Kaimon.MANAGED_EXTENSIONS_LOCK) do
+            s = copy(Kaimon.MANAGED_EXTENSIONS)
+            empty!(Kaimon.MANAGED_EXTENSIONS)
+            s
+        end
+        saved_mt = Kaimon._ext_registry_mtime[]
+        try
+            # Not seeded → dormant: never reconciles, even with a registry on disk.
+            Kaimon._ext_registry_mtime[] = nothing
+            Kaimon.save_extensions_config([Kaimon.ExtensionEntry(dir, true, false)])
+            @test Kaimon._rescan_registry_if_changed!() == false
+            @test isempty(live())
+
+            # Seed to the pre-edit state (here: as if loaded when no file existed), then a
+            # real change → reconcile picks up the new extension.
+            Kaimon._ext_registry_mtime[] = 0.0
+            @test Kaimon._rescan_registry_if_changed!() == true
+            @test "watch_x" in live()
+
+            # No further change → no reconcile.
+            @test Kaimon._rescan_registry_if_changed!() == false
+        finally
+            Kaimon._ext_registry_mtime[] = saved_mt
+            lock(Kaimon.MANAGED_EXTENSIONS_LOCK) do
+                empty!(Kaimon.MANAGED_EXTENSIONS)
+                append!(Kaimon.MANAGED_EXTENSIONS, saved)
+            end
+            rm(dir; recursive = true, force = true)
+        end
+    end
+end
+
 @testset "extension gate advertise probe (timeout diagnostic)" begin
     dir = mktempdir()
     @test !Kaimon._extension_gate_advertised(dir)              # empty → nothing advertised
