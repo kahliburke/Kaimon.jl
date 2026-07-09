@@ -53,6 +53,127 @@ using Kaimon.Session: UNINITIALIZED, INITIALIZING, INITIALIZED, CLOSED
         end
     end
 
+    @testset "server→client request delivery tolerates session-id splits" begin
+        schema = Dict{String,Any}("type" => "object", "properties" => Dict{String,Any}())
+        mkmsg() = Dict{String,Any}("jsonrpc" => "2.0", "id" => "rid-$(rand(UInt32))",
+            "method" => "elicitation/create")
+
+        # Isolate _SESSION_OUTBOX so the any-open-stream fallback below only sees the
+        # streams each sub-test registers (not a real client's live stream).
+        saved = lock(Kaimon._SESSION_OUTBOX_LOCK) do
+            s = copy(Kaimon._SESSION_OUTBOX)
+            empty!(Kaimon._SESSION_OUTBOX)
+            s
+        end
+        try
+            # 1. Exact-id match → lands in that session's own receive stream.
+            @testset "exact-id outbox" begin
+                sid = "sess-$(rand(UInt32))"
+                ch = Kaimon._register_session_stream!(sid)
+                try
+                    msg = mkmsg()
+                    @test Kaimon._deliver_to_client!(sid, msg, nothing)
+                    @test isready(ch) && take!(ch)["id"] == msg["id"]
+                finally
+                    Kaimon._unregister_session_stream!(sid, ch)
+                end
+            end
+
+            # 2. THE FIX: the caller's id has no stream, but another receive stream is
+            #    open — Claude Code POSTs tool calls under one (persisted) id while its
+            #    live GET receive stream is under another. Deliver to the open stream
+            #    instead of silently no-op'ing (the "immediate no-answer" symptom).
+            @testset "mismatched-id falls back to an open stream" begin
+                get_sid = "getstream-$(rand(UInt32))"
+                post_sid = "postcaller-$(rand(UInt32))"   # different id, no stream
+                ch = Kaimon._register_session_stream!(get_sid)
+                try
+                    msg = mkmsg()
+                    @test Kaimon._deliver_to_client!(post_sid, msg, nothing)
+                    @test isready(ch) && take!(ch)["id"] == msg["id"]
+                finally
+                    Kaimon._unregister_session_stream!(get_sid, ch)
+                end
+            end
+
+            # 3. No open receive stream at all → the in-flight tool-call SSE writer is
+            #    the last resort (best-effort for a client that keeps no GET stream).
+            @testset "writer is the last resort" begin
+                captured = Ref{Any}(nothing)
+                writer = m -> (captured[] = m; true)
+                msg = mkmsg()
+                @test Kaimon._deliver_to_client!("nobody-$(rand(UInt32))", msg, writer)
+                @test captured[] !== nothing && captured[]["id"] == msg["id"]
+            end
+
+            # 4. No stream and no writer → undeliverable (caller maps this to :timeout).
+            @testset "no channel → false" begin
+                @test !Kaimon._deliver_to_client!("nobody-$(rand(UInt32))", mkmsg(), nothing)
+            end
+
+            # Integration: request_elicitation delivers to the caller's stream and
+            # returns the routed reply.
+            @testset "request_elicitation round-trip via the caller's stream" begin
+                sid = "elicit-$(rand(UInt32))"
+                ch = Kaimon._register_session_stream!(sid)
+                try
+                    client = @async begin
+                        while !isready(ch)
+                            sleep(0.005)
+                        end
+                        req = take!(ch)
+                        Kaimon._route_server_response!(Dict{String,Any}(
+                            "jsonrpc" => "2.0", "id" => req["id"],
+                            "result" => Dict{String,Any}("action" => "accept",
+                                "content" => Dict{String,Any}("remember" => false))))
+                    end
+                    res = Kaimon.request_elicitation(sid, "approve?", schema; timeout = 5.0)
+                    wait(client)
+                    @test res isa AbstractDict && res["action"] == "accept"
+                finally
+                    Kaimon._unregister_session_stream!(sid, ch)
+                end
+            end
+        finally
+            lock(Kaimon._SESSION_OUTBOX_LOCK) do
+                empty!(Kaimon._SESSION_OUTBOX)
+                merge!(Kaimon._SESSION_OUTBOX, saved)
+            end
+        end
+    end
+
+    @testset "list-changed notifications re-deliver on every re-queue (seq cursor)" begin
+        m = "notifications/test-lc-$(rand(UInt32))"
+        sid = "notif-sid-$(rand(UInt32))"
+        mk() = Dict{String,Any}("jsonrpc" => "2.0", "method" => m)
+
+        # Queue once → a fresh session sees it, and the global seq advanced.
+        s0 = Kaimon._NOTIF_SEQ[]
+        Kaimon._queue_notification!(mk())
+        @test Kaimon._NOTIF_SEQ[] > s0
+        @test any(n -> n["method"] == m, Kaimon._flush_notifications_for_session!(sid))
+
+        # Same session, no re-queue → cursor advanced past it, so it is NOT resent.
+        # (This is what replaces re-sending the same board entry every poll tick.)
+        @test !any(n -> n["method"] == m, Kaimon._flush_notifications_for_session!(sid))
+
+        # Re-queue (the extension restarted) → fresh, higher seq → delivered AGAIN.
+        # The old method-name dedup suppressed this for the stream's whole life,
+        # which is exactly what forced a manual /mcp reconnect.
+        Kaimon._queue_notification!(mk())
+        @test any(n -> n["method"] == m, Kaimon._flush_notifications_for_session!(sid))
+
+        # The board keeps ONE entry per method (latest), not one per re-queue.
+        @test haskey(Kaimon._PENDING_NOTIFICATIONS, m)
+
+        # A different session has its own cursor → still sees the pending change.
+        sid2 = "notif-sid2-$(rand(UInt32))"
+        @test any(n -> n["method"] == m, Kaimon._flush_notifications_for_session!(sid2))
+
+        # Empty sid is anonymous (no stable cursor) → never delivered.
+        @test isempty(Kaimon._flush_notifications_for_session!(""))
+    end
+
     @testset "project path falls back to persisted workspace root" begin
         mktempdir() do cache
             withenv("XDG_CACHE_HOME" => cache) do

@@ -404,38 +404,61 @@ using .Prompts
 # Resource Change Notification Queue
 # ============================================================================
 
-"""Pending JSON-RPC notifications to flush on the next SSE response.
+"""Pending JSON-RPC notifications (`tools/list_changed`, `resources/list_changed`)
+to deliver to connected clients.
 
-Both GET SSE streams and POST response flushes drain this independently —
-each takes a snapshot and delivers it, so both paths see every notification.
-Notifications are deduplicated by method name within each flush.
-"""
-const _PENDING_NOTIFICATIONS = Dict{String,Dict{String,Any}}()  # method => notification
+The board keeps the LATEST notification per method, each tagged with a global
+monotonic sequence number assigned at queue time. It is NOT drained on delivery —
+it's bounded (one entry per method) and every consumer instead advances its OWN
+cursor (the highest seq it has delivered), keyed by Mcp-Session-Id and shared
+between a session's GET receive stream and its POST-response flushes.
+
+This is what lets a REPEAT notification through: re-queuing `tools/list_changed`
+(e.g. every time the slate extension restarts) assigns a fresh, higher seq, so a
+long-lived GET stream sees it as new and re-delivers it — instead of suppressing
+it forever after the first (the old method-name dedup, which forced a manual
+`/mcp` reconnect to resync). Delivering all entries with `seq > cursor` and
+advancing the cursor to the max also means a POST flush can't steal a notification
+out from under a concurrent GET stream (they share the cursor, so at most a
+harmless duplicate — never a miss)."""
+const _PENDING_NOTIFICATIONS = Dict{String,Tuple{Int,Dict{String,Any}}}()  # method => (seq, notif)
 const _PENDING_NOTIFICATIONS_LOCK = ReentrantLock()
+const _NOTIF_SEQ = Ref{Int}(0)                          # global monotonic sequence
+const _SESSION_NOTIF_CURSOR = Dict{String,Int}()        # sid => highest seq delivered
 
 function _queue_notification!(notif::Dict{String,Any})
     lock(_PENDING_NOTIFICATIONS_LOCK) do
-        _PENDING_NOTIFICATIONS[notif["method"]] = notif
+        _NOTIF_SEQ[] += 1
+        _PENDING_NOTIFICATIONS[notif["method"]] = (_NOTIF_SEQ[], notif)
     end
 end
 
-function _take_notifications!()::Vector{Dict{String,Any}}
+"""Notifications newer than session `sid`'s cursor, in seq order, advancing the
+cursor past them. Shared by the GET receive stream (each poll tick) and POST
+response flushes so a session gets each notification version at most once,
+regardless of which path carries it. Empty sid → no delivery (an anonymous
+stream has no stable cursor to track)."""
+function _flush_notifications_for_session!(sid::AbstractString)::Vector{Dict{String,Any}}
+    isempty(sid) && return Dict{String,Any}[]
     lock(_PENDING_NOTIFICATIONS_LOCK) do
         isempty(_PENDING_NOTIFICATIONS) && return Dict{String,Any}[]
-        result = collect(values(_PENDING_NOTIFICATIONS))
-        empty!(_PENDING_NOTIFICATIONS)
-        return result
+        cursor = get(_SESSION_NOTIF_CURSOR, String(sid), 0)
+        due = sort!([sn for sn in values(_PENDING_NOTIFICATIONS) if sn[1] > cursor]; by = first)
+        isempty(due) && return Dict{String,Any}[]
+        _SESSION_NOTIF_CURSOR[String(sid)] = due[end][1]
+        return Dict{String,Any}[n for (_, n) in due]
     end
 end
 
-
-"""Drop all pending notifications. Called on server start/stop so the queue is
-bound to a server's lifecycle — a freshly-started server must not flush
-notifications queued before it existed (e.g. by a previous server instance),
-which would otherwise upgrade its first POST response to SSE unexpectedly."""
+"""Drop all pending notifications AND per-session cursors. Called on server
+start/stop so the queue is bound to a server's lifecycle — a freshly-started
+server must not flush notifications queued before it existed (e.g. by a previous
+server instance), which would otherwise upgrade its first POST response to SSE
+unexpectedly. The monotonic seq is left intact (only ever increases)."""
 function _clear_notifications!()
     lock(_PENDING_NOTIFICATIONS_LOCK) do
         empty!(_PENDING_NOTIFICATIONS)
+        empty!(_SESSION_NOTIF_CURSOR)
     end
 end
 
@@ -484,6 +507,36 @@ function _push_to_session_outbox!(session_id::AbstractString, msg::Dict{String,A
         ch === nothing && return false
         try; put!(ch, msg); return true; catch; return false; end
     end
+end
+
+"""Deliver a server→client request (`elicitation/create`, `roots/list`) to the
+client, returning true if it reached at least one channel.
+
+Delivery order:
+  1. The caller's OWN GET receive stream (exact Mcp-Session-Id match).
+  2. Any other open GET receive stream. A client can present DIFFERENT session ids
+     on its POST channel vs its GET receive stream — observed with Claude Code,
+     which POSTs tool calls under one (persisted) id while its live receive stream
+     is registered under another. Kaimon is a local, effectively single-client
+     server, so "the open receive stream" is the human we want to prompt; reply
+     correlation is by request id, so a stray prompt on another stream just cancels
+     on timeout. Without this, a split-id client's elicitation silently no-ops.
+  3. The in-flight tool-call SSE stream (`writer`), if provided — best-effort for a
+     client that keeps NO GET receive stream at all (some clients don't render
+     server→client requests arriving on a POST response stream).
+"""
+function _deliver_to_client!(session_id::AbstractString, msg::Dict{String,Any}, writer)
+    _push_to_session_outbox!(session_id, msg) && return true
+    delivered = lock(_SESSION_OUTBOX_LOCK) do
+        ok = false
+        for ch in values(_SESSION_OUTBOX)
+            try; put!(ch, msg); ok = true; catch; end
+        end
+        ok
+    end
+    delivered && return true
+    writer === nothing && return false
+    return try; writer(msg) === true; catch; false; end
 end
 
 """If `parsed` is a JSON-RPC *response* to a server-issued request (id + result/
@@ -541,20 +594,22 @@ function _request_from_client(session_id::AbstractString, method::AbstractString
     try
         msg = Dict{String,Any}("jsonrpc" => "2.0", "id" => rid, "method" => String(method))
         params === nothing || (msg["params"] = params)
-        _push_to_session_outbox!(session_id, msg) || return nothing
+        # Deliver via `_deliver_to_client!`: the caller's own GET receive stream, else
+        # any open receive stream (clients like Claude Code can split their POST vs
+        # GET session ids), else the in-flight tool-call SSE stream as a last resort.
+        writer = get(task_local_storage(), :mcp_sse_request, nothing)
+        _deliver_to_client!(session_id, msg, writer) || return nothing
         if Base.timedwait(() -> isready(sink), timeout) !== :ok
             # Timed out waiting for the user. Cancel the request client-side so a
             # lingering prompt (e.g. an elicitation dialog) is dismissed instead of
-            # outliving our wait and firing a side effect on a late answer.
-            _push_to_session_outbox!(
-                session_id,
-                Dict{String,Any}(
-                    "jsonrpc" => "2.0",
-                    "method" => "notifications/cancelled",
-                    "params" =>
-                        Dict{String,Any}("requestId" => rid, "reason" => "timeout"),
-                ),
+            # outliving our wait and firing a side effect on a late answer. Route it
+            # the same way the request went out.
+            cancel = Dict{String,Any}(
+                "jsonrpc" => "2.0",
+                "method" => "notifications/cancelled",
+                "params" => Dict{String,Any}("requestId" => rid, "reason" => "timeout"),
             )
+            _deliver_to_client!(session_id, cancel, writer)
             return nothing
         end
         return take!(sink)
@@ -846,8 +901,11 @@ function _handle_gate_tool_sse(
 
     progress_token = "tool-$(tool_name_str)-$(round(Int, time()))"
 
-    # ── Flush pending notifications (e.g., resource list changes) ─────────
-    for notif in _take_notifications!()
+    # ── Flush pending notifications (e.g., resource/tool list changes) ────
+    # Only those newer than this session's cursor (shared with its GET stream),
+    # so we don't re-announce the same change on every tool call now that the
+    # board isn't drained.
+    for notif in _flush_notifications_for_session!(session === nothing ? "" : session.id)
         try
             notif_json = JSON.json(notif)
             write(http, "data: $(notif_json)\n\n")
@@ -858,15 +916,23 @@ function _handle_gate_tool_sse(
     step_counter = Ref(0)
     last_event_time = Ref(time())
 
-    # Write an SSE event (JSON-RPC notification)
+    # Serialize all writes to this stream: the heartbeat task, the progress
+    # callback, and a server→client elicitation request (see :mcp_sse_request
+    # below) can all race to `write(http, …)`. Interleaved writes would corrupt
+    # the SSE framing, so every emitter goes through this lock.
+    sse_write_lock = ReentrantLock()
+
+    # Write an SSE event (JSON-RPC notification OR a server→client request).
     function send_sse_event(data::Dict)
-        try
-            event_json = JSON.json(data)
-            write(http, "data: $(event_json)\n\n")
-            flush(http)
-            last_event_time[] = time()
-        catch
-            # Connection may have closed
+        lock(sse_write_lock) do
+            try
+                event_json = JSON.json(data)
+                write(http, "data: $(event_json)\n\n")
+                flush(http)
+                last_event_time[] = time()
+            catch
+                # Connection may have closed
+            end
         end
     end
 
@@ -940,9 +1006,19 @@ function _handle_gate_tool_sse(
     caller = session === nothing ? "" : session.id
     agent_id = _session_agent_id(caller)   # "" unless a Kaimon-owned agent
 
+    # Deliver a server→client REQUEST (e.g. elicitation/create) on THIS in-flight
+    # tool-call SSE stream — it is guaranteed open for the duration of the call and
+    # correctly bound to the caller, unlike the standalone GET receive stream, which
+    # a client may not keep open (or may key under a stale Mcp-Session-Id). This is
+    # what makes elicitation prompts reliable rather than intermittently timing out
+    # with no prompt shown. `_request_from_client` prefers this writer and falls back
+    # to the GET outbox when absent. Return true so the caller knows delivery succeeded.
+    sse_request_sink = (msg::Dict{String,Any}) -> (send_sse_event(msg); true)
+
     result_text = try
       task_local_storage(:mcp_caller, caller) do
        task_local_storage(:mcp_agent_id, agent_id) do
+        task_local_storage(:mcp_sse_request, sse_request_sink) do
         # Call tool handler with progress callback piped through
         # The tool handler calls execute_via_gate_streaming which accepts on_progress
         # We inject on_progress into the args dict as a special key that execute_via_gate_streaming
@@ -972,6 +1048,7 @@ function _handle_gate_tool_sse(
             args["_on_progress"] = send_progress
             Base.invokelatest(tool.handler, args)
         end
+        end  # task_local_storage(:mcp_sse_request) do
        end  # task_local_storage(:mcp_agent_id) do
       end  # task_local_storage(:mcp_caller) do
     catch e
@@ -1188,9 +1265,11 @@ function start_mcp_server(
             response = handler(req_with_body)
 
             # Check for pending notifications (e.g. tools/list_changed from extensions).
-            # If any are queued, upgrade this response to SSE so we can send both
-            # the notifications and the JSON-RPC result as separate events.
-            pending = _take_notifications!()
+            # If any are newer than this session's cursor, upgrade this response to SSE
+            # so we can send both the notifications and the JSON-RPC result as separate
+            # events. (Shared cursor with the session's GET/tool-call streams — see
+            # `_flush_notifications_for_session!`.)
+            pending = _flush_notifications_for_session!(session !== nothing ? session.id : "")
 
             if !isempty(pending)
                 HTTP.setstatus(http, 200)

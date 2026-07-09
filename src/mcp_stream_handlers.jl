@@ -308,10 +308,6 @@ function _stream_get_sse(http, req)
                     @async try; _capture_roots!(sid); catch; end
                 end
                 try
-                    # Track which notifications this stream has already delivered
-                    # so we don't re-send every second but also don't consume them
-                    # (POST flush is the primary delivery path).
-                    sent = Set{String}()
                     while isopen(http)
                         # Targeted server→client messages (e.g. roots/list) first.
                         if outbox !== nothing
@@ -319,15 +315,13 @@ function _stream_get_sse(http, req)
                                 write(http, "data: $(JSON.json(take!(outbox)))\n\n")
                             end
                         end
-                        notifs = lock(_PENDING_NOTIFICATIONS_LOCK) do
-                            collect(values(_PENDING_NOTIFICATIONS))
-                        end
-                        for notif in notifs
-                            method = get(notif, "method", "")
-                            method in sent && continue
-                            push!(sent, method)
-                            notif_json = JSON.json(notif)
-                            write(http, "data: $(notif_json)\n\n")
+                        # Notifications newer than this session's cursor. The cursor
+                        # (shared with POST flushes) advances past what we deliver, so
+                        # a re-queued notification — e.g. tools/list_changed on every
+                        # extension restart — comes through as a fresh, higher seq
+                        # instead of being suppressed for the stream's whole life.
+                        for notif in _flush_notifications_for_session!(sid)
+                            write(http, "data: $(JSON.json(notif))\n\n")
                         end
                         flush(http)
                         sleep(1)
