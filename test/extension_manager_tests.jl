@@ -9,6 +9,11 @@
 
 using ReTest
 using Kaimon
+using Logging, LoggingExtras
+
+# A value whose show throws, for the log-formatter robustness test below.
+struct _ExplodingShow end
+Base.show(io::IO, ::_ExplodingShow) = error("show blew up")
 
 @testset "extension orphan cmdline matching" begin
     # Boot script as `_build_extension_script` emits it (the identifying bits).
@@ -54,6 +59,55 @@ end
     withenv("KAIMON_EXTENSION_STARTUP_TIMEOUT" => "notanumber") do
         @test Kaimon._extension_startup_timeout() >= 120.0
     end
+end
+
+@testset "extension log formatter keeps structured kwargs" begin
+    # Log through the exact sink the extension boot script installs, so the test
+    # covers the real FormatLogger → _format_extension_log path.
+    fmt(f) = begin
+        buf = IOBuffer()
+        with_logger(f, FormatLogger(Kaimon._format_extension_log, buf))
+        String(take!(buf))
+    end
+
+    # Plain message: level + message on one line, no kwarg lines.
+    out = fmt(() -> @info "extension ready")
+    @test occursin("Info] extension ready", out)
+    @test !occursin(" = ", out)
+
+    # Structured kwargs each get their own indented line.
+    out = fmt(() -> @warn "request failed" url = "http://x" n = 3)
+    @test occursin("Warn] request failed", out)
+    @test occursin("url = \"http://x\"", out)
+    @test occursin("n = 3", out)
+
+    # exception=err renders the error message, not a repr of the struct.
+    out = fmt(() -> @error "boom" exception = ErrorException("the actual reason"))
+    @test occursin("the actual reason", out)
+
+    # exception=(err, backtrace) — the standard idiom — renders message + stack trace.
+    err, bt = try
+        error("deep failure")
+    catch e
+        e, catch_backtrace()
+    end
+    out = fmt(() -> @error "task died" exception = (err, bt))
+    @test occursin("deep failure", out)
+    @test occursin("Stacktrace:", out)
+
+    # Multi-line values stay under their kwarg (continuation lines indented).
+    out = fmt(() -> @info "multi" text = "line1\nline2")
+    @test occursin("line1\\n", out) || occursin("line1\n  line2", out)
+
+    # A value whose show throws must not take down the logger.
+    out = fmt(() -> @warn "bad value" v = _ExplodingShow())
+    @test occursin("Warn] bad value", out)
+    @test occursin("error rendering value", out)
+
+    # Huge values are capped so one kwarg can't bloat the log file.
+    out = fmt(() -> @info "big" blob = "x"^100_000)
+    @test sizeof(out) < 10_000
+    @test occursin("⋯", out)
 end
 
 @testset "extension gate advertise probe (timeout diagnostic)" begin

@@ -166,6 +166,41 @@ end
 
 # ── Spawn / Stop / Restart ───────────────────────────────────────────────────
 
+const _EXT_LOG_TIME_FORMAT = Dates.DateFormat("HH:MM:SS")
+
+"""
+    _format_extension_log(io, args)
+
+`FormatLogger` sink for extension subprocess logs: one `[HH:MM:SS Level] message`
+line, then each structured kwarg (`@warn "…" key=val`) on its own indented line.
+An `exception=` kwarg — an exception or an `(exc, backtrace)` tuple — is rendered
+with `showerror` so extension failures keep their error message and stack trace.
+"""
+function _format_extension_log(io, args)
+    println(io, "[", Dates.format(Dates.now(), _EXT_LOG_TIME_FORMAT), " ", args.level, "] ",
+        args.message)
+    for (k, v) in args.kwargs
+        str = try
+            _render_extension_log_value(k, v)
+        catch e
+            "<error rendering value: $(sprint(showerror, e))>"
+        end
+        println(io, "  ", k, " = ", replace(str, "\n" => "\n  "))
+    end
+end
+
+function _render_extension_log_value(k::Symbol, v)
+    if k === :exception
+        v isa Exception && return sprint(showerror, v)
+        if v isa Tuple && length(v) == 2 && v[1] isa Exception
+            return sprint(showerror, v[1], v[2])
+        end
+    end
+    str = sprint(show, v; context = :limit => true)
+    # Cap huge values so one kwarg can't bloat the log file.
+    sizeof(str) <= 4096 ? str : first(str, 4096) * " ⋯"
+end
+
 """
     _build_extension_script(config::ExtensionConfig) -> String
 
@@ -224,15 +259,12 @@ function _build_extension_script(config::ExtensionConfig)
     try; import Pkg; Pkg.resolve(io=devnull); catch e; @warn "Pkg.resolve failed" exception=e; end
     using Kaimon
     # Auto-flushing logger so extension output is visible immediately in the log file
-    using LoggingExtras, Logging, Dates
-    let _fmt = DateFormat("HH:MM:SS")
-        global_logger(MinLevelLogger(
-            FormatLogger(stderr; always_flush=true) do io, args
-                println(io, "[", Dates.format(now(), _fmt), " ", args.level, "] ", args.message)
-            end,
-            Logging.Info,
-        ))
-    end
+    # (formatter lives in Kaimon so it's testable and keeps structured kwargs).
+    using LoggingExtras, Logging
+    global_logger(MinLevelLogger(
+        FormatLogger(Kaimon._format_extension_log, stderr; always_flush=true),
+        Logging.Info,
+    ))
     using $(m.module_name)
     tools = $(m.module_name).$(m.tools_function)(Kaimon.KaimonGate.GateTool)
     Kaimon.KaimonGate.serve(tools=tools, namespace=$(repr(m.namespace)), force=true, allow_mirror=false, allow_restart=false, spawned_by="extension"$on_shutdown_kwarg)
