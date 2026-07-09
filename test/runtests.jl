@@ -15,9 +15,18 @@ using ReTest
 include("KaimonTests.jl")
 using .KaimonTests
 
-# Run all tests with ReTest
+# Run all tests with ReTest. Each ARG is a pattern; multiple ARGs are ANDed
+# (ReTest conjunction). Within a single ARG, '|' separates OR-alternatives:
+# ReTest matches a bare string LITERALLY (so "a|b" would look for the substring
+# "a|b", not "a" OR "b"), while an ARRAY of strings is matched disjunctively — so
+# we split on '|' into an array. This makes the natural, oft-attempted
+# `pattern="elicitation|notifications"` actually run either group.
 if isempty(ARGS)
     retest()
 else
-    retest(ARGS[1])
+    pats = map(ARGS) do a
+        alts = split(a, '|'; keepempty = false)
+        length(alts) == 1 ? String(alts[1]) : String.(alts)
+    end
+    retest(pats...)
 end
