@@ -20,6 +20,11 @@ mutable struct ManagedExtension
     log_file::String        # path to stderr/stdout log
 end
 
+# Per-extension log size cap. We append to one `<namespace>.log` across every restart, so a
+# chatty extension started dozens of times accumulates unbounded (slate.log reached >1 GB).
+# On start, if the log is over this, we rotate it to a single `.1` backup and begin fresh.
+const _EXT_LOG_CAP_BYTES = 10 * 1024^2   # 10 MB
+
 function ManagedExtension(config::ExtensionConfig)
     log_dir = joinpath(kaimon_cache_dir(), "extensions")
     mkpath(log_dir)
@@ -326,7 +331,14 @@ function spawn_extension!(ext::ManagedExtension)
         end
         cmd = setenv(`$julia_bin $flags --startup-file=no --project=$project -e $script`, env)
 
-        # Redirect output to log file
+        # Redirect output to log file. Rotate first if it's grown past the cap (across
+        # restarts) so it can't accumulate without bound — keep one `.1` backup.
+        try
+            if isfile(ext.log_file) && filesize(ext.log_file) > _EXT_LOG_CAP_BYTES
+                mv(ext.log_file, ext.log_file * ".1"; force = true)
+            end
+        catch
+        end
         log_io = open(ext.log_file, "a")
         println(log_io, "\n--- Extension $(ext.config.manifest.namespace) starting at $(Dates.now()) ---")
         flush(log_io)

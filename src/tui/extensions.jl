@@ -284,6 +284,31 @@ function _sync_ext_detail_pane!(m::KaimonModel, area::Rect)
     end
 end
 
+# Read the last `n` lines of a (possibly huge) file WITHOUT slurping it: seek near the end
+# and read back a bounded window. `readlines(path)` here on the TUI main thread — which the
+# co-located MCP server shares — locked up the whole process when an extension log grew large
+# (a multi-GB slate.log re-read every render, 100% CPU in readline/eof). Bounded read = O(window),
+# independent of file size.
+function _tail_lines(path::AbstractString, n::Int; window::Int = 65536)
+    try
+        sz = filesize(path)
+        sz == 0 && return String[]
+        return open(path, "r") do io
+            start = max(0, sz - window)
+            start > 0 && seek(io, start)
+            data = read(io, String)                       # ≤ window bytes
+            if start > 0                                   # drop the partial first line
+                nl = findfirst('\n', data)
+                nl !== nothing && (data = SubString(data, nextind(data, nl)))
+            end
+            ls = split(data, '\n'; keepempty = false)
+            String.(length(ls) > n ? ls[end-n+1:end] : ls)
+        end
+    catch
+        return String[]
+    end
+end
+
 """Build styled content lines for the full extension detail view."""
 function _build_ext_detail_lines(ext::ManagedExtension, conn_mgr)
     lines = Tuple{String,Style}[]
@@ -375,19 +400,16 @@ function _build_ext_detail_lines(ext::ManagedExtension, conn_mgr)
         end
     end
 
-    # Log output (tail of log file)
+    # Log output — bounded TAIL (never slurp the whole file; see `_tail_lines`).
     if isfile(ext.log_file)
-        try
-            log_lines = readlines(ext.log_file)
-            if !isempty(log_lines)
-                push!(lines, ("", Style()))
-                push!(lines, ("Log Output (last 30 lines):", tstyle(:accent, bold = true)))
-                push!(lines, ("─" ^ 40, tstyle(:border)))
-                for line in log_lines[max(1, end - 29):end]
-                    push!(lines, (line, tstyle(:text_dim)))
-                end
+        log_lines = _tail_lines(ext.log_file, 30)
+        if !isempty(log_lines)
+            push!(lines, ("", Style()))
+            push!(lines, ("Log Output (last 30 lines):", tstyle(:accent, bold = true)))
+            push!(lines, ("─" ^ 40, tstyle(:border)))
+            for line in log_lines
+                push!(lines, (line, tstyle(:text_dim)))
             end
-        catch
         end
     end
 
