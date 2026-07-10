@@ -856,6 +856,105 @@ function _highlight_repl_output(text::String)
     return spans
 end
 
+# Emit `line` as spans with occurrences of `rx` colored `hl` and the rest in `base`.
+# Byte-offset walk (mirrors `_highlight_julia`); zero-width matches are skipped.
+function _grep_hl_line!(spans::Vector{Span}, line::AbstractString, rx, base::Style, hl::Style)
+    s = string(line)
+    if rx === nothing
+        push!(spans, Span(s * "\n", base)); return
+    end
+    pos = 1
+    for mt in eachmatch(rx, s)
+        isempty(mt.match) && continue
+        mt.offset > pos && push!(spans, Span(s[pos:prevind(s, mt.offset)], base))
+        push!(spans, Span(string(mt.match), hl))
+        pos = mt.offset + ncodeunits(mt.match)
+    end
+    pos <= ncodeunits(s) && push!(spans, Span(s[pos:end], base))
+    push!(spans, Span("\n", base))
+end
+
+"""
+Re-highlight a `grep_code` result at RENDER time — the MCP wire stays verbatim (see
+`_grep_parse_rg`), and the colors live only on the human-facing surface. The searched
+pattern is pulled from the `🔎 /pattern/` header and colored on match lines; the header is
+dim and file-path headers are secondary. Best-effort and fail-safe: the pattern's flags
+(ignore_case/word/fixed) aren't on the wire, so we reconstruct a permissive regex and fall
+back to plain text on any trouble — decoration must never crash or mangle the pane.
+"""
+function _highlight_grep_result(text::String)
+    spans = Span[]
+    try
+        rx = nothing
+        hm = match(r"^🔎 /(.+)/ in ", text)
+        if hm !== nothing
+            pat = String(hm.captures[1])
+            rx = try; Regex(pat); catch; try; Regex(pat, "i"); catch; nothing; end; end
+        end
+        base = tstyle(:text)
+        hl = tstyle(:accent, bold = true)
+        for line in split(text, '\n')
+            ln = string(line)
+            if startswith(ln, "🔎")
+                push!(spans, Span("  " * ln * "\n", tstyle(:text_dim)))
+            elseif isempty(ln)
+                push!(spans, Span("\n", base))
+            elseif !startswith(ln, " ")          # file-path header / footer, not a match line
+                push!(spans, Span("  " * ln * "\n", tstyle(:secondary)))
+            else                                  # indented hit / context / "+N more" line
+                push!(spans, Span("  ", base))
+                _grep_hl_line!(spans, ln, rx, base, hl)
+            end
+        end
+    catch
+        empty!(spans)
+        for ln in split(text, '\n')
+            push!(spans, Span("  " * string(ln) * "\n", tstyle(:text)))
+        end
+    end
+    return spans
+end
+
+"""
+Re-highlight a `search_code` result at RENDER time — TUI-only decoration, the MCP wire
+stays verbatim (see `_matched_lines`). The query is pulled from the `🔍 "query"` header and
+its terms (the same `_query_tokens` the search used, so exactly the words searched) are
+colored wherever they appear. Best-effort and fail-safe: falls back to plain text.
+"""
+function _highlight_search_result(text::String)
+    spans = Span[]
+    try
+        rx = nothing
+        hm = match(r"^🔍 \"(.+)\" in ", text)
+        if hm !== nothing
+            toks = _query_tokens(String(hm.captures[1]))   # ≥3-char terms, minus FTS operators
+            if !isempty(toks)
+                pat = join(sort(unique(toks); by = length, rev = true), "|")   # alnum/_ only, no escaping
+                rx = try; Regex("(?:" * pat * ")", "i"); catch; nothing; end
+            end
+        end
+        base = tstyle(:text)
+        hl = tstyle(:accent, bold = true)
+        for line in split(text, '\n')
+            ln = string(line)
+            if startswith(ln, "🔍")
+                push!(spans, Span("  " * ln * "\n", tstyle(:text_dim)))
+            elseif isempty(ln)
+                push!(spans, Span("\n", base))
+            else
+                push!(spans, Span("  ", base))
+                _grep_hl_line!(spans, ln, rx, base, hl)
+            end
+        end
+    catch
+        empty!(spans)
+        for ln in split(text, '\n')
+            push!(spans, Span("  " * string(ln) * "\n", tstyle(:text)))
+        end
+    end
+    return spans
+end
+
 """Extract eval_id from an ex tool call's progress lines or result text."""
 function _extract_eval_id(progress_lines::Vector{String})
     for line in progress_lines
@@ -924,6 +1023,10 @@ function _build_detail_spans!(
         push!(spans, Span("── Result ──\n", tstyle(:text_dim)))
         if tool_name == "ex"
             append!(spans, _highlight_repl_output(result_text))
+        elseif tool_name == "grep_code"
+            append!(spans, _highlight_grep_result(result_text))
+        elseif tool_name == "search_code"
+            append!(spans, _highlight_search_result(result_text))
         else
             for ln in split(result_text, '\n')
                 push!(spans, Span("  " * string(ln) * "\n", tstyle(:text)))
