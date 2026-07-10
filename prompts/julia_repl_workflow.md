@@ -27,8 +27,13 @@ and they show each hit's enclosing function):
   `grep_code(pattern="_eval_with_capture")`. Add `query="…"` to also rank the matching
   files by relevance.
 - **Stay scoped.** Both default to your session's project; pass `collection=` / `path=`
-  for another. `search_code(..., cross_project=true)` fans out over every project —
-  slower, only when you don't know which one holds the code.
+  for another (an absolute `path=`/`file=` forces the repo when your session isn't bound to
+  it). `search_code(..., cross_project=true)` fans out over every project — slower, only when
+  you don't know which one holds the code.
+- **grep_code globs are project-root-relative** — written like `path=`/`file=` (relative to
+  the repo, as if you `cd`'d in and ran `rg -g '<glob>'`), **not** relative to `path=`. So
+  don't repeat a `path=` prefix in the glob: `path="src"` + `glob=["src/**/*.jl"]` is right
+  (no double-anchor), and a bare basename (`glob=["worker.jl"]`, no `/`) matches at any depth.
 
 Full references: `tool_help("search_code", extended=true)` and
 `tool_help("grep_code", extended=true)`.

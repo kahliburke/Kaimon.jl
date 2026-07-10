@@ -34,11 +34,33 @@ Flags:
 ## Scope
 
 Defaults to your **bound session's project** (same per-agent binding `search_code` uses).
-Narrow it:
+If you're driving from a REPL that isn't bound to the repo you mean — or an agent whose
+session isn't that project — pass an absolute `path=`/`file=`, or point at the right repo
+first. Narrow it:
 
 - `path="src/server"` — a subdirectory (relative to the project, or absolute).
 - `file="src/bind.jl"` — a single file (the common "grep one file to locate a function").
 - `glob=["src/**/*.jl", "!**/test/**"]` — ripgrep include/exclude globs, repeatable.
+
+### Globs are project-root-relative — write them like `path=`/`file=`
+
+`path=` and `file=` resolve **relative to the project root**, and so do `glob=` patterns.
+A `glob` is anchored to the **repo root**, exactly as if you had `cd`'d into the repo and
+run `rg -g '<glob>'` — *not* relative to `path=`. Two consequences:
+
+- **Don't repeat a `path=` prefix inside the glob.** `path="src"` already narrows the scan
+  to `src/`; a glob is still written from the repo root. `path="src"` + `glob=["src/**/*.jl"]`
+  is correct (both project-relative — no double-anchor). The old footgun — `path="src"`
+  double-anchoring the glob to `src/src/…` and silently matching nothing — is gone.
+- **A glob with no `/` matches that basename at any depth.** `glob=["worker.jl"]` finds
+  `worker.jl` anywhere; `glob=["*.jl"]` finds every `.jl` file. Use a bare basename when you
+  don't care where the file lives; use a slash-glob (`src/**/*.jl`) to anchor by path.
+
+```julia
+grep_code(pattern="memo", glob=["src/**/*.jl"])              # every .jl under src/, from the repo root
+grep_code(pattern="memo", path="src", glob=["**/*.jl"])     # scan src/ only; glob need not repeat "src/"
+grep_code(pattern="memo", glob=["worker.jl"])               # this basename, wherever it lives
+```
 
 ## Logs, generated, and gitignored files (`no_ignore`)
 
@@ -71,9 +93,27 @@ Then:
 ## Output
 
 Hits are grouped by file (relevance-ranked when `query` is set). Each line shows
-`L<n>  <enclosing symbol>  <matched line>` with the match **bolded**; expanded hits show
-the `▸` marker on the match line and plain context around it. `limit` caps the number of
-matches (default 40; more are reported as truncated).
+`L<n>  <enclosing symbol>  <matched line>`, and the matched line is **verbatim** — no inline
+markers (they split identifiers and cost exact-string fidelity; the human-facing TUI
+re-highlights at render time instead). The enclosing-symbol column is omitted when the hit
+is on the definition's own line (it would just repeat the line). Expanded hits show a `▸`
+marker on the match line with plain context around it.
+
+The header echoes the normalized inputs — `🔎 /pattern/ in <scope> · glob=[…] ignore_case` —
+so you can see *what* was actually searched.
+
+**Fair-share truncation.** `limit` is a budget of match lines (default 20), and it's split
+across files by max-min *water-filling*, not depth-first: every matching file stays visible,
+each getting `min(its matches, fair share)` with the slack flowing to the bigger files.
+Depth is sacrificed before breadth — losing lines in one file is recoverable (narrow and
+re-query), a whole file vanishing is not. When a file is clipped its header says
+`path (showing X of N)`, and the global header says `T matches in F files, showing S`. Files
+past a display cap collapse into one honest stub: `…and K more files (M matches not shown)`.
+A single-file / `file=` scope degrades naturally to first-`limit`.
+
+**Self-evidencing empties.** No match reports how much was searched —
+`No matches for /pat/ in src (94 files in scope)` — so a true negative is distinguishable
+from a scoping mistake, which instead reads `(0 files in scope — check path=/glob=)`.
 
 ## Examples
 

@@ -52,6 +52,21 @@ end
 # the raw path if it can't be resolved.
 _grep_canon(p::AbstractString) = try; realpath(p); catch; String(p); end
 
+# Nearest enclosing git repo root of `p` (the dir holding `.git`), canonicalized, or
+# `nothing` if none is found before the filesystem root. Used to anchor globs when the
+# search root lies OUTSIDE the bound project (a foreign absolute `path=`): so those globs
+# are still repo-root-relative — the `cd repo && rg -g '<glob>'` model — matching the
+# in-project case instead of silently anchoring one directory deeper.
+function _grep_repo_root(p::AbstractString)
+    d = _grep_canon(isdir(p) ? p : dirname(p))
+    while true
+        ispath(joinpath(d, ".git")) && return d
+        parent = dirname(d)
+        parent == d && return nothing   # hit filesystem root, no repo
+        d = parent
+    end
+end
+
 const _GREP_NO_PROJECT_MSG =
     "Error: no project is bound to your MCP session, so grep_code has nothing to scope " *
     "to. This usually means the session hasn't reassociated with its project after a " *
@@ -215,33 +230,91 @@ end
 
 # ── ripgrep --json parse ───────────────────────────────────────────────────────
 
-# Parse ripgrep's `--json` stream into match hits, stopping once `cap` is collected
-# (the remainder is reported as truncated). Each hit: (file, line, text, subs) where
-# `subs` are the matched substrings (for highlighting).
-function _grep_parse_rg(out::AbstractString, cap::Int)
-    hits = NamedTuple[]
-    more = false
+# Parse ripgrep's `--json --stats` stream. Returns (files, total, scanned):
+#   files   — Vector of (path, count, hits) in ENCOUNTER order. `count` is the file's EXACT
+#             match total (from its `end` message); `hits` are the first ≤`retain` matched
+#             lines (document order), each (file, line, text) kept VERBATIM.
+#   total   — total matches across the whole search (`summary` message).
+#   scanned — files ripgrep examined (`summary.searches`), so a true "no matches" can say
+#             how much was looked at ("0 of N files scanned") instead of being mistaken for
+#             a scoping error.
+# Lines are kept verbatim (no `**`/marker): an in-band marker splits identifiers into
+# unfamiliar subword fragments and costs exact-string fidelity, while the "which substring
+# matched" signal is worth ~nothing to a consumer that knows its own pattern. Retaining is
+# bounded (≤`retain` lines per file, and only for the first `_GREP_RETAIN_FILES` files) so a
+# broad match can't blow up memory — the `end`/`summary` COUNTS stay exact regardless.
+function _grep_parse_rg(out::AbstractString, retain::Int)
+    order = String[]
+    idx = Dict{String,Int}()
+    counts = Int[]
+    hitsv = Vector{NamedTuple}[]
+    total = 0; scanned = 0; have_summary = false
     for ln in eachsplit(out, '\n'; keepempty = false)
         obj = try; JSON.parse(ln); catch; continue; end
-        get(obj, "type", "") == "match" || continue
-        if length(hits) >= cap
-            more = true
+        typ = get(obj, "type", "")
+        d = get(obj, "data", Dict())
+        if typ == "match"
+            path = get(get(d, "path", Dict()), "text", "")
+            (path isa AbstractString && !isempty(path)) || continue   # skip non-UTF8 paths
+            gi = get(idx, path, 0)
+            if gi == 0
+                push!(order, path); push!(counts, 0); push!(hitsv, NamedTuple[])
+                gi = length(order); idx[path] = gi
+            end
+            if gi <= _GREP_RETAIN_FILES && length(hitsv[gi]) < retain
+                text = get(get(d, "lines", Dict()), "text", "")
+                text isa AbstractString || continue
+                push!(hitsv[gi], (file = String(path), line = Int(get(d, "line_number", 0)),
+                                  text = rstrip(String(text), ['\n', '\r'])))
+            end
+        elseif typ == "end"
+            path = get(get(d, "path", Dict()), "text", "")
+            (path isa AbstractString && !isempty(path)) || continue
+            c = Int(get(get(d, "stats", Dict()), "matches", 0))
+            gi = get(idx, path, 0)
+            if gi == 0
+                push!(order, path); push!(counts, c); push!(hitsv, NamedTuple[]); idx[path] = length(order)
+            else
+                counts[gi] = c
+            end
+        elseif typ == "summary"
+            s = get(d, "stats", Dict())
+            total = Int(get(s, "matches", 0)); scanned = Int(get(s, "searches", 0))
+            have_summary = true
+        end
+    end
+    files = [(path = order[i], count = counts[i], hits = hitsv[i]) for i in eachindex(order)]
+    have_summary || (total = sum(counts; init = 0))
+    return files, total, scanned
+end
+
+# Max-min fair-share (water-filling): hand out a `budget` of match slots across files with
+# the given `counts`, in order. Each round gives every still-unsatisfied file an equal
+# share (capped at what it can absorb); small files take only what they have and the
+# leftover redistributes to the bigger ones. Depth is spent before breadth — losing lines
+# in a big file is recoverable (narrow and re-query), losing a whole file to depth-first
+# truncation is not (you never learn to go back). e.g. counts=[40,18], budget=40 → [22,18].
+function _grep_waterfill(counts::Vector{Int}, budget::Int)
+    n = length(counts)
+    alloc = zeros(Int, n)
+    remaining = max(0, budget)
+    while remaining > 0
+        active = [i for i in 1:n if alloc[i] < counts[i]]
+        isempty(active) && break
+        share = remaining ÷ length(active)
+        if share == 0                        # remainder < #active → one each, in order
+            for i in active
+                remaining == 0 && break
+                alloc[i] += 1; remaining -= 1
+            end
             break
         end
-        d = get(obj, "data", Dict())
-        path = get(get(d, "path", Dict()), "text", "")
-        (path isa AbstractString && !isempty(path)) || continue   # skip non-UTF8 (bytes) paths
-        text = get(get(d, "lines", Dict()), "text", "")
-        text isa AbstractString || continue
-        subs = String[]
-        for s in get(d, "submatches", [])
-            mt = get(get(s, "match", Dict()), "text", "")
-            mt isa AbstractString && !isempty(mt) && push!(subs, mt)
+        for i in active
+            give = min(share, counts[i] - alloc[i])
+            alloc[i] += give; remaining -= give
         end
-        push!(hits, (file = String(path), line = Int(get(d, "line_number", 0)),
-                     text = rstrip(String(text), ['\n', '\r']), subs = unique(subs)))
     end
-    return hits, more
+    return alloc
 end
 
 # ── per-file context (raw lines + definitions), parsed once per grep call ──────
@@ -338,18 +411,10 @@ function _grep_relfile(f::AbstractString, base::AbstractString)
     return f
 end
 
-# Bold the matched substrings within a line (capped width). Literal, case-sensitive
-# replace of the actual ripgrep submatch text — no regex escaping needed.
-function _grep_highlight(text::AbstractString, subs::Vector{String}; width::Int = 200)
-    t = strip(text)
-    length(t) > width && (t = first(t, width) * "…")
-    for st in subs
-        occursin("**" * st * "**", t) && continue   # avoid double-bolding
-        t = replace(t, st => "**" * st * "**")
-    end
-    return t
-end
-
+# Trim + width-cap a matched/context line for display. The line is returned VERBATIM (no
+# inline match markers) — see `_grep_parse_rg` for why highlighting is deliberately absent.
+# A human-facing TUI is free to re-highlight at RENDER time (it has the search pattern), so
+# decoration lives at the display surface, not on the MCP wire.
 _grep_trunc(s::AbstractString; width::Int = 200) = (t = strip(s); length(t) > width ? first(t, width) * "…" : t)
 
 # One hit: a tight single line, or — when `ctx > 0` (a semantic window overlaps it, or
@@ -357,14 +422,20 @@ _grep_trunc(s::AbstractString; width::Int = 200) = (t = strip(s); length(t) > wi
 # what it's part of.
 function _grep_render_hit(h, lines::Vector, defs, ctx::Int)
     enc = _grep_enclosing(h.line, defs)
-    label = enc === nothing ? "" :
+    # Suppress the enclosing-symbol column when the hit is ON the definition's own line: the
+    # line text already spells out the signature, so the label would just duplicate it (e.g.
+    # `L79  const _MEMO_OK  const _MEMO_OK = try`). The column earns its keep only when the
+    # hit sits deeper in the body, away from the name.
+    span = _grep_enclosing_span(h.line, defs)
+    on_def_line = span !== nothing && span[1] == h.line
+    label = (enc === nothing || on_def_line) ? "" :
         (enc[2] == "function" || enc[2] == "tool" ? "  $(enc[1])" : "  $(enc[2]) $(enc[1])")
-    ctx <= 0 && return "  L$(h.line)$label  $(_grep_highlight(h.text, h.subs))\n"
+    ctx <= 0 && return "  L$(h.line)$label  $(_grep_trunc(h.text))\n"
     lo = max(1, h.line - ctx); hi = min(length(lines), h.line + ctx)
     out = "  L$(h.line)$label\n"
     for n in lo:hi
         if n == h.line
-            out *= "    ▸ L$n  $(_grep_highlight(h.text, h.subs))\n"
+            out *= "    ▸ L$n  $(_grep_trunc(h.text))\n"
         else
             out *= "      L$n  $(_grep_trunc(lines[n]))\n"
         end
@@ -375,6 +446,8 @@ end
 # Output-shaping budgets (keep a single grep result token-cheap):
 const _GREP_OUT_BUDGET = 8192          # ~8 KB total-output cap; overflow is truncated with guidance
 const _GREP_RANK_EXPAND_TOPN = 5       # only the top-N ranked files get context expansion
+const _GREP_MAX_FILES = 15             # cap on files shown; the rest roll into a "…N more files" stub
+const _GREP_RETAIN_FILES = 200         # retain hit LINES for at most this many files (counts stay exact)
 
 # Collapse a file's hits that share one enclosing definition: the first hit represents
 # the function, the rest fold into a single "(+N more)" line. Hits with no enclosing def
@@ -395,70 +468,100 @@ function _grep_group_by_enclosing(hits::Vector, defs::Vector{Tuple{Int,Int,Strin
     return [(g[1], @view g[2:end]) for g in groups]
 end
 
-function _grep_format(pattern, scope_label, hits, more, base, query, sem_windows, ctx_arg::Int)
-    # Group hits by file (encounter order).
-    files = String[]
-    byfile = Dict{String,Vector{Any}}()
-    for h in hits
-        haskey(byfile, h.file) || (push!(files, h.file); byfile[h.file] = Any[])
-        push!(byfile[h.file], h)
-    end
-
-    # Stage 2: when ranking, order file groups by each file's best semantic score.
+# Render the parsed files into the final text. `files` is the parser's per-file data
+# (path, count, hits). Match slots are FAIR-SHARED across files (waterfill) so a broad
+# match spends its budget on breadth, not depth — every matching file stays visible (with
+# a per-file "showing X of N" when clipped), and files past the display cap collapse into a
+# one-line stub rather than vanishing silently.
+function _grep_format(pattern, scope_label, files, total, header_extra, base, query,
+                      sem_windows, ctx_arg::Int, limit::Int)
+    F = length(files)
+    # File order: ranked by best semantic score when a `query` is given, else encounter order.
     ranked = !isempty(sem_windows)
+    order = collect(1:F)
     if ranked
         best = Dict{String,Float64}()
         for (f, _, _, sc) in sem_windows
             best[f] = max(get(best, f, -Inf), sc)
         end
-        files = sort(files; by = f -> -get(best, f, -Inf), alg = Base.Sort.MergeSort)  # stable
+        sort!(order; by = i -> -get(best, files[i].path, -Inf), alg = Base.Sort.MergeSort)  # stable
     end
-    # Context expansion is confined to the top-N ranked files — a broad `query` that
-    # overlaps windows across many files can't balloon the output; the rest stay tight.
-    expandable = ranked ? Set(files[1:min(length(files), _GREP_RANK_EXPAND_TOPN)]) : Set{String}()
 
-    nh = length(hits)
-    out = "🔎 /$pattern/ in $scope_label — $nh match$(nh == 1 ? "" : "es") in " *
-          "$(length(files)) file$(length(files) == 1 ? "" : "s")"
+    # File-count cap: allocate the budget only across the first _GREP_MAX_FILES files; the
+    # rest are summarized so a broad match can't silently swallow whole files.
+    ncap = min(F, _GREP_MAX_FILES)
+    cap_idx = order[1:ncap]
+    beyond = order[ncap+1:end]
+    alloc = _grep_waterfill([files[i].count for i in cap_idx], limit)
+    rendered = [(cap_idx[k], alloc[k]) for k in 1:ncap if alloc[k] > 0]
+    starved = [cap_idx[k] for k in 1:ncap if alloc[k] == 0]   # in-cap but budget ran out
+    hidden = vcat(starved, beyond)
+    shown_total = sum(a for (_, a) in rendered; init = 0)
+
+    # Context expansion stays confined to the top-N ranked rendered files.
+    expandable = Set{String}()
+    if ranked
+        for k in 1:min(length(rendered), _GREP_RANK_EXPAND_TOPN)
+            push!(expandable, files[rendered[k][1]].path)
+        end
+    end
+
+    out = "🔎 /$pattern/ in $scope_label$header_extra — $total match$(total == 1 ? "" : "es") in " *
+          "$F file$(F == 1 ? "" : "s")"
     ranked && (out *= " · ranked by relevance to \"$query\"")
-    more && (out *= " (truncated)")
+    shown_total < total && (out *= ", showing $shown_total")
     out *= ":\n"
 
     cache = Dict{String,Any}()
-    shown = 0                 # hits represented so far (rendered or folded into a +N line)
-    budget_hit = false
-    for f in files
+    byte_hit = false
+    for (i, a) in rendered
+        f = files[i].path
+        fh = files[i].hits
+        take = fh[1:min(a, length(fh))]                 # first `a` matches, document order
         lines, defs = _grep_file_ctx(f, cache)
-        header_written = false
+        clip = files[i].count > a ? " (showing $a of $(files[i].count))" : ""
+        out *= "\n$(_grep_relfile(f, base))$clip\n"
         # Respect an explicit context= request by rendering every hit (empty defs → no
         # collapsing); otherwise collapse repeats that share an enclosing function.
-        groups = _grep_group_by_enclosing(byfile[f],
-            ctx_arg > 0 ? Tuple{Int,Int,String,String}[] : defs)
+        groups = _grep_group_by_enclosing(take, ctx_arg > 0 ? Tuple{Int,Int,String,String}[] : defs)
         for (rep, rest) in groups
             if sizeof(out) >= _GREP_OUT_BUDGET
-                budget_hit = true
+                byte_hit = true
                 break
             end
-            header_written || (out *= "\n$(_grep_relfile(f, base))\n"; header_written = true)
-            # Stage 3: expand context where a semantic window overlaps the hit (or the
-            # caller forced it), but only in the top-N ranked files; else stay tight.
             ctx = max(ctx_arg, (f in expandable && _grep_in_window(f, rep.line, sem_windows)) ? 2 : 0)
             out *= _grep_render_hit(rep, lines, defs, ctx)
-            shown += 1
-            if !isempty(rest)
-                out *= "      (+$(length(rest)) more: $(join(("L$(h.line)" for h in rest), ", ")))\n"
-                shown += length(rest)
-            end
+            isempty(rest) ||
+                (out *= "      (+$(length(rest)) more: $(join(("L$(h.line)" for h in rest), ", ")))\n")
         end
-        budget_hit && break
+        byte_hit && break
     end
-    if budget_hit && shown < nh
-        left = nh - shown
-        out *= "\n… output truncated at ~$(_GREP_OUT_BUDGET ÷ 1024) KB; $left more " *
-               "match$(left == 1 ? "" : "es") not shown — narrow with glob=/path=, a lower " *
-               "limit=, or a tighter pattern.\n"
+
+    if !isempty(hidden)
+        hm = sum(files[i].count for i in hidden; init = 0)
+        nh = length(hidden)
+        out *= "\n…and $nh more file$(nh == 1 ? "" : "s") ($hm match$(hm == 1 ? "" : "es") not shown) — " *
+               "narrow the pattern or scope (glob=/path=), or raise limit=.\n"
+    elseif byte_hit
+        out *= "\n… output truncated at ~$(_GREP_OUT_BUDGET ÷ 1024) KB — narrow with glob=/path= " *
+               "or a tighter pattern.\n"
     end
     return out
+end
+
+# Count files IN SCOPE (after .gitignore + globs) by asking rg to LIST them (`--files`).
+# Used only on the empty path — cheap, and it answers the question `stats.searches` can't
+# on this rg build: was anything actually searched? 0 ⇒ the path/glob matched no files (a
+# scoping mistake); N ⇒ a genuine negative over N files.
+function _grep_scope_file_count(rg, scan_flags, root, rg_cwd)
+    argv = String[rg...; "--files"; scan_flags...; "--"; root]
+    try
+        out = read(pipeline(ignorestatus(Cmd(Cmd(argv); dir = rg_cwd)), stderr = devnull), String)
+        isempty(out) && return 0
+        return count(==('\n'), out) + (endswith(out, '\n') ? 0 : 1)
+    catch
+        return 0
+    end
 end
 
 """
@@ -486,28 +589,57 @@ function _grep_code(args)
     ctx_arg = max(0, Int(get(args, "context", 0)))
     query = _grep_str(args, "query")
 
-    flags = String[]
-    _grep_bool(args, "ignore_case") && push!(flags, "-i")
-    _grep_bool(args, "word") && push!(flags, "-w")
-    _grep_bool(args, "fixed") && push!(flags, "-F")
+    # Pattern flags (-i/-w/-F) vs traversal flags (glob + ignore/hidden). Kept apart so the
+    # traversal set can be reused to COUNT files in scope on an empty result (below).
+    pat_flags = String[]
+    _grep_bool(args, "ignore_case") && push!(pat_flags, "-i")
+    _grep_bool(args, "word") && push!(pat_flags, "-w")
+    _grep_bool(args, "fixed") && push!(pat_flags, "-F")
+    scan_flags = String[]
     # no_ignore: also search .gitignored + hidden files (logs, build/ output, generated,
     # dotfiles) — makes grep_code the one pattern-search tool instead of falling back to
     # shell grep for non-tracked text. Default off keeps code search free of build noise.
     if _grep_bool(args, "no_ignore")
-        push!(flags, "--no-ignore"); push!(flags, "--hidden")
+        push!(scan_flags, "--no-ignore"); push!(scan_flags, "--hidden")
     end
-    for g in _grep_globs(args)
-        push!(flags, "-g"); push!(flags, g)
+    globs = _grep_globs(args)
+    for g in globs
+        push!(scan_flags, "-g"); push!(scan_flags, g)
     end
 
+    # Echo the normalized search inputs (glob + active flags) in the header, so a caller
+    # sees WHAT was actually searched — a header of just `in src` hides whether a glob or
+    # case-fold was applied, which turns a surprising result into a guessing game.
+    echo = String[]
+    isempty(globs) || push!(echo, "glob=[" * join((repr(g) for g in globs), ", ") * "]")
+    _grep_bool(args, "ignore_case") && push!(echo, "ignore_case")
+    _grep_bool(args, "word") && push!(echo, "word")
+    _grep_bool(args, "fixed") && push!(echo, "fixed")
+    _grep_bool(args, "no_ignore") && push!(echo, "no_ignore")
+    header_extra = isempty(echo) ? "" : " · " * join(echo, " ")
+
+    # `--stats` makes rg emit a `summary` (total matches) and per-file `end` counts, which
+    # drive fair-share truncation. (`stats.searches` is NOT used for "files scanned" — some
+    # rg builds report it as matched-files, so it reads 0 exactly on the empty case we need
+    # it for; we count scope files with `rg --files` instead.)
     # `--` terminates flags so a pattern starting with `-` is taken literally.
-    argv = String[rg...; "--json"; flags...; "--"; pattern; root]
-    # ripgrep anchors slash-containing globs (`src/**/*.jl`) to the PROCESS CWD, not to
-    # the search-path argument. This server is long-lived and its CWD is not the searched
-    # repo, so without pinning rg's cwd to the root every `-g dir/…` glob silently matches
-    # nothing — including this tool's own advertised `['src/**/*.jl']` example. Run rg from
-    # the root (its containing dir when the root resolved to a single file).
-    rg_cwd = isdir(root) ? root : dirname(root)
+    argv = String[rg...; "--json"; "--stats"; pat_flags...; scan_flags...; "--"; pattern; root]
+    # Glob anchoring. ripgrep matches slash-containing globs (`src/**/*.jl`) against each
+    # file's path RELATIVE TO rg's PROCESS CWD, not the positional search argument. We want
+    # a `glob` to be written the SAME WAY as `path=`/`file=` — both project-root-relative —
+    # so that `glob=['src/**/*.jl']` matches `<project>/src/…` whether or not `path` also
+    # narrows the scan, and `path:"src"` + `glob:["src/…"]` doesn't double-anchor to
+    # `src/src/…`. So run rg from the PROJECT ROOT (`base`): the positional `root` stays
+    # absolute (rg still emits absolute paths → context reads + relative display unchanged),
+    # but glob matching now resolves against the base-relative path. When the search root
+    # sits OUTSIDE the bound project (a foreign absolute `path=`), anchor instead at that
+    # path's OWN git repo root, so its globs stay repo-root-relative too (same `cd repo &&
+    # rg` feel); only when there's no enclosing repo do we anchor at the root itself.
+    rg_cwd = if !isempty(base) && _grep_path_within(root, [base])
+        base
+    else
+        something(_grep_repo_root(root), isdir(root) ? root : dirname(root))
+    end
     errbuf = IOBuffer()
     out = try
         read(pipeline(ignorestatus(Cmd(Cmd(argv); dir = rg_cwd)), stderr = errbuf), String)
@@ -515,16 +647,23 @@ function _grep_code(args)
         return "Error running ripgrep: $(sprint(showerror, e))"
     end
 
-    hits, more = _grep_parse_rg(out, limit)
-    if isempty(hits)
+    files_parsed, total, _ = _grep_parse_rg(out, limit)
+    scope_label = root == base ? basename(rstrip(base, '/')) : _grep_relfile(root, base)
+    if total == 0 || isempty(files_parsed)
         errtxt = strip(String(take!(errbuf)))
-        isempty(errtxt) && return "No matches for /$pattern/ in $(_grep_relfile(root, base))"
-        return "Error: ripgrep — $(first(errtxt, 300))"
+        isempty(errtxt) || return "Error: ripgrep — $(first(errtxt, 300))"
+        # Self-evidencing empty: report how many files were in scope, so a true negative
+        # (searched N files, found nothing) is distinguishable from a scoping mistake
+        # (path=/glob= matched no files → nothing was searched).
+        nscope = _grep_scope_file_count(rg, scan_flags, root, rg_cwd)
+        note = nscope == 0 ? " (0 files in scope — check path=/glob=)" :
+               " ($nscope file$(nscope == 1 ? "" : "s") in scope)"
+        return "No matches for /$pattern/ in $scope_label$header_extra$note"
     end
 
     sem_windows = _grep_semantic_windows(query, _grep_collection(args, base))
-    scope_label = root == base ? basename(rstrip(base, '/')) : _grep_relfile(root, base)
-    return _grep_format(pattern, scope_label, hits, more, base, query, sem_windows, ctx_arg)
+    return _grep_format(pattern, scope_label, files_parsed, total, header_extra, base, query,
+                        sem_windows, ctx_arg, limit)
 end
 
 # ── Anti-shell-grep nudge: the brain behind the agent PreToolUse hooks ─────────

@@ -454,7 +454,7 @@ const _GREP_CODE_PARAMS = Dict(
         "glob" => Dict(
             "type" => "array",
             "items" => Dict("type" => "string"),
-            "description" => "Include-only globs in ripgrep syntax, e.g. ['src/**/*.jl', '!**/test/**']. Repeatable; narrows which files are scanned within the scope.",
+            "description" => "Include-only globs in ripgrep syntax, e.g. ['src/**/*.jl', '!**/test/**']. Repeatable; narrows which files are scanned within the scope. Slash-containing globs are anchored to the PROJECT ROOT — written exactly like `path=`/`file=`, i.e. relative to the repo, NOT to `path=`. So don't repeat a `path=` prefix inside the glob: `path='src'` + glob=['src/**/*.jl'] is fine (both project-relative, no double-anchor), and glob=['src/**/*.jl'] alone works too. A glob with no `/` (e.g. 'worker.jl', '*.jl') matches that basename at ANY depth.",
         ),
         "query" => Dict(
             "type" => "string",
@@ -472,14 +472,14 @@ const _GREP_CODE_PARAMS = Dict(
         "word" => Dict("type" => "boolean", "description" => "Match whole words only (default: false)."),
         "fixed" => Dict("type" => "boolean", "description" => "Treat the pattern as a literal string, not a regex (default: false)."),
         "no_ignore" => Dict("type" => "boolean", "description" => "Also search .gitignored and hidden files — logs, build/generated output, dotfiles (default: false, which keeps code search free of build noise). Use this to grep logs or generated text without falling back to shell grep."),
-        "limit" => Dict("type" => "integer", "description" => "Max matches to return (default: 20); more are reported as truncated. Total output is also capped (~8 KB) — a broad search is truncated with guidance to narrow it."),
+        "limit" => Dict("type" => "integer", "description" => "Budget of match lines to show (default: 20). Split FAIRLY across matching files (max-min water-fill), not depth-first, so every matching file stays visible — a clipped file is headed `(showing X of N)` and the global header reads `T matches in F files, showing S`. Files past a display cap collapse into a `…and K more files` stub. Raise it for more depth/breadth; a broad search is also hard-capped at ~8 KB of output."),
     ),
     "required" => ["pattern"],
 )
 
 grep_code_tool = @mcp_tool(
     :grep_code,
-    "Find an EXACT PATTERN over files — a better grep than grep. Runs a real regex over the live working tree (no stale index), scoped to the bound project by default (narrow with path=/file=/glob=), and returns file:line WITH the enclosing function/struct for each code hit. Use it whenever you know the literal text or a regex (a symbol name, a call site, a string, a TODO) and want every occurrence — `grep_code(pattern=\"_eval_with_capture\")` is the right move over shell grep/rg/find, which miss the enclosing symbol and aren't repo-scoped. By default it respects .gitignore (clean code search); pass no_ignore=true to also search logs and generated/gitignored/hidden files, so it covers the same ground as shell grep. Add an optional natural-language `query` to RANK the matching files by relevance and auto-expand context around relevant hits. For finding code purely by MEANING (a concept you can't name), use search_code instead. Reads are confined to the bound project and your declared workspace roots; a path/file outside that scope prompts the user to approve it (once, or \"always\" to remember it), so don't assume out-of-project reads will just work. Flags: ignore_case, word (whole-word), fixed (literal, not regex), no_ignore (include ignored/hidden files).",
+    "Find an EXACT PATTERN over files — a better grep than grep. Runs a real regex over the live working tree (no stale index), scoped to the bound project by default (narrow with path=/file=/glob=, all resolved relative to the PROJECT ROOT — a glob is anchored to the repo root like `cd repo && rg -g`, not to path=, so don't repeat a path= prefix inside a glob; a bare basename glob matches at any depth), and returns file:line WITH the enclosing function/struct for each code hit. Use it whenever you know the literal text or a regex (a symbol name, a call site, a string, a TODO) and want every occurrence — `grep_code(pattern=\"_eval_with_capture\")` is the right move over shell grep/rg/find, which miss the enclosing symbol and aren't repo-scoped. By default it respects .gitignore (clean code search); pass no_ignore=true to also search logs and generated/gitignored/hidden files, so it covers the same ground as shell grep. Add an optional natural-language `query` to RANK the matching files by relevance and auto-expand context around relevant hits. For finding code purely by MEANING (a concept you can't name), use search_code instead. Reads are confined to the bound project and your declared workspace roots; a path/file outside that scope prompts the user to approve it (once, or \"always\" to remember it), so don't assume out-of-project reads will just work. Flags: ignore_case, word (whole-word), fixed (literal, not regex), no_ignore (include ignored/hidden files).",
     _GREP_CODE_PARAMS,
     args -> _grep_code(args),
 )

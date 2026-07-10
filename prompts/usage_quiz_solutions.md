@@ -119,7 +119,7 @@ qualifier matters: these are `public` but not exported, so `Gate.…`/bare `prog
 
 ---
 
-## Q8: Searching code (10 — 2 each)
+## Q8: Searching code (12 — 2 each)
 
 a) `grep_code(pattern="_eval_with_capture")` — every occurrence WITH its enclosing function,
    exact and repo-scoped over the live tree; shell `grep`/`find` miss the enclosing symbol
@@ -137,6 +137,13 @@ d) **False.** `search_code`'s lexical half (local SQLite FTS) keeps working with
 e) You **don't** have to leave the Kaimon tools: `grep_code(pattern=…, no_ignore=true)` also
    searches logs and generated/gitignored/hidden files. Shell `grep`/`sed`/`awk` is the right
    call only to **transform** matches (sed/awk) or **pipe** them into another command.
+f) A `grep_code` glob is anchored to the **project root** — written the same way as `path=`
+   and `file=`, i.e. relative to the repo (as if you `cd`'d into it and ran `rg -g '<glob>'`),
+   **not** relative to `path=`. So `path="src"` + `glob=["src/worker.jl"]` double-anchors to
+   `src/src/worker.jl` and matches nothing. Fixes: drop the redundant prefix — `glob=["worker.jl"]`
+   (a bare basename, no `/`, matches at any depth); or keep `glob=["src/worker.jl"]` and drop
+   the `path`; or just `file="src/worker.jl"`. (Also sanity-check the session is scoped to the
+   repo you mean — an absolute `path=` forces it.)
 
 ---
 

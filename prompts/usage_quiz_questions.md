@@ -86,7 +86,7 @@ g) **Write it.** Give the actual `ex(...)` call for a long task — a loop over 
 
 ---
 
-## Question 8: Searching code (10 points)
+## Question 8: Searching code (12 points)
 
 Kaimon has TWO search tools: **`search_code`** finds by MEANING (semantic-first — describe
 what the code does), and **`grep_code`** finds an EXACT pattern/regex over the live tree,
@@ -97,6 +97,7 @@ b) You want "where HTTP routing is handled" but don't know the function name. Wh
 c) Is a long bag of keywords (`"transform power parse method body atStartOfTurn actions"`) a problem under semantic-first search? What's better?
 d) Ollama (embeddings) is down. Should you fall back to shell `grep`? Explain.
 e) You need to search a `.log` file or other generated/gitignored text. Do you have to leave the Kaimon tools? When is shell `grep`/`sed`/`awk` actually the right call?
+f) `grep_code(pattern="memo", path="src", glob=["src/worker.jl"])` returns no matches even though `src/worker.jl` plainly contains `memo`. What's wrong, and how do you write it? (What is a `grep_code` glob anchored to?)
 
 ---
 

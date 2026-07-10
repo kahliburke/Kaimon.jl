@@ -5,25 +5,47 @@ using ReTest
 using Kaimon
 
 @testset "grep_code" begin
-    @testset "_grep_parse_rg" begin
-        j = "{\"type\":\"begin\",\"data\":{\"path\":{\"text\":\"/a/foo.jl\"}}}\n" *
-            "{\"type\":\"match\",\"data\":{\"path\":{\"text\":\"/a/foo.jl\"}," *
-            "\"lines\":{\"text\":\"  bar()\\n\"},\"line_number\":3," *
-            "\"submatches\":[{\"match\":{\"text\":\"bar\"},\"start\":2,\"end\":5}]}}\n" *
-            "{\"type\":\"summary\",\"data\":{}}"
-        hits, more = Kaimon._grep_parse_rg(j, 40)
-        @test length(hits) == 1 && !more
-        @test hits[1].file == "/a/foo.jl"
-        @test hits[1].line == 3
-        @test hits[1].text == "  bar()"          # trailing newline stripped
-        @test hits[1].subs == ["bar"]
+    @testset "_grep_parse_rg — per-file counts, totals, verbatim lines" begin
+        # foo.jl: 2 matches, bar.jl: 1. `end` messages carry exact per-file counts; the
+        # `summary` carries the grand total + files scanned.
+        j = join([
+            "{\"type\":\"begin\",\"data\":{\"path\":{\"text\":\"/a/foo.jl\"}}}",
+            "{\"type\":\"match\",\"data\":{\"path\":{\"text\":\"/a/foo.jl\"},\"lines\":{\"text\":\"  bar()\\n\"},\"line_number\":3,\"submatches\":[{\"match\":{\"text\":\"bar\"}}]}}",
+            "{\"type\":\"match\",\"data\":{\"path\":{\"text\":\"/a/foo.jl\"},\"lines\":{\"text\":\"  baz()\\n\"},\"line_number\":7,\"submatches\":[]}}",
+            "{\"type\":\"end\",\"data\":{\"path\":{\"text\":\"/a/foo.jl\"},\"stats\":{\"matches\":2}}}",
+            "{\"type\":\"begin\",\"data\":{\"path\":{\"text\":\"/a/bar.jl\"}}}",
+            "{\"type\":\"match\",\"data\":{\"path\":{\"text\":\"/a/bar.jl\"},\"lines\":{\"text\":\"q\\n\"},\"line_number\":1,\"submatches\":[]}}",
+            "{\"type\":\"end\",\"data\":{\"path\":{\"text\":\"/a/bar.jl\"},\"stats\":{\"matches\":1}}}",
+            "{\"type\":\"summary\",\"data\":{\"stats\":{\"matches\":3,\"searches\":2}}}",
+        ], "\n")
+        files, total, scanned = Kaimon._grep_parse_rg(j, 40)
+        @test total == 3 && scanned == 2
+        @test length(files) == 2
+        @test files[1].path == "/a/foo.jl" && files[1].count == 2
+        @test [h.line for h in files[1].hits] == [3, 7]
+        @test files[1].hits[1].text == "  bar()"        # verbatim, trailing newline stripped
+        @test !hasproperty(files[1].hits[1], :subs)     # submatches deliberately not extracted
+        @test files[2].path == "/a/bar.jl" && files[2].count == 1
     end
 
-    @testset "_grep_parse_rg caps and reports truncation" begin
+    @testset "_grep_parse_rg retains ≤`retain` lines per file but counts all" begin
         m(i) = "{\"type\":\"match\",\"data\":{\"path\":{\"text\":\"/a/f.jl\"}," *
                "\"lines\":{\"text\":\"x\\n\"},\"line_number\":$i,\"submatches\":[]}}"
-        hits, more = Kaimon._grep_parse_rg(join([m(i) for i in 1:5], "\n"), 3)
-        @test length(hits) == 3 && more
+        e = "{\"type\":\"end\",\"data\":{\"path\":{\"text\":\"/a/f.jl\"},\"stats\":{\"matches\":5}}}"
+        files, total, _ = Kaimon._grep_parse_rg(join([[m(i) for i in 1:5]; e], "\n"), 3)
+        @test length(files) == 1
+        @test files[1].count == 5           # exact count from `end`
+        @test length(files[1].hits) == 3    # retained only up to `retain`
+        @test total == 5                    # no summary → fallback to sum of `end` counts
+    end
+
+    @testset "_grep_waterfill — max-min fair share" begin
+        @test Kaimon._grep_waterfill([40, 18], 40) == [22, 18]   # small file whole; big absorbs slack
+        @test Kaimon._grep_waterfill([5, 5], 4) == [2, 2]        # even split
+        @test Kaimon._grep_waterfill([10, 1, 1], 4) == [2, 1, 1] # tiny files satisfied, remainder → big
+        @test Kaimon._grep_waterfill([3, 3], 10) == [3, 3]       # budget ≥ total → everyone full
+        @test sum(Kaimon._grep_waterfill([7, 2, 9], 6)) == 6     # never over-allocates
+        @test Kaimon._grep_waterfill([5, 5, 5], 2) == [1, 1, 0]  # budget < files → 1 each, in order
     end
 
     @testset "_grep_enclosing (smallest containing def, parsed fresh)" begin
@@ -37,10 +59,16 @@ using Kaimon
         rm(dir; recursive = true)
     end
 
-    @testset "_grep_highlight" begin
-        @test Kaimon._grep_highlight("foo bar baz", ["bar"]) == "foo **bar** baz"
-        @test Kaimon._grep_highlight("  x  ", String[]) == "x"          # trims, no subs
-        @test Kaimon._grep_highlight("a a", ["a"]) == "**a** **a**"     # all occurrences
+    @testset "_grep_trunc — verbatim line, trim + width-cap, no markers" begin
+        # Lines come back VERBATIM: no inline match markers of any kind (no `**`, no ANSI).
+        @test Kaimon._grep_trunc("foo bar baz") == "foo bar baz"        # unchanged
+        @test Kaimon._grep_trunc("  x  ") == "x"                        # trims surrounding ws
+        # A literal `**` (e.g. a glob pattern in source) survives untouched — the exact case
+        # inline markers used to make undecipherable.
+        @test Kaimon._grep_trunc("include(\"src/**/*.jl\")") == "include(\"src/**/*.jl\")"
+        long = "a"^250
+        capped = Kaimon._grep_trunc(long)
+        @test endswith(capped, "…") && length(capped) == 201            # 200 chars + ellipsis
     end
 
     @testset "_grep_resolve_root" begin
@@ -268,11 +296,66 @@ using Kaimon
         end
     end
 
-    @testset "slash-anchored globs match regardless of process cwd" begin
-        # Regression: ripgrep anchors slash-containing globs (`sub/*.jl`) to the PROCESS
-        # CWD, not the search-path argument. The long-lived server runs with a cwd that is
-        # not the searched repo, so before the cwd-pin fix every `-g dir/…` glob silently
-        # matched nothing. Reproduce by searching from a foreign cwd.
+    @testset "enclosing-symbol column suppressed on the definition line" begin
+        if Kaimon._rg_argv() === nothing
+            @test_skip "ripgrep not available"
+        else
+            dir = mktempdir()
+            # `NEEDLE_TOK` appears on the const's OWN line (def line) and again in a function body.
+            write(joinpath(dir, "a.jl"),
+                "const NEEDLE_TOK = 1\n\nfunction wrap()\n    y = NEEDLE_TOK + 1\nend\n")
+            out = Kaimon._grep_code(Dict("pattern" => "NEEDLE_TOK", "path" => dir))
+            # Def-line hit: no `const NEEDLE_TOK` label duplicating the line text.
+            @test occursin("L1  const NEEDLE_TOK = 1", out)
+            @test !occursin("const NEEDLE_TOK  const NEEDLE_TOK", out)
+            # Body hit still gets its enclosing-symbol column.
+            @test occursin("wrap", out)
+            rm(dir; recursive = true)
+        end
+    end
+
+    @testset "fair-share truncation keeps every file visible (honesty headers)" begin
+        if Kaimon._rg_argv() === nothing
+            @test_skip "ripgrep not available"
+        else
+            dir = mktempdir()
+            # big.jl: 10 matches, small.jl: 2. With budget 6, waterfill gives big 4 and small
+            # its full 2 — the small file must NOT be dropped by depth-first truncation.
+            write(joinpath(dir, "big.jl"), join(["z$i = 1  # NEEDLE" for i in 1:10], "\n") * "\n")
+            write(joinpath(dir, "small.jl"), "a = 1 # NEEDLE\nb = 2 # NEEDLE\n")
+            out = Kaimon._grep_code(Dict("pattern" => "NEEDLE", "path" => dir, "limit" => 6))
+            @test occursin("12 matches in 2 files, showing 6", out)   # global honesty header
+            @test occursin("small.jl", out)                            # small file survives fair-share
+            @test occursin("(showing 4 of 10)", out)                   # big.jl clipped: 6 − 2 = 4
+            rm(dir; recursive = true)
+        end
+    end
+
+    @testset "empty result reports files in scope (self-evidencing)" begin
+        if Kaimon._rg_argv() === nothing
+            @test_skip "ripgrep not available"
+        else
+            dir = mktempdir()
+            write(joinpath(dir, "a.jl"), "hello\n")
+            write(joinpath(dir, "b.jl"), "world\n")
+            # True negative over real files → "N files in scope", not a bare "No matches".
+            out = Kaimon._grep_code(Dict("pattern" => "zzz_absent_qqq", "path" => dir))
+            @test occursin("No matches", out) && occursin("2 files in scope", out)
+            # A glob matching nothing → 0 files in scope, flagged as a scoping issue, and the
+            # glob is echoed back so the caller sees what was actually searched.
+            out2 = Kaimon._grep_code(Dict("pattern" => "hello", "path" => dir, "glob" => ["*.nomatch"]))
+            @test occursin("0 files in scope", out2) && occursin("glob=", out2)
+            rm(dir; recursive = true)
+        end
+    end
+
+    @testset "slash-anchored globs match regardless of process cwd (out-of-project root)" begin
+        # Regression: ripgrep matches slash-containing globs (`sub/*.jl`) against a path
+        # relative to rg's PROCESS CWD, not the positional search argument. The long-lived
+        # server runs with a cwd that is not the searched repo, so without pinning rg's cwd
+        # a `-g dir/…` glob silently matched nothing. Here the search root is OUTSIDE the
+        # bound project (path=dir, but base=foreign cwd), so grep anchors globs at the
+        # search root itself — `sub/*.jl` is relative to `dir`.
         if Kaimon._rg_argv() === nothing
             @test_skip "ripgrep not available"
         else
@@ -283,7 +366,7 @@ using Kaimon
             foreign = mktempdir()
             orig = pwd()
             try
-                cd(foreign)   # cwd ≠ searched root — the server's condition
+                cd(foreign)   # cwd ≠ searched root, and `dir` is outside it → root-anchored
                 star = Kaimon._grep_code(Dict("pattern" => "tok_glob_zz", "path" => dir, "glob" => ["sub/*.jl"]))
                 @test occursin("deep.jl", star)      # slash glob now matches
                 @test !occursin("top.jl", star)      # and correctly excludes the top-level file
@@ -294,6 +377,73 @@ using Kaimon
             end
             rm(dir; recursive = true)
             rm(foreign; recursive = true)
+        end
+    end
+
+    @testset "slash globs are project-root-relative (path + glob don't double-anchor)" begin
+        # A `glob` is written the same way as `path=`/`file=`: relative to the PROJECT ROOT.
+        # So `path:"src"` + `glob:["src/**/*.jl"]` must NOT double-anchor to `src/src/…` —
+        # the exact footgun that made a KaimonSlate worker search return nothing. When the
+        # bound project IS the searched tree (cwd == base), globs anchor at that root.
+        if Kaimon._rg_argv() === nothing
+            @test_skip "ripgrep not available"
+        else
+            dir = mktempdir()
+            mkpath(joinpath(dir, "src"))
+            write(joinpath(dir, "src", "worker.jl"), "function g()\n    memo_tok_zz = 1\nend\n")
+            write(joinpath(dir, "top.jl"), "memo_tok_zz = 2\n")
+            orig = pwd()
+            try
+                cd(dir)   # bound project == searched tree → base == this dir
+                # path narrows to src/, glob is written project-relative (repeats `src/`).
+                anchored = Kaimon._grep_code(Dict("pattern" => "memo_tok_zz",
+                    "path" => "src", "glob" => ["src/**/*.jl"]))
+                @test occursin("worker.jl", anchored)   # no `src/src/…` double-anchor
+                # Same glob without a redundant `path` — still project-relative.
+                nopath = Kaimon._grep_code(Dict("pattern" => "memo_tok_zz",
+                    "glob" => ["src/**/*.jl"]))
+                @test occursin("worker.jl", nopath)
+                @test !occursin("top.jl", nopath)        # top-level file excluded by glob
+                # Basename glob (no `/`) still matches at any depth.
+                base = Kaimon._grep_code(Dict("pattern" => "memo_tok_zz", "glob" => ["worker.jl"]))
+                @test occursin("worker.jl", base)
+            finally
+                cd(orig)
+            end
+            rm(dir; recursive = true)
+        end
+    end
+
+    @testset "foreign absolute path anchors globs at ITS repo root" begin
+        # Grepping a repo OTHER than the bound project via an absolute `path=`: the glob
+        # should still be repo-root-relative — anchored at the foreign path's own git repo
+        # root, not at the search dir — so `path=<repo>/src` + `glob=["src/worker.jl"]`
+        # matches (same feel as grepping your own repo) instead of double-anchoring.
+        if Kaimon._rg_argv() === nothing
+            @test_skip "ripgrep not available"
+        else
+            repo = mktempdir()
+            mkpath(joinpath(repo, ".git"))            # marks the repo root for _grep_repo_root
+            mkpath(joinpath(repo, "src"))
+            write(joinpath(repo, "src", "worker.jl"), "function g()\n    memo_tok_zz = 1\nend\n")
+            elsewhere = mktempdir()                    # bound cwd, a different (non-repo) tree
+            orig = pwd()
+            try
+                cd(elsewhere)
+                src = joinpath(repo, "src")
+                # Repo-root-relative slash glob now matches across the repo boundary.
+                anchored = Kaimon._grep_code(Dict("pattern" => "memo_tok_zz",
+                    "path" => src, "glob" => ["src/worker.jl"]))
+                @test occursin("worker.jl", anchored)
+                # Basename glob works regardless.
+                basen = Kaimon._grep_code(Dict("pattern" => "memo_tok_zz",
+                    "path" => src, "glob" => ["worker.jl"]))
+                @test occursin("worker.jl", basen)
+            finally
+                cd(orig)
+            end
+            rm(repo; recursive = true)
+            rm(elsewhere; recursive = true)
         end
     end
 
@@ -334,9 +484,9 @@ using Kaimon
         @test Kaimon._grep_enclosing_span(5, defs) === nothing   # blank line between defs
         # Two hits sharing an enclosing def collapse into one group (rep + rest); a hit in
         # a different def is its own group; encounter order preserved.
-        hits = Any[(file = f, line = 2, text = "a + 1", subs = String[]),
-                   (file = f, line = 3, text = "a + 2", subs = String[]),
-                   (file = f, line = 6, text = "x", subs = String[])]
+        hits = Any[(file = f, line = 2, text = "a + 1"),
+                   (file = f, line = 3, text = "a + 2"),
+                   (file = f, line = 6, text = "x")]
         groups = Kaimon._grep_group_by_enclosing(hits, defs)
         @test length(groups) == 2
         @test groups[1][1].line == 2 && [h.line for h in groups[1][2]] == [3]   # outer: rep L2 (+L3)
