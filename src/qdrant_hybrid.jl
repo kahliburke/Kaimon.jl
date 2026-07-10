@@ -232,16 +232,13 @@ _query_tokens(query::AbstractString) =
     [t for t in split(lowercase(query), r"[^a-z0-9_]+"; keepempty = false)
      if length(t) >= 3 && t ∉ _FTS_OPERATOR_WORDS]
 
-# Wrap each query-token occurrence in `**…**` (case-insensitive, original case kept).
-# Tokens are alnum/underscore only (no regex metachars), so no escaping needed.
-function _highlight_tokens(line::AbstractString, toks::Vector{<:AbstractString})
-    isempty(toks) && return line
-    pat = Regex("(" * join(sort(unique(toks); by = length, rev = true), "|") * ")", "i")
-    replace(line, pat => s"**\1**")
-end
-
 # Grep-style matched lines: the actual source lines within a chunk that contain a
-# query token, each with its ABSOLUTE line number (chunk `start_line` + offset).
+# query token, each with its ABSOLUTE line number (chunk `start_line` + offset). The
+# tokens locate WHICH lines matched; the lines themselves are returned VERBATIM (no
+# `**…**` marking) — an in-band marker splits identifiers into unfamiliar subword
+# fragments and taxes exact-string reasoning, while highlighting the query words (often
+# common terms like `the`/`process`) is noise the consumer doesn't need. Same treatment
+# as grep_code (see `_grep_parse_rg`).
 # FTS5 doesn't expose match offsets, so we re-find the tokens in the chunk text; a
 # term that only matched via trigram across a line boundary won't be found here and
 # the hit falls back to its snippet/preview. Capped per hit to keep output lean.
@@ -253,7 +250,7 @@ function _matched_lines(text::AbstractString, start_line::Int, toks::Vector{<:Ab
         if any(t -> occursin(t, lowercase(ln)), toks)
             t = strip(ln)
             length(t) > width && (t = first(t, width) * "…")
-            push!(out, (start_line + i - 1, _highlight_tokens(t, toks)))
+            push!(out, (start_line + i - 1, string(t)))
             length(out) >= max_lines && break
         end
     end
@@ -320,7 +317,9 @@ function _format_hybrid(query, where_label, hits::Vector{HybridHit},
                 out *= "  L$ln  $txt\n"
             end
         elseif !isempty(h.snippet)
-            snip = replace(replace(h.snippet, '\x02' => "**"), '\x03' => "**")
+            # Strip the FTS5 snippet's highlight sentinels entirely — verbatim text, no
+            # `**` marks (same rationale as the matched-line handling above).
+            snip = replace(h.snippet, '\x02' => "", '\x03' => "")
             snip = replace(snip, '\n' => ' ')
             out *= "  $snip\n"
         else
