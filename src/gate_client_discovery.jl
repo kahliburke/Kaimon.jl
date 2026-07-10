@@ -375,11 +375,20 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
     stream_endpoint = stream_port > 0 ? "tcp://$(host):$(stream_port)" : ""
     sid = "tcp-$(host)-$(port)"
 
-    # Check for existing connection to this endpoint
-    existing = lock(mgr.lock) do
-        findfirst(c -> c.session_id == sid, mgr.connections)
+    # An existing LIVE connection to this endpoint is a real conflict — but a :disconnected
+    # corpse must not block reconnecting: `disconnect!` tears the sockets down and marks the
+    # status, yet leaves the registry entry in `mgr.connections` (e.g. Slate detaching a remote
+    # worker's kernel, then reattaching to the same host:port). Reap the corpse and proceed.
+    # The live-status set mirrors the discovery loop's "already connected?" check.
+    lock(mgr.lock) do
+        idx = findfirst(c -> c.session_id == sid, mgr.connections)
+        if idx !== nothing
+            if mgr.connections[idx].status in (:connected, :evaluating, :stalled, :connecting)
+                error("Already connected to $endpoint")
+            end
+            deleteat!(mgr.connections, idx)
+        end
     end
-    existing !== nothing && error("Already connected to $endpoint")
 
     # Fast-fail if nothing is even accepting TCP on the port: a downed gate refuses
     # instantly, so this avoids building sockets and then burning the multi-second ZMQ
