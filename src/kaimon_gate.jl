@@ -494,6 +494,16 @@ function _format_gate_response(
     return result
 end
 
+# Seconds a foreground eval may run before it's promoted to a background job. Resolved as
+# env (KAIMON_GATE_PROMOTE_AFTER) > persisted preference (Config tab) > 30s default. A value
+# ≤ 0 DISABLES promotion, so the eval stays in the foreground until it finishes — for long
+# scripts that end by opening a GUI or returning a value the user needs to see inline (#59).
+function _promote_after()::Float64
+    v = tryparse(Float64, get(ENV, "KAIMON_GATE_PROMOTE_AFTER", ""))
+    v === nothing && (v = get_gate_promote_after_preference())
+    return v <= 0 ? Inf : v
+end
+
 """
     execute_via_gate_streaming(code; quiet=true, silent=false, max_output=6000, session="", on_progress=nothing)
 
@@ -554,8 +564,9 @@ function execute_via_gate_streaming(
         nothing
     end
 
-    # Run eval in a background task so we can promote to a job if it takes too long
-    promotion_threshold = 30.0  # seconds before promoting to background job
+    # Run eval in a background task so we can promote to a job if it takes too long.
+    # Threshold is configurable (KAIMON_GATE_PROMOTE_AFTER); Inf ⇒ never promote (#59).
+    promotion_threshold = _promote_after()
     result_channel = Channel{Any}(1)
 
     eval_task = Threads.@spawn begin

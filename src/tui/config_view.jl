@@ -126,6 +126,15 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
         # Row 8: [v] VSCode
         set_string!(buf, x, y, "[v]", tstyle(:accent, bold = true); max_x=arx)
         set_string!(buf, x + 4, y, "VSCode Remote Control ext", tstyle(:text); max_x=arx)
+        y += 1
+        # Row 9: [b] Auto-background threshold
+        set_string!(buf, x, y, "[b]", tstyle(:accent, bold = true); max_x=arx)
+        set_string!(buf, x + 4, y, "Auto-background long evals after", tstyle(:text); max_x=arx)
+        y += 1
+        pa = m.gate_promote_after
+        pa_status = _promote_after_label(pa)
+        pa_style = pa <= 0 ? tstyle(:warning) : tstyle(:success)
+        set_string!(buf, x + 4, y, "after: $pa_status", pa_style; max_x=arx)
     end
 
     # ── Right column: MCP Clients (top) + Projects & TCP Gates side-by-side (bottom) ──
@@ -322,6 +331,29 @@ function view_config_flow(m::KaimonModel, area::Rect, buf::Buffer)
             CLIENT_LABELS,
             m.flow_selected,
             "[↑↓] select  [Enter] confirm  [Esc] cancel";
+            tick = m.tick,
+        )
+
+    elseif flow == FLOW_PROMOTE_AFTER
+        _render_selection_modal(
+            buf,
+            area,
+            "Auto-background long evals after",
+            PROMOTE_AFTER_LABELS,
+            m.flow_selected,
+            "[↑↓] select  [Enter] confirm  [Esc] cancel";
+            tick = m.tick,
+        )
+
+    elseif flow == FLOW_PROMOTE_AFTER_CUSTOM
+        m.promote_after_input !== nothing && (m.promote_after_input.tick = m.tick)
+        _render_text_input_modal(
+            buf,
+            area,
+            "Custom threshold",
+            "Seconds before auto-backgrounding (0 = never):",
+            m.promote_after_input,
+            "[Enter] apply  [Esc] cancel";
             tick = m.tick,
         )
 

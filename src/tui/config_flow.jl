@@ -276,6 +276,31 @@ function handle_flow_input!(m::KaimonModel, evt::KeyEvent)
                 handle_key!(active_input, evt)
             end
         end
+
+    elseif flow == FLOW_PROMOTE_AFTER
+        @match evt.key begin
+            :up => (m.flow_selected = max(1, m.flow_selected - 1))
+            :down => (m.flow_selected = min(length(PROMOTE_AFTER_LABELS), m.flow_selected + 1))
+            :enter => begin
+                val = PROMOTE_AFTER_VALUES[m.flow_selected]
+                if val === :custom
+                    cur = m.gate_promote_after
+                    m.promote_after_input =
+                        TextInput(text = string(cur <= 0 ? 0 : round(Int, cur)), label = "", tick = m.tick)
+                    m.config_flow = FLOW_PROMOTE_AFTER_CUSTOM
+                else
+                    _apply_promote_after!(m, val)
+                end
+            end
+            _ => nothing
+        end
+    elseif flow == FLOW_PROMOTE_AFTER_CUSTOM
+        if evt.key == :enter
+            s = tryparse(Float64, strip(Tachikoma.text(m.promote_after_input)))
+            _apply_promote_after!(m, s === nothing ? m.gate_promote_after : max(0.0, s))
+        else
+            m.promote_after_input !== nothing && handle_key!(m.promote_after_input, evt)
+        end
     end
 end
 
@@ -454,6 +479,32 @@ function toggle_gate_mirror_repl!(m::KaimonModel)
         :info,
         "Host REPL mirroring $state (applied to $applied/$total connected gate sessions)",
     )
+end
+
+"""Human label for the auto-background threshold: "off", "30s", "2m", …"""
+_promote_after_label(s::Real) =
+    s <= 0 ? "off (stay foreground)" :
+    s < 60 ? "$(round(Int, s))s" : "$(rstrip(rstrip(string(round(s / 60, digits = 1)), '0'), '.'))m"
+
+# Auto-background threshold dialog (#59): presets + Never + Custom. `:custom` opens a
+# text-input sub-flow; every other value is applied directly. Values are seconds (0 = never).
+const PROMOTE_AFTER_LABELS = ["30 seconds", "1 minute", "2 minutes", "5 minutes",
+                              "Never (stay foreground)", "Custom…"]
+const PROMOTE_AFTER_VALUES = Any[30.0, 60.0, 120.0, 300.0, 0.0, :custom]
+
+"""Open the auto-background-threshold picker, pre-selecting the current value."""
+function begin_promote_after!(m::KaimonModel)
+    m._render_mode && return
+    i = findfirst(v -> v isa Real && v == m.gate_promote_after, PROMOTE_AFTER_VALUES)
+    m.flow_selected = i === nothing ? length(PROMOTE_AFTER_VALUES) : i   # fall back to Custom
+    m.config_flow = FLOW_PROMOTE_AFTER
+end
+
+"""Persist + apply a chosen threshold (seconds; 0 = never) and close the dialog."""
+function _apply_promote_after!(m::KaimonModel, secs::Real)
+    m.gate_promote_after = set_gate_promote_after_preference!(secs)
+    m.config_flow = FLOW_IDLE
+    _push_log!(:info, "Auto-background threshold: $(_promote_after_label(m.gate_promote_after))")
 end
 
 function remove_client_config!(m::KaimonModel)

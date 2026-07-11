@@ -271,6 +271,7 @@ function Tachikoma.init!(m::KaimonModel, _t::Tachikoma.Terminal)
     end
 
     m.gate_mirror_repl = get_gate_mirror_repl_preference()
+    m.gate_promote_after = get_gate_promote_after_preference()
 
     # Load editor preference from global config
     _cfg = load_global_config()

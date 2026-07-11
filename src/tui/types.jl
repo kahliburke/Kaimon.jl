@@ -50,6 +50,9 @@ end
 # Modal flow states
 @enum ConfigFlow begin
     FLOW_IDLE
+    # Auto-background threshold (#59)
+    FLOW_PROMOTE_AFTER          # choose preset / Never / Custom
+    FLOW_PROMOTE_AFTER_CUSTOM   # TextInput for custom seconds
     # Project onboarding (always project-scoped)
     FLOW_ONBOARD_PATH          # TextInput for project path
     FLOW_ONBOARD_CONFIRM       # Modal confirmation
@@ -197,6 +200,7 @@ const TAB_ADVANCED   = 10
     result_word_wrap::Bool = true   # word wrap in detail panel
     detail_paragraph::Union{Paragraph,Nothing} = nothing  # cached for scroll state
     _detail_for_result::Int = -1   # which selected_result the paragraph was built for
+    _detail_result_resolved::Bool = false  # detail shows a promoted ex's finished result (not the placeholder)
     activity_table::Union{DataTable,Nothing} = nothing  # DataTable for tool call list
     _activity_table_hash::UInt64 = UInt64(0)
     _activity_detail_area::Rect = Rect()   # cached inner area of detail pane
@@ -238,6 +242,7 @@ const TAB_ADVANCED   = 10
     client_target::Symbol = :claude
     client_scope::Symbol = :user
     gate_mirror_repl::Bool = false
+    gate_promote_after::Float64 = 30.0  # auto-background threshold, seconds (0 = never; #59)
     editor::String = "vscode"  # Configured editor for file:line links
 
     # Flow result
@@ -462,6 +467,7 @@ const TAB_ADVANCED   = 10
     tcp_gate_token_input::Any = nothing # TextInput for auth token
     tcp_gate_stream_port_input::Any = nothing  # TextInput for PUB stream port
     qdrant_prefix_input::Any = nothing         # TextInput for qdrant prefix
+    promote_after_input::Any = nothing         # TextInput for custom auto-background seconds
     _tcp_gate_field::Int = 1            # 1=host:port, 2=name, 3=token, 4=stream_port
 
     # ── Extensions tab (tab 8) ──

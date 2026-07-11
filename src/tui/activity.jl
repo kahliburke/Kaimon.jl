@@ -169,6 +169,25 @@ function _ex_preview(r::ToolCallResult)
     end
 end
 
+# The finished EvalRecord for a promoted `ex` call, looked up by eval_id (thread-safe read
+# on the TUI thread), or nothing. A promoted ex's ToolCallResult only ever holds the
+# "⏳ promoted to background… use check_eval" placeholder — the real status + full result
+# land on the EvalRecord when the background job finishes. Resolving it here lets the
+# Activity detail pane show the actual result to a HUMAN, who can't call check_eval (#59).
+function _ex_eval_record(m::KaimonModel, r::ToolCallResult)
+    (r.tool_name == "ex" && !isempty(r.eval_id) && m.conn_mgr !== nothing) || return nothing
+    mgr = m.conn_mgr
+    return lock(mgr.eval_history_lock) do
+        for rec in mgr.eval_history
+            rec.eval_id == r.eval_id && return rec
+        end
+        return nothing
+    end
+end
+
+# True once a promoted ex's background job has finished and its full result is available.
+_ex_result_ready(rec) = rec !== nothing && rec.promoted && !isempty(rec.full_result)
+
 function _tool_preview(r::ToolCallResult)
     try
         args = JSON.parse(r.args_json)
@@ -650,13 +669,22 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
     else
         r = m.tool_results[m.selected_result]
 
-        # (Re)build the Paragraph when selection or wrap mode changes
-        if m._detail_for_result != m.selected_result || m.detail_paragraph === nothing
+        # For a promoted `ex`, prefer the finished background job's real status + result
+        # over the "⏳ promoted…" placeholder that's frozen in the ToolCallResult (#59).
+        rec = _ex_eval_record(m, r)
+        ready = _ex_result_ready(rec)
+        success = ready ? (rec.status == :completed) : r.success
+        result_text = ready ? rec.full_result : r.result_text
+
+        # (Re)build the Paragraph when selection or wrap mode changes — or when a promoted
+        # job we're currently viewing just finished (so the result appears without reselect).
+        if m._detail_for_result != m.selected_result || m.detail_paragraph === nothing ||
+           (ready && !m._detail_result_resolved)
             spans = Span[]
             _detail_span!(
                 spans,
-                r.success ? "✓ Success" : "✗ Failed",
-                r.success ? :success : :error,
+                success ? "✓ Success" : "✗ Failed",
+                success ? :success : :error,
                 "Status:   ",
             )
             _detail_span!(spans, r.duration_str, :text, "Duration: ")
@@ -673,10 +701,11 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
             if !isempty(r.eval_id)
                 _detail_span!(spans, r.eval_id, :secondary, "Eval ID:  ")
             end
-            _build_detail_spans!(spans, r.tool_name, r.args_json, r.result_text)
+            _build_detail_spans!(spans, r.tool_name, r.args_json, result_text)
             wrap_mode = m.result_word_wrap ? word_wrap : no_wrap
             m.detail_paragraph = Paragraph(spans; wrap = wrap_mode)
             m._detail_for_result = m.selected_result
+            m._detail_result_resolved = ready
         end
 
         # Update wrap mode if toggled without selection change

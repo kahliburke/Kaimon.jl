@@ -12,6 +12,7 @@ public call_tool, list_tools, tool_help
 public tui
 public setup_wizard_tui
 public get_gate_mirror_repl_preference, set_gate_mirror_repl_preference!
+public get_gate_promote_after_preference, set_gate_promote_after_preference!
 
 # ============================================================================
 # Port Management
