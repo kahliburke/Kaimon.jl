@@ -56,6 +56,11 @@ jobs:
       - name: Load Julia packages from cache
         id: julia-cache
         uses: julia-actions/cache@v2
+      - name: Refresh registry
+        # julia-actions/cache can restore a ~/.julia/registries snapshot that predates a
+        # just-published dependency (e.g. a fresh Tachikoma release), making resolve fail
+        # until the cache expires. Force the registry current.
+        run: julia -e 'using Pkg; Pkg.Registry.update()'
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
       - name: Save Julia depot cache on cancel or failure

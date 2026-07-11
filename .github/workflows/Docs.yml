@@ -51,7 +51,8 @@ jobs:
         run: |
           julia --project=docs -e '
             using Pkg
-            Pkg.develop(PackageSpec(path=pwd()))
+            Pkg.Registry.update()   # refresh registry — the cache above can restore a snapshot
+            Pkg.develop(PackageSpec(path=pwd()))   # that predates a just-published dependency
             Pkg.instantiate()'
 
       - uses: actions/setup-node@v4
