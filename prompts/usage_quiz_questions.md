@@ -88,12 +88,13 @@ g) **Write it.** Give the actual `ex(...)` call for a long task — a loop over 
 
 ## Question 8: Searching code (12 points)
 
-Kaimon has TWO search tools: **`search_code`** finds by MEANING (semantic-first — describe
-what the code does), and **`grep_code`** finds an EXACT pattern/regex over the live tree,
-returning each hit's enclosing function.
+Kaimon has TWO search tools. **`search_code`** finds by MEANING (semantic-first — describe
+what the code does) and is the DEFAULT for exploring; **`grep_code`** finds an EXACT
+pattern/regex over the live tree once you already hold a real token, returning each hit's
+enclosing function.
 
 a) Find every call site of the exact function `_eval_with_capture`. Which tool, and why not shell `grep`/`find`?
-b) You want "where HTTP routing is handled" but don't know the function name. Which tool, and what query?
+b) You're mapping an unfamiliar subsystem and want "where HTTP routing is handled", but you don't know any of the names involved. You *could* guess a plausible function name and `grep_code` it — why is that the trap (what does grep structurally miss?), and what should you do instead (name the tool and a query)?
 c) Is a long bag of keywords (`"transform power parse method body atStartOfTurn actions"`) a problem under semantic-first search? What's better?
 d) Ollama (embeddings) is down. Should you fall back to shell `grep`? Explain.
 e) You need to search a `.log` file or other generated/gitignored text. Do you have to leave the Kaimon tools? When is shell `grep`/`sed`/`awk` actually the right call?

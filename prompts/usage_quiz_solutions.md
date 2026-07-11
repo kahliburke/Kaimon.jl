@@ -124,8 +124,14 @@ qualifier matters: these are `public` but not exported, so `Gate.…`/bare `prog
 a) `grep_code(pattern="_eval_with_capture")` — every occurrence WITH its enclosing function,
    exact and repo-scoped over the live tree; shell `grep`/`find` miss the enclosing symbol
    and aren't repo-scoped.
-b) `search_code(query="where HTTP routing is handled")` — a short natural-language phrase;
-   semantic-first, so describe the behaviour, don't guess the name.
+b) **Don't guess-and-grep — that's the trap.** `grep_code` matches only the literal text you
+   type, so it's structurally blind to synonyms, indirection, and the code you didn't know to
+   name; a guessed symbol that's wrong (or just spelled differently) returns nothing, and you
+   can't tell "not here" from "I guessed wrong." Describe it instead:
+   `search_code(query="where HTTP routing is handled")` — a short natural-language phrase,
+   semantic-ranked, surfaces the real code regardless of what it's called. Default to
+   `search_code` when exploring; drop to `grep_code` once search_code (or the code) hands you
+   an exact name. (A `grep_code` 0-match reply nudges you back here for exactly this reason.)
 c) **Not** the OR-bag disaster it once was — the lexical arm is floored on bag-of-words
    queries, so it won't flood you with keyword-coincidences. But a word-salad still embeds
    worse than a coherent phrase: **say what you want** — `search_code(query="apply power at

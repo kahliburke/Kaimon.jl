@@ -16,16 +16,22 @@ Kaimon provides Julia-native code discovery tools. Prefer these over grep/shell:
 
 ### Searching effectively (read this before your first search)
 
-Two tools, picked by intent — both beat shell grep/find (repo-scoped, `.gitignore`-aware,
-and they show each hit's enclosing function):
+Two tools, picked by **what you have in hand** — both beat shell grep/find (repo-scoped,
+`.gitignore`-aware, and they show each hit's enclosing function):
 
-- **By MEANING → `search_code(query="…")`.** You can describe what the code does but not
-  its exact name. Semantic-first, so a **natural-language phrase is good** — say it in
-  words: `search_code(query="where is HTTP routing handled")`. No need to ration keywords.
-- **By EXACT pattern → `grep_code(pattern="…")`.** You have a symbol, string, or regex.
-  Returns every occurrence with its enclosing symbol:
+- **DEFAULT when exploring → `search_code(query="…")`.** You can describe what the code
+  does but can't (or shouldn't guess) its exact name. Semantic-first, so a
+  **natural-language phrase is good** — say it in words:
+  `search_code(query="where is HTTP routing handled")`. No need to ration keywords.
+  Start here whenever you're mapping unfamiliar code: `grep_code` only finds the literal
+  text you type, so it can't see synonyms, indirection, or the function three files away
+  that you didn't know to name. **Guessing a plausible symbol and grepping it is the
+  classic miss** — describe it instead and let the ranker surface what's actually there.
+- **Once you hold an EXACT token → `grep_code(pattern="…")`.** You have a real symbol,
+  string, or regex — not a guess. Returns every occurrence with its enclosing symbol:
   `grep_code(pattern="_eval_with_capture")`. Add `query="…"` to also rank the matching
-  files by relevance.
+  files by relevance. (Its 0-match reply nudges you back to `search_code` — take the hint:
+  a miss usually means you guessed the name wrong, which is exactly search_code's job.)
 - **Stay scoped.** Both default to your session's project; pass `collection=` / `path=`
   for another (an absolute `path=`/`file=` forces the repo when your session isn't bound to
   it). `search_code(..., cross_project=true)` fans out over every project — slower, only when

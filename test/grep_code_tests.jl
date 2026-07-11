@@ -341,10 +341,14 @@ using Kaimon
             # True negative over real files → "N files in scope", not a bare "No matches".
             out = Kaimon._grep_code(Dict("pattern" => "zzz_absent_qqq", "path" => dir))
             @test occursin("No matches", out) && occursin("2 files in scope", out)
+            # ...and a true negative nudges the caller toward search_code (guessed the name?).
+            @test occursin("search_code", out)
             # A glob matching nothing → 0 files in scope, flagged as a scoping issue, and the
             # glob is echoed back so the caller sees what was actually searched.
             out2 = Kaimon._grep_code(Dict("pattern" => "hello", "path" => dir, "glob" => ["*.nomatch"]))
             @test occursin("0 files in scope", out2) && occursin("glob=", out2)
+            # A scoping mistake (0 files searched) is NOT a missing symbol → no search_code nudge.
+            @test !occursin("search_code", out2)
             rm(dir; recursive = true)
         end
     end

@@ -6,14 +6,19 @@ enclosing function or struct):
 
 - **`search_code`** — find code by **meaning**. Describe a concept or behaviour
   ("function that handles HTTP routing") and a hybrid semantic + lexical engine
-  returns one ranked list. Use it when you can't name what you're looking for.
+  returns one ranked list. Reach for it when exploring or when you can't name
+  what you're looking for — it's the default for learning a codebase.
 - **`grep_code`** — find an **exact pattern**. Give it a literal string or regex
   (a symbol, a call site, a `TODO`) and it runs a real regex over the live working
-  tree, returning every match with its enclosing symbol. The "better grep than grep".
+  tree, returning every match with its enclosing symbol.
 
-Rule of thumb: if you can name it, `grep_code`; if you can only describe it,
-`search_code`. Most of this page covers `search_code` (the semantic engine);
-`grep_code` is summarized in its own section at the end.
+Rule of thumb: **describe it → `search_code`; already hold the exact token →
+`grep_code`.** Default to `search_code` when exploring — `grep_code` only finds the
+text you type, so it can't see synonyms, indirection, or code you didn't know to
+name; guessing a symbol and grepping it is the classic miss. Reach for `grep_code`
+the moment you have a real identifier or string in hand. Most of this page covers
+`search_code` (the semantic engine); `grep_code` is summarized in its own section at
+the end.
 
 ![Kaimon search tab](./assets/kaimon_search.gif)
 

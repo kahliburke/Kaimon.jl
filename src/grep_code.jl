@@ -658,7 +658,18 @@ function _grep_code(args)
         nscope = _grep_scope_file_count(rg, scan_flags, root, rg_cwd)
         note = nscope == 0 ? " (0 files in scope — check path=/glob=)" :
                " ($nscope file$(nscope == 1 ? "" : "s") in scope)"
-        return "No matches for /$pattern/ in $scope_label$header_extra$note"
+        # Discovery nudge. A TRUE negative — files WERE searched, the exact text just isn't
+        # there — is the highest-signal moment to switch tools: grep only finds the literal
+        # text you type, so a concept hunt that came up empty usually means the symbol was
+        # guessed wrong. search_code finds by MEANING and catches the synonym / indirection /
+        # renamed symbol grep structurally can't. Gate on nscope>0: a 0-scope result is a
+        # scoping mistake (the note above already handles it), not a missing symbol.
+        nudge = nscope > 0 ?
+            "\n↳ Searched but nothing matched that exact text. If you were after a CONCEPT " *
+            "(not a known literal), the name was likely just guessed wrong — describe it to " *
+            "search_code(query=\"…\") instead: it finds by meaning and catches the synonyms / " *
+            "indirection / renames grep can't see." : ""
+        return "No matches for /$pattern/ in $scope_label$header_extra$note$nudge"
     end
 
     sem_windows = _grep_semantic_windows(query, _grep_collection(args, base))

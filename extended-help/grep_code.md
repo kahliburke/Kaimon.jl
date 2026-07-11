@@ -1,17 +1,21 @@
 # grep_code
 
-Find an **exact pattern** in code — a better grep than grep. It runs a real regex over
-the **live working tree** (`.gitignore`-aware, no stale index), scoped to your bound
-project by default, and returns `file:line` **with the enclosing function/struct** for
-every hit. Prefer it over shell `grep`/`rg`/`find` for code: those miss the enclosing
-symbol, aren't repo-scoped, and don't rank by relevance.
+Find an **exact pattern** in code — for when you **already have the token** in hand. It
+runs a real regex over the **live working tree** (`.gitignore`-aware, no stale index),
+scoped to your bound project by default, and returns `file:line` **with the enclosing
+function/struct** for every hit. Prefer it over shell `grep`/`rg`/`find` for code: those
+miss the enclosing symbol, aren't repo-scoped, and don't rank by relevance.
 
 ## grep_code vs search_code
 
-- **`grep_code`** — you have an exact symbol, string, or regex (a name, a call site, a
-  `TODO`). You want *every* occurrence, exactly.
-- **`search_code`** — you can describe *what the code does* but not its exact name. Finds
-  by meaning, ranked semantically.
+- **`grep_code`** — you already have an exact symbol, string, or regex (a name, a call
+  site, a `TODO`) — not a guess. You want *every* occurrence, exactly.
+- **`search_code`** — you can describe *what the code does* but not its exact name, or
+  you're exploring unfamiliar code. Finds by meaning, ranked semantically. **This is the
+  default for discovery** — `grep_code` only finds the literal text you type, so it's
+  blind to synonyms, indirection, and code you didn't know to name; guessing a symbol and
+  grepping it is the classic miss. If a `grep_code` returns 0 matches, that's usually the
+  signal to switch to `search_code`.
 
 ## Pattern
 
