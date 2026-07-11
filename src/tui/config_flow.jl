@@ -780,24 +780,25 @@ function _install_gemini(m::KaimonModel, port::Int, api_key)
 end
 
 function _install_antigravity(m::KaimonModel, port::Int, api_key)
-    mcp_dir = joinpath(homedir(), ".gemini", "antigravity")
-    isdir(mcp_dir) || mkpath(mcp_dir)
-    mcp_file = joinpath(mcp_dir, "mcp_config.json")
-
-    existing = if isfile(mcp_file)
-        try JSON.parsefile(mcp_file) catch; Dict{String,Any}() end
-    else
-        Dict{String,Any}()
-    end
-    servers = get(existing, "mcpServers", Dict{String,Any}())
     entry = Dict{String,Any}("serverUrl" => "http://localhost:$port/mcp")
     if api_key !== nothing
         entry["headers"] = Dict{String,Any}("Authorization" => "Bearer $api_key")
     end
-    servers["kaimon"] = entry
-    existing["mcpServers"] = servers
-    write(mcp_file, _to_json(existing))
-    m.flow_message = "Wrote $(_short_path(mcp_file))"
+    # Antigravity's config location has moved between versions: current builds read
+    # ~/.gemini/config/mcp.json, older ones used ~/.gemini/antigravity/mcp_config.json (#57).
+    # It's a moving target, so write BOTH (merging into any existing file) to work regardless.
+    targets = [joinpath(homedir(), ".gemini", "config", "mcp.json"),
+               joinpath(homedir(), ".gemini", "antigravity", "mcp_config.json")]
+    for mcp_file in targets
+        mkpath(dirname(mcp_file))
+        existing = isfile(mcp_file) ?
+            (try JSON.parsefile(mcp_file) catch; Dict{String,Any}() end) : Dict{String,Any}()
+        servers = get(existing, "mcpServers", Dict{String,Any}())
+        servers["kaimon"] = entry
+        existing["mcpServers"] = servers
+        write(mcp_file, _to_json(existing))
+    end
+    m.flow_message = "Wrote $(_short_path(targets[1]))\n(+ legacy path for older Antigravity)"
     m.flow_success = true
 end
 

@@ -595,6 +595,7 @@ function _refresh_client_status_async!(m::KaimonModel)
     # Antigravity
     spawn_task!(q, :client_status) do
         "Antigravity" => _detect_in_files(
+            joinpath(homedir(), ".gemini", "config", "mcp.json"),
             joinpath(homedir(), ".gemini", "antigravity", "mcp_config.json"),
         )
     end
