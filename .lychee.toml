@@ -11,6 +11,10 @@ exclude = [
   # KaimonSlate.jl is not public yet — the URL is correct and ships in the 2.0
   # release notes. Remove this exclusion once the repository is made public.
   "^https://github\\.com/kahliburke/KaimonSlate\\.jl",
+  # webgraphviz.com serves the page fine in a browser (verified HTTP 200) but
+  # returns 415 to lychee's probe (anti-bot on the request shape). The link works —
+  # exclude the false positive rather than drop a useful reference.
+  "^http://www\\.webgraphviz\\.com",
 ]
 
 exclude_path = ["docs/build"]
