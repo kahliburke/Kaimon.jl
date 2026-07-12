@@ -8,7 +8,7 @@ Most tools accept an optional `session` parameter (8-character session key) for 
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `ex` | Evaluate Julia code in a persistent REPL. The user sees code in real-time. | `e` (code), `q` (quiet, default true), `s` (silent), `max_output`, `ses` (session) |
+| `ex` | Evaluate Julia code in a persistent REPL. The user sees code in real-time. | `e` (the Julia code — **required**; the parameter is `e`, not `code`), `q` (quiet, default true), `s` (silent), `max_output`, `ses` (session) |
 | `manage_repl` | Restart or shut down a Julia session. Restart preserves the session key. | `command` ("restart" or "shutdown"), `session` |
 
 **`ex` -- Evaluate Julia code**

@@ -5,7 +5,7 @@
 **`ex` is the primary tool.** Use it for nearly every generic task: running code, quick tests, docs, and quick checks.
 
 It uses short parameter names to save tokens:
-- `e` - expression (required)
+- `e` - expression to evaluate (**required** — this is the code parameter; it is `e`, not `code`). A call without `e` returns an error rather than running silently.
 - `q` - quiet mode (default: true)
 - `s` - silent mode (default: false)
 

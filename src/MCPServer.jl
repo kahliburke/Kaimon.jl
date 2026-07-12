@@ -1027,22 +1027,29 @@ function _handle_gate_tool_sse(
         # execute_via_gate_streaming being called within the tool handler.
         # For the `ex` tool specifically, we can call execute_via_gate_streaming directly.
         if tool_name_str == "ex"
-            # Direct streaming path for the ex tool
-            code = get(args, "e", "")
-            quiet = get(args, "q", true)
-            silent = get(args, "s", false)
-            max_output = min(get(args, "max_output", 6000), 25000)
-            ses = get(args, "ses", "")
-            main_thread = get(args, "mt", false)
-            execute_via_gate_streaming(
-                code;
-                quiet = quiet,
-                silent = silent,
-                max_output = max_output,
-                session = ses,
-                main_thread = main_thread,
-                on_progress = send_progress,
-            )
+            # Direct streaming path for the ex tool. The code MUST be `e` (see
+            # _ex_code_or_error); a call without it is malformed — return a clear error
+            # instead of dispatching an empty eval (which runs nothing, returns no value,
+            # and shows only a bare `agent>` in the shared REPL).
+            code, ex_err = _ex_code_or_error(args)
+            if ex_err !== nothing
+                ex_err
+            else
+                quiet = get(args, "q", true)
+                silent = get(args, "s", false)
+                max_output = min(get(args, "max_output", 6000), 25000)
+                ses = get(args, "ses", "")
+                main_thread = get(args, "mt", false)
+                execute_via_gate_streaming(
+                    code;
+                    quiet = quiet,
+                    silent = silent,
+                    max_output = max_output,
+                    session = ses,
+                    main_thread = main_thread,
+                    on_progress = send_progress,
+                )
+            end
         else
             # All other tools (including session tools): inject progress callback
             args["_on_progress"] = send_progress

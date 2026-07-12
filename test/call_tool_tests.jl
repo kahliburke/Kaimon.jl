@@ -58,6 +58,16 @@ _call_tool_saved_xdg = get(ENV, "XDG_CONFIG_HOME", nothing)
                 result = Kaimon.call_tool(:ex, Dict("e" => "2 + 2", "s" => true))
                 @test result isa String
 
+                # Omitting `e` must return a CLEAR ERROR, not silently run an empty eval
+                # (regression: the ex handler read only `e`, so a call that put the code
+                # under `code` — or omitted it — ran nothing: success, no result, bare
+                # `agent>`). Passing `code` gets a targeted hint.
+                result_code = Kaimon.call_tool(:ex, Dict("code" => "2 + 2", "s" => true))
+                @test occursin("requires the Julia code in the `e`", result_code)
+                @test occursin("`code`", result_code)   # calls out the common slip
+                result_nocode = Kaimon.call_tool(:ex, Dict("q" => false, "s" => true))
+                @test occursin("requires the Julia code in the `e`", result_nocode)
+
                 # Test tool with (args) only signature
                 result2 = Kaimon.call_tool(:search_methods, Dict("query" => "println"))
                 @test result2 isa String
@@ -92,4 +102,21 @@ _call_tool_saved_xdg = get(ENV, "XDG_CONFIG_HOME", nothing)
             ENV["XDG_CONFIG_HOME"] = _call_tool_saved_xdg
         end
     end
+end
+
+# Pure unit test (no server) for the ex code-argument resolver: the code MUST be `e`;
+# a missing `e` returns a clear error (with a targeted hint when `code` was used), so
+# the handler never silently dispatches an empty eval.
+@testset "ex code arg (requires `e`)" begin
+    @test Kaimon._ex_code_or_error(Dict("e" => "1 + 1")) == ("1 + 1", nothing)
+
+    code, err = Kaimon._ex_code_or_error(Dict("code" => "2 + 2"))
+    @test code === nothing
+    @test occursin("requires the Julia code in the `e`", err)
+    @test occursin("`code`", err)   # calls out the common slip
+
+    code2, err2 = Kaimon._ex_code_or_error(Dict())
+    @test code2 === nothing
+    @test occursin("requires the Julia code in the `e`", err2)
+    @test !occursin("`code`", err2)  # no hint when `code` wasn't the mistake
 end

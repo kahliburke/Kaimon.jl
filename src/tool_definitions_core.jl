@@ -426,10 +426,27 @@ usage_instructions and retake.""",
     end
 )
 
+"""
+    _ex_code_or_error(args) -> Tuple
+
+Resolve the `ex` code, which MUST be supplied as `e`. Returns `(code, nothing)` on success,
+or `(nothing, errmsg)` when `e` is absent — so the handler returns a clear error to the
+agent instead of silently dispatching an empty eval (which runs nothing and shows only a
+bare `agent>`). A common slip is passing the code as `code`, so the error calls that out.
+"""
+function _ex_code_or_error(args)
+    haskey(args, "e") && return (string(args["e"]), nothing)
+    hint = haskey(args, "code") ?
+           " (You passed `code` — this tool takes the code in `e`.)" : ""
+    return (nothing,
+        "Error: `ex` requires the Julia code in the `e` parameter, e.g. ex(e=\"1 + 1\").$hint")
+end
+
 repl_tool = @mcp_tool(
     :ex,
     """Execute Julia code in a persistent REPL. User sees code in real-time.
 
+Pass the code as `e` — e.g. ex(e="1 + 1"). (It is `e`, not `code`; a call without `e` returns an error.)
 Default q=true: suppresses return values (token-efficient). Use q=false only when you need the result.
 println/print to stdout are stripped from agent code. Use q=false with a final expression to see values.
 s=true (rare): suppresses agent> prompt and REPL echo for large outputs.
@@ -439,7 +456,7 @@ mt=true: routes eval through the REPL backend (thread 1). ALWAYS use mt=true for
         "properties" => Dict(
             "e" => Dict(
                 "type" => "string",
-                "description" => "Julia expression to evaluate (e.g., '2 + 3 * 4' or 'using Pkg; Pkg.status()')",
+                "description" => "Julia expression to evaluate (e.g., '2 + 3 * 4' or 'using Pkg; Pkg.status()'). This is the required code parameter — pass the code here (the parameter is `e`, not `code`).",
             ),
             "q" => Dict(
                 "type" => "boolean",
@@ -469,7 +486,8 @@ mt=true: routes eval through the REPL backend (thread 1). ALWAYS use mt=true for
         try
             silent = get(args, "s", false)
             quiet = get(args, "q", true)
-            expr_str = get(args, "e", "")
+            expr_str, ex_err = _ex_code_or_error(args)
+            ex_err === nothing || return ex_err
             max_output = get(args, "max_output", 6000)
             ses = get(args, "ses", "")
             main_thread = get(args, "mt", false)
