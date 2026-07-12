@@ -410,10 +410,13 @@ function _serve(;
     # (embedded/private gates reached via explicit endpoints).
     if discoverable && (mode != :tcp || local_gate)
         mpath = write_metadata(sid, name, endpoint, stream_endpoint; spawned_by, mode)
-        # Diagnostic (visible in an extension's own log): confirms serve() reached the
-        # advertise step and WHERE it wrote — so a "never connected" failure can be split
-        # into "gate never advertised" vs "advertised but the server didn't discover it".
-        @info "Kaimon gate advertised for discovery at $endpoint (mode=$mode, metadata: $mpath)"
+        # Diagnostic: confirms serve() reached the advertise step and WHERE it wrote — so a
+        # "never connected" failure can be split into "gate never advertised" vs "advertised
+        # but the server didn't discover it". For a SPAWNED gate (server session / extension)
+        # this lands in that process's captured log where it's wanted; for a user's own
+        # interactive gate (spawned_by == "user") it's just REPL noise, so drop it to @debug.
+        _adv = "Kaimon gate advertised for discovery at $endpoint (mode=$mode, metadata: $mpath)"
+        spawned_by == "user" ? (@debug _adv) : (@info _adv)
     end
 
     # Register cleanup
