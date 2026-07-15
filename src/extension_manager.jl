@@ -314,10 +314,21 @@ function spawn_extension!(ext::ManagedExtension)
         julia_bin = joinpath(Sys.BINDIR, "julia")
         project = ext.config.entry.project_path
         env = copy(ENV)
-        # LOAD_PATH: extension project (@), Kaimon project (for Gate, LoggingExtras, etc.),
-        # global env (@v#.#), stdlib.  Adding Kaimon's project path ensures extensions can
+        # LOAD_PATH: extension project (@), Kaimon's environment (for Gate, LoggingExtras, etc.),
+        # global env (@v#.#), stdlib.  Adding Kaimon's environment ensures extensions can
         # always find Kaimon and its deps without requiring them in their own Project.toml.
-        kaimon_project = pkgdir(@__MODULE__)
+        #
+        # Prefer the RUNNING instance's active environment over `pkgdir(Kaimon)`: for a
+        # registry install (e.g. `pkg> app add Kaimon`) the depot package dir has a
+        # Project.toml but NO Manifest.toml, so `using Kaimon` from it cannot resolve
+        # Kaimon's deps and the extension crashes on boot ("Package JSON is required but
+        # does not seem to be installed"). The active environment (the app env, or a dev
+        # checkout's project) carries an instantiated manifest. Fall back to pkgdir when
+        # the active project has no manifest (e.g. a bare --project=@temp session).
+        kaimon_project = let active = Base.active_project(), pd = pkgdir(@__MODULE__)
+            mf = active === nothing ? nothing : Base.project_file_manifest_path(active)
+            (mf !== nothing && isfile(mf)) ? dirname(active) : pd
+        end
         # OS-correct separator (`;` on Windows) — a hardcoded `:` breaks Windows drive
         # letters and drops @stdlib, so the extension can't even find Pkg/Kaimon.
         env["JULIA_LOAD_PATH"] = _join_load_path("@", kaimon_project, "@v#.#", "@stdlib")
