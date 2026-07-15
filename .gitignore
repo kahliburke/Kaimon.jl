@@ -61,3 +61,7 @@ docs/src/assets/*.tach
 docs/src/assets/*.gif
 docs/src/assets/*.svg
 kaimon.toml
+
+# Deploy tooling artifacts (Netlify / Cloudflare Wrangler)
+.netlify/
+.wrangler/
