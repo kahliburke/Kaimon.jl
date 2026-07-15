@@ -228,10 +228,18 @@ end
 # crashing on a malformed response. The credential is the API key (security gate).
 function _stream_oauth(http, req)
     _is_public_oauth_path(req.target) || return false
+    # Body is JSON shaped like an OAuth error (string `error`), NOT plain text:
+    # some clients (Claude Code) parse the discovery/endpoint response body as
+    # JSON even on a 404, so a "Not Found" string makes them throw a JSON parse
+    # error when a user manually triggers "Authenticate". Valid JSON with a
+    # string `error` lets that OAuth attempt fail cleanly instead of crashing.
     HTTP.setstatus(http, 404)
-    HTTP.setheader(http, "Content-Type" => "text/plain")
+    HTTP.setheader(http, "Content-Type" => "application/json")
     HTTP.startwrite(http)
-    write(http, "Not Found")
+    write(http, JSON.json(Dict(
+        "error" => "oauth_not_supported",
+        "error_description" => "This server does not provide OAuth; authenticate with a configured API key.",
+    )))
     return true
 end
 

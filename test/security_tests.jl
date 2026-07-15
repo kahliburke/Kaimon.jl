@@ -254,6 +254,10 @@ using JSON
                     retry = false,
                 )
                 @test r.status == 404
+                # Body must be valid JSON with a string `error` — a client that
+                # parses the discovery response even on a 404 (Claude Code) would
+                # throw on a plain-text "Not Found".
+                @test JSON.parse(String(r.body))["error"] isa String
             end
 
             # The token endpoint mints nothing — a client cannot self-authorize.
@@ -265,6 +269,7 @@ using JSON
                 retry = false,
             )
             @test tok_resp.status == 404
+            @test JSON.parse(String(tok_resp.body))["error"] isa String
 
             # SECURITY: a fabricated `access_*` bearer (the shape a minting flow
             # would have produced) is rejected — no strict-mode bypass.
@@ -330,6 +335,7 @@ using JSON
                     retry = false,
                 )
                 @test r.status == 404
+                @test JSON.parse(String(r.body))["error"] isa String
             finally
                 Kaimon.stop_mcp_server(server)
                 sleep(0.2)
