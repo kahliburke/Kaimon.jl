@@ -19,6 +19,7 @@ function _stream_security_gate(http, req, body, security_config)
         let origin = HTTP.header(req, "Origin", "")
             if !isempty(origin)
                 if !is_trusted_origin(origin)
+                    @warn "Auth denied: untrusted Origin (403)" origin target = req.target
                     HTTP.setstatus(http, 403)
                     HTTP.setheader(http, "Content-Type" => "application/json")
                     HTTP.startwrite(http)
@@ -113,31 +114,49 @@ function _stream_security_gate(http, req, body, security_config)
                 # For non-vscode-response endpoints, use standard API key validation
                 api_key = extract_api_key(req)
                 if api_key === nothing && security_config.mode != :lax
+                    @warn "Auth denied: missing API key (401)" client_ip =
+                        get_client_ip(req) method = req.method target = req.target
+                    # RFC 6750 challenge: a bare Bearer scheme (we run no OAuth
+                    # server, so no resource_metadata pointer — the credential is
+                    # the API key), and a string-typed `error` a strict OAuth
+                    # client can parse instead of a JSON-RPC error object.
                     HTTP.setstatus(http, 401)
                     HTTP.setheader(http, "Content-Type" => "application/json")
+                    HTTP.setheader(http, "WWW-Authenticate" => "Bearer realm=\"kaimon\"")
                     HTTP.startwrite(http)
                     write(
                         http,
                         JSON.json(
                             Dict(
-                                "error" => "Unauthorized: Missing API key in Authorization header",
+                                "error" => "invalid_token",
+                                "error_description" => "Missing API key in Authorization header",
                             ),
                         ),
                     )
                     return true
                 end
 
+                # Only a configured API key is accepted — no minted/self-provisioned
+                # tokens (that would bypass strict/relaxed mode).
                 if !validate_api_key(String(something(api_key, "")), security_config)
-                    HTTP.setstatus(http, 403)
+                    @warn "Auth denied: invalid API key (401)" client_ip =
+                        get_client_ip(req) method = req.method target = req.target
+                    HTTP.setstatus(http, 401)
                     HTTP.setheader(http, "Content-Type" => "application/json")
+                    HTTP.setheader(http, "WWW-Authenticate" => "Bearer realm=\"kaimon\"")
                     HTTP.startwrite(http)
-                    write(http, JSON.json(Dict("error" => "Forbidden: Invalid API key")))
+                    write(http, JSON.json(Dict(
+                        "error" => "invalid_token",
+                        "error_description" => "Invalid API key",
+                    )))
                     return true
                 end
 
                 # Validate IP address
                 client_ip = get_client_ip(req)
                 if !validate_ip(client_ip, security_config)
+                    @warn "Auth denied: IP not allowed (403)" client_ip method =
+                        req.method target = req.target
                     HTTP.setstatus(http, 403)
                     HTTP.setheader(http, "Content-Type" => "application/json")
                     HTTP.startwrite(http)
@@ -199,6 +218,21 @@ function _stream_hook_nudge(http, req, body)
         return true
     end
     return false
+end
+
+# We intentionally run NO OAuth authorization server (see mcp_rpc_methods.jl — an
+# anonymous localhost auto-mint would bypass strict/relaxed mode). Serve a clean
+# 404 for OAuth discovery/endpoint paths BEFORE the security gate, so a client
+# probing for OAuth gets the RFC 8414 "no metadata" signal and falls back to the
+# API-key bearer it was configured with — rather than being 401'd on discovery or
+# crashing on a malformed response. The credential is the API key (security gate).
+function _stream_oauth(http, req)
+    _is_public_oauth_path(req.target) || return false
+    HTTP.setstatus(http, 404)
+    HTTP.setheader(http, "Content-Type" => "text/plain")
+    HTTP.startwrite(http)
+    write(http, "Not Found")
+    return true
 end
 
 function _stream_vscode_response(http, req, body)

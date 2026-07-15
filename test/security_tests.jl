@@ -78,6 +78,38 @@ using JSON
             @test config2.editor == "cursor"
         end
 
+        @testset "OAuth Not Implemented" begin
+            # We run no OAuth authorization server; only the path predicate that
+            # `_stream_oauth` uses to short-circuit these paths to 404 remains.
+            for p in (
+                "/.well-known/oauth-authorization-server",
+                "/.well-known/oauth-authorization-server/mcp",  # RFC 8414 suffix
+                "/.well-known/oauth-protected-resource",
+                "/.well-known/openid-configuration",  # OIDC discovery
+                "/register",   # root dynamic client registration
+                "/authorize",
+                "/token",
+                "/oauth/register",
+                "/oauth/authorize",
+                "/oauth/token",
+            )
+                @test Kaimon._is_public_oauth_path(p)
+            end
+            @test Kaimon._is_public_oauth_path("/oauth/authorize?redirect_uri=x&state=y")
+            @test !Kaimon._is_public_oauth_path("/mcp")
+            @test !Kaimon._is_public_oauth_path("/oauth/other")
+            @test !Kaimon._is_public_oauth_path("/tokenize")  # exact match, no over-reach
+
+            # Regression guard: the anonymous auto-mint machinery must NOT exist —
+            # a token endpoint or a "gate accepts a self-minted token" helper would
+            # silently bypass strict/relaxed mode. If you reintroduce OAuth, do it
+            # with real consent + PKCE, not an auto-mint (see mcp_rpc_methods.jl).
+            @test !isdefined(Kaimon, :_oauth_token_response)
+            @test !isdefined(Kaimon, :_is_issued_oauth_token)
+            @test !isdefined(Kaimon, :_oauth_authorize_response)
+            @test !isdefined(Kaimon, :_oauth_metadata_response)
+        end
+
         @testset "Server Authentication" begin
             # Create security config
             api_key = Kaimon.generate_api_key()
@@ -164,10 +196,15 @@ using JSON
             )
 
             @test response.status == 401  # Unauthorized
+            # RFC 6750 challenge so an OAuth client can begin discovery, and a
+            # string-typed `error` a strict OAuth client can parse (not a
+            # JSON-RPC error object).
+            @test !isempty(HTTP.header(response, "WWW-Authenticate"))
             body = JSON.parse(String(response.body))
-            @test contains(body["error"], "Unauthorized")
+            @test body["error"] == "invalid_token"
 
-            # Test 2: Invalid API key - should fail with 403
+            # Test 2: Invalid API key - 401 (RFC 6750: invalid_token), so the
+            # client re-authenticates rather than treating it as a hard forbid.
             response = HTTP.post(
                 "http://localhost:$test_port/",
                 [
@@ -180,9 +217,10 @@ using JSON
                 retry = false,
             )
 
-            @test response.status == 403  # Forbidden
+            @test response.status == 401
+            @test !isempty(HTTP.header(response, "WWW-Authenticate"))
             body = JSON.parse(String(response.body))
-            @test contains(body["error"], "Forbidden")
+            @test body["error"] == "invalid_token"
 
             # Test 3: Valid API key - should succeed with 200
             response = HTTP.post(
@@ -202,9 +240,100 @@ using JSON
             @test haskey(body, "result")
             @test body["result"]["content"][1]["text"] == "hello"
 
+            # ── OAuth is not advertised, and nothing can be self-minted ──────
+            # Discovery endpoints return a clean 404 (RFC 8414 "no metadata"),
+            # unauthenticated, even in strict mode — so a client's OAuth probe
+            # concludes "no OAuth here" and falls back to its API-key bearer.
+            for path in (
+                "/.well-known/oauth-authorization-server",
+                "/.well-known/oauth-protected-resource",
+            )
+                r = HTTP.get(
+                    "http://localhost:$test_port$path";
+                    status_exception = false,
+                    retry = false,
+                )
+                @test r.status == 404
+            end
+
+            # The token endpoint mints nothing — a client cannot self-authorize.
+            tok_resp = HTTP.post(
+                "http://localhost:$test_port/oauth/token",
+                ["Content-Type" => "application/x-www-form-urlencoded"],
+                "grant_type=authorization_code&code=abc";
+                status_exception = false,
+                retry = false,
+            )
+            @test tok_resp.status == 404
+
+            # SECURITY: a fabricated `access_*` bearer (the shape a minting flow
+            # would have produced) is rejected — no strict-mode bypass.
+            response = HTTP.post(
+                "http://localhost:$test_port/",
+                [
+                    "Content-Type" => "application/json",
+                    "Authorization" => "Bearer access_fabricated_deadbeef",
+                ],
+                request_body;
+                status_exception = false,
+                request_timeout = 10,
+                retry = false,
+            )
+            @test response.status == 401  # not accepted
+
             # Clean up
             Kaimon.stop_mcp_server(server)
             sleep(0.2)
+        end
+
+        @testset "OAuth Not Advertised in Lax Mode" begin
+            # In lax mode there is nothing to authenticate, so no OAuth is
+            # advertised — discovery endpoints 404 (which is how a client learns
+            # the server needs no auth).
+            lax_config = Kaimon.SecurityConfig(:lax, String[], ["127.0.0.1", "::1"])
+            noop_tool = Kaimon.@mcp_tool(
+                :noop,
+                "noop",
+                Kaimon.text_parameter("x", "x"),
+                args -> "ok"
+            )
+            server = Kaimon.start_mcp_server(
+                [noop_tool],
+                0;
+                verbose = false,
+                security_config = lax_config,
+            )
+            test_port = server.port
+            try
+                ready = false
+                for _ = 1:40
+                    try
+                        r = HTTP.get(
+                            "http://localhost:$test_port/.well-known/oauth-authorization-server";
+                            status_exception = false,
+                            retry = false,
+                            connect_timeout = 5,
+                        )
+                        if r.status >= 100
+                            ready = true
+                            break
+                        end
+                    catch
+                        sleep(0.5)
+                    end
+                end
+                @test ready
+
+                r = HTTP.get(
+                    "http://localhost:$test_port/.well-known/oauth-authorization-server";
+                    status_exception = false,
+                    retry = false,
+                )
+                @test r.status == 404
+            finally
+                Kaimon.stop_mcp_server(server)
+                sleep(0.2)
+            end
         end
 
     finally

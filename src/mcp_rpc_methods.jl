@@ -352,79 +352,39 @@ function _rpc_prompts_get(request)
     )
 end
 
-# ── OAuth response builders (security-gated by create_handler's preamble) ────
+# ── OAuth: intentionally NOT implemented ─────────────────────────────────────
+# This server is localhost-bound and its credential is an API key presented as a
+# bearer token (validated by the security gate). We deliberately do NOT run an
+# OAuth authorization server: a localhost auto-approve flow can only "mint a
+# token for anyone who can reach the port", which would silently bypass
+# strict/relaxed mode — a security hole, not a feature. `_stream_oauth` therefore
+# returns a clean 404 for these paths (before the security gate) so a client's
+# OAuth discovery concludes "no OAuth here" — the RFC 8414 "no metadata" signal —
+# and falls back to the configured API-key bearer, instead of being 401'd or
+# crashing on a malformed response.
+#
+# If a non-localhost/remote gate ever needs browser-based auth, implement a real
+# authorization-code + PKCE flow WITH human consent (an approval step that
+# verifies the PKCE code_verifier and binds the token to the approval) — never an
+# anonymous auto-mint.
 
-function _oauth_metadata_response(port)
-    oauth_metadata = Dict(
-        "issuer" => "http://localhost:$port",
-        "authorization_endpoint" => "http://localhost:$port/oauth/authorize",
-        "token_endpoint" => "http://localhost:$port/oauth/token",
-        "registration_endpoint" => "http://localhost:$port/oauth/register",
-        "grant_types_supported" =>
-            ["authorization_code", "client_credentials"],
-        "response_types_supported" => ["code"],
-        "scopes_supported" => ["read", "write"],
-        "client_registration_types_supported" => ["dynamic"],
-        "code_challenge_methods_supported" => ["S256"],
-    )
-    return HTTP.Response(
-        200,
-        ["Content-Type" => "application/json"],
-        JSON.json(oauth_metadata),
-    )
-end
-
-function _oauth_register_response()
-    client_id = "claude-code-" * string(rand(UInt64), base = 16)
-    client_secret = string(rand(UInt128), base = 16)
-
-    registration_response = Dict(
-        "client_id" => client_id,
-        "client_secret" => client_secret,
-        "client_id_issued_at" => Int(floor(time())),
-        "grant_types" => ["authorization_code", "client_credentials"],
-        "response_types" => ["code"],
-        "redirect_uris" => [
-            "http://localhost:8080/callback",
-            "http://127.0.0.1:8080/callback",
-        ],
-        "token_endpoint_auth_method" => "client_secret_basic",
-        "scope" => "read write",
-    )
-    return HTTP.Response(
-        201,
-        ["Content-Type" => "application/json"],
-        JSON.json(registration_response),
-    )
-end
-
-function _oauth_authorize_response(req)
-    # For local development, auto-approve all requests
-    uri = HTTP.URI(req.target)
-    query_params = HTTP.queryparams(uri)
-    redirect_uri = get(query_params, "redirect_uri", "")
-    state = get(query_params, "state", "")
-
-    auth_code = "auth_" * string(rand(UInt64), base = 16)
-    redirect_url = "$redirect_uri?code=$auth_code&state=$state"
-
-    return HTTP.Response(302, ["Location" => redirect_url], "")
-end
-
-function _oauth_token_response()
-    access_token = "access_" * string(rand(UInt128), base = 16)
-
-    token_response = Dict(
-        "access_token" => access_token,
-        "token_type" => "Bearer",
-        "expires_in" => 3600,
-        "scope" => "read write",
-    )
-    return HTTP.Response(
-        200,
-        ["Content-Type" => "application/json"],
-        JSON.json(token_response),
-    )
+# The OAuth/OIDC discovery + endpoint paths a client probes when it thinks the
+# server might speak OAuth. We short-circuit ALL of them to a clean 404 (before
+# the security gate) so the probe concludes "no OAuth here" rather than getting a
+# 401 on a discovery endpoint (technically wrong, and it clutters the auth log).
+# `.well-known/*` uses startswith so RFC 8414 path-suffixed variants
+# (…/oauth-authorization-server/mcp) are covered too. Query string ignored.
+function _is_public_oauth_path(target)
+    p = first(split(String(target), '?'))
+    return startswith(p, "/.well-known/oauth-authorization-server") ||
+           startswith(p, "/.well-known/oauth-protected-resource") ||
+           startswith(p, "/.well-known/openid-configuration") ||
+           p == "/register" ||
+           p == "/authorize" ||
+           p == "/token" ||
+           p == "/oauth/register" ||
+           p == "/oauth/authorize" ||
+           p == "/oauth/token"
 end
 
 # ── tools/call (body extracted byte-exact from the original branch) ──────────

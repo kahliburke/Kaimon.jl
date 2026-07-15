@@ -719,44 +719,9 @@ function create_handler(
         body = String(req.body)
 
         try
-            # Handle OAuth well-known metadata requests first (before JSON parsing)
-            # Only advertise OAuth if security is configured (not in lax mode)
-            if req.target == "/.well-known/oauth-authorization-server"
-                if security_config !== nothing && security_config.mode != :lax
-                    return _oauth_metadata_response(port)
-                else
-                    # No OAuth in lax mode - return 404
-                    return HTTP.Response(404, ["Content-Type" => "text/plain"], "Not Found")
-                end
-            end
-
-            # Handle dynamic client registration
-            # Only support OAuth if security is configured (not in lax mode)
-            if req.target == "/oauth/register" && req.method == "POST"
-                if security_config !== nothing && security_config.mode != :lax
-                    return _oauth_register_response()
-                else
-                    return HTTP.Response(404, ["Content-Type" => "text/plain"], "Not Found")
-                end
-            end
-
-            # Handle authorization endpoint
-            if startswith(req.target, "/oauth/authorize")
-                if security_config !== nothing && security_config.mode != :lax
-                    return _oauth_authorize_response(req)
-                else
-                    return HTTP.Response(404, ["Content-Type" => "text/plain"], "Not Found")
-                end
-            end
-
-            # Handle token endpoint
-            if req.target == "/oauth/token" && req.method == "POST"
-                if security_config !== nothing && security_config.mode != :lax
-                    return _oauth_token_response()
-                else
-                    return HTTP.Response(404, ["Content-Type" => "text/plain"], "Not Found")
-                end
-            end
+            # NOTE: OAuth discovery/endpoint paths are short-circuited to 404 by
+            # `_stream_oauth` BEFORE the security gate (we run no OAuth server).
+            # By the time we reach here the request is a non-empty JSON-RPC POST.
 
             # Support both root "/" and "/mcp" endpoints for HTTP JSON-RPC
             # This allows MCP clients to use either endpoint
@@ -1163,6 +1128,12 @@ function start_mcp_server(
         # security gate so an agent's PreToolUse hook curl needs no credentials. Localhost,
         # canned response, no side effects.
         _stream_hook_nudge(http, req, body) && return nothing
+
+        # OAuth is intentionally not implemented — return a clean 404 for OAuth
+        # discovery/endpoint paths (before the gate) so a client's OAuth probe
+        # concludes "no OAuth here" and falls back to its API-key bearer, rather
+        # than crashing. (mcp_stream_handlers.jl / mcp_rpc_methods.jl)
+        _stream_oauth(http, req) && return nothing
 
         # Origin + API-key/nonce/IP security gate (mcp_stream_handlers.jl).
         _stream_security_gate(http, req, body, security_config) && return nothing
