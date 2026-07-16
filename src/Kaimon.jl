@@ -9,7 +9,6 @@ using HTTP
 using Random
 using SHA
 using Dates
-using ReTest
 using Pkg
 using Sockets
 using TOML
