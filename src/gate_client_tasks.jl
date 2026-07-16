@@ -132,6 +132,7 @@ function start!(mgr::ConnectionManager)
                                 _unregister_session_tools!(conn)
                                 disconnect!(conn)
                                 _remove_session_files(mgr.sock_dir, conn.session_id)
+                                _clear_gate_error!(conn)   # drop its error-throttle entry
                                 deleteat!(mgr.connections, idx)
                             end
                         end
@@ -204,6 +205,28 @@ function _protocol_mismatch_warning!(mgr::ConnectionManager, conn::REPLConnectio
     ))
 end
 
+# Once-per-message throttle for gate-error health replies (session_id → last message),
+# so a persistent rejection — pinged every few seconds — logs once, not every cycle.
+const _GATE_ERROR_NOTED = Dict{String,String}()
+const _GATE_ERROR_NOTED_LOCK = ReentrantLock()
+
+"""Log a gate that answered a health ping with an error, but only when the message is
+new or changed for this session (a steady rejection shouldn't flood the log)."""
+function _note_gate_error!(conn::REPLConnection, message::AbstractString)
+    changed = lock(_GATE_ERROR_NOTED_LOCK) do
+        get(_GATE_ERROR_NOTED, conn.session_id, "") == message && return false
+        _GATE_ERROR_NOTED[conn.session_id] = String(message)
+        return true
+    end
+    changed && _push_log!(:warn,
+        "Gate '$(conn.display_name)' answered a health ping with an error — not ready: $message")
+end
+
+"""Clear the gate-error throttle for a session (on a real pong, or when it's removed),
+so a later error logs afresh instead of being suppressed as a duplicate."""
+_clear_gate_error!(conn::REPLConnection) =
+    lock(_GATE_ERROR_NOTED_LOCK) do; delete!(_GATE_ERROR_NOTED, conn.session_id); end
+
 """Process the result of a health check ping for one connection."""
 function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, result, to_remove::Vector{REPLConnection})
     if result === :busy
@@ -214,7 +237,16 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
             conn.status = :evaluating
             _fire_sessions_changed(mgr)
         end
+    elseif result isa NamedTuple && get(result, :type, :pong) === :error
+        # The gate ANSWERED but refused the request: a (type=:error, message=…) reply,
+        # most often "Authentication required" when the client reached a token-guarded
+        # gate without presenting the token. It carries no :tools/:namespace, so counting
+        # it as a healthy pong silently wedges an extension at :starting until the startup
+        # timeout — with nothing explaining why. Log it (once per distinct message) and do
+        # NOT treat it as a successful pong.
+        _note_gate_error!(conn, string(get(result, :message, "unknown error")))
     elseif result !== nothing
+        _clear_gate_error!(conn)   # a real pong — reset the once-per-message error throttle
         # Successful pong
         if conn.status != :connected
             conn.diagnostics = nothing

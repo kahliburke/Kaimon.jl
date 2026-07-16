@@ -61,6 +61,30 @@ are not (their PID is meaningless here).
 _is_local_tcp(conn::REPLConnection) = _is_tcp(conn) && _is_local_host(_endpoint_host(conn.endpoint))
 
 """
+    _local_gate_token() -> String
+
+The auth token a LOCAL gate on this machine expects — resolved the SAME way the gate
+derived it: `KAIMON_GATE_TOKEN` env, else the first API key of a non-lax security
+config (`""` for a lax config, which leaves the gate open). A gate binds TCP not only
+when explicitly remote but also when a requested local IPC gate is coerced to TCP
+because the platform has no IPC transport (Windows). That coerced-local gate still
+applies the config's token — so the discovery watcher, which spawned it and shares the
+same config, must present that token or be rejected with "Authentication required"
+(the gate is on loopback but a TCP port isn't filesystem-protected like an IPC socket,
+so we authenticate rather than exempt it). Mirrors `connect_tcp!`'s token resolution.
+"""
+function _local_gate_token()
+    tok = get(ENV, "KAIMON_GATE_TOKEN", "")
+    isempty(tok) || return tok
+    try
+        config = load_global_config()
+        (config.mode != :lax && !isempty(config.api_keys)) && return first(config.api_keys)
+    catch
+    end
+    return ""
+end
+
+"""
     _update_session_metadata!(sock_dir, session_id; kwargs...)
 
 Update fields in an existing session metadata JSON file. Reads the file,
@@ -326,6 +350,9 @@ function discover_sessions(mgr::ConnectionManager)
             pid = pid,
             spawned_by = get(meta, "spawned_by", "user"),
             server_pubkey = server_pubkey,
+            # A local coerced-TCP gate (Windows IPC substitute) enforces the config's
+            # auth token; present it so the watcher isn't rejected. IPC gates need none.
+            auth_token = session_mode == :tcp ? _local_gate_token() : "",
         )
 
         # If this session_id was already known (PID changed = process restarted),
