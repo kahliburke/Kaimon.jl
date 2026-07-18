@@ -236,6 +236,37 @@ end
         @test Kaimon._spawn_argv(String[], true) == String[]      # empty argv is a no-op
     end
 
+    @testset "agent spawn error is sanitized (never leaks the environment)" begin
+        # A real failed spawn raises an IOError whose text embeds `setenv(cmd, env)` — the
+        # whole process environment, API keys included. The surfaced error must not contain it.
+        leaky = Base.IOError(
+            "could not spawn setenv(`claude -p`, [\"ANTHROPIC_API_KEY=sk-secret-XYZ\", " *
+            "\"PATH=/x\"]): no such file or directory (ENOENT)", Base.UV_ENOENT)
+
+        for win in (false, true)
+            err = Kaimon._agent_spawn_error(leaky, ["claude", "-p"]; iswin = win)
+            @test err isa ErrorException
+            msg = sprint(showerror, err)
+            @test occursin("claude", msg)              # names the CLI that failed
+            @test !occursin("sk-secret-XYZ", msg)      # never the secret value
+            @test !occursin("ANTHROPIC_API_KEY", msg)  # nor any env at all
+        end
+
+        # Windows ENOENT points the user at the npm-shim / native-install remedy.
+        win_msg = sprint(showerror, Kaimon._agent_spawn_error(leaky, ["claude"]; iswin = true))
+        @test occursin("install", lowercase(win_msg))
+        # Non-Windows ENOENT gives a PATH hint, not the Windows shim spiel.
+        nix_msg = sprint(showerror, Kaimon._agent_spawn_error(leaky, ["claude"]; iswin = false))
+        @test occursin("PATH", nix_msg)
+
+        # A non-ENOENT spawn failure still never leaks the env.
+        other = Base.IOError(
+            "could not spawn setenv(`claude`, [\"ANTHROPIC_API_KEY=sk-x\"])", Base.UV_EACCES)
+        om = sprint(showerror, Kaimon._agent_spawn_error(other, ["claude"]; iswin = false))
+        @test !occursin("sk-x", om)
+        @test occursin("claude", om)
+    end
+
     @testset "Utils.launch_argv resolves bare CLI names via which" begin
         U = Kaimon.Utils
         # Bare name → resolved by `which` to a .cmd shim → launched through cmd.exe.
@@ -253,6 +284,38 @@ end
         # Non-Windows → never touched, regardless of what which would return.
         @test U.launch_argv(["claude", "x"]; iswin = false, which = _ -> "C:\\claude.cmd") ==
             ["claude", "x"]
+
+        # Sys.which misses the shim (only finds .exe on Windows) → PATHEXT fallback resolves it
+        # and the .cmd is still wrapped. This is the real npm-shim case (Sys.which("claude")=nothing).
+        @test U.launch_argv(["claude", "mcp"]; iswin = true, which = _ -> nothing,
+            which_ext = _ -> "C:\\npm\\claude.cmd") ==
+            ["cmd.exe", "/d", "/c", "C:\\npm\\claude.cmd", "mcp"]
+        # Neither which nor the PATHEXT search finds it → bare name kept (handled by the
+        # sanitized spawn error downstream).
+        @test U.launch_argv(["claude"]; iswin = true, which = _ -> nothing,
+            which_ext = _ -> nothing) == ["claude"]
+    end
+
+    @testset "Utils._which_pathext searches PATH × PATHEXT (the Sys.which .exe-only gap)" begin
+        U = Kaimon.Utils
+        pathext = ".COM;.EXE;.BAT;.CMD"
+        path = "C:\\a;C:\\npm"
+        # Build expected paths the same way the function does (`joinpath`), so the test is
+        # host-agnostic (macOS joins with `/`, Windows with `\`).
+        claude_cmd = joinpath("C:\\npm", "claude.cmd")
+        @test U._which_pathext("claude"; path = path, pathext = pathext,
+            exists = p -> p == claude_cmd) == claude_cmd   # Sys.which would return nothing here
+        # PATHEXT order wins: prefer .EXE over .CMD when both exist in the same dir.
+        tool_exe = joinpath("C:\\a", "tool.exe")
+        tool_cmd = joinpath("C:\\a", "tool.cmd")
+        @test U._which_pathext("tool"; path = path, pathext = pathext,
+            exists = p -> p in (tool_exe, tool_cmd)) == tool_exe
+        # Nothing on PATH → nothing.
+        @test U._which_pathext("ghost"; path = path, pathext = pathext,
+            exists = _ -> false) === nothing
+        # A name that's already a path is not a bare name → nothing (caller handles it).
+        @test U._which_pathext("C:\\x\\claude"; path = path, pathext = pathext,
+            exists = _ -> true) === nothing
     end
 
     @testset "image downscale (tool-result PNG)" begin
