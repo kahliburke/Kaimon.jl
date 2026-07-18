@@ -351,6 +351,11 @@ const TAB_ADVANCED   = 10
     search_qdrant_up::Bool = false
     search_ollama_up::Bool = false
     search_model_available::Bool = false
+    # Managed-Qdrant display state, refreshed by the health check so the render
+    # loop doesn't do per-frame syscalls (and demos/tests can set it directly).
+    search_managed_qdrant_enabled::Bool = false   # policy is not :off
+    search_managed_qdrant_installed::Bool = false # binary present in the service env
+    search_managed_qdrant_running::Bool = false   # a Kaimon-managed instance is live
     search_collection_count::Int = 0
     search_health_last_check::Float64 = 0.0
     search_collections::Vector{String} = String[]

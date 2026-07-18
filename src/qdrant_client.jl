@@ -284,6 +284,13 @@ function create_collection(
         data = JSON.parse(String(response.body))
         return get(data, "result", false) == true
     catch e
+        # 409 Conflict = the collection already exists. Qdrant's PUT-create isn't
+        # idempotent, but the desired end state (collection present) is met — so
+        # treat it as success. This keeps concurrent indexers racing to create the
+        # same collection (common against a fresh instance) from spamming errors.
+        if e isa HTTP.StatusError && e.status == 409
+            return true
+        end
         @error "Create collection failed" collection = collection exception = e
         return false
     end

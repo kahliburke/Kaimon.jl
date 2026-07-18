@@ -75,7 +75,11 @@ Pkg.develop(url="https://github.com/kahliburke/Kaimon.jl")
 
 ### Qdrant (Semantic Search)
 
-Kaimon can index your codebase into [Qdrant](https://qdrant.tech/) for natural language code search. If you want to use the semantic search tools (`qdrant_index_project`, `search_code`, etc.), run a local Qdrant instance:
+Kaimon can index your codebase into [Qdrant](https://qdrant.tech/) for natural language code search. If you want to use the semantic search tools (`qdrant_index_project`, `search_code`, etc.), you need a local Qdrant on port `6333`.
+
+The easiest way is **managed Qdrant** — no Docker needed. On the Search tab, press `l` (`enable managed Qdrant`) and Kaimon downloads the Qdrant binary into a private service environment and runs it for you. It's opt-in, so nothing is downloaded unless you ask. See [Setting Up Qdrant](search.md#setting-up-qdrant) for the full workflow (enable / stop / remove).
+
+Prefer to run it yourself? Any Qdrant on `6333` works, e.g. via Docker:
 
 ```bash
 docker run -d --name qdrant -p 6333:6333 -p 6334:6334 \

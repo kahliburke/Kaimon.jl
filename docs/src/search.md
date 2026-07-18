@@ -89,7 +89,27 @@ Semantic search requires two external services running locally:
 
 ### Setting Up Qdrant
 
-Start Qdrant using Docker:
+**Managed Qdrant (no Docker required).** Kaimon can run Qdrant for you. On the
+Search tab, when Qdrant isn't reachable the status row shows:
+
+    ○ Qdrant  [l] enable managed Qdrant
+
+Press `l` and Kaimon downloads the Qdrant binary (via `Qdrant_jll`) into a private
+service environment, launches it on the default port (`6333`), and stores its data
+under `~/.cache/kaimon/qdrant/`. This is opt-in — nothing is downloaded until you
+ask, so Docker users pay nothing. While a managed instance is running the row
+becomes:
+
+    ◆ Qdrant managed by Kaimon  [l] stop  [x] remove
+
+`l` stops it, `x` removes the install (the on-disk index is kept). Ownership is
+tracked in a PID file, so Kaimon still recognizes and controls its managed Qdrant
+across restarts. Set the policy with `KAIMON_QDRANT_MANAGED` (`auto` / `always` /
+`off`) or the `qdrant_managed` preference.
+
+**Run it yourself instead.** Any Qdrant answering on `6333` works — Kaimon uses
+whatever is already there and leaves the managed launcher out of the way. For
+example, with Docker:
 
 ```bash
 docker run -d --name qdrant -p 6333:6333 \
@@ -97,9 +117,8 @@ docker run -d --name qdrant -p 6333:6333 \
   qdrant/qdrant
 ```
 
-This runs Qdrant on the default port (`6333`). Kaimon connects to it
-automatically. The `-v qdrant_storage:/qdrant/storage` volume persists your
-index across container restarts and reboots.
+The `-v qdrant_storage:/qdrant/storage` volume persists your index across
+container restarts and reboots.
 
 ### Setting Up Ollama
 

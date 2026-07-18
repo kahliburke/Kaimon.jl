@@ -247,6 +247,9 @@ function Tachikoma.update!(m::KaimonModel, evt::TaskEvent)
         m.search_ollama_up = h.ollama_up
         m.search_model_available = h.model_available
         m.search_collection_count = h.collection_count
+        m.search_managed_qdrant_enabled = h.managed_qdrant_enabled
+        m.search_managed_qdrant_installed = h.managed_qdrant_installed
+        m.search_managed_qdrant_running = h.managed_qdrant_running
         m.search_health_last_check = time()
         # Also refresh collections list if Qdrant is up
         if h.qdrant_up
@@ -294,6 +297,45 @@ function Tachikoma.update!(m::KaimonModel, evt::TaskEvent)
             _push_log!(:warn, "Model pull failed: $(result.status)")
         end
         # Refresh health to pick up the new model
+        m.search_health_last_check = 0.0
+        _refresh_search_health_async!(m)
+    elseif evt.id == :search_start_qdrant
+        result = evt.value::NamedTuple
+        if result.success
+            _set_search_status!("Managed Qdrant started")
+            _push_log!(:info, "Managed Qdrant is up")
+        else
+            _set_search_status!("Qdrant start failed: $(result.error_msg)")
+            _push_log!(:warn, "Managed Qdrant start failed: $(result.error_msg)")
+        end
+        # Refresh health to pick up the now-running service
+        m.search_health_last_check = 0.0
+        _refresh_search_health_async!(m)
+    elseif evt.id == :search_install_qdrant
+        r = evt.value::NamedTuple
+        if !r.installed
+            _set_search_status!("Qdrant_jll install failed (see log)")
+            _push_log!(:warn, "Qdrant_jll install failed:\n$(r.output)")
+        elseif r.started
+            _set_search_status!("Managed Qdrant installed & running")
+            _push_log!(:info, "Qdrant_jll installed, extension active, Qdrant up")
+        elseif r.active
+            _set_search_status!("Qdrant installed & loaded — starting…")
+            _push_log!(:info, "Qdrant_jll installed and loaded into the running process")
+        else
+            _set_search_status!("Qdrant installed but failed to load (see log)")
+            _push_log!(:warn, "Qdrant_jll installed but load_qdrant_jll! failed:\n$(r.output)")
+        end
+        m.search_health_last_check = 0.0
+        _refresh_search_health_async!(m)
+    elseif evt.id == :search_remove_qdrant
+        r = evt.value::NamedTuple
+        if r.removed
+            _set_search_status!("Managed Qdrant removed")
+            _push_log!(:info, "Managed Qdrant removed (service env deleted); on-disk index kept")
+        else
+            _set_search_status!("Managed Qdrant removal failed (see log)")
+        end
         m.search_health_last_check = 0.0
         _refresh_search_health_async!(m)
     elseif evt.id == :search_index_project

@@ -595,6 +595,10 @@ function _build_search_model()
         server_running = true,
         server_started = true,
         search_qdrant_up = true,
+        # Managed Qdrant running → status row shows the ◆ control line
+        search_managed_qdrant_enabled = true,
+        search_managed_qdrant_installed = true,
+        search_managed_qdrant_running = true,
         search_collections = ["Kaimon", "Tachikoma"],
         search_collection_count = 2,
         search_selected_collection = 1,

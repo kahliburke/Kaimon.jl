@@ -497,6 +497,11 @@ function tui(; port::Int = 2828, theme_name::Union{Symbol,Nothing} = nothing, re
     model = KaimonModel(server_port = port, _revise_polling = revise_polling, _revise_mod = revise_mod)
     model.search_embedding_model = _load_embedding_model()
 
+    # Bring managed Qdrant back up on launch if it's enabled+installed (background,
+    # no-op if already running) — symmetric with the atexit reap, so a restart
+    # doesn't leave the user to press [l] again.
+    autostart_managed_qdrant!()
+
     while true
         # invokelatest so that after Revise updates, the new method bodies
         # for view()/update!() are visible inside Tachikoma's event loop.

@@ -65,3 +65,4 @@ kaimon.toml
 # Deploy tooling artifacts (Netlify / Cloudflare Wrangler)
 .netlify/
 .wrangler/
+.qdrant-initialized

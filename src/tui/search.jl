@@ -65,6 +65,15 @@ function _view_search_status(m::KaimonModel, area::Rect, buf::Buffer)
     else
         if qdrant_up
             _write_spans!(buf, x, y, [("● ", tstyle(:success)), ("Qdrant", txt)])
+        elseif m.search_managed_qdrant_enabled
+            # Managed state comes from the health check (model fields), so the
+            # render loop stays free of syscalls and demos are deterministic.
+            hint = m.search_managed_qdrant_installed ? " start managed Qdrant" :
+                                                       " enable managed Qdrant"
+            _write_spans!(buf, x, y, [
+                ("○ ", tstyle(:error)), ("Qdrant  ", txt),
+                ("[l]", tstyle(:warning)), (hint, dim),
+            ])
         else
             _write_spans!(buf, x, y, [
                 ("○ ", tstyle(:error)), ("Qdrant  ", txt),
@@ -90,6 +99,16 @@ function _view_search_status(m::KaimonModel, area::Rect, buf::Buffer)
                 ("https://ollama.com/download", dim),
             ])
         end
+        y += 1
+    end
+
+    # ── Managed-Qdrant control (only when Kaimon is running the child) ──
+    if m.search_managed_qdrant_running
+        _write_spans!(buf, x, y, [
+            ("◆ ", tstyle(:accent)), ("Qdrant managed by Kaimon  ", dim),
+            ("[l]", tstyle(:warning)), (" stop  ", dim),
+            ("[x]", tstyle(:warning)), (" remove", dim),
+        ])
         y += 1
     end
 

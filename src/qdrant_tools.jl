@@ -23,54 +23,46 @@ const DEFAULT_EMBEDDING_MODEL = "qwen3-embedding:0.6b"
 
 Get embedding for text using Ollama `/api/embed` endpoint.
 """
-function get_ollama_embedding(text::String; model::String = DEFAULT_EMBEDDING_MODEL)
-    try
-        body = Dict("model" => model, "input" => text)
+function get_ollama_embedding(
+    text::String;
+    model::String = DEFAULT_EMBEDDING_MODEL,
+    retries::Int = 2,
+)
+    body = JSON.json(Dict("model" => model, "input" => text))
+    last_note = ""
+    # The embedding runner can transiently drop the connection ("… : EOF") or
+    # otherwise fail under load — especially larger models. These are recoverable,
+    # so retry a couple of times with a short backoff before giving up (which
+    # leaves the chunk lexical-only). A truly bad input fails all attempts.
+    for attempt in 0:retries
+        try
+            response = HTTP.post(
+                "http://localhost:11434/api/embed",
+                ["Content-Type" => "application/json"],
+                body;
+                status_exception = false,
+            )
+            body_text = String(response.body)
 
-        response = HTTP.post(
-            "http://localhost:11434/api/embed",
-            ["Content-Type" => "application/json"],
-            JSON.json(body),
-        )
-        body_text = String(response.body)
-
-        if response.status != 200
-            preview = body_text
-            if length(preview) > 500
-                preview = first(preview, 500) * "..."
+            if response.status == 200
+                data = JSON.parse(body_text)
+                embeddings = get(data, "embeddings", [])
+                if !isempty(embeddings) && !isempty(first(embeddings))
+                    return Float64.(first(embeddings))
+                end
+                last_note = "empty embeddings"
+            else
+                last_note = "status $(response.status): $(first(body_text, 200))"
             end
-            @warn "Ollama embedding request failed" status = response.status model = model body =
-                preview
-            return Float64[]
-        end
-
-        data = try
-            JSON.parse(body_text)
         catch e
-            preview = body_text
-            if length(preview) > 500
-                preview = first(preview, 500) * "..."
-            end
-            @warn "Ollama embedding response parse failed" model = model body = preview exception =
-                e
-            return Float64[]
+            last_note = sprint(showerror, e)
         end
-
-        embeddings = get(data, "embeddings", [])
-        if isempty(embeddings) || isempty(first(embeddings))
-            preview = body_text
-            if length(preview) > 500
-                preview = first(preview, 500) * "..."
-            end
-            @warn "Ollama embedding empty" model = model body = preview
-            return Float64[]
-        end
-
-        return Float64.(first(embeddings))
-    catch e
-        @warn "Ollama embedding request error" model = model exception = e
-        return Float64[]
+        # Backoff before the next attempt; give the runner a moment to recover.
+        attempt < retries && sleep(0.25 * (attempt + 1))
     end
+    @warn "Ollama embedding failed after retries" model = model attempts = (retries + 1) note =
+        last_note
+    return Float64[]
 end
 
 # ============================================================================
@@ -162,6 +154,7 @@ function check_search_health(; model::String = DEFAULT_EMBEDDING_MODEL)
     catch
         (0, 0)
     end
+    K = parentmodule(@__MODULE__)
     return (
         qdrant_up = qdrant_up,
         ollama_up = ollama_up,
@@ -169,6 +162,9 @@ function check_search_health(; model::String = DEFAULT_EMBEDDING_MODEL)
         collection_count = collection_count,
         fts_chunks = fts_chunks,
         fts_collections = fts_collections,
+        managed_qdrant_enabled = K.qdrant_managed_mode() !== :off,
+        managed_qdrant_installed = K.managed_qdrant_installed(),
+        managed_qdrant_running = K.managed_qdrant_running(),
     )
 end
 
@@ -184,7 +180,14 @@ function _require_services(;
     model::String = DEFAULT_EMBEDDING_MODEL,
 )
     if need_qdrant && !QdrantClient.ping()
-        return "Qdrant is not reachable at $(QdrantClient.QDRANT_URL[]). Is it running? (e.g., `docker run -p 6333:6333 qdrant/qdrant`)"
+        # Try to bring up a Kaimon-managed Qdrant child (opt-in via Qdrant_jll);
+        # a no-op that returns false when managed mode is off or the launcher
+        # isn't installed, in which case we fall through to the guidance below.
+        if !parentmodule(@__MODULE__).ensure_qdrant!()
+            return "Qdrant is not reachable at $(QdrantClient.QDRANT_URL[]). Is it running? \
+                    (e.g., `docker run -p 6333:6333 qdrant/qdrant`, or add `Qdrant_jll` to let \
+                    Kaimon run it for you)"
+        end
     end
     if need_ollama
         if !ping_ollama()

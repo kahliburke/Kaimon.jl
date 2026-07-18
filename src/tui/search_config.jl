@@ -33,6 +33,9 @@ function _handle_search_key!(m::KaimonModel, evt::KeyEvent)
             end
         end
         'p' => _pull_embedding_model_async!(m)
+        'l' => (managed_qdrant_running() ? _disable_managed_qdrant!(m) :
+                                           _start_managed_qdrant_async!(m))
+        'x' => _remove_managed_qdrant_async!(m)
         'c' => begin
             if !isempty(m.search_collections)
                 m.search_collection_delete_confirm = false
@@ -63,6 +66,9 @@ function _refresh_search_health_async!(m::KaimonModel; force::Bool = false)
             model_available = health.model_available,
             collection_count = health.collection_count,
             collections = collections,
+            managed_qdrant_enabled = health.managed_qdrant_enabled,
+            managed_qdrant_installed = health.managed_qdrant_installed,
+            managed_qdrant_running = health.managed_qdrant_running,
         )
     end
 end
@@ -259,6 +265,90 @@ function _pull_embedding_model_async!(
         catch e
             (success = false, model = model, status = sprint(showerror, e))
         end
+    end
+end
+
+
+"""
+Enable managed Qdrant from the Search tab. Picks the right step for the current
+state: start it if the launcher is live, activate the extension if `Qdrant_jll`
+is merely installed, or install `Qdrant_jll` first if it's missing — all in the
+background so the (potentially large) download never blocks the UI.
+"""
+function _start_managed_qdrant_async!(m::KaimonModel)
+    if m.search_qdrant_up
+        _set_search_status!("Qdrant already running")
+        return
+    end
+    qdrant_managed_mode() === :off && enable_managed_qdrant!()
+    if managed_qdrant_installed()
+        # Binary present → ensure_qdrant! loads it (if needed) and spawns.
+        _set_search_status!("Starting managed Qdrant...")
+        _push_log!(:info, "Starting managed Qdrant child process...")
+        spawn_task!(m._task_queue, :search_start_qdrant) do
+            ok = try
+                ensure_qdrant!()
+            catch e
+                _push_log!(:warn, "ensure_qdrant! error: $(sprint(showerror, e))")
+                false
+            end
+            (success = ok, error_msg = ok ? "" : "did not become healthy (see qdrant.log)")
+        end
+    else
+        _install_managed_qdrant_async!(m)
+    end
+end
+
+"""Install the Qdrant binary into Kaimon's service env (subprocess), then load +
+start it in-process — no restart, and the app env / repo are never touched."""
+function _install_managed_qdrant_async!(m::KaimonModel)
+    _set_search_status!("Installing Qdrant (downloading binary)...")
+    _push_log!(:info, "Installing Qdrant_jll into Kaimon's service env — this downloads a binary artifact.")
+    cmd = qdrant_install_command()
+    spawn_task!(m._task_queue, :search_install_qdrant) do
+        io = IOBuffer()
+        installed = try
+            proc = run(pipeline(cmd; stdout = io, stderr = io); wait = false)
+            wait(proc)
+            proc.exitcode == 0
+        catch e
+            print(io, "\n", sprint(showerror, e))
+            false
+        end
+        loaded = installed && (try load_qdrant_jll!() catch; false end)
+        started = loaded && (try ensure_qdrant!() catch; false end)
+        out = String(take!(io))
+        tail = join(last(split(out, '\n'; keepempty = false), 12), "\n")
+        (installed = installed, active = loaded, started = started, output = tail)
+    end
+end
+
+"""Stop the managed Qdrant child and disable auto-launch (persist mode=off)."""
+function _disable_managed_qdrant!(m::KaimonModel)
+    disable_managed_qdrant!()
+    _set_search_status!("Managed Qdrant stopped & disabled")
+    _push_log!(:info, "Stopped managed Qdrant; auto-launch disabled (mode=off)")
+    m.search_health_last_check = 0.0
+    _refresh_search_health_async!(m)
+end
+
+"""Stop, disable, and delete Kaimon's managed Qdrant install (service env). Keeps the
+on-disk index. No-op with a note if nothing is installed."""
+function _remove_managed_qdrant_async!(m::KaimonModel)
+    if !managed_qdrant_installed()
+        _set_search_status!("Managed Qdrant is not installed")
+        return
+    end
+    _set_search_status!("Removing managed Qdrant...")
+    _push_log!(:info, "Removing Kaimon's managed Qdrant (service env); on-disk index kept.")
+    spawn_task!(m._task_queue, :search_remove_qdrant) do
+        ok = try
+            uninstall_managed_qdrant!()
+        catch e
+            _push_log!(:warn, "uninstall error: $(sprint(showerror, e))")
+            false
+        end
+        (removed = ok,)
     end
 end
 
