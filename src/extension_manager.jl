@@ -144,10 +144,14 @@ function _kill_orphan_extension_processes!(project_path::String, namespace::Stri
                     environ = read("/proc/$pid/environ", String)
                     is_our_extension = contains(environ, "KAIMON_EXTENSION=$namespace")
                 else
-                    # macOS: fall back to command-line matching (env not easily readable)
+                    # macOS: env not easily readable — match the boot-script markers in
+                    # the command line (`spawned_by="extension"` + `namespace="…"`). This is
+                    # independent of `--project`, which for a managed env no longer equals
+                    # the registered `project_path`.
                     cmdline = read(pipeline(`ps -p $pid -o command=`; stderr=devnull), String)
-                    is_our_extension = contains(cmdline, project_path) &&
-                        contains(cmdline, "spawned_by=\"extension\"")
+                    is_our_extension =
+                        occursin("spawned_by=\"extension\"", cmdline) &&
+                        occursin("namespace=\"$(namespace)\"", cmdline)
                 end
             catch
             end
@@ -278,6 +282,98 @@ function _build_extension_script(config::ExtensionConfig)
     """
 end
 
+# ── Managed extension environments ───────────────────────────────────────────
+# A registry/app-installed extension package (e.g. `pkg> app add KaimonSlate`)
+# lives in a manifest-less, write-protected depot dir. Launching the subprocess
+# with `--project=<that dir>` leaves the extension unable to resolve its OWN deps
+# ("Package X is required but does not seem to be installed"), and the boot
+# script's `Pkg.resolve` can't repair a read-only depot ("Permission denied").
+# For such extensions Kaimon maintains its own writable environment that
+# `develop`s the package from its source dir and instantiates its deps, and
+# launches the subprocess against THAT. A dev checkout whose project already
+# carries an instantiated manifest is used as-is (unchanged behavior).
+#
+# (Kaimon and its own deps still reach the extension via the parent's active
+# environment on JULIA_LOAD_PATH — see `spawn_extension!`; the two are
+# independent: this env resolves the extension package, the load-path entry
+# resolves Kaimon.)
+
+_extension_env_dir(namespace::AbstractString) =
+    joinpath(first(DEPOT_PATH), "environments", "kaimon-ext", namespace)
+
+# Serializes builds so a spawn re-entered by the monitor tick can't race a
+# half-built env for the same namespace.
+const _EXT_ENV_BUILD_LOCK = ReentrantLock()
+
+function _project_has_manifest(project_path::AbstractString)
+    pf = joinpath(project_path, "Project.toml")
+    isfile(pf) || return false
+    mf = Base.project_file_manifest_path(pf)
+    return mf !== nothing && isfile(mf)
+end
+
+# Identity of the extension source, so an updated package (new depot slug or
+# changed deps) rebuilds rather than reusing a stale env. Path + Project.toml
+# mtime captures both a new slug (path changes) and an in-place edit.
+function _extension_env_fingerprint(project_path::AbstractString)
+    pf = joinpath(project_path, "Project.toml")
+    stamp = isfile(pf) ? string(mtime(pf)) : "0"
+    return string(abspath(project_path), "|", stamp)
+end
+
+"""
+    _ensure_extension_runtime_project(project_path, namespace) -> String
+
+Return the project directory to launch the extension subprocess with. A dev
+checkout (its own instantiated manifest) is returned unchanged. A manifest-less
+registry/app install gets a Kaimon-managed, instantiated environment (built once,
+cached, rebuilt when the source changes) whose path is returned instead.
+"""
+function _ensure_extension_runtime_project(project_path::AbstractString, namespace::AbstractString)
+    _project_has_manifest(project_path) && return project_path
+
+    env = _extension_env_dir(namespace)
+    stamp_file = joinpath(env, ".kaimon_ext_source")
+    fingerprint = _extension_env_fingerprint(project_path)
+    lock(_EXT_ENV_BUILD_LOCK) do
+        up_to_date = isfile(joinpath(env, "Manifest.toml")) && isfile(stamp_file) &&
+                     strip(read(stamp_file, String)) == fingerprint
+        if !up_to_date
+            _build_extension_env!(env, project_path, namespace)
+            write(stamp_file, fingerprint)
+        end
+    end
+    return env
+end
+
+# Build (or refresh) a managed extension env in an ISOLATED subprocess — never
+# `Pkg.activate` in the running Kaimon process, which would clobber its own
+# active project. Throws on failure so `spawn_extension!`'s catch marks the
+# extension crashed with the build log surfaced.
+function _build_extension_env!(env::AbstractString, project_path::AbstractString, namespace::AbstractString)
+    mkpath(env)
+    julia_bin = joinpath(Sys.BINDIR, "julia")
+    code = """
+    using Pkg
+    Pkg.develop(path=raw"$(abspath(project_path))")
+    Pkg.instantiate()
+    """
+    _push_log!(:info, "Building managed environment for extension '$namespace' at $env")
+    build_log = joinpath(env, "build.log")
+    # Resolve + install only — leave precompilation to the extension's own boot
+    # (`using <module>`). Auto-precompiling a package `develop`ed from a read-only
+    # depot dir here is flaky ("Missing source file …") and, on Pkg versions that
+    # treat a precompile failure as fatal, would fail the build spuriously; the
+    # extension precompiles what it needs on load regardless.
+    build_env = copy(ENV)
+    build_env["JULIA_PKG_PRECOMPILE_AUTO"] = "0"
+    open(build_log, "w") do io
+        run(pipeline(setenv(`$julia_bin --startup-file=no --project=$env -e $code`, build_env);
+                     stdout = io, stderr = io))
+    end
+    return
+end
+
 """
     spawn_extension!(ext::ManagedExtension)
 
@@ -312,7 +408,11 @@ function spawn_extension!(ext::ManagedExtension)
         # active environment and the default LOAD_PATH ["@", "@v#.#", "@stdlib"]
         # is used.  The parent process may have these set (e.g. from the launcher).
         julia_bin = joinpath(Sys.BINDIR, "julia")
-        project = ext.config.entry.project_path
+        # Runtime project: a dev checkout is used directly; a manifest-less
+        # registry/app install gets a Kaimon-managed instantiated env so the
+        # extension can resolve its OWN deps (see `_ensure_extension_runtime_project`).
+        project = _ensure_extension_runtime_project(
+            ext.config.entry.project_path, ext.config.manifest.namespace)
         env = copy(ENV)
         # LOAD_PATH: extension project (@), Kaimon's environment (for Gate, LoggingExtras, etc.),
         # global env (@v#.#), stdlib.  Adding Kaimon's environment ensures extensions can
