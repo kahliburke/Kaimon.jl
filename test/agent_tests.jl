@@ -284,6 +284,38 @@ end
         # Non-Windows → never touched, regardless of what which would return.
         @test U.launch_argv(["claude", "x"]; iswin = false, which = _ -> "C:\\claude.cmd") ==
             ["claude", "x"]
+
+        # Sys.which misses the shim (only finds .exe on Windows) → PATHEXT fallback resolves it
+        # and the .cmd is still wrapped. This is the real npm-shim case (Sys.which("claude")=nothing).
+        @test U.launch_argv(["claude", "mcp"]; iswin = true, which = _ -> nothing,
+            which_ext = _ -> "C:\\npm\\claude.cmd") ==
+            ["cmd.exe", "/d", "/c", "C:\\npm\\claude.cmd", "mcp"]
+        # Neither which nor the PATHEXT search finds it → bare name kept (handled by the
+        # sanitized spawn error downstream).
+        @test U.launch_argv(["claude"]; iswin = true, which = _ -> nothing,
+            which_ext = _ -> nothing) == ["claude"]
+    end
+
+    @testset "Utils._which_pathext searches PATH × PATHEXT (the Sys.which .exe-only gap)" begin
+        U = Kaimon.Utils
+        pathext = ".COM;.EXE;.BAT;.CMD"
+        path = "C:\\a;C:\\npm"
+        # Build expected paths the same way the function does (`joinpath`), so the test is
+        # host-agnostic (macOS joins with `/`, Windows with `\`).
+        claude_cmd = joinpath("C:\\npm", "claude.cmd")
+        @test U._which_pathext("claude"; path = path, pathext = pathext,
+            exists = p -> p == claude_cmd) == claude_cmd   # Sys.which would return nothing here
+        # PATHEXT order wins: prefer .EXE over .CMD when both exist in the same dir.
+        tool_exe = joinpath("C:\\a", "tool.exe")
+        tool_cmd = joinpath("C:\\a", "tool.cmd")
+        @test U._which_pathext("tool"; path = path, pathext = pathext,
+            exists = p -> p in (tool_exe, tool_cmd)) == tool_exe
+        # Nothing on PATH → nothing.
+        @test U._which_pathext("ghost"; path = path, pathext = pathext,
+            exists = _ -> false) === nothing
+        # A name that's already a path is not a bare name → nothing (caller handles it).
+        @test U._which_pathext("C:\\x\\claude"; path = path, pathext = pathext,
+            exists = _ -> true) === nothing
     end
 
     @testset "image downscale (tool-result PNG)" begin

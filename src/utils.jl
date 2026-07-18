@@ -63,25 +63,61 @@ end
 export terminate_process
 
 """
+    _which_pathext(name; path, pathext, exists) -> String | nothing
+
+Resolve a bare command `name` across `PATH` × `PATHEXT` (Windows), returning the first
+existing `<dir>\\<name><ext>` in PATHEXT order, or `nothing`. This fills the gap where
+`Sys.which` resolves a bare name only as `.exe` on Windows — so an npm-installed CLI that
+ships `.cmd`/`.ps1` shims (Claude Code, gemini, …) is invisible to `Sys.which` and thus to
+`Base.run`, which then ENOENTs. `path`/`pathext`/`exists` are injectable so the search is
+unit-testable off-Windows. A `name` that already contains a path separator returns `nothing`
+(it isn't a bare name to resolve).
+"""
+function _which_pathext(name::AbstractString;
+                        path = get(ENV, "PATH", ""),
+                        pathext = get(ENV, "PATHEXT", ".COM;.EXE;.BAT;.CMD"),
+                        exists = isfile)
+    (occursin('/', name) || occursin('\\', name)) && return nothing
+    exts = [lowercase(e) for e in split(pathext, ';'; keepempty = false)]
+    for dir in split(path, ';'; keepempty = false)
+        isempty(strip(dir)) && continue
+        for e in exts
+            cand = joinpath(String(dir), name * e)
+            exists(cand) && return cand
+        end
+    end
+    return nothing
+end
+
+"""
     launch_argv(argv; iswin=Sys.iswindows(), which=Sys.which) -> Vector{String}
 
 Return an argv that will actually execute on this platform. `argv[1]` is the executable
-(a bare name or a path). On Windows a bare name is resolved via `PATHEXT` (`Sys.which`), and
-a resulting `.cmd`/`.bat`/`.ps1` shim — which `CreateProcess` (what `run`/libuv use) cannot
-execute directly — is launched through its interpreter (`cmd.exe /d /c`, or
-`powershell -File`). A native `.exe`, or any non-Windows target, is returned unchanged apart
-from name→path resolution. `iswin`/`which` are injectable so the rewrite is unit-testable
-off-Windows.
+(a bare name or a path). On Windows a bare name is resolved first via `Sys.which` (which only
+finds `.exe`), then via a `PATH` × `PATHEXT` search (`_which_pathext`) so npm `.cmd`/`.ps1`
+shims are found too; a resulting `.cmd`/`.bat`/`.ps1` shim — which `CreateProcess` (what
+`run`/libuv use) cannot execute directly — is launched through its interpreter (`cmd.exe /d
+/c`, or `powershell -File`). A native `.exe`, or any non-Windows target, is returned unchanged
+apart from name→path resolution. `iswin`/`which`/`which_ext` are injectable so the rewrite is
+unit-testable off-Windows.
 
 Known edge: `cmd.exe` re-parses the command line, so an argv VALUE containing cmd
 metacharacters (`% ! & | < >`) can mis-quote — rare for CLI flag values.
 """
 function launch_argv(argv::AbstractVector{<:AbstractString};
-                     iswin::Bool = Sys.iswindows(), which = Sys.which)
+                     iswin::Bool = Sys.iswindows(), which = Sys.which,
+                     which_ext = _which_pathext)
     a = String[String(x) for x in argv]
     (iswin && !isempty(a)) || return a
     exe = a[1]
-    resolved = isfile(exe) ? exe : something(which(exe), exe)
+    # `Sys.which` resolves a bare name only as `.exe` on Windows, so npm `.cmd`/`.ps1` shims
+    # slip through — fall back to a PATH × PATHEXT search so they're found and can be wrapped.
+    resolved = if isfile(exe)
+        exe
+    else
+        w = which(exe)
+        w === nothing ? something(which_ext(exe), exe) : w
+    end
     rest = @view a[2:end]
     ext = lowercase(splitext(resolved)[2])
     if ext == ".cmd" || ext == ".bat"
