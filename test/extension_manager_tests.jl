@@ -221,3 +221,44 @@ end
     @test !Kaimon._extension_gate_advertised(joinpath(dir, "nope"))   # missing dir → false
     rm(dir; recursive = true)
 end
+
+@testset "managed extension runtime environment" begin
+    # A registry/app-installed extension package lives in a manifest-less,
+    # write-protected depot dir; a dev checkout carries its own manifest. Kaimon
+    # picks the launch --project accordingly (see `_ensure_extension_runtime_project`).
+
+    sound = mktempdir()      # dev-checkout shape: Project.toml + Manifest.toml
+    write(joinpath(sound, "Project.toml"), "name = \"Ext\"\nuuid = \"$(Base.UUID(1))\"\n")
+    write(joinpath(sound, "Manifest.toml"), "manifest_format = \"2.0\"\n")
+
+    bare = mktempdir()       # registry/app shape: Project.toml, NO manifest
+    write(joinpath(bare, "Project.toml"), "name = \"Ext\"\nuuid = \"$(Base.UUID(1))\"\n")
+
+    empty = mktempdir()      # not even a Project.toml
+
+    # _project_has_manifest: only the sound checkout qualifies.
+    @test Kaimon._project_has_manifest(sound)
+    @test !Kaimon._project_has_manifest(bare)
+    @test !Kaimon._project_has_manifest(empty)
+
+    # A sound checkout is launched AS-IS — no managed env is built for it.
+    @test Kaimon._ensure_extension_runtime_project(sound, "ext_sound") == sound
+
+    # The managed env dir is under the depot, namespaced (never inside the read-only pkgdir).
+    envdir = Kaimon._extension_env_dir("ext_ns")
+    @test occursin(joinpath("environments", "kaimon-ext", "ext_ns"), envdir)
+    @test startswith(envdir, first(DEPOT_PATH))
+
+    # Fingerprint distinguishes a source-changed / relocated package (so a stale managed
+    # env rebuilds) but is stable for an unchanged one.
+    fp1 = Kaimon._extension_env_fingerprint(bare)
+    @test fp1 == Kaimon._extension_env_fingerprint(bare)          # stable
+    @test occursin(abspath(bare), fp1)                           # path is part of identity
+    other = mktempdir()
+    write(joinpath(other, "Project.toml"), "name = \"Ext\"\n")
+    @test fp1 != Kaimon._extension_env_fingerprint(other)         # different path → different id
+
+    for d in (sound, bare, empty, other)
+        rm(d; recursive = true, force = true)
+    end
+end
