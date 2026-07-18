@@ -236,6 +236,37 @@ end
         @test Kaimon._spawn_argv(String[], true) == String[]      # empty argv is a no-op
     end
 
+    @testset "agent spawn error is sanitized (never leaks the environment)" begin
+        # A real failed spawn raises an IOError whose text embeds `setenv(cmd, env)` — the
+        # whole process environment, API keys included. The surfaced error must not contain it.
+        leaky = Base.IOError(
+            "could not spawn setenv(`claude -p`, [\"ANTHROPIC_API_KEY=sk-secret-XYZ\", " *
+            "\"PATH=/x\"]): no such file or directory (ENOENT)", Base.UV_ENOENT)
+
+        for win in (false, true)
+            err = Kaimon._agent_spawn_error(leaky, ["claude", "-p"]; iswin = win)
+            @test err isa ErrorException
+            msg = sprint(showerror, err)
+            @test occursin("claude", msg)              # names the CLI that failed
+            @test !occursin("sk-secret-XYZ", msg)      # never the secret value
+            @test !occursin("ANTHROPIC_API_KEY", msg)  # nor any env at all
+        end
+
+        # Windows ENOENT points the user at the npm-shim / native-install remedy.
+        win_msg = sprint(showerror, Kaimon._agent_spawn_error(leaky, ["claude"]; iswin = true))
+        @test occursin("install", lowercase(win_msg))
+        # Non-Windows ENOENT gives a PATH hint, not the Windows shim spiel.
+        nix_msg = sprint(showerror, Kaimon._agent_spawn_error(leaky, ["claude"]; iswin = false))
+        @test occursin("PATH", nix_msg)
+
+        # A non-ENOENT spawn failure still never leaks the env.
+        other = Base.IOError(
+            "could not spawn setenv(`claude`, [\"ANTHROPIC_API_KEY=sk-x\"])", Base.UV_EACCES)
+        om = sprint(showerror, Kaimon._agent_spawn_error(other, ["claude"]; iswin = false))
+        @test !occursin("sk-x", om)
+        @test occursin("claude", om)
+    end
+
     @testset "Utils.launch_argv resolves bare CLI names via which" begin
         U = Kaimon.Utils
         # Bare name → resolved by `which` to a .cmd shim → launched through cmd.exe.

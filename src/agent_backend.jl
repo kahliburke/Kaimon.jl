@@ -74,6 +74,32 @@ end
 _spawn_argv(argv::Vector{String}) = Utils.launch_argv(argv)
 _spawn_argv(argv::Vector{String}, iswin::Bool) = Utils.launch_argv(argv; iswin = iswin)
 
+# A failed process spawn raises an `IOError` whose message stringifies the WHOLE
+# `setenv(cmd, env)` — the process environment included, which may hold API keys
+# (ANTHROPIC_API_KEY, …). Surfacing `showerror(e)` on it (e.g. into the agent UI, or an
+# error a user pastes into an issue) leaks those secrets. Build a clean, actionable message
+# from the argv alone (safe — no env) and drop the original error entirely. `iswin` is
+# injectable so both branches are testable off-Windows.
+function _agent_spawn_error(e, args::Vector{String}; iswin::Bool = Sys.iswindows())
+    cli = isempty(args) ? "the agent CLI" : "`$(args[1])`"
+    notfound = e isa Base.IOError && e.code == Base.UV_ENOENT
+    if notfound && iswin
+        return ErrorException(
+            "Could not launch $cli. If it was installed via npm it exists only as a " *
+            "`.cmd`/`.ps1` shim, which may not be resolvable on this process's PATH. Install " *
+            "the native CLI so a real executable is on PATH (Claude Code: " *
+            "`irm https://claude.ai/install.ps1 | iex`), then retry.")
+    elseif notfound
+        return ErrorException(
+            "Could not launch $cli — not found on PATH. Install the CLI and ensure it is on PATH.")
+    else
+        # Any other spawn failure: report the libuv error CODE only, never the message
+        # (which carries the command + environment).
+        code = e isa Base.IOError ? " (error $(e.code))" : ""
+        return ErrorException("Could not launch $cli$code. Check that it is installed and executable.")
+    end
+end
+
 mutable struct ClaudeHandle <: AgentHandle
     backend::ClaudeBackend
     proc::Base.Process
@@ -148,7 +174,13 @@ function backend_start(b::ClaudeBackend; cwd::String, agent_id::String,
     log_io = open(log_file, "a")
 
     cmd = setenv(Cmd(_spawn_argv(args)), env; dir = cwd)   # wrap a Windows .cmd/.ps1 shim in its interpreter
-    proc = open(pipeline(cmd; stderr = log_io), "r+")   # proc.in = write, proc.out = read
+    proc = try
+        open(pipeline(cmd; stderr = log_io), "r+")   # proc.in = write, proc.out = read
+    catch e
+        try; close(log_io); catch; end
+        # A spawn IOError stringifies `env` (may hold API keys) — re-raise a sanitized error.
+        throw(_agent_spawn_error(e, args))
+    end
 
     events = Channel{ACP.AgentEvent}(Inf)
     h = ClaudeHandle(b, proc, proc.in, proc.out, events, Task(() -> nothing),
