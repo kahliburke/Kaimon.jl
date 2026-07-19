@@ -135,8 +135,8 @@ ping_tool = @mcp_tool(
                 copy(mgr.connections)
             end
             # Separate extension sessions from regular sessions
-            ext_conns = filter(c -> c.spawned_by == "extension", all_conns)
-            user_conns = filter(c -> c.spawned_by != "extension", all_conns)
+            ext_conns = filter(is_extension, all_conns)
+            user_conns = filter(!is_extension, all_conns)
             connected_count = count(c -> c.status == :connected, user_conns)
             # Sort by connected_at descending (newest first)
             sort!(user_conns; by=c -> c.connected_at, rev=true)
@@ -185,7 +185,7 @@ ping_tool = @mcp_tool(
                     end
                 elseif conn.status == :evaluating || conn.eval_state[] != EVAL_IDLE
                     ", busy"
-                elseif conn.spawned_by == "agent"
+                elseif is_agent_spawned(conn)
                     ", agent-spawned"
                 else
                     ", free"

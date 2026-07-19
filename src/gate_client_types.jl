@@ -59,7 +59,7 @@ mutable struct REPLConnection
     debug_paused::Bool           # True when session is paused at an @infiltrate breakpoint
     diagnostics::Union{ProcessDiagnostics,Nothing}  # populated when stalled
     backtrace_sample::Union{String,Nothing}  # stack sample captured when stalled
-    spawned_by::String           # "user" or "agent" — how this session was started
+    spawned_by::String           # provenance: "user" | "agent" | "extension" (see is_extension/is_agent_spawned)
     auth_token::String           # TCP auth token (empty = no auth)
     server_pubkey::String        # CURVE server public key to pin (empty = plain TCP/IPC)
     stall_reason::Symbol         # why stalled (TCP): :none|:offline|:key_changed|:unresponsive
@@ -138,6 +138,17 @@ end
 
 """TCP sessions have no local socket file — identified by empty socket_path."""
 _is_tcp(conn::REPLConnection) = isempty(conn.socket_path)
+
+"""An extension runtime (e.g. Slate) that connects to the gate to serve its tools.
+NOT an addressable REPL: agents must never bind to it or eval in it (its stdout is
+invisible and its runtime isn't a scratch REPL). The two session-resolver primitives
+(`connected_sessions`, `get_connection_by_key`) exclude these by default; only the
+internal extension-management machinery opts in via `include_extensions=true`."""
+is_extension(conn::REPLConnection) = conn.spawned_by == "extension"
+
+"""A REPL that Kaimon spawned on an agent's behalf (vs. a user-started one). Still a
+fully addressable session — this only affects display tagging and lifecycle policy."""
+is_agent_spawned(conn::REPLConnection) = conn.spawned_by == "agent"
 
 """Parse a `tcp://host:port` endpoint into `(host, port)`, or `nothing`."""
 function _endpoint_host_port(endpoint::AbstractString)

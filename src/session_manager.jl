@@ -408,7 +408,7 @@ function _monitor_managed_sessions!(conn_mgr)
                 catch
                     conn.project_path
                 end
-                if conn_norm == norm_path && conn.spawned_by == "agent"
+                if conn_norm == norm_path && is_agent_spawned(conn)
                     ms.status = :running
                     ms.session_key = short_key(conn)
                     _push_log!(

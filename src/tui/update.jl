@@ -917,7 +917,7 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
                     conns = _visible_connections(m)
                     if m.selected_connection >= 1 && m.selected_connection <= length(conns)
                         conn = conns[m.selected_connection]
-                        if conn.spawned_by == "agent" && conn.status != :stalled
+                        if is_agent_spawned(conn) && conn.status != :stalled
                             ms = find_managed_session(conn.project_path)
                             ms !== nothing && _open_session_terminal!(m, ms)
                         end
@@ -1091,7 +1091,7 @@ function _visible_session_count(m::KaimonModel)
     ext_namespaces = Set(
         ext.config.manifest.namespace for ext in get_managed_extensions()
     )
-    return count(c -> c.spawned_by != "extension" && !(c.namespace in ext_namespaces), conns)
+    return count(c -> !is_extension(c) && !(c.namespace in ext_namespaces), conns)
 end
 
 """Reset test output panes and tree view (used on run selection change)."""

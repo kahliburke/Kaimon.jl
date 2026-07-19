@@ -326,9 +326,9 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
 
     # ── Status bar ──
     n_sessions, n_exts = if m.conn_mgr !== nothing
-        conns = connected_sessions(m.conn_mgr)
-        ns = count(c -> c.spawned_by != "extension", conns)
-        ne = count(c -> c.spawned_by == "extension", conns)
+        conns = connected_sessions(m.conn_mgr; include_extensions = true)
+        ns = count(!is_extension, conns)
+        ne = count(is_extension, conns)
         (ns, ne)
     else
         (0, 0)
@@ -456,7 +456,7 @@ function view_server(m::KaimonModel, area::Rect, f::Frame)
         status_icon = m.server_running ? "●" : m.server_started ? "○" : "◌"
         status_text = m.server_running ? "running" : m.server_started ? "stopped" : "starting…"
         status_style = m.server_running ? tstyle(:success) : tstyle(:error)
-        n_conns = m.conn_mgr !== nothing ? count(c -> c.spawned_by != "extension", connected_sessions(m.conn_mgr)) : 0
+        n_conns = m.conn_mgr !== nothing ? length(connected_sessions(m.conn_mgr)) : 0
 
         kver = _kaimon_version_str()
         # Row 1: name + version + status + port + uptime

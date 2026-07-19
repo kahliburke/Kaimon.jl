@@ -37,8 +37,8 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
         n_conns = 0
         n_exts = 0
         if m.conn_mgr !== nothing
-            for c in connected_sessions(m.conn_mgr)
-                if c.spawned_by == "extension"
+            for c in connected_sessions(m.conn_mgr; include_extensions = true)
+                if is_extension(c)
                     n_exts += 1
                 else
                     n_conns += 1

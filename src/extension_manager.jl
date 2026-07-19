@@ -578,7 +578,7 @@ function _try_gate_shutdown!(ext::ManagedExtension)
 
     # Find the extension's connection by namespace
     conn = nothing
-    for c in connected_sessions(mgr)
+    for c in connected_sessions(mgr; include_extensions = true)
         if c.namespace == ns
             conn = c
             break
@@ -761,7 +761,7 @@ function _monitor_extensions!(conn_mgr)
 
             if ext.status == :starting
                 # Look for a matching gate session by namespace
-                for conn in connected_sessions(conn_mgr)
+                for conn in connected_sessions(conn_mgr; include_extensions = true)
                     if conn.namespace == ns
                         ext.status = :running
                         ext.session_key = short_key(conn)
@@ -799,7 +799,7 @@ function _monitor_extensions!(conn_mgr)
                 ext.last_heartbeat = time()
                 # Sync session key — after eviction the connection may have
                 # a different session_id than what the monitor originally matched.
-                for conn in connected_sessions(conn_mgr)
+                for conn in connected_sessions(conn_mgr; include_extensions = true)
                     if conn.namespace == ns && short_key(conn) != ext.session_key
                         ext.session_key = short_key(conn)
                         break

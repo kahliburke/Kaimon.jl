@@ -317,11 +317,11 @@ function _resolve_namespace!(conn::REPLConnection, mgr::ConnectionManager)
     # with the same namespace (any status) instead of deduplicating.
     # Must check all statuses because the old connection may have been marked
     # :disconnected by the health checker before the new one resolves its namespace.
-    if conn.spawned_by == "extension"
+    if is_extension(conn)
         lock(mgr.lock) do
             to_evict = [
                 c for c in mgr.connections if
-                c !== conn && c.spawned_by == "extension" && c.namespace == base_ns
+                c !== conn && is_extension(c) && c.namespace == base_ns
             ]
             for old in to_evict
                 _push_log!(:info, "Evicting stale extension connection: $(base_ns) $(short_key(old)) → $(short_key(conn))")

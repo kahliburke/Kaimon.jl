@@ -339,7 +339,7 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
                     old_ns = conn.namespace
                     conn.namespace = pong_ns
                     _resolve_namespace!(conn, mgr)
-                    if isempty(old_ns) && conn.spawned_by == "extension"
+                    if isempty(old_ns) && is_extension(conn)
                         existing = lock(mgr.lock) do
                             [c.display_name for c in mgr.connections if c !== conn]
                         end
@@ -502,13 +502,19 @@ function get_default_connection(mgr::ConnectionManager)
 end
 
 """
-    connected_sessions(mgr) -> Vector{REPLConnection}
+    connected_sessions(mgr; include_extensions=false) -> Vector{REPLConnection}
 
-List all currently connected sessions.
+List currently connected, *addressable* sessions. Extension runtimes (see
+`is_extension`) are excluded by default: they are not REPLs an agent can bind to,
+target with `ses=`, or eval in. Only the extension-management machinery, which
+tracks extensions by namespace, passes `include_extensions=true`.
 """
-function connected_sessions(mgr::ConnectionManager)
+function connected_sessions(mgr::ConnectionManager; include_extensions::Bool = false)
     lock(mgr.lock) do
-        filter(c -> c.status in (:connected, :evaluating, :stalled), mgr.connections)
+        filter(mgr.connections) do c
+            c.status in (:connected, :evaluating, :stalled) &&
+                (include_extensions || !is_extension(c))
+        end
     end
 end
 
@@ -519,12 +525,18 @@ not a raw `session_id[1:8]`."""
 short_key(sid::AbstractString) = startswith(sid, "tcp-") ? String(sid) : first(sid, 8)
 short_key(conn::REPLConnection) = short_key(conn.session_id)
 
-"""Look up a connection by its 8-char short key. Returns nothing if not found.
-Includes stalled sessions so tools can still interact with them."""
-function get_connection_by_key(mgr::ConnectionManager, key::String)
+"""Look up an *addressable* connection by its 8-char short key. Returns nothing if
+not found. Includes stalled sessions so tools can still interact with them, but
+excludes extension runtimes by default (see `is_extension`) — an agent must not be
+able to resolve an extension via `ses=`. Pass `include_extensions=true` from the
+extension-management machinery that legitimately addresses them."""
+function get_connection_by_key(mgr::ConnectionManager, key::String;
+                               include_extensions::Bool = false)
     lock(mgr.lock) do
         for conn in mgr.connections
-            if conn.status in (:connected, :evaluating, :stalled) && startswith(conn.session_id, key)
+            if conn.status in (:connected, :evaluating, :stalled) &&
+               startswith(conn.session_id, key) &&
+               (include_extensions || !is_extension(conn))
                 return conn
             end
         end

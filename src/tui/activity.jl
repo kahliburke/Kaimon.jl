@@ -11,7 +11,7 @@ function _activity_session_list(m::KaimonModel)
         sk = short_key(conn)
         if !isempty(sk) && sk ∉ seen_keys
             push!(seen_keys, sk)
-            push!(is_ext, conn.spawned_by == "extension")
+            push!(is_ext, is_extension(conn))
         end
     end
     return seen_keys, is_ext

@@ -295,6 +295,24 @@ function _resolve_gate_conn(session::String; allow_stalled::Bool = false)
         get_connection_by_key(mgr, session)
     end
     if conn === nothing
+        # If an explicit key resolved to nothing only because it names an extension
+        # runtime, say so plainly instead of the generic "no match" — extensions are
+        # deliberately not addressable (their runtime isn't a REPL; eval there is
+        # invisible), so an agent that lands on one via `ses=` or a project auto-match
+        # needs to know to start a real REPL for the project instead.
+        if !isempty(session)
+            ext = get_connection_by_key(mgr, session; include_extensions = true)
+            if ext !== nothing && is_extension(ext)
+                ns = isempty(ext.namespace) ? ext.display_name : ext.namespace
+                return (
+                    nothing,
+                    "ERROR: '$(session)' is the '$ns' extension's internal runtime, not a REPL. " *
+                    "Extensions serve tools; they are not addressable sessions and eval there is " *
+                    "invisible. To run code for this project, start a REPL with " *
+                    "start_session(project_path=\"$(ext.project_path)\") and target that.",
+                )
+            end
+        end
         available =
             join(["$(short_key(c)) ($(c.name))" for c in connected_sessions(mgr)], ", ")
         if isempty(available)

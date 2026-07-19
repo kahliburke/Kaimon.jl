@@ -51,7 +51,7 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
     end
 
     # Filter out extension-spawned connections (they appear in the Extensions tab)
-    filter!(conn -> conn.spawned_by != "extension", connections)
+    filter!(!is_extension, connections)
 
     _sync_sessions_table!(m, connections)
     dt = m.sessions_table
@@ -99,7 +99,7 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
             "off"
         end
         restart_str = conn.allow_restart ? "allowed" : "disabled"
-        spawned_str = conn.spawned_by == "agent" ? "agent $(m.personality_icon)" : "user"
+        spawned_str = is_agent_spawned(conn) ? "agent $(m.personality_icon)" : "user"
         fields = [
             ("Name", dname),
             ("Status", (conn.status == :stalled && conn.stall_reason != :none) ?
@@ -314,7 +314,7 @@ function _sync_sessions_table!(m::KaimonModel, connections::Vector{REPLConnectio
             conn.status == :stalled ? tstyle(:warning) :
             conn.status == :connecting ? tstyle(:warning) : tstyle(:error)
         dname = isempty(conn.display_name) ? conn.name : conn.display_name
-        agent_tag = conn.spawned_by == "agent" ? " $(m.personality_icon)" : ""
+        agent_tag = is_agent_spawned(conn) ? " $(m.personality_icon)" : ""
         lock_tag = isempty(conn.server_pubkey) ? "" : " 🔒"   # CURVE-encrypted link
         stall_tag = (conn.status == :stalled && conn.stall_reason != :none) ?
             " · $(_stall_tag(conn.stall_reason))" : ""
@@ -427,7 +427,7 @@ function _visible_connections(m::KaimonModel)
     ext_namespaces = Set(
         ext.config.manifest.namespace for ext in get_managed_extensions()
     )
-    filter!(conn -> conn.spawned_by != "extension" && !(conn.namespace in ext_namespaces), conns)
+    filter!(conn -> !is_extension(conn) && !(conn.namespace in ext_namespaces), conns)
     return conns
 end
 
@@ -448,7 +448,7 @@ function _shutdown_selected_session!(m::KaimonModel)
     # Fire-and-forget: shutdown gate + stop managed process without blocking the TUI
     Threads.@spawn begin
         send_shutdown!(conn)
-        if conn.spawned_by == "agent"
+        if is_agent_spawned(conn)
             ms = find_managed_session(conn.project_path)
             ms !== nothing && stop_session!(ms)
         end

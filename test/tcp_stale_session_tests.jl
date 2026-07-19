@@ -502,6 +502,77 @@ end
         end
     end
 
+    @testset "extension runtimes are not addressable sessions" begin
+        # An extension (e.g. Slate) connects as a gate session but is NOT a REPL:
+        # agents must not auto-bind to it, resolve it via ses=, or eval in it. The
+        # resolver primitives exclude it by default; only the extension-management
+        # machinery opts in via include_extensions=true.
+        proj = "/tmp/KaimonSlate.jl"
+        mgr = Kaimon.ConnectionManager(sock_dir = mktempdir())
+        ext = Kaimon.REPLConnection(
+            session_id = "tcp-127.0.0.1-9400", endpoint = "tcp://127.0.0.1:9400",
+            name = "slate", namespace = "slate", project_path = proj,
+            spawned_by = "extension", pid = 40000)
+        ext.status = :connected
+        lock(mgr.lock) do
+            push!(mgr.connections, ext)
+        end
+        ekey = Kaimon.short_key(ext)
+
+        # Predicates classify provenance.
+        @test Kaimon.is_extension(ext)
+        @test !Kaimon.is_agent_spawned(ext)
+
+        # connected_sessions / get_connection_by_key hide the extension by default…
+        @test isempty(Kaimon.connected_sessions(mgr))
+        @test Kaimon.get_connection_by_key(mgr, ekey) === nothing
+        # …but the extension machinery can still reach it explicitly.
+        @test Kaimon.connected_sessions(mgr; include_extensions = true) == [ext]
+        @test Kaimon.get_connection_by_key(mgr, ekey; include_extensions = true) === ext
+
+        old_mgr = Kaimon.GATE_CONN_MGR[]
+        Kaimon.GATE_CONN_MGR[] = mgr
+        try
+            # The reported bug: an agent whose workspace root is the extension's own
+            # project must NOT be auto-bound to the extension connection.
+            caller = "caller-ext-test"
+            sess = Kaimon.Session.MCPSession()
+            sess.id = caller
+            lock(Kaimon.STANDALONE_SESSIONS_LOCK) do
+                Kaimon.STANDALONE_SESSIONS[caller] = sess
+            end
+            try
+                Kaimon._bind_caller_to_project!(caller, proj)
+                @test sess.target_julia_session_id === nothing   # not bound to the ext
+
+                # A real REPL for the same project IS a valid bind target.
+                repl = Kaimon.REPLConnection(
+                    session_id = "tcp-127.0.0.1-9401", endpoint = "tcp://127.0.0.1:9401",
+                    name = "slate-repl", project_path = proj, spawned_by = "user", pid = 40001)
+                repl.status = :connected
+                lock(mgr.lock) do
+                    push!(mgr.connections, repl)
+                end
+                Kaimon._bind_caller_to_project!(caller, proj)
+                @test sess.target_julia_session_id == Kaimon.short_key(repl)
+            finally
+                lock(Kaimon.STANDALONE_SESSIONS_LOCK) do
+                    delete!(Kaimon.STANDALONE_SESSIONS, caller)
+                end
+            end
+
+            # Explicitly targeting the extension key yields a teaching error, not a
+            # generic "no match": it names the extension and points at start_session.
+            c, err = Kaimon._resolve_gate_conn(ekey)
+            @test c === nothing
+            @test err !== nothing
+            @test occursin("extension", err)
+            @test occursin("start_session", err)
+        finally
+            Kaimon.GATE_CONN_MGR[] = old_mgr
+        end
+    end
+
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
