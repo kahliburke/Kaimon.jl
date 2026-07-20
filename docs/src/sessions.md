@@ -102,6 +102,16 @@ type_info(type_expr="Matrix{Float64}", session="a3f8b2c1")
 
 If an agent omits the session key when multiple sessions are connected, the server returns an error indicating that a session must be specified.
 
+!!! note "Extension runtimes are not addressable sessions"
+    Extensions connect through the Gate like a session, but they are **not** REPLs
+    an agent can target. They are excluded from the session list agents route to,
+    cannot be reached with `ses=`, and cannot be eval'd in — their runtime is not a
+    scratch REPL and its output is not visible. Targeting one explicitly returns a
+    message pointing you at `start_session` for a real REPL. Extensions are managed
+    on the [Extensions](extensions.md) tab instead. To work in an extension's own
+    project (e.g. developing the extension), start a normal session for it with
+    `start_session`.
+
 ## Viewing Sessions in the TUI
 
 The TUI (terminal user interface) includes a **Sessions tab** that displays all connected REPLs. For each session, it shows:
