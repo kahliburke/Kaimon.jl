@@ -102,6 +102,7 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
     # Drain streaming REPL output from gate SUB sockets
     if m.conn_mgr !== nothing && !m._render_mode
         for msg in drain_stream_messages!(m.conn_mgr)
+            msg.data isa Vector{UInt8} && continue   # a raw binary stream frame (numeric buffer) — not for the activity feed
             if msg.channel == "files_changed"
                 m._reindex_pending[msg.data] = time()
                 if !haskey(m._reindex_first_seen, msg.data)

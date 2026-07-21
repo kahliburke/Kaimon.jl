@@ -200,6 +200,42 @@ function _publish_stream(channel::String, data; request_id::String = "")
     return
 end
 
+# Wire marker for a RAW binary stream frame (see `_publish_stream_raw`). Byte ≥0x80 so it can never
+# collide with an observe-broadcast topic (ASCII) on frame 1, and the receiver only consults it on the
+# MULTIPART path — a single-frame serialized message is never mistaken for one. MUST stay in lockstep
+# with the copy in Kaimon's `gate_client_debug.jl` (a cross-PROCESS wire constant, not a shared symbol).
+const _STREAM_BIN_MAGIC = 0xb1
+
+"""
+    _publish_stream_raw(channel, payload::Vector{UInt8}) -> nothing
+
+Publish a high-rate BINARY numeric frame WITHOUT the Serialization envelope that `_publish_stream`
+imposes. Enqueues a 2-frame multipart `[ [MAGIC|u8 chanLen|chan] , payload ]`: a tiny header frame plus
+the payload sent BY REFERENCE (the broadcaster copies it once at the wire, the only unavoidable pass).
+The receiver (`drain_stream_messages!`) recognizes MAGIC on the multipart path and routes the payload as
+bytes with NO `deserialize` — so a numeric buffer avoids BOTH the serialize (here) and deserialize
+(there) memcpy passes the string path costs, roughly doubling hub→browser numeric throughput. Use for
+already-framed binary blobs (e.g. Slate's `slate_emit_bin`); the string `_publish_stream` still handles
+everything else.
+"""
+function _publish_stream_raw(channel::AbstractString, payload::Vector{UInt8})
+    _STREAM_SOCKET[] === nothing && return
+    cb = codeunits(String(channel))
+    length(cb) <= 255 || throw(ArgumentError("_publish_stream_raw: channel name too long ($(length(cb)) > 255)"))
+    header = Vector{UInt8}(undef, 2 + length(cb))
+    @inbounds begin
+        header[1] = _STREAM_BIN_MAGIC
+        header[2] = length(cb) % UInt8
+        for i in eachindex(cb); header[2 + i] = cb[i]; end
+    end
+    try
+        put!(_STREAM_OUTBOX, Vector{UInt8}[header, payload])
+    catch e
+        @debug "raw stream publish failed" channel = channel exception = e
+    end
+    return
+end
+
 """
     publish(topic, payload) -> nothing
 

@@ -22,6 +22,11 @@ function _gate_send_recv(conn::REPLConnection, request::NamedTuple)
     end
 end
 
+# Wire marker for a RAW binary stream frame — MUST match `KaimonGate._STREAM_BIN_MAGIC` (a cross-process
+# wire constant). A frame-1 byte of this value on the MULTIPART path means "binary numeric frame: the
+# next frame is the payload, route it as bytes without deserialize"; see `_publish_stream_raw`.
+const _STREAM_BIN_MAGIC = 0xb1
+
 """
     drain_stream_messages!(mgr::ConnectionManager) -> Vector{NamedTuple}
 
@@ -34,7 +39,9 @@ routing, must use `conn_name` — keying on the mutable `session_name` silently 
 label diverges from the name).
 """
 function drain_stream_messages!(mgr::ConnectionManager)
-    messages = NamedTuple{(:channel, :data, :session_name, :conn_name),Tuple{String,String,String,String}}[]
+    # `data` is normally a String, but a BINARY stream frame (a raw numeric buffer published as
+    # `Vector{UInt8}`) is preserved as bytes — see the decode below; downstream routes it un-stringified.
+    messages = NamedTuple{(:channel, :data, :session_name, :conn_name),Tuple{String,Union{String,Vector{UInt8}},String,String}}[]
     pub_events = Tuple{String,String,String}[]  # (channel, data, session_name) for global PUB re-broadcast
     lock(mgr.lock) do
         for conn in mgr.connections
@@ -65,11 +72,19 @@ function drain_stream_messages!(mgr::ConnectionManager)
                     catch
                         return nothing  # recv error — no more messages
                     end
-                    # Observe-channel broadcasts (KaimonGate.publish) are 2-frame
-                    # multipart [topic, payload]; the internal stream messages are a
-                    # single blob. Detect the extra frame, drain it, and skip — the
-                    # Kaimon TUI doesn't consume out-of-band observe streams.
+                    # Multipart. Two kinds arrive here: a RAW binary numeric frame
+                    # (`_publish_stream_raw`: [MAGIC|chanLen|chan] + [payload]) which we KEEP —
+                    # its payload routes as bytes with no deserialize — and observe-channel
+                    # broadcasts (`KaimonGate.publish`: [topic, payload]) which the Kaimon client
+                    # doesn't consume, so we drain + skip. Internal stream messages are single-blob.
                     if (try; conn.sub_socket.rcvmore; catch; false; end)
+                        if !isempty(r) && @inbounds(r[1]) == _STREAM_BIN_MAGIC
+                            payload = try; _zmq_recv(conn.sub_socket); catch; UInt8[]; end
+                            while (try; conn.sub_socket.rcvmore; catch; false; end)
+                                try; _zmq_recv(conn.sub_socket); catch; break; end   # keep the socket frame-aligned
+                            end
+                            return (:binframe, r, payload)
+                        end
                         while (try; conn.sub_socket.rcvmore; catch; false; end)
                             try; _zmq_recv(conn.sub_socket); catch; break; end
                         end
@@ -79,6 +94,17 @@ function drain_stream_messages!(mgr::ConnectionManager)
                 end
                 raw === nothing && break
                 raw === :skip && continue
+                # Raw binary numeric frame — bypass deserialize + all the String-typed routing below
+                # (panel_push / eval-inbox / job_stash / pub_events). Header = [MAGIC|u8 chanLen|chan];
+                # the payload rides straight through as bytes (zero-copy — passed by reference).
+                if raw isa Tuple && @inbounds(raw[1]) === :binframe
+                    hdr = raw[2]::Vector{UInt8}; payload = raw[3]::Vector{UInt8}
+                    clen = length(hdr) >= 2 ? Int(hdr[2]) : 0
+                    ch = length(hdr) >= 2 + clen ? String(@view hdr[3:2+clen]) : "stdout"
+                    dname = isempty(conn.display_name) ? conn.name : conn.display_name
+                    push!(messages, (channel = ch, data = payload, session_name = dname, conn_name = conn.name))
+                    continue
+                end
                 msg = try
                     _safe_deserialize(raw; label = "debug_stream")
                 catch
@@ -99,7 +125,9 @@ function drain_stream_messages!(mgr::ConnectionManager)
                     continue
                 end
 
-                data = string(get(msg, :data, ""))
+                # Preserve a raw binary frame (a numeric stream buffer) as bytes; everything else stringifies.
+                _rawd = get(msg, :data, "")
+                data = _rawd isa Vector{UInt8} ? _rawd : string(_rawd)
                 msg_request_id = string(get(msg, :request_id, ""))
 
                 # Route eval and tool lifecycle messages to the correct per-request inbox
@@ -165,9 +193,12 @@ function drain_stream_messages!(mgr::ConnectionManager)
                     routed = true
                 end
 
-                # Collect for deferred global PUB re-broadcast (outside mgr.lock)
+                # Collect for deferred global PUB re-broadcast (outside mgr.lock). BINARY frames are
+                # skipped — pub_events + its downstream consumers (the TUI observe stream) are String-typed,
+                # and a raw numeric buffer has no place in a text re-broadcast. It still reaches its own
+                # subscriber via `messages` below.
                 dname_for_pub = isempty(conn.display_name) ? conn.name : conn.display_name
-                push!(pub_events, (ch, data, dname_for_pub))
+                data isa Vector{UInt8} || push!(pub_events, (ch, data, dname_for_pub))
 
                 if !routed
                     dname = isempty(conn.display_name) ? conn.name : conn.display_name
@@ -197,6 +228,62 @@ function drain_stream_messages!(mgr::ConnectionManager)
         _republish_event!(mgr, ch, data, sname)
     end
     return messages
+end
+
+"""
+    wait_stream_messages!(mgr::ConnectionManager; idle_timeout=0.25) -> Vector{NamedTuple}
+
+Event-driven sibling of [`drain_stream_messages!`](@ref): drain whatever is pending right
+now and, if nothing is, PARK on every connection's SUB socket fd (a transient `FDWatcher`
+each — near-zero idle CPU, same discipline as [`_sub_reader`](@ref)) until one becomes readable
+or `idle_timeout` seconds elapse, then drain once more and return. Same return shape and the
+same per-request routing side-effects as `drain_stream_messages!` — only the *trigger* differs.
+
+A caller that OWNS the drain for `mgr` (no competing `_sub_reader` supervisor on these same
+connections — two libuv poll handles on one fd collide) can loop on this instead of the
+`drain + sleep` poll: it trades the fixed poll-cadence latency floor for wake-on-arrival, so a
+streaming producer's frame is forwarded the moment it lands rather than up to a poll interval
+later. Drain-first means a busy stream never parks (we spin at drain speed); only an idle `mgr`
+blocks, at ~no CPU. The `idle_timeout` ceiling self-heals a park left stale by a SUB socket the
+health task recreated under us (new fd ⇒ the old watcher never fires).
+"""
+function wait_stream_messages!(mgr::ConnectionManager; idle_timeout::Real = 0.25)
+    msgs = drain_stream_messages!(mgr)         # drain-first: a busy stream returns without parking
+    isempty(msgs) || return msgs
+    # Nothing pending — arm one watcher per live SUB fd, then block until the first is readable.
+    # Draining above already re-read each socket's EVENTS, re-arming the edge-triggered ZMQ_FD, so
+    # a frame that lands after the drain still asserts the fd and wakes the watcher (no lost wakeup).
+    conns = lock(mgr.lock) do; copy(mgr.connections) end
+    watchers = FileWatching.FDWatcher[]
+    for conn in conns
+        sub = conn.sub_socket
+        sub === nothing && continue
+        fd = try; Cint(sub.fd); catch; Cint(-1); end
+        fd < 0 && continue
+        w = try; FileWatching.FDWatcher(RawFD(fd), true, false); catch; nothing; end
+        w === nothing || push!(watchers, w)
+    end
+    if isempty(watchers)                       # all SUBs mid-recreation — fall back to a plain sleep
+        sleep(idle_timeout)
+        return drain_stream_messages!(mgr)
+    end
+    ready = Base.Event()                        # level: first waker sets it; late notifies are no-ops
+    timer = Timer(_ -> notify(ready), Float64(idle_timeout))
+    for w in watchers
+        Threads.@spawn begin
+            try; wait(w); catch; end            # a close() below unblocks a still-parked wait → throws → exits
+            notify(ready)
+        end
+    end
+    try
+        wait(ready)
+    finally
+        try; close(timer); catch; end
+        for w in watchers
+            try; close(w); catch; end
+        end
+    end
+    return drain_stream_messages!(mgr)          # readable (or timed out) — pull whatever arrived
 end
 
 """
