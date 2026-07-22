@@ -610,6 +610,7 @@ function (@main)(ARGS)
         elseif arg == "--reset-global-prompt"
             _set_global_install_dismissed(false)
             _set_gate_setup_version(0)
+            _set_gate_upgrade_dismissed_version("")
             println("Reset: Kaimon will re-check your gate setup on next start.")
             return
         elseif arg in ("--help", "-h")
@@ -697,6 +698,11 @@ function (@main)(ARGS)
         else
             _maybe_run_setup_update()
         end
+
+        # If the user's global KaimonGate is registry-installed and behind the
+        # version bundled with this kaimon, offer to update it so auto-connecting
+        # REPL sessions get the latest gate fixes. No-op unless it's stale.
+        _maybe_run_gate_upgrade()
 
         _revise_active = use_revise && _Revise !== nothing
         if _revise_active

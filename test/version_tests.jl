@@ -129,4 +129,85 @@ using TOML
         @test occursin("PACKAGE_VERSION", mcp_src)
         @test !occursin("\"0.4.0\"", mcp_src)
     end
+
+    @testset "Global KaimonGate version detection" begin
+        mktempdir() do dir
+            mpath = joinpath(dir, "Manifest.toml")
+
+            # Absent manifest → nothing.
+            @test Kaimon._global_kaimongate_version(mpath) === nothing
+
+            # Format 2.0, registry-tracked (no `path`) → (version, is_dev=false).
+            write(mpath, """
+            manifest_format = "2.0"
+            [[deps.KaimonGate]]
+            uuid = "5ee84a8c-75bd-412f-a7b8-4e6463aa635f"
+            version = "1.0.1"
+            """)
+            info = Kaimon._global_kaimongate_version(mpath)
+            @test info !== nothing
+            @test info.version == v"1.0.1"
+            @test info.is_dev == false
+
+            # Format 2.0, dev/path install → is_dev=true (never treated as stale).
+            write(mpath, """
+            manifest_format = "2.0"
+            [[deps.KaimonGate]]
+            path = "/somewhere/lib/KaimonGate"
+            uuid = "5ee84a8c-75bd-412f-a7b8-4e6463aa635f"
+            version = "1.1.0"
+            """)
+            info = Kaimon._global_kaimongate_version(mpath)
+            @test info !== nothing
+            @test info.is_dev == true
+
+            # Older flat manifest layout (package tables at top level).
+            write(mpath, """
+            [[KaimonGate]]
+            uuid = "5ee84a8c-75bd-412f-a7b8-4e6463aa635f"
+            version = "1.0.0"
+            """)
+            info = Kaimon._global_kaimongate_version(mpath)
+            @test info !== nothing
+            @test info.version == v"1.0.0"
+
+            # KaimonGate absent from a populated manifest → nothing.
+            write(mpath, """
+            manifest_format = "2.0"
+            [[deps.SomethingElse]]
+            uuid = "00000000-0000-0000-0000-000000000000"
+            version = "1.2.3"
+            """)
+            @test Kaimon._global_kaimongate_version(mpath) === nothing
+
+            # Unparseable manifest → nothing (not a throw).
+            write(mpath, "this is not valid toml = = =")
+            @test Kaimon._global_kaimongate_version(mpath) === nothing
+        end
+    end
+
+    @testset "Gate upgrade dismissal preference" begin
+        # Isolate config writes to a temp dir so we never touch the user's real config.
+        mktempdir() do cfg
+            withenv("XDG_CONFIG_HOME" => cfg, "APPDATA" => cfg) do
+                @test Kaimon._get_gate_upgrade_dismissed_version() == ""  # default
+                @test Kaimon._set_gate_upgrade_dismissed_version("1.1.0")
+                @test Kaimon._get_gate_upgrade_dismissed_version() == "1.1.0"
+                # Clearing (as `--reset-global-prompt` does) restores the default.
+                @test Kaimon._set_gate_upgrade_dismissed_version("")
+                @test Kaimon._get_gate_upgrade_dismissed_version() == ""
+            end
+        end
+    end
+
+    @testset "Gate upgrade prompt is a no-op without a TTY" begin
+        # The test runner's stdin isn't a TTY, so the prompt must return quietly
+        # without prompting, updating, or writing any dismissal.
+        mktempdir() do cfg
+            withenv("XDG_CONFIG_HOME" => cfg, "APPDATA" => cfg) do
+                @test Kaimon._maybe_run_gate_upgrade() === nothing
+                @test Kaimon._get_gate_upgrade_dismissed_version() == ""
+            end
+        end
+    end
 end

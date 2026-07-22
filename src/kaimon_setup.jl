@@ -287,6 +287,109 @@ function _maybe_run_setup_update()
     end
 end
 
+"""Path to the user's global (shared) environment Manifest for the running Julia."""
+_global_manifest_path() = joinpath(homedir(), ".julia", "environments",
+                                   "v$(VERSION.major).$(VERSION.minor)", "Manifest.toml")
+
+"""
+    _global_kaimongate_version(manifest_path=<global env manifest>)
+        -> Union{Nothing, @NamedTuple{version::VersionNumber, is_dev::Bool}}
+
+Read the KaimonGate entry from an environment's `Manifest.toml`. Returns the
+installed `version` plus whether it's a `dev`/path install (`is_dev`), or `nothing`
+if KaimonGate isn't present or the manifest can't be read/parsed. A `path` entry
+tracks the bundled source directly and so is never "stale" against the registry —
+callers use `is_dev` to skip the upgrade prompt for such installs. Handles both
+Manifest format 2.0 (entries nested under `deps`) and the older flat layout.
+"""
+function _global_kaimongate_version(manifest_path::AbstractString = _global_manifest_path())
+    isfile(manifest_path) || return nothing
+    parsed = try
+        Pkg.TOML.parsefile(manifest_path)
+    catch
+        return nothing
+    end
+    # Format 2.0 nests package tables under "deps"; the older format lists them at
+    # the top level. In both, a package maps to a vector-of-tables (one per copy).
+    table = get(parsed, "deps", parsed)
+    table isa AbstractDict || return nothing
+    entries = get(table, "KaimonGate", nothing)
+    entries === nothing && return nothing
+    entry = entries isa AbstractVector ? (isempty(entries) ? nothing : first(entries)) : entries
+    entry isa AbstractDict || return nothing
+    vstr = get(entry, "version", nothing)
+    vstr === nothing && return nothing
+    v = try; VersionNumber(String(vstr)); catch; return nothing; end
+    return (version = v, is_dev = haskey(entry, "path"))
+end
+
+"""
+    _update_gate_global()
+
+Run `Pkg.update("KaimonGate")` in the user's global environment via a clean
+subprocess (JULIA_PROJECT/JULIA_LOAD_PATH stripped so it defaults to the shared
+`@v#.#` env), so the running app's own package environment is never perturbed.
+"""
+function _update_gate_global()
+    env = copy(ENV)
+    delete!(env, "JULIA_PROJECT")
+    delete!(env, "JULIA_LOAD_PATH")
+    code = "using Pkg; Pkg.update(\"KaimonGate\")"
+    run(setenv(`$(Base.julia_cmd()) --startup-file=no -e $code`, env))
+    return nothing
+end
+
+"""
+    _maybe_run_gate_upgrade()
+
+On an interactive startup, if the user's global KaimonGate is registry-installed
+and older than the version bundled with this `kaimon`, offer to update it so
+auto-connecting REPL sessions pick up the latest gate fixes. No-op when KaimonGate
+isn't installed globally, is a dev/path install (already tracks the source), is
+already current, or the user has dismissed this target version. A declined prompt
+records the target version so it isn't re-asked until a newer `kaimon` ships.
+"""
+function _maybe_run_gate_upgrade()
+    isa(stdin, Base.TTY) || return
+    bundled = try; pkgversion(KaimonGate); catch; nothing; end
+    bundled === nothing && return
+    info = _global_kaimongate_version()
+    info === nothing && return          # not installed globally
+    info.is_dev && return               # path/dev install tracks source; never stale
+    info.version >= bundled && return   # already current or newer
+    _get_gate_upgrade_dismissed_version() == string(bundled) && return  # already declined
+
+    global_env = joinpath(homedir(), ".julia", "environments",
+                          "v$(VERSION.major).$(VERSION.minor)")
+    println("""
+
+    Your global KaimonGate is out of date: v$(info.version) installed, v$(bundled)
+    ships with this kaimon. Updating keeps the Julia REPL sessions that auto-connect
+    to the dashboard in sync with the latest gate fixes. This will:
+      • run the equivalent of `]update KaimonGate` in your global env
+        ($global_env)
+      • after it finishes, you'll need to restart any running Julia REPLs so they
+        load the new gate
+    """)
+    print("Update KaimonGate now? [Y/n]: ")
+    response = lowercase(strip(readline()))
+    if isempty(response) || response in ("y", "yes")
+        @info "Updating KaimonGate in your global environment…"
+        try
+            _update_gate_global()
+            println("\nDone — restart your Julia REPL sessions to load KaimonGate v$(bundled).\n")
+        catch e
+            @warn "KaimonGate update failed — run `]update KaimonGate` in your global env manually" exception = e
+        end
+    else
+        # Decline: remember this target version so we don't nag every launch. A later
+        # kaimon with a higher bundled version will re-prompt.
+        _set_gate_upgrade_dismissed_version(string(bundled))
+        println("\nGot it — won't ask again for v$(bundled). Run `]update KaimonGate` anytime.\n")
+    end
+    return
+end
+
 # ============================================================================
 # Tool Definition Macros
 # ============================================================================

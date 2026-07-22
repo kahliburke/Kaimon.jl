@@ -502,6 +502,12 @@ function tui(; port::Int = 2828, theme_name::Union{Symbol,Nothing} = nothing, re
     # doesn't leave the user to press [l] again.
     autostart_managed_qdrant!()
 
+    # This process runs its OWN persistent full-screen TUI (`app` below) alongside a
+    # self-served gate whose capture mux may be installed. Opt out of the #67 TUI
+    # stream-guard here: wrapping the top-level app in it would suspend the mux for
+    # the TUI's whole lifetime and disable eval capture. Gate sessions keep the guard.
+    try; KaimonGate.disable_wedge_guard!(); catch; end
+
     while true
         # invokelatest so that after Revise updates, the new method bodies
         # for view()/update!() are visible inside Tachikoma's event loop.
