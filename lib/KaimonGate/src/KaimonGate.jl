@@ -197,6 +197,7 @@ public tty_path, tty_size, uninstall_infiltrator_hook!, infiltrator_routing
 public PROTOCOL_VERSION
 public set_version_provider!, set_mirror_pref_provider!, set_personality_provider!
 public set_tachikoma!, set_restart_code_builder!, set_auth_token_provider!
+public disable_wedge_guard!
 # CURVE transport (opt-in TCP encryption + auth)
 public curve_keypair, curve_public, pin_server!, authorize_client!
 public known_servers, unpin_server!, authorized_clients, revoke_client!

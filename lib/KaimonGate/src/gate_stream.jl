@@ -386,23 +386,30 @@ const _CAPTURE_ORIG_ERR  = Ref{IO}(devnull)
 
 """Install the persistent capture mux as stdout/stderr (idempotent, gate-lifetime)."""
 function _ensure_capture_installed!()
-    _CAPTURE_INSTALLED[] && return nothing
-    lock(_EVAL_SEM_LOCK) do
-        _CAPTURE_INSTALLED[] && return nothing
-        out0 = stdout
-        err0 = stderr
-        _CAPTURE_ORIG_OUT[] = out0
-        _CAPTURE_ORIG_ERR[] = err0
-        # `redirect_stdout()` only accepts fd-backed streams (pipe/TTY/file), so it
-        # can't install a custom routing IO. Set the `Base.stdout`/`stderr` bindings
-        # directly instead — they're non-const, and print/println read them
-        # dynamically, so writes route through the mux per task. fd-level writes
-        # bypass this (documented tradeoff). The interactive REPL uses its own
-        # terminal handle (not this binding) for line-editing, so it's unaffected.
-        setglobal!(Base, :stdout, _CaptureIO(:stdout, out0))
-        setglobal!(Base, :stderr, _CaptureIO(:stderr, err0))
-        _CAPTURE_INSTALLED[] = true
+    if !_CAPTURE_INSTALLED[]
+        lock(_EVAL_SEM_LOCK) do
+            _CAPTURE_INSTALLED[] && return
+            out0 = stdout
+            err0 = stderr
+            _CAPTURE_ORIG_OUT[] = out0
+            _CAPTURE_ORIG_ERR[] = err0
+            # `redirect_stdout()` only accepts fd-backed streams (pipe/TTY/file), so it
+            # can't install a custom routing IO. Set the `Base.stdout`/`stderr` bindings
+            # directly instead — they're non-const, and print/println read them
+            # dynamically, so writes route through the mux per task. fd-level writes
+            # bypass this (documented tradeoff). The interactive REPL uses its own
+            # terminal handle (not this binding) for line-editing, so it's unaffected.
+            setglobal!(Base, :stdout, _CaptureIO(:stdout, out0))
+            setglobal!(Base, :stderr, _CaptureIO(:stderr, err0))
+            _CAPTURE_INSTALLED[] = true
+        end
     end
+    # With the mux active, a raw-mode Tachikoma TUI would skip its terminal
+    # capture/restore cycle (its gate is `stdout isa Base.TTY`, now false) and wedge
+    # the host REPL on exit. Register our stream-suspender as Tachikoma's guard so
+    # such a TUI runs with the real streams restored. Runs on every eval so a
+    # Tachikoma loaded *after* the mux is still covered; cheap once registered.
+    _register_tachikoma_stream_guard!()
     return nothing
 end
 
@@ -471,6 +478,59 @@ function _with_uncaptured_streams(f)
             end
         end
     end
+end
+
+# ── Host TUI stream-guard (Kaimon #67) ───────────────────────────────────────
+# A raw-mode Tachikoma TUI (`with_terminal`/`app`) run from a gate REPL wedges the
+# host REPL's stdin on exit: the capture mux makes `stdout isa Base.TTY` false, so
+# Tachikoma skips its terminal capture/restore cycle. Fix: hand Tachikoma our
+# `_with_uncaptured_streams` as its stream guard, so it runs the TUI with the real
+# fd streams restored (mux suspended) and restores cleanly. Requires a Tachikoma
+# new enough to define `set_stream_guard!`; older versions are a silent no-op.
+const _TACHIKOMA_UUID          = Base.UUID("468859d6-42d8-48b7-8ad9-1d312e0e3b0a")
+const _WEDGE_GUARD_OPT_OUT     = Ref{Bool}(false)
+const _WEDGE_GUARD_REGISTERED  = Ref{Bool}(false)
+
+_loaded_tachikoma() =
+    get(Base.loaded_modules, Base.PkgId(_TACHIKOMA_UUID, "Tachikoma"), nothing)
+
+"""Install `guard` as module `T`'s `with_terminal` stream guard via its
+`set_stream_guard!`. Returns true on success, false if `T` is nothing or too old
+to define the hook (or the call throws). Split out from the registration policy so
+it's unit-testable against a mock module."""
+function _install_stream_guard!(T, guard = _with_uncaptured_streams)
+    (T === nothing || !isdefined(T, :set_stream_guard!)) && return false
+    try
+        Base.invokelatest(getfield(T, :set_stream_guard!), guard)
+        return true
+    catch
+        return false
+    end
+end
+
+"""Register `_with_uncaptured_streams` as Tachikoma's `with_terminal` stream guard,
+once, if Tachikoma is loaded and supports the hook and this process hasn't opted
+out. Idempotent and cheap after the first success; safe to call on every eval."""
+function _register_tachikoma_stream_guard!()
+    (_WEDGE_GUARD_OPT_OUT[] || _WEDGE_GUARD_REGISTERED[]) && return nothing
+    _install_stream_guard!(_loaded_tachikoma()) && (_WEDGE_GUARD_REGISTERED[] = true)
+    return nothing
+end
+
+"""
+    disable_wedge_guard!()
+
+Opt this process out of the #67 TUI stream-guard and clear it if already installed.
+For a host that runs its OWN persistent full-screen TUI in the same process as an
+active capture mux (e.g. the Kaimon coordinator): there, wrapping the top-level app
+in the guard would suspend the mux for the app's entire lifetime and disable eval
+capture. Gate SESSIONS and standalone KaimonGate keep the guard.
+"""
+function disable_wedge_guard!()
+    _WEDGE_GUARD_OPT_OUT[] = true
+    _install_stream_guard!(_loaded_tachikoma(), nothing)  # clear it if registered
+    _WEDGE_GUARD_REGISTERED[] = false
+    return nothing
 end
 
 # `using`/`import` (which trigger precompilation) can only appear at top level, so
