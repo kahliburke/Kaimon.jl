@@ -420,7 +420,9 @@ end
 function _find_ext_connection(ext::ManagedExtension, conn_mgr)
     conn_mgr === nothing && return nothing
     ns = ext.config.manifest.namespace
-    for conn in connected_sessions(conn_mgr)
+    # Extension runtimes are non-addressable and excluded from connected_sessions by
+    # default; the extension-management machinery must opt in to see its own conn.
+    for conn in connected_sessions(conn_mgr; include_extensions = true)
         if conn.namespace == ns
             return conn
         end
