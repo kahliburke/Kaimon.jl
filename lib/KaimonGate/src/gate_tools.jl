@@ -733,9 +733,16 @@ function _dispatch_tool_call(handler::Function, args::Dict{String,Any}; tool_nam
         return handler(args)
     end
 
-    ms = methods(handler)
+    ms = collect(methods(handler))
     isempty(ms) && error("No methods found for handler")
-    m = first(ms)
+    # Reflect the MOST complete signature. A function with optional positional args compiles one
+    # method PER ARITY, and the method table's ORDER IS NOT DEFINED — `first(ms)` can be the
+    # lowest-arity stub, whose signature names none of the optional params and whose `kwarg_decl`
+    # is empty. Every optional argument the caller sent is then dropped SILENTLY and the handler
+    # runs on its defaults, with no error and no clue at the call site. `_reflect_tool` already
+    # picks max-arity for the schema, so this is also what keeps the advertised parameters and
+    # the actual call in agreement.
+    m = argmax(mm -> Int(mm.nargs), ms)
 
     # Get arg names (skip first = function itself)
     arg_names_all = Base.method_argnames(m)
@@ -749,13 +756,36 @@ function _dispatch_tool_call(handler::Function, args::Dict{String,Any}; tool_nam
     sig_params = sig.parameters
     arg_types = length(sig_params) > 1 ? sig_params[2:end] : []
 
-    # Build positional args
+    # Check for a missing REQUIRED positional first — the common "wrong param name" mistake.
+    # It must precede the gap check below, which would otherwise report a misnamed required arg
+    # as an ordering problem instead of the tailored did-you-mean.
+    pos_all, n_required, _ = _tool_param_names(handler)
+    for i = 1:n_required
+        haskey(args, string(pos_all[i])) ||
+            throw(ToolArgumentError(_tool_arg_error(tool_name, handler, args)))
+    end
+
+    # Build positional args. These fill from the FRONT: a call site cannot skip one positional
+    # and supply the next, so an argument sent after an omitted OPTIONAL would BIND TO THE WRONG
+    # PARAMETER (`f(a, b="", c="")` given `a` and `c` would splat as `f(a, c)`, landing `c`'s
+    # value in `b`). Stop at the first omission and reject anything supplied past it, rather than
+    # silently misbinding it. (Keyword args have no such ordering constraint — which is why an
+    # optional tool param is better written as a kwarg.)
     pos_args = Any[]
+    first_gap = 0
     for i in eachindex(arg_names)
         name = string(arg_names[i])
         T = i <= length(arg_types) ? arg_types[i] : Any
-        if haskey(args, name)
+        if !haskey(args, name)
+            first_gap == 0 && (first_gap = i)
+        elseif first_gap == 0
             push!(pos_args, _coerce_arg(args[name], T, name, tool_name))
+        else
+            throw(ToolArgumentError(
+                (isempty(tool_name) ? "This tool" : "Tool '$tool_name'") *
+                " was given '$name' but not '$(arg_names[first_gap])', which comes before it. " *
+                "Positional parameters can only be omitted from the END — pass " *
+                "'$(arg_names[first_gap])' as well, or leave '$name' out."))
         end
     end
 
@@ -773,15 +803,6 @@ function _dispatch_tool_call(handler::Function, args::Dict{String,Any}; tool_nam
             T = get(kw_types, kw, Any)
             push!(kwargs, kw => _coerce_arg(args[kw_str], T, kw_str, tool_name))
         end
-    end
-
-    # Up-front check for a missing required positional — the common "wrong param name"
-    # mistake (the loop above silently skips an unmatched positional, so the handler would
-    # otherwise fail with a cryptic MethodError). Give a tailored message instead.
-    pos_all, n_required, _ = _tool_param_names(handler)
-    for i = 1:n_required
-        haskey(args, string(pos_all[i])) ||
-            throw(ToolArgumentError(_tool_arg_error(tool_name, handler, args)))
     end
 
     try

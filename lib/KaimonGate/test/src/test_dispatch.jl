@@ -219,6 +219,55 @@ end
     @test !occursin("invalid base", err4.msg)   # the raw ArgumentError text is gone
 end
 
+# ── _dispatch_tool_call: optional POSITIONAL args ─────────────────────────────
+# Regression: an optional positional compiles one method PER ARITY, and the method table's
+# order is not defined — the dispatcher used to reflect `first(methods(handler))`, which can be
+# the ZERO-ARITY stub. It names no parameters and its `kwarg_decl` is empty, so every optional
+# argument the caller sent was dropped SILENTLY and the handler ran on defaults, while
+# `_reflect_tool` (max-arity) still advertised the parameter in the schema. A real extension tool
+# (`slate.api(topic)`) shipped this way and returned its default for every input.
+#
+# Closures are the case that bites: `create_tools`-style factories return them, and that is where
+# the zero-arity method was observed first in the table.
+
+@testset "_dispatch_tool_call optional positional" begin
+    dispatch = KaimonGate._dispatch_tool_call
+
+    function _make_optional_positional()
+        api(topic::String = "") = isempty(topic) ? "INDEX" : "entry:$topic"
+        api
+    end
+    api = _make_optional_positional()
+    @test dispatch(api, Dict{String,Any}("topic" => "echart"); tool_name = "api") == "entry:echart"
+    @test dispatch(api, Dict{String,Any}(); tool_name = "api") == "INDEX"
+    # The schema and the call must agree on the parameter list — advertising `topic` while
+    # dropping it is what made the failure invisible from the outside.
+    refl = KaimonGate._reflect_tool(KaimonGate.GateTool("api", api))
+    @test "topic" in [a["name"] for a in refl["arguments"]]
+
+    # Optional positionals AND kwargs on one handler: the stub carries neither, so both were lost.
+    function _make_mixed()
+        f(a, b = "Bdef", c = "Cdef"; k = "Kdef") = "a=$a b=$b c=$c k=$k"
+        f
+    end
+    f = _make_mixed()
+    @test dispatch(f, Dict{String,Any}("a" => "A"); tool_name = "f") == "a=A b=Bdef c=Cdef k=Kdef"
+    @test dispatch(f, Dict{String,Any}("a" => "A", "b" => "B", "k" => "K"); tool_name = "f") ==
+          "a=A b=B c=Cdef k=K"
+
+    # A GAP must be refused, not splatted: `a` and `c` with `b` omitted would land C's value in
+    # `b` (positionals fill from the front and cannot skip), silently producing a wrong answer.
+    err = try
+        dispatch(f, Dict{String,Any}("a" => "A", "c" => "C"); tool_name = "f")
+        nothing
+    catch e
+        e
+    end
+    @test err isa KaimonGate.ToolArgumentError
+    @test occursin("'c'", err.msg) && occursin("'b'", err.msg)
+    @test !occursin("b=C", something(err.msg, ""))
+end
+
 # ── GateTool struct basics ────────────────────────────────────────────────────
 
 @testset "GateTool basics" begin
