@@ -548,14 +548,23 @@ function stop_extension!(ext::ManagedExtension; timeout::Float64 = 5.0)
     if !isempty(ext.session_key)
         mgr = GATE_CONN_MGR[]
         if mgr !== nothing
-            lock(mgr.lock) do
-                idx = findfirst(c -> short_key(c) == ext.session_key, mgr.connections)
-                if idx !== nothing
-                    _unregister_session_tools!(mgr.connections[idx])
-                    disconnect!(mgr.connections[idx])
-                    _remove_session_files(mgr.sock_dir, mgr.connections[idx].session_id)
-                    deleteat!(mgr.connections, idx)
+            try
+                lock(mgr.lock) do
+                    idx = findfirst(c -> short_key(c) == ext.session_key, mgr.connections)
+                    if idx !== nothing
+                        _unregister_session_tools!(mgr.connections[idx])
+                        disconnect!(mgr.connections[idx])
+                        _remove_session_files(mgr.sock_dir, mgr.connections[idx].session_id)
+                        deleteat!(mgr.connections, idx)
+                    end
                 end
+            catch e
+                # The extension is being torn down regardless; a disconnect or
+                # session-file cleanup hiccup must not abort the stop.
+                _push_log!(
+                    :warn,
+                    "Gate teardown error for '$(ext.config.manifest.namespace)': $(sprint(showerror, e))",
+                )
             end
         end
     end

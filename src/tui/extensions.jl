@@ -505,6 +505,7 @@ function execute_ext_add!(m::KaimonModel)
     catch e
         m.ext_flow_message = "Error: $(sprint(showerror, e))"
         m.ext_flow_success = false
+        _push_log!(:error, "Extension registration failed: $(sprint(showerror, e))")
     end
     m.ext_flow = :add_result
 end
@@ -542,6 +543,7 @@ function execute_ext_remove!(m::KaimonModel)
     catch e
         m.ext_flow_message = "Error: $(sprint(showerror, e))"
         m.ext_flow_success = false
+        _push_log!(:error, "Extension removal failed: $(sprint(showerror, e))")
     end
     m.ext_flow = :remove_result
 end
@@ -634,8 +636,8 @@ function _handle_ext_flow_input!(m::KaimonModel, evt::KeyEvent)
         end
 
     elseif flow == :add_result
-        # Errors require Enter to dismiss, success closes on any key
-        (m.ext_flow_success || evt.key == :enter) && (m.ext_flow = :idle)
+        # Any key closes (matches the "Press any key to close" hint)
+        m.ext_flow = :idle
 
     elseif flow == :remove_confirm
         @match evt.key begin
@@ -652,7 +654,8 @@ function _handle_ext_flow_input!(m::KaimonModel, evt::KeyEvent)
         end
 
     elseif flow == :remove_result
-        (m.ext_flow_success || evt.key == :enter) && (m.ext_flow = :idle)
+        # Any key closes (matches the "Press any key to close" hint)
+        m.ext_flow = :idle
     end
 end
 
