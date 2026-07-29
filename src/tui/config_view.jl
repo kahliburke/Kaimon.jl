@@ -527,6 +527,13 @@ function _render_qdrant_prefix_modal(m::KaimonModel, buf::Buffer, area::Rect)
     end
 end
 
+# Launch-config modal rows, in display order. Shared with config_flow.jl so the field list,
+# the key handler's bounds, and the rendered rows can't drift apart.
+const LAUNCH_CONFIG_FIELDS =
+    [:threads, :gcthreads, :heap_size_hint, :sysimage, :julia_bin, :startup_file, :extra_flags]
+const LAUNCH_CONFIG_LABELS = ["Threads (-t):", "GC threads:", "Heap size hint:",
+    "Sysimage (-J):", "Julia binary:", "Run startup.jl:", "Extra flags:"]
+
 function _render_launch_config_modal(m::KaimonModel, buf::Buffer, area::Rect)
     idx = m.selected_project
     proj_name = if idx >= 1 && idx <= length(m.project_entries)
@@ -535,8 +542,8 @@ function _render_launch_config_modal(m::KaimonModel, buf::Buffer, area::Rect)
         "?"
     end
 
-    w = min(50, area.width - 4)
-    h = 11
+    w = min(64, area.width - 4)
+    h = length(LAUNCH_CONFIG_FIELDS) + 7
     rect = center(area, w, h)
 
     border_s = tstyle(:accent, bold = true)
@@ -573,10 +580,7 @@ function _render_launch_config_modal(m::KaimonModel, buf::Buffer, area::Rect)
     label_w = 18
     input_w = max(4, inner.width - label_w - 3)
 
-    field_labels = ["Threads (-t):", "GC threads:", "Heap size hint:", "Extra flags:"]
-    field_keys = [:threads, :gcthreads, :heap_size_hint, :extra_flags]
-
-    for (i, (label, key)) in enumerate(zip(field_labels, field_keys))
+    for (i, (label, key)) in enumerate(zip(LAUNCH_CONFIG_LABELS, LAUNCH_CONFIG_FIELDS))
         y > bottom(inner) - 2 && break
         selected = i == m.launch_config_selected
         label_style = selected ? tstyle(:accent, bold = true) : tstyle(:text_dim)
@@ -585,16 +589,21 @@ function _render_launch_config_modal(m::KaimonModel, buf::Buffer, area::Rect)
         set_string!(buf, x + 2, y, rpad(label, label_w), label_style)
 
         input = m.launch_config_inputs[key]
-        if selected
-            input.tick = m.tick
+        if input isa Bool
+            set_string!(buf, x + 2 + label_w, y, input ? "[x] yes" : "[ ] no",
+                        selected ? tstyle(:accent) : tstyle(:text))
+        else
+            if selected
+                input.tick = m.tick
+            end
+            render(input, Rect(x + 2 + label_w, y, input_w, 1), buf)
         end
-        render(input, Rect(x + 2 + label_w, y, input_w, 1), buf)
         y += 1
     end
 
     y += 1
     if y <= bottom(inner)
-        set_string!(buf, x, y, "[Enter] Save  [Esc] Cancel", tstyle(:text_dim))
+        set_string!(buf, x, y, "[Space] toggle  [Enter] Save  [Esc] Cancel", tstyle(:text_dim))
     end
 end
 

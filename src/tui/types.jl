@@ -461,7 +461,7 @@ const TAB_ADVANCED   = 10
     project_path_input::Any = nothing  # TextInput for adding projects
 
     # Launch config editing
-    launch_config_inputs::Dict{Symbol,Any} = Dict{Symbol,Any}()  # TextInput widgets for threads/gc/heap/extra
+    launch_config_inputs::Dict{Symbol,Any} = Dict{Symbol,Any}()  # TextInput widgets per LAUNCH_CONFIG_FIELDS (Bool for toggle rows)
     launch_config_selected::Int = 1  # which field is focused (1-4)
 
     # ── TCP Gates (Config tab) ──

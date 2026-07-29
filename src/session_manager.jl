@@ -124,17 +124,39 @@ end
 """
     _resolve_launch_config(project_path::String) -> LaunchConfig
 
-Look up the LaunchConfig for a project from the projects config.
-Returns default LaunchConfig if not found.
+Resolve the effective LaunchConfig for a project. The user's `projects.json` entry is
+overlaid field-wise on the project's own checked-in `kaimon.toml [launch]` defaults, so a
+repo can ship its launch recipe (typically a custom sysimage) while the local user still
+overrides any single field. Returns the default LaunchConfig when neither source exists.
 """
 function _resolve_launch_config(project_path::String)
+    base = something(load_toml_launch_config(project_path), LaunchConfig())
     norm_path = normalize_path(project_path)
-    entries = load_projects_config()
-    for entry in entries
-        entry_norm = normalize_path(entry.project_path)
-        entry_norm == norm_path && return entry.launch_config
+    for entry in load_projects_config()
+        if normalize_path(entry.project_path) == norm_path
+            return merge_launch_config(base, entry.launch_config)
+        end
     end
-    return LaunchConfig()
+    return base
+end
+
+"""
+    _resolve_sysimage(lc::LaunchConfig, project::String) -> String
+
+Resolve the configured sysimage to an absolute path, or `""` if unset/unusable. A relative
+path is taken against the project root, so a repo's `kaimon.toml` can name the image its own
+build script produces. A configured-but-missing image degrades to the default sysimage with a
+warning rather than failing the spawn — a stale path shouldn't cost the user their session.
+"""
+function _resolve_sysimage(lc::LaunchConfig, project::String)
+    isempty(lc.sysimage) && return ""
+    path = expanduser(lc.sysimage)
+    isabspath(path) || (path = joinpath(project, path))
+    if !isfile(path)
+        _push_log!(:warn, "Sysimage not found, using the default: $path")
+        return ""
+    end
+    return abspath(path)
 end
 
 """
@@ -143,8 +165,14 @@ end
 Build the Julia command array from a LaunchConfig and boot script.
 """
 function _build_julia_cmd(lc::LaunchConfig, script::String; project::String = "")
-    julia_bin = joinpath(Sys.BINDIR, "julia")
+    # Default to the Julia running Kaimon; a configured binary may also be a wrapper
+    # script, so long as it forwards its arguments to julia.
+    julia_bin = isempty(lc.julia_bin) ? joinpath(Sys.BINDIR, "julia") : expanduser(lc.julia_bin)
     cmd = [julia_bin, "-i"]
+
+    # Custom system image (before the boot script, so `using` in it hits the baked code)
+    sysimage = _resolve_sysimage(lc, project)
+    !isempty(sysimage) && push!(cmd, "--sysimage=$sysimage")
 
     # Threads: use config or default to "auto"
     threads = isempty(lc.threads) ? "auto" : lc.threads
@@ -162,8 +190,10 @@ function _build_julia_cmd(lc::LaunchConfig, script::String; project::String = ""
     # Project activation via --project flag
     !isempty(project) && push!(cmd, "--project=$project")
 
-    # Always include startup-file=no and the boot script
-    append!(cmd, ["--startup-file=no", "-e", script])
+    # startup.jl is suppressed by default so a spawned session boots predictably; opt in
+    # when the project's launch recipe depends on it.
+    push!(cmd, lc.startup_file ? "--startup-file=yes" : "--startup-file=no")
+    append!(cmd, ["-e", script])
 
     return cmd
 end

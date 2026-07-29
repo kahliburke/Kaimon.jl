@@ -116,8 +116,59 @@ The `projects.json` file at `~/.config/kaimon/projects.json` controls which Juli
 |-------|-------------|
 | `project_path` | Absolute path to a Julia project directory (must contain `Project.toml`) |
 | `enabled` | Whether agents can spawn sessions for this project |
+| `launch_config` | Julia launch flags for this project's spawned sessions ([details](@ref launch-config)) |
 
 Manage the projects list through the TUI Config tab or by editing the file directly. The `start_session` tool called with no arguments lists all allowed projects and their current status.
+
+### [Launch Configuration](@id launch-config)
+
+How Kaimon starts a managed session for a project — most importantly, which **system image** it boots. A project with a custom sysimage should declare it here, or a spawned session will pay full compilation cost (and diverge from how you start the project by hand).
+
+| Field | Description |
+|-------|-------------|
+| `sysimage` | `-J` system image. A relative path resolves against the project root |
+| `julia_bin` | Julia binary, or a wrapper script that forwards its arguments to one. Default: the Julia running Kaimon |
+| `threads` | `-t` value. Default `auto` |
+| `gcthreads` | `--gcthreads` value |
+| `heap_size_hint` | `--heap-size-hint` value, e.g. `8G` |
+| `startup_file` | Run `~/.julia/config/startup.jl`. Default `false` |
+| `extra_flags` | Any further Julia flags, passed through verbatim |
+
+There are two places to set it. Per user, in `projects.json`:
+
+```json
+{
+  "projects": [
+    {
+      "project_path": "/path/to/MyProject",
+      "enabled": true,
+      "launch_config": {
+        "sysimage": "MyProject-image.so",
+        "threads": "auto",
+        "heap_size_hint": "8G"
+      }
+    }
+  ]
+}
+```
+
+Or per project, checked into the repo, in the project's own `kaimon.toml` — so everyone working on it gets the same launch recipe with no local setup:
+
+```toml
+[launch]
+sysimage = "MyProject-image.so"   # relative → resolved against the project root
+threads = "auto"
+startup_file = true
+```
+
+A user's `projects.json` entry is overlaid field-wise on the project's `kaimon.toml [launch]`, so you can override a single field locally and inherit the rest. A configured sysimage that doesn't exist on disk is logged and skipped — the session still starts, on the default image.
+
+With `startup_file = true`, your `startup.jl` runs *before* the session's own boot script. If it connects a gate of its own, the session registers under those settings first and is then reconfigured — harmless, but worth knowing if your `startup.jl` does anything session-visible.
+
+Edit the per-user half through the TUI Config tab: select a project and press `e` for the Launch Config modal.
+
+!!! note "Restarting your own REPL"
+    This config applies to sessions **Kaimon spawns**. A REPL you started yourself keeps its own launch flags across `manage_repl(command="restart")` — the gate re-execs with the original argv, so a custom `-J` sysimage, thread count, and heap hint all survive.
 
 ### Session Preferences
 

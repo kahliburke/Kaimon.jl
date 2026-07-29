@@ -36,6 +36,9 @@ function begin_project_edit_launch!(m::KaimonModel)
         :gcthreads => TextInput(text = lc.gcthreads, label = "", tick = m.tick),
         :heap_size_hint => TextInput(text = lc.heap_size_hint, label = "", tick = m.tick),
         :extra_flags => TextInput(text = join(lc.extra_flags, " "), label = "", tick = m.tick),
+        :sysimage => TextInput(text = lc.sysimage, label = "", tick = m.tick),
+        :julia_bin => TextInput(text = lc.julia_bin, label = "", tick = m.tick),
+        :startup_file => lc.startup_file,   # Bool — a toggle row, not a text field
     )
     m.launch_config_selected = 1
     m.config_flow = FLOW_PROJECT_EDIT_LAUNCH
@@ -264,16 +267,23 @@ function handle_flow_input!(m::KaimonModel, evt::KeyEvent)
         m.config_flow = FLOW_IDLE
 
     elseif flow == FLOW_PROJECT_EDIT_LAUNCH
-        field_keys = [:threads, :gcthreads, :heap_size_hint, :extra_flags]
+        field_keys = LAUNCH_CONFIG_FIELDS
         active_key = field_keys[m.launch_config_selected]
         active_input = m.launch_config_inputs[active_key]
         @match evt.key begin
             :up => (m.launch_config_selected = max(1, m.launch_config_selected - 1))
-            :down => (m.launch_config_selected = min(4, m.launch_config_selected + 1))
+            :down =>
+                (m.launch_config_selected = min(length(field_keys), m.launch_config_selected + 1))
             :enter => execute_project_edit_launch!(m)
             _ => begin
-                active_input.tick = m.tick
-                handle_key!(active_input, evt)
+                if active_input isa Bool
+                    # Toggle rows have no text to edit — space flips them
+                    evt.key == :char && evt.char == ' ' &&
+                        (m.launch_config_inputs[active_key] = !active_input)
+                else
+                    active_input.tick = m.tick
+                    handle_key!(active_input, evt)
+                end
             end
         end
 
@@ -433,8 +443,11 @@ function execute_project_edit_launch!(m::KaimonModel)
         heap = strip(Tachikoma.text(m.launch_config_inputs[:heap_size_hint]))
         extra_raw = strip(Tachikoma.text(m.launch_config_inputs[:extra_flags]))
         extra = isempty(extra_raw) ? String[] : String.(split(extra_raw))
+        sysimage = strip(Tachikoma.text(m.launch_config_inputs[:sysimage]))
+        julia_bin = strip(Tachikoma.text(m.launch_config_inputs[:julia_bin]))
+        startup_file = m.launch_config_inputs[:startup_file] === true
 
-        lc = LaunchConfig(threads, gcthreads, heap, extra)
+        lc = LaunchConfig(threads, gcthreads, heap, extra, sysimage, julia_bin, startup_file)
         old = entries[idx]
         entries[idx] = ProjectEntry(old.project_path, old.enabled, lc)
         save_projects_config(entries)

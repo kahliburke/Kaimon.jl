@@ -7,15 +7,28 @@
 
 Per-project Julia launch flags for agent-spawned sessions.
 Empty strings use defaults (threads="auto", others omitted).
+
+`sysimage` and `julia_bin` let a project boot the same way its author does by hand — a
+custom system image built against that project's deps, and/or a specific Julia binary
+(or a wrapper script that `exec`s one). `startup_file` opts back into `~/.julia/config/startup.jl`,
+which is suppressed by default so a spawned session boots predictably.
 """
 struct LaunchConfig
     threads::String           # "-t" value: "auto", "4", "2,1", etc. Empty = "auto"
     gcthreads::String         # "--gcthreads" value: "2", "2,1", etc. Empty = omit flag
     heap_size_hint::String    # "--heap-size-hint" value: "4G", "512M", etc. Empty = omit
     extra_flags::Vector{String}  # arbitrary additional Julia flags
+    sysimage::String          # "-J" value; relative paths resolve against the project root
+    julia_bin::String         # Julia binary/launcher. Empty = the Julia running Kaimon
+    startup_file::Bool        # true = --startup-file=yes. Default false
 end
 
-LaunchConfig() = LaunchConfig("", "", "", String[])
+LaunchConfig() = LaunchConfig("", "", "", String[], "", "", false)
+
+# Positional constructor for the pre-sysimage field set, so existing callers/tests
+# (and any config written by an older Kaimon) keep working.
+LaunchConfig(threads, gcthreads, heap_size_hint, extra_flags) =
+    LaunchConfig(threads, gcthreads, heap_size_hint, extra_flags, "", "", false)
 
 """
     ProjectEntry
@@ -91,12 +104,17 @@ end
 """Parse a launch_config dict from JSON into a LaunchConfig struct."""
 function _parse_launch_config(raw)::LaunchConfig
     raw === nothing && return LaunchConfig()
-    raw isa Dict || return LaunchConfig()
+    # AbstractDict, not Dict: JSON.jl hands back a `JSON.Object`, and TOML a plain Dict —
+    # a `isa Dict` guard silently discards every launch config parsed from projects.json.
+    raw isa AbstractDict || return LaunchConfig()
     LaunchConfig(
         String(get(raw, "threads", "")),
         String(get(raw, "gcthreads", "")),
         String(get(raw, "heap_size_hint", "")),
         String[String(f) for f in get(raw, "extra_flags", [])],
+        String(get(raw, "sysimage", "")),
+        String(get(raw, "julia_bin", "")),
+        Bool(get(raw, "startup_file", false)),
     )
 end
 
@@ -112,6 +130,9 @@ function _project_entry_to_dict(e::ProjectEntry)
     !isempty(lc.gcthreads) && (lcd["gcthreads"] = lc.gcthreads)
     !isempty(lc.heap_size_hint) && (lcd["heap_size_hint"] = lc.heap_size_hint)
     !isempty(lc.extra_flags) && (lcd["extra_flags"] = lc.extra_flags)
+    !isempty(lc.sysimage) && (lcd["sysimage"] = lc.sysimage)
+    !isempty(lc.julia_bin) && (lcd["julia_bin"] = lc.julia_bin)
+    lc.startup_file && (lcd["startup_file"] = true)
     !isempty(lcd) && (d["launch_config"] = lcd)
     return d
 end
@@ -123,13 +144,64 @@ Return a compact summary of non-default launch config settings.
 """
 function launch_config_summary(lc::LaunchConfig)
     parts = String[]
+    !isempty(lc.julia_bin) && push!(parts, basename(lc.julia_bin))
+    !isempty(lc.sysimage) && push!(parts, "-J $(basename(lc.sysimage))")
     !isempty(lc.threads) && push!(parts, "-t $(lc.threads)")
     !isempty(lc.gcthreads) && push!(parts, "--gcthreads=$(lc.gcthreads)")
     !isempty(lc.heap_size_hint) && push!(parts, "--heap-size-hint=$(lc.heap_size_hint)")
+    lc.startup_file && push!(parts, "--startup-file=yes")
     for f in lc.extra_flags
         push!(parts, f)
     end
     return join(parts, ", ")
+end
+
+"""
+    load_toml_launch_config(project_path) -> Union{LaunchConfig,Nothing}
+
+Read the `[launch]` section of the project's own `kaimon.toml`, or `nothing` when the
+file/section is absent. This is the checked-in, shareable half of the launch config: a
+project that ships a sysimage build script can declare the resulting image here and every
+collaborator's Kaimon picks it up with no local setup.
+
+```toml
+[launch]
+sysimage = "my-image.so"   # relative → resolved against the project root
+threads = "auto"
+startup_file = true
+```
+"""
+function load_toml_launch_config(project_path::AbstractString)
+    path = joinpath(String(project_path), "kaimon.toml")
+    isfile(path) || return nothing
+    raw = try
+        get(TOML.parsefile(path), "launch", nothing)
+    catch e
+        @warn "Failed to parse [launch] from $path" exception = e
+        return nothing
+    end
+    raw isa AbstractDict || return nothing
+    return _parse_launch_config(raw)
+end
+
+"""
+    merge_launch_config(base::LaunchConfig, override::LaunchConfig) -> LaunchConfig
+
+Field-wise overlay: every field the user set in `override` wins, anything left at its
+default falls through to `base`. Used to layer the user's `projects.json` entry over the
+project's checked-in `kaimon.toml [launch]` defaults.
+"""
+function merge_launch_config(base::LaunchConfig, override::LaunchConfig)
+    pick(o, b) = isempty(o) ? b : o
+    LaunchConfig(
+        pick(override.threads, base.threads),
+        pick(override.gcthreads, base.gcthreads),
+        pick(override.heap_size_hint, base.heap_size_hint),
+        pick(override.extra_flags, base.extra_flags),
+        pick(override.sysimage, base.sysimage),
+        pick(override.julia_bin, base.julia_bin),
+        override.startup_file || base.startup_file,
+    )
 end
 
 """
@@ -169,7 +241,7 @@ function load_session_prefs()
         raw === nothing && return Dict{String,SessionPrefs}()
         result = Dict{String,SessionPrefs}()
         for (pattern, prefs_dict) in raw
-            prefs_dict isa Dict || continue
+            prefs_dict isa AbstractDict || continue   # JSON.jl yields a JSON.Object, not a Dict
             mr = get(prefs_dict, "mirror_repl", nothing)
             ar = get(prefs_dict, "allow_restart", nothing)
             result[string(pattern)] = SessionPrefs(
