@@ -124,6 +124,38 @@ end
         end
     end
 
+    @testset "atexit reaper survives an already-exited child (regression)" begin
+        # `getpid` throws ESRCH once a child has exited and been reaped — which is the
+        # normal state by the time the reaper's kill loop finishes. Reading it there threw
+        # IOError straight out of atexit, so every clean shutdown ended in a stack trace.
+        _with_temp_cache() do dir
+            saved = K._QDRANT_PROC[]
+            try
+                proc = run(`sh -c "exit 0"`; wait = false)
+                wait(proc)
+                @test !Base.process_running(proc)
+                @test K._proc_pid(proc) === nothing        # handle is gone
+
+                K._QDRANT_PROC[] = proc
+                K._write_qdrant_pid(2^30)                  # a pid that is not alive
+                @test_nowarn K.shutdown_qdrant!()
+                @test !isfile(K._qdrant_pid_file())        # dead-pid file still cleaned
+                @test K._QDRANT_PROC[] === nothing
+
+                # ...but a pid file naming a LIVE process we can no longer identify as
+                # ours is left alone rather than yanked from under its owner.
+                proc2 = run(`sh -c "exit 0"`; wait = false)
+                wait(proc2)
+                K._QDRANT_PROC[] = proc2
+                K._write_qdrant_pid(getpid())              # someone else's live instance
+                K.shutdown_qdrant!()
+                @test isfile(K._qdrant_pid_file())
+            finally
+                K._QDRANT_PROC[] = saved
+            end
+        end
+    end
+
     @testset "atexit reaper leaves a NON-owned instance alone (regression)" begin
         # A transient Kaimon process exiting must NOT kill a shared managed Qdrant
         # it never spawned: with no handle, shutdown_qdrant! is a no-op and must

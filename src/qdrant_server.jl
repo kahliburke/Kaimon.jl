@@ -206,6 +206,21 @@ function _read_qdrant_pid()::Union{Int,Nothing}
     return tryparse(Int, strip(read(f, String)))
 end
 
+"""
+    _proc_pid(proc) -> Union{Int,Nothing}
+
+The child's PID, or `nothing` once the handle is gone. `getpid` throws `ESRCH` on a
+process that has already exited and been reaped, so every caller that may run after the
+child dies — the `atexit` reaper above all — must go through this.
+"""
+function _proc_pid(proc::Base.Process)::Union{Int,Nothing}
+    try
+        return Int(getpid(proc))
+    catch
+        return nothing
+    end
+end
+
 """Best-effort liveness check for a bare PID (no Process handle needed)."""
 function _pid_alive(pid::Integer)::Bool
     try
@@ -324,8 +339,12 @@ function shutdown_qdrant!()
     lock(_QDRANT_LOCK) do
         proc = _QDRANT_PROC[]
         proc isa Base.Process || return   # we didn't spawn one — leave others alone
+        # Snapshot the pid up front: `getpid` throws ESRCH once the child has exited and
+        # been reaped, and by the time the kill loop below finishes that is exactly the
+        # expected state. Escaping from here means an error trace on every clean exit.
+        pid = _proc_pid(proc)
         if Base.process_running(proc)
-            @info "Stopping managed Qdrant" pid = getpid(proc)
+            @info "Stopping managed Qdrant" pid
             try
                 kill(proc)           # SIGTERM — Qdrant flushes and exits cleanly
                 for _ in 1:20
@@ -337,9 +356,12 @@ function shutdown_qdrant!()
                 @warn "Error stopping managed Qdrant" exception = e
             end
         end
-        # Only clear the PID file if it points at OUR child.
-        _read_qdrant_pid() == getpid(proc) &&
-            (try; rm(_qdrant_pid_file(); force = true); catch; end)
+        # Only clear the PID file if it points at OUR child — or, when the handle died
+        # before we could read its pid, at a process that is no longer alive.
+        stale = _read_qdrant_pid()
+        if stale !== nothing && (stale == pid || (pid === nothing && !_pid_alive(stale)))
+            try; rm(_qdrant_pid_file(); force = true); catch; end
+        end
         _QDRANT_PROC[] = nothing
     end
 end
@@ -355,7 +377,8 @@ it is NOT what `atexit` uses, so it only fires when the user asks.
 function stop_managed_qdrant!()
     lock(_QDRANT_LOCK) do
         proc = _QDRANT_PROC[]
-        pid = proc isa Base.Process ? getpid(proc) : _read_qdrant_pid()
+        pid = (proc isa Base.Process ? _proc_pid(proc) : nothing)
+        pid = something(pid, _read_qdrant_pid(), Some(nothing))
         if pid !== nothing && _pid_alive(pid)
             @info "Stopping managed Qdrant" pid
             _kill_pid(pid; force = false)
