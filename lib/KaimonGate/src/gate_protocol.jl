@@ -124,33 +124,59 @@ function _capture_original_argv()
     end
 end
 
+# Julia flags that take a value as a SEPARATE following token (`-t 4`, `--sysimage x.so`).
+# Two consumers, and both are wrong without the full set:
+#   * `_should_replay_argv` must not mistake such a value for a positional script — a flag
+#     whose value is a path (`--sysimage`, `--machine-file`) otherwise looks exactly like a
+#     `julia foo.jl` launch, sending restart down the verbatim-replay branch, where a plain
+#     REPL is re-exec'd with no serve() call and the session never comes back.
+#   * `_base_julia_args` must fuse flag+value into one token so the value isn't re-parsed as
+#     a positional on restart.
+const _VALUE_FLAGS = Set([
+    "-t", "--threads",
+    "-C", "--cpu-target",
+    "-J", "--sysimage",
+    "-O", "--optimize",
+    "-L", "--load",
+    "-p", "--procs",
+    "-g", "--debug-info",
+    "--gcthreads", "--heap-size-hint", "--machine-file", "--project", "--bind-to",
+])
+
+# Flags that carry user code/startup work which a restart must re-run verbatim.
+const _USER_CODE_FLAGS = Set(["-e", "--eval", "-E", "--print", "-L", "--load"])
+
 """
     _should_replay_argv()
 
-Check if the original process was started with user-provided code that should
-be replayed on restart: a `-e` command (not our own restart code) or a script file.
+Check if the original process was started with user-provided code that should be replayed
+on restart: a `-e`/`-L` (not our own restart code) or a script file.
 """
 function _should_replay_argv()
     argv = _ORIGINAL_ARGV[]
     isempty(argv) && return false
-    # Check for -e flag with user code
-    for (i, arg) in enumerate(argv)
-        if arg == "-e" && i < length(argv)
-            code = argv[i+1]
-            # Our restart serve() pattern → not user code
-            occursin("Gate.serve(session_id=", code) && return false
-            return true
-        end
-    end
-    # Check for script file (positional arg that's a file path, not a flag)
-    # Skip argv[1] (julia binary). Look for first non-flag argument.
-    for i = 2:length(argv)
+    i = 2   # skip argv[1] (julia binary)
+    while i <= length(argv)
         arg = argv[i]
-        startswith(arg, "-") && continue
-        # Previous arg was a flag expecting a value (e.g. -C native, -J sysimg, --project=...)
-        i > 1 && argv[i-1] in ("-C", "-J", "--project", "-t") && continue
-        # This is a positional argument — likely a script file
+        if arg in _USER_CODE_FLAGS && i < length(argv)
+            # Our own injected restart serve() → not user code; keep scanning
+            occursin("Gate.serve(session_id=", argv[i+1]) || return true
+            i += 2
+            continue
+        end
+        # Combined forms: --eval=..., --load=...
+        for f in ("--eval=", "--print=", "--load=")
+            startswith(arg, f) &&
+                (occursin("Gate.serve(session_id=", arg) || return true)
+        end
+        if startswith(arg, "-")
+            # A value-taking flag consumes the next token, so it is never a script path
+            i += (arg in _VALUE_FLAGS && i < length(argv)) ? 2 : 1
+            continue
+        end
+        # A bare positional that exists on disk — a `julia script.jl` launch
         isfile(arg) && return true
+        i += 1
     end
     return false
 end
@@ -169,14 +195,6 @@ Falls back to `Base.julia_cmd().exec` if `_ORIGINAL_ARGV[]` was not captured
 function _base_julia_args()::Vector{String}
     orig = _ORIGINAL_ARGV[]
     isempty(orig) && return Base.julia_cmd().exec
-
-    # Flags that take a separate value and should be combined into one token
-    # (e.g. `-t 4,2` → `-t4,2`) to avoid the value being misinterpreted as a
-    # positional script argument on restart.
-    _VALUE_FLAGS = Set(["-t", "--threads", "-C", "--cpu-target",
-                        "-J", "--sysimage", "-O", "--optimize",
-                        "-L", "--load",
-                        "--gcthreads", "--heap-size-hint"])
 
     result = [orig[1]]   # preserve exact Julia binary path
     i = 2

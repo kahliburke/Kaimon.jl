@@ -34,6 +34,54 @@ using KaimonGate
     @test KG._restart_tcp_kwargs(:ipc, false, "", 0, 0, false, false) == ""
 end
 
+@testset "argv replay detection + launch-flag reconstruction" begin
+    KG = KaimonGate
+    saved = KG._ORIGINAL_ARGV[]
+    # A real file on disk, to stand in for a sysimage / script path
+    img = tempname() * ".so"
+    write(img, "x")
+    try
+        J = "/opt/julia/bin/julia"
+        replay(argv...) = (KG._ORIGINAL_ARGV[] = String[argv...]; KG._should_replay_argv())
+        base(argv...)   = (KG._ORIGINAL_ARGV[] = String[argv...]; KG._base_julia_args())
+
+        # A custom sysimage is a launch FLAG, never user code — in every spelling.
+        # The separated `--sysimage <path>` form is the trap: its value is a real file,
+        # so a naive positional scan reads it as a `julia script.jl` launch and replays
+        # argv verbatim, re-exec'ing a bare REPL that never calls serve().
+        @test !replay(J, "-J$img", "--project=/p", "-i")
+        @test !replay(J, "-J", img, "--project=/p", "-i")
+        @test !replay(J, "--sysimage=$img", "--project=/p", "-i")
+        @test !replay(J, "--sysimage", img, "--project=/p", "-i")
+        @test !replay(J, "--machine-file", img, "-i")
+
+        # Genuine user code still replays
+        @test replay(J, "-e", "using Foo; Foo.run()")
+        @test replay(J, "--eval=using Foo", "-i")
+        @test replay(J, "-J$img", "-L", img, "-i")       # -L runs a user startup file
+        @test replay(J, "--load=$img", "-i")
+        @test replay(J, "-J$img", img)                   # positional script
+        # ...but our own injected restart code does not
+        @test !replay(J, "-i", "-e", "using KaimonGate\nKaimonGate.Gate.serve(session_id=\"ab\")")
+
+        # Reconstruction fuses each flag with its separate value so the value can't be
+        # re-parsed as a positional, and preserves every non-injected flag verbatim.
+        b = base(J, "--sysimage", img, "-t", "3", "--heap-size-hint=2G",
+                 "--project=/p", "-i", "--startup-file=no")
+        @test b[1] == J
+        @test "--sysimage=$img" in b
+        @test "-t3" in b
+        @test "--heap-size-hint=2G" in b
+        @test "--startup-file=no" in b
+        @test !any(startswith(a, "--project") for a in b)   # injected by _exec_restart
+        @test !("-i" in b)                                  # ditto
+        @test !("-e" in b)
+    finally
+        rm(img; force = true)
+        KG._ORIGINAL_ARGV[] = saved
+    end
+end
+
 @testset "utf16 wide-string conversion (Windows argv capture)" begin
     KG = KaimonGate
     # _capture_original_argv on Windows reads argv as NUL-terminated UTF-16 wide strings
