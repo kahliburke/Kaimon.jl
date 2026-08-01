@@ -7,6 +7,7 @@
 **Opening the gate between AI and Julia.**
 
 [![CI](https://github.com/kahliburke/Kaimon.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/kahliburke/Kaimon.jl/actions/workflows/CI.yml)
+[![Codecov](https://codecov.io/gh/kahliburke/Kaimon.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/kahliburke/Kaimon.jl)
 [![Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://kahliburke.github.io/Kaimon.jl/dev/)
 [![Julia 1.12+](https://img.shields.io/badge/julia-1.12%2B-blue)](https://julialang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
