@@ -46,7 +46,7 @@ function _ensure_global_collection!()
         if gc_name ∉ existing
             # Use the same dimensions as the default embedding model
             cfg = get_embedding_config(DEFAULT_EMBEDDING_MODEL)
-            QdrantClient.create_collection(gc_name; vector_size=cfg.dims)
+            QdrantClient.create_collection(gc_name; vector_size = cfg.dims)
         end
         _GLOBAL_COLLECTION_ENSURED[] = true
     catch e
@@ -73,7 +73,7 @@ One-time migration: copy all vectors from per-project collections into the
 global cross-project collection. Safe to run multiple times — uses upsert
 so duplicates are overwritten.
 """
-function populate_global_collection!(; verbose::Bool=true)
+function populate_global_collection!(; verbose::Bool = true)
     _ensure_global_collection!()
     gc_name = global_collection_name()
     collections = QdrantClient.list_collections()
@@ -85,11 +85,13 @@ function populate_global_collection!(; verbose::Bool=true)
         # and checking for our schema fields. Skip foreign collections.
         is_kaimon = try
             # Sample a point and check for Kaimon payload fields
-            sample = QdrantClient.scroll_points(col; limit=1)
+            sample = QdrantClient.scroll_points(col; limit = 1)
             points = get(sample, "points", [])
             if !isempty(points)
                 payload = get(first(points), "payload", Dict())
-                haskey(payload, "file") && haskey(payload, "type") && haskey(payload, "text")
+                haskey(payload, "file") &&
+                    haskey(payload, "type") &&
+                    haskey(payload, "text")
             else
                 false
             end
@@ -107,7 +109,12 @@ function populate_global_collection!(; verbose::Bool=true)
             offset = nothing
             col_count = 0
             while true
-                result = QdrantClient.scroll_points(col; limit=100, offset=offset, with_vector=true)
+                result = QdrantClient.scroll_points(
+                    col;
+                    limit = 100,
+                    offset = offset,
+                    with_vector = true,
+                )
                 points = get(result, "points", [])
                 isempty(points) && break
                 # Convert scroll result points to upsert format
@@ -117,11 +124,10 @@ function populate_global_collection!(; verbose::Bool=true)
                     vector = get(pt, "vector", nothing)
                     payload = get(pt, "payload", Dict())
                     (id === nothing || vector === nothing) && continue
-                    push!(upsert_batch, Dict(
-                        "id" => id,
-                        "vector" => vector,
-                        "payload" => payload,
-                    ))
+                    push!(
+                        upsert_batch,
+                        Dict("id" => id, "vector" => vector, "payload" => payload),
+                    )
                 end
                 !isempty(upsert_batch) && QdrantClient.upsert_points(gc_name, upsert_batch)
                 col_count += length(upsert_batch)
@@ -136,7 +142,9 @@ function populate_global_collection!(; verbose::Bool=true)
             verbose && println("failed: $(sprint(showerror, e))")
         end
     end
-    verbose && println("✅ Global collection populated: $total vectors from $(length(collections)-1) collections")
+    verbose && println(
+        "✅ Global collection populated: $total vectors from $(length(collections)-1) collections",
+    )
     return total
 end
 
@@ -152,12 +160,15 @@ function _extract_pdf_text end
 
 # Embedding model configuration
 const EMBEDDING_CONFIGS = Dict(
-    "embeddinggemma:latest" => (dims=768, context_tokens=2048, context_chars=4000),
-    "qwen3-embedding:0.6b" => (dims=1024, context_tokens=8192, context_chars=16000),
-    "qwen3-embedding:4b" => (dims=2560, context_tokens=8192, context_chars=16000),
-    "qwen3-embedding:8b" => (dims=4096, context_tokens=8192, context_chars=16000),
-    "snowflake-arctic-embed:latest" => (dims=1024, context_tokens=512, context_chars=1000),
-    "nomic-embed-text" => (dims=768, context_tokens=512, context_chars=1000),
+    "embeddinggemma:latest" =>
+        (dims = 768, context_tokens = 2048, context_chars = 4000),
+    "qwen3-embedding:0.6b" =>
+        (dims = 1024, context_tokens = 8192, context_chars = 16000),
+    "qwen3-embedding:4b" => (dims = 2560, context_tokens = 8192, context_chars = 16000),
+    "qwen3-embedding:8b" => (dims = 4096, context_tokens = 8192, context_chars = 16000),
+    "snowflake-arctic-embed:latest" =>
+        (dims = 1024, context_tokens = 512, context_chars = 1000),
+    "nomic-embed-text" => (dims = 768, context_tokens = 512, context_chars = 1000),
 )
 
 const CHUNK_SIZE = 1500  # Target chunk size in characters
@@ -173,28 +184,99 @@ const DEFAULT_SOURCE_DIRS = ["src", "test", "scripts"]
 
 # Known source file extensions for auto-detection (superset of per-language lists)
 const SOURCE_EXTENSIONS = Set([
-    ".jl", ".py", ".rs", ".go", ".ts", ".tsx", ".js", ".jsx",
-    ".c", ".cpp", ".cc", ".h", ".hpp", ".java", ".kt", ".kts",
-    ".rb", ".ex", ".exs", ".zig", ".nim", ".lua", ".swift", ".m",
-    ".cs", ".fs", ".scala", ".clj", ".cljs", ".erl", ".hrl",
-    ".hs", ".ml", ".mli", ".r", ".R", ".jl", ".sh", ".bash",
-    ".md", ".mdx", ".rst", ".toml", ".yaml", ".yml", ".json",
-    ".xml", ".html", ".css", ".scss", ".sass", ".less",
-    ".sql", ".graphql", ".gql", ".proto", ".tf", ".hcl",
-    ".vue", ".svelte",
+    ".jl",
+    ".py",
+    ".rs",
+    ".go",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".c",
+    ".cpp",
+    ".cc",
+    ".h",
+    ".hpp",
+    ".java",
+    ".kt",
+    ".kts",
+    ".rb",
+    ".ex",
+    ".exs",
+    ".zig",
+    ".nim",
+    ".lua",
+    ".swift",
+    ".m",
+    ".cs",
+    ".fs",
+    ".scala",
+    ".clj",
+    ".cljs",
+    ".erl",
+    ".hrl",
+    ".hs",
+    ".ml",
+    ".mli",
+    ".r",
+    ".R",
+    ".jl",
+    ".sh",
+    ".bash",
+    ".md",
+    ".mdx",
+    ".rst",
+    ".toml",
+    ".yaml",
+    ".yml",
+    ".json",
+    ".xml",
+    ".html",
+    ".css",
+    ".scss",
+    ".sass",
+    ".less",
+    ".sql",
+    ".graphql",
+    ".gql",
+    ".proto",
+    ".tf",
+    ".hcl",
+    ".vue",
+    ".svelte",
 ])
 
 # Directories to skip during walkdir and auto-detection, even if tracked by git
 const IGNORED_DIRS = Set([
-    "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache",
-    "vendor", "dist", "build", "_build", ".next", ".nuxt",
-    "coverage", ".tox", "target", ".gradle", ".cache",
-    ".eggs", ".egg-info", "venv", ".venv", "env",
+    "node_modules",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    "vendor",
+    "dist",
+    "build",
+    "_build",
+    ".next",
+    ".nuxt",
+    "coverage",
+    ".tox",
+    "target",
+    ".gradle",
+    ".cache",
+    ".eggs",
+    ".egg-info",
+    "venv",
+    ".venv",
+    "env",
 ])
 
 # Get embedding config for a model
 function get_embedding_config(model::String)
-    return get(EMBEDDING_CONFIGS, model, (dims=768, context_tokens=512, context_chars=2000))
+    return get(
+        EMBEDDING_CONFIGS,
+        model,
+        (dims = 768, context_tokens = 512, context_chars = 2000),
+    )
 end
 
 # Logging and error tracking for background indexing
@@ -209,13 +291,13 @@ const INDEX_FAILED_FILES = Ref{Dict{String,Int}}(Dict{String,Int}())  # file -> 
 Setup rotating log file for background indexing operations.
 Log file is stored in ~/.cache/kaimon/indexer.log with 10MB max size and 3 file rotation (30MB total).
 """
-function setup_index_logging(project_path::String=pwd())
+function setup_index_logging(project_path::String = pwd())
     log_file = joinpath(kaimon_cache_dir(), "indexer.log")
 
     # Create rotating file logger (10MB max, 3 files = 30MB total)
     file_logger = LoggingExtras.MinLevelLogger(
-        LoggingExtras.FileLogger(log_file; append=true, always_flush=true),
-        Logging.Info
+        LoggingExtras.FileLogger(log_file; append = true, always_flush = true),
+        Logging.Info,
     )
 
     INDEX_LOGGER[] = file_logger
@@ -253,7 +335,7 @@ function check_and_notify_index_errors()
     if INDEX_ERROR_COUNT[] >= 5 && !INDEX_USER_NOTIFIED[]
         printstyled(
             "\n⚠️  Semantic search indexing is experiencing issues. Check ~/.cache/kaimon/indexer.log for details.\n",
-            color=:yellow
+            color = :yellow,
         )
         INDEX_USER_NOTIFIED[] = true
     end
@@ -345,4 +427,3 @@ default that legacy/unstamped collections were almost certainly built with —
 backwards-compatible, and avoids querying with a mismatched model)."""
 resolve_search_model(collection::String) =
     something(get_collection_model(collection), DEFAULT_EMBEDDING_MODEL)
-

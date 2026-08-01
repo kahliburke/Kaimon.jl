@@ -34,8 +34,10 @@ function begin_project_edit_launch!(m::KaimonModel)
     m.launch_config_inputs = Dict{Symbol,Any}(
         :threads => TextInput(text = lc.threads, label = "", tick = m.tick),
         :gcthreads => TextInput(text = lc.gcthreads, label = "", tick = m.tick),
-        :heap_size_hint => TextInput(text = lc.heap_size_hint, label = "", tick = m.tick),
-        :extra_flags => TextInput(text = join(lc.extra_flags, " "), label = "", tick = m.tick),
+        :heap_size_hint =>
+            TextInput(text = lc.heap_size_hint, label = "", tick = m.tick),
+        :extra_flags =>
+            TextInput(text = join(lc.extra_flags, " "), label = "", tick = m.tick),
         :sysimage => TextInput(text = lc.sysimage, label = "", tick = m.tick),
         :julia_bin => TextInput(text = lc.julia_bin, label = "", tick = m.tick),
         :startup_file => lc.startup_file,   # Bool — a toggle row, not a text field
@@ -45,7 +47,8 @@ function begin_project_edit_launch!(m::KaimonModel)
 end
 
 function begin_tcp_gate_add!(m::KaimonModel)
-    m.tcp_gate_input = TextInput(text = "127.0.0.1:9876", label = "Host:Port: ", tick = m.tick)
+    m.tcp_gate_input =
+        TextInput(text = "127.0.0.1:9876", label = "Host:Port: ", tick = m.tick)
     m.tcp_gate_name_input = TextInput(text = "", label = "Name: ", tick = m.tick)
     m.tcp_gate_token_input = TextInput(text = "", label = "Token: ", tick = m.tick)
     m.tcp_gate_stream_port_input = TextInput(text = "", label = "Stream: ", tick = m.tick)
@@ -81,7 +84,14 @@ function _execute_tcp_gate_add!(m::KaimonModel)
     token = strip(Tachikoma.text(m.tcp_gate_token_input))
     sp_str = strip(Tachikoma.text(m.tcp_gate_stream_port_input))
     stream_port = isempty(sp_str) ? 0 : something(tryparse(Int, sp_str), 0)
-    entry = TCPGateEntry(host, port, isempty(name) ? "$host:$port" : name, true, token, stream_port)
+    entry = TCPGateEntry(
+        host,
+        port,
+        isempty(name) ? "$host:$port" : name,
+        true,
+        token,
+        stream_port,
+    )
     push!(m.tcp_gate_entries, entry)
     save_tcp_gates_config(m.tcp_gate_entries)
     m.flow_message = "Added TCP gate: $(entry.name) ($host:$port)"
@@ -104,8 +114,13 @@ function _execute_qdrant_prefix!(m::KaimonModel)
         config = load_global_config()
         if config !== nothing
             new_config = KaimonConfig(
-                config.mode, config.api_keys, config.allowed_ips,
-                config.port, config.editor, prefix)
+                config.mode,
+                config.api_keys,
+                config.allowed_ips,
+                config.port,
+                config.editor,
+                prefix,
+            )
             save_global_config(new_config)
         end
     catch
@@ -145,7 +160,8 @@ end
 
 # ── Config Flow: Input Handler ───────────────────────────────────────────────
 
-const CLIENT_OPTIONS = [:claude, :gemini, :antigravity, :codex, :copilot, :vscode, :kilo, :cursor, :opencode]
+const CLIENT_OPTIONS =
+    [:claude, :gemini, :antigravity, :codex, :copilot, :vscode, :kilo, :cursor, :opencode]
 const CLIENT_LABELS = [
     "Claude Code",
     "Gemini CLI",
@@ -158,16 +174,16 @@ const CLIENT_LABELS = [
     "OpenCode",
 ]
 const CLIENT_LABEL = Dict(
-    :claude       => "Claude Code",
-    :gemini       => "Gemini CLI",
-    :antigravity  => "Antigravity",
-    :codex        => "OpenAI Codex",
-    :copilot      => "GitHub Copilot",
-    :vscode       => "VS Code / Copilot",
-    :kilo         => "KiloCode",
-    :cursor       => "Cursor",
-    :opencode     => "OpenCode",
-    :startup_jl   => "Julia startup.jl (global gate)",
+    :claude => "Claude Code",
+    :gemini => "Gemini CLI",
+    :antigravity => "Antigravity",
+    :codex => "OpenAI Codex",
+    :copilot => "GitHub Copilot",
+    :vscode => "VS Code / Copilot",
+    :kilo => "KiloCode",
+    :cursor => "Cursor",
+    :opencode => "OpenCode",
+    :startup_jl => "Julia startup.jl (global gate)",
 )
 
 function handle_flow_input!(m::KaimonModel, evt::KeyEvent)
@@ -251,7 +267,12 @@ function handle_flow_input!(m::KaimonModel, evt::KeyEvent)
         elseif evt.key == :enter
             m._tcp_gate_field = mod1(field + 1, n_fields)
         else
-            input = (m.tcp_gate_input, m.tcp_gate_name_input, m.tcp_gate_token_input, m.tcp_gate_stream_port_input)[field]
+            input = (
+                m.tcp_gate_input,
+                m.tcp_gate_name_input,
+                m.tcp_gate_token_input,
+                m.tcp_gate_stream_port_input,
+            )[field]
             input !== nothing && handle_key!(input, evt)
         end
     elseif flow == FLOW_TCP_GATE_ADD_RESULT
@@ -272,13 +293,16 @@ function handle_flow_input!(m::KaimonModel, evt::KeyEvent)
         active_input = m.launch_config_inputs[active_key]
         @match evt.key begin
             :up => (m.launch_config_selected = max(1, m.launch_config_selected - 1))
-            :down =>
-                (m.launch_config_selected = min(length(field_keys), m.launch_config_selected + 1))
+            :down => (
+                m.launch_config_selected =
+                    min(length(field_keys), m.launch_config_selected + 1)
+            )
             :enter => execute_project_edit_launch!(m)
             _ => begin
                 if active_input isa Bool
                     # Toggle rows have no text to edit — space flips them
-                    evt.key == :char && evt.char == ' ' &&
+                    evt.key == :char &&
+                        evt.char == ' ' &&
                         (m.launch_config_inputs[active_key] = !active_input)
                 else
                     active_input.tick = m.tick
@@ -290,13 +314,17 @@ function handle_flow_input!(m::KaimonModel, evt::KeyEvent)
     elseif flow == FLOW_PROMOTE_AFTER
         @match evt.key begin
             :up => (m.flow_selected = max(1, m.flow_selected - 1))
-            :down => (m.flow_selected = min(length(PROMOTE_AFTER_LABELS), m.flow_selected + 1))
+            :down =>
+                (m.flow_selected = min(length(PROMOTE_AFTER_LABELS), m.flow_selected + 1))
             :enter => begin
                 val = PROMOTE_AFTER_VALUES[m.flow_selected]
                 if val === :custom
                     cur = m.gate_promote_after
-                    m.promote_after_input =
-                        TextInput(text = string(cur <= 0 ? 0 : round(Int, cur)), label = "", tick = m.tick)
+                    m.promote_after_input = TextInput(
+                        text = string(cur <= 0 ? 0 : round(Int, cur)),
+                        label = "",
+                        tick = m.tick,
+                    )
                     m.config_flow = FLOW_PROMOTE_AFTER_CUSTOM
                 else
                     _apply_promote_after!(m, val)
@@ -365,8 +393,7 @@ function execute_project_add!(m::KaimonModel)
     try
         path = normalize_path(m.onboard_path)
         isdir(path) || error("Directory does not exist: $path")
-        isfile(joinpath(path, "Project.toml")) ||
-            error("No Project.toml found in $path")
+        isfile(joinpath(path, "Project.toml")) || error("No Project.toml found in $path")
 
         norm_path = path
 
@@ -447,7 +474,8 @@ function execute_project_edit_launch!(m::KaimonModel)
         julia_bin = strip(Tachikoma.text(m.launch_config_inputs[:julia_bin]))
         startup_file = m.launch_config_inputs[:startup_file] === true
 
-        lc = LaunchConfig(threads, gcthreads, heap, extra, sysimage, julia_bin, startup_file)
+        lc =
+            LaunchConfig(threads, gcthreads, heap, extra, sysimage, julia_bin, startup_file)
         old = entries[idx]
         entries[idx] = ProjectEntry(old.project_path, old.enabled, lc)
         save_projects_config(entries)
@@ -497,12 +525,19 @@ end
 """Human label for the auto-background threshold: "off", "30s", "2m", …"""
 _promote_after_label(s::Real) =
     s <= 0 ? "off (stay foreground)" :
-    s < 60 ? "$(round(Int, s))s" : "$(rstrip(rstrip(string(round(s / 60, digits = 1)), '0'), '.'))m"
+    s < 60 ? "$(round(Int, s))s" :
+    "$(rstrip(rstrip(string(round(s / 60, digits = 1)), '0'), '.'))m"
 
 # Auto-background threshold dialog (#59): presets + Never + Custom. `:custom` opens a
 # text-input sub-flow; every other value is applied directly. Values are seconds (0 = never).
-const PROMOTE_AFTER_LABELS = ["30 seconds", "1 minute", "2 minutes", "5 minutes",
-                              "Never (stay foreground)", "Custom…"]
+const PROMOTE_AFTER_LABELS = [
+    "30 seconds",
+    "1 minute",
+    "2 minutes",
+    "5 minutes",
+    "Never (stay foreground)",
+    "Custom…",
+]
 const PROMOTE_AFTER_VALUES = Any[30.0, 60.0, 120.0, 300.0, 0.0, :custom]
 
 """Open the auto-background-threshold picker, pre-selecting the current value."""
@@ -517,7 +552,10 @@ end
 function _apply_promote_after!(m::KaimonModel, secs::Real)
     m.gate_promote_after = set_gate_promote_after_preference!(secs)
     m.config_flow = FLOW_IDLE
-    _push_log!(:info, "Auto-background threshold: $(_promote_after_label(m.gate_promote_after))")
+    _push_log!(
+        :info,
+        "Auto-background threshold: $(_promote_after_label(m.gate_promote_after))",
+    )
 end
 
 function remove_client_config!(m::KaimonModel)
@@ -552,7 +590,16 @@ end
 
 function _remove_claude(m::KaimonModel)
     for s in ("project", "user", "local")
-        try read(pipeline(Utils.launch_cmd(`claude mcp remove --scope $s kaimon`); stderr = devnull), String) catch end
+        try
+            read(
+                pipeline(
+                    Utils.launch_cmd(`claude mcp remove --scope $s kaimon`);
+                    stderr = devnull,
+                ),
+                String,
+            )
+        catch
+        end
     end
     m.flow_message = "Removed kaimon from Claude Code"
     m.flow_success = true
@@ -560,7 +607,16 @@ end
 
 function _remove_gemini(m::KaimonModel)
     for s in ("project", "user")
-        try read(pipeline(Utils.launch_cmd(`gemini mcp remove --scope $s kaimon`); stderr = devnull), String) catch end
+        try
+            read(
+                pipeline(
+                    Utils.launch_cmd(`gemini mcp remove --scope $s kaimon`);
+                    stderr = devnull,
+                ),
+                String,
+            )
+        catch
+        end
     end
     m.flow_message = "Removed kaimon from Gemini CLI"
     m.flow_success = true
@@ -584,7 +640,10 @@ end
 
 function _remove_codex(m::KaimonModel)
     try
-        read(pipeline(Utils.launch_cmd(`codex mcp remove kaimon`); stderr = devnull), String)
+        read(
+            pipeline(Utils.launch_cmd(`codex mcp remove kaimon`); stderr = devnull),
+            String,
+        )
     catch
     end
     _codex_env_remove!("MCPREPL_API_KEY")
@@ -629,14 +688,20 @@ snippet that had no end marker."""
 function _strip_gate_block(content::AbstractString)
     # Current style: delimited by begin + end markers.
     if occursin(_STARTUP_END_MARKER, content)
-        content = replace(content,
-            Regex("\\n*" * _STARTUP_MARKER * "[\\s\\S]*?" * _STARTUP_END_MARKER * "\\n?") => "")
+        content = replace(
+            content,
+            Regex(
+                "\\n*" * _STARTUP_MARKER * "[\\s\\S]*?" * _STARTUP_END_MARKER * "\\n?",
+            ) => "",
+        )
     end
     # Legacy style: marker through the two `end`s (Revise try + Kaimon try),
     # with no end marker. Best-effort for the unedited snippet.
     if occursin(_STARTUP_MARKER, content)
-        content = replace(content,
-            Regex("\\n*" * _STARTUP_MARKER * "[\\s\\S]*?end\\n[\\s\\S]*?end\\n") => "\n")
+        content = replace(
+            content,
+            Regex("\\n*" * _STARTUP_MARKER * "[\\s\\S]*?end\\n[\\s\\S]*?end\\n") => "\n",
+        )
     end
     return content
 end
@@ -731,7 +796,16 @@ function _install_claude(m::KaimonModel, port::Int, api_key)
     url = "http://localhost:$port/mcp"
     scope = string(m.client_scope)
     for s in ("project", "user", "local")
-        try read(pipeline(Utils.launch_cmd(`claude mcp remove --scope $s kaimon`); stderr = devnull), String) catch end
+        try
+            read(
+                pipeline(
+                    Utils.launch_cmd(`claude mcp remove --scope $s kaimon`);
+                    stderr = devnull,
+                ),
+                String,
+            )
+        catch
+        end
     end
     args = `claude mcp add --transport http --scope $scope kaimon $url`
     if api_key !== nothing
@@ -781,7 +855,16 @@ function _install_gemini(m::KaimonModel, port::Int, api_key)
     url = "http://localhost:$port/mcp"
     scope = string(m.client_scope)
     for s in ("project", "user")
-        try read(pipeline(Utils.launch_cmd(`gemini mcp remove --scope $s kaimon`); stderr = devnull), String) catch end
+        try
+            read(
+                pipeline(
+                    Utils.launch_cmd(`gemini mcp remove --scope $s kaimon`);
+                    stderr = devnull,
+                ),
+                String,
+            )
+        catch
+        end
     end
     args = `gemini mcp add --transport http --scope $scope kaimon $url`
     if api_key !== nothing
@@ -800,12 +883,19 @@ function _install_antigravity(m::KaimonModel, port::Int, api_key)
     # Antigravity's config location has moved between versions: current builds read
     # ~/.gemini/config/mcp.json, older ones used ~/.gemini/antigravity/mcp_config.json (#57).
     # It's a moving target, so write BOTH (merging into any existing file) to work regardless.
-    targets = [joinpath(homedir(), ".gemini", "config", "mcp.json"),
-               joinpath(homedir(), ".gemini", "antigravity", "mcp_config.json")]
+    targets = [
+        joinpath(homedir(), ".gemini", "config", "mcp.json"),
+        joinpath(homedir(), ".gemini", "antigravity", "mcp_config.json"),
+    ]
     for mcp_file in targets
         mkpath(dirname(mcp_file))
-        existing = isfile(mcp_file) ?
-            (try JSON.parsefile(mcp_file) catch; Dict{String,Any}() end) : Dict{String,Any}()
+        existing = isfile(mcp_file) ? (
+            try
+                JSON.parsefile(mcp_file)
+            catch
+                Dict{String,Any}()
+            end
+        ) : Dict{String,Any}()
         servers = get(existing, "mcpServers", Dict{String,Any}())
         servers["kaimon"] = entry
         existing["mcpServers"] = servers
@@ -846,7 +936,10 @@ end
 function _install_codex(m::KaimonModel, port::Int, api_key)
     url = "http://localhost:$port/mcp"
     try
-        read(pipeline(Utils.launch_cmd(`codex mcp remove kaimon`); stderr = devnull), String)
+        read(
+            pipeline(Utils.launch_cmd(`codex mcp remove kaimon`); stderr = devnull),
+            String,
+        )
     catch
     end
     # Current Codex CLI expects `codex mcp add <NAME> [COMMAND]...`, not
@@ -948,11 +1041,7 @@ function _install_opencode(m::KaimonModel, port::Int, api_key)
         Dict{String,Any}()
     end
     mcp_servers = get(existing, "mcp", Dict{String,Any}())
-    entry = Dict{String,Any}(
-        "type" => "remote",
-        "url" => url,
-        "enabled" => true
-    )
+    entry = Dict{String,Any}("type" => "remote", "url" => url, "enabled" => true)
     if api_key !== nothing
         entry["headers"] = Dict{String,Any}("Authorization" => "Bearer $api_key")
     end
@@ -980,20 +1069,23 @@ function _install_vscode_remote_control!(m::KaimonModel)
         break
     end
     @async try
-        install_vscode_remote_control(workspace; allowed_commands=[
-            "workbench.action.files.save",
-            "workbench.action.files.saveAll",
-            "workbench.action.files.openFile",
-            "workbench.action.terminal.new",
-            "workbench.action.terminal.sendSequence",
-            "workbench.action.terminal.focus",
-            "workbench.action.quickOpen",
-            "workbench.action.gotoLine",
-            "workbench.action.showAllSymbols",
-            "workbench.action.reloadWindow",
-            "workbench.action.findInFiles",
-            "vscode.open",
-        ])
+        install_vscode_remote_control(
+            workspace;
+            allowed_commands = [
+                "workbench.action.files.save",
+                "workbench.action.files.saveAll",
+                "workbench.action.files.openFile",
+                "workbench.action.terminal.new",
+                "workbench.action.terminal.sendSequence",
+                "workbench.action.terminal.focus",
+                "workbench.action.quickOpen",
+                "workbench.action.gotoLine",
+                "workbench.action.showAllSymbols",
+                "workbench.action.reloadWindow",
+                "workbench.action.findInFiles",
+                "vscode.open",
+            ],
+        )
         m.config_flow = FLOW_CLIENT_RESULT
         m.flow_message = "VSCode Remote Control installed.\nReload VSCode to activate.\n\nAllowed commands are configured in\nVS Code settings under\nvscode-remote-control.allowedCommands"
         m.flow_success = true

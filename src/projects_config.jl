@@ -41,7 +41,8 @@ struct ProjectEntry
     launch_config::LaunchConfig
 end
 
-ProjectEntry(project_path::String, enabled::Bool) = ProjectEntry(project_path, enabled, LaunchConfig())
+ProjectEntry(project_path::String, enabled::Bool) =
+    ProjectEntry(project_path, enabled, LaunchConfig())
 
 """
     get_projects_config_path() -> String
@@ -120,10 +121,7 @@ end
 
 """Serialize a ProjectEntry to a Dict, only including non-default launch_config fields."""
 function _project_entry_to_dict(e::ProjectEntry)
-    d = Dict{String,Any}(
-        "project_path" => e.project_path,
-        "enabled" => e.enabled,
-    )
+    d = Dict{String,Any}("project_path" => e.project_path, "enabled" => e.enabled)
     lc = e.launch_config
     lcd = Dict{String,Any}()
     !isempty(lc.threads) && (lcd["threads"] = lc.threads)
@@ -224,7 +222,8 @@ struct SessionPrefs
     allow_restart::Union{Bool,Nothing}
 end
 
-SessionPrefs(; mirror_repl=nothing, allow_restart=nothing) = SessionPrefs(mirror_repl, allow_restart)
+SessionPrefs(; mirror_repl = nothing, allow_restart = nothing) =
+    SessionPrefs(mirror_repl, allow_restart)
 
 """
     load_session_prefs() -> Dict{String,SessionPrefs}
@@ -244,10 +243,8 @@ function load_session_prefs()
             prefs_dict isa AbstractDict || continue   # JSON.jl yields a JSON.Object, not a Dict
             mr = get(prefs_dict, "mirror_repl", nothing)
             ar = get(prefs_dict, "allow_restart", nothing)
-            result[string(pattern)] = SessionPrefs(
-                mr isa Bool ? mr : nothing,
-                ar isa Bool ? ar : nothing,
-            )
+            result[string(pattern)] =
+                SessionPrefs(mr isa Bool ? mr : nothing, ar isa Bool ? ar : nothing)
         end
         return result
     catch e
@@ -298,7 +295,11 @@ Match `project_path` against session pref patterns in priority order:
 
 Returns the preference value for `key`, or `nothing` if no match.
 """
-function resolve_session_pref(prefs::Dict{String,SessionPrefs}, project_path::String, key::Symbol)
+function resolve_session_pref(
+    prefs::Dict{String,SessionPrefs},
+    project_path::String,
+    key::Symbol,
+)
     norm_path = normalize_path(project_path)
     bname = basename(norm_path)
 
@@ -431,9 +432,13 @@ function allow_grep_path!(path::AbstractString)::Bool
     isempty(norm) && return false
     cfg = get_projects_config_path()
     mkpath(dirname(cfg))
-    data =
-        isfile(cfg) ? (try; JSON.parsefile(cfg); catch; Dict{String,Any}(); end) :
-        Dict{String,Any}()
+    data = isfile(cfg) ? (
+        try
+            JSON.parsefile(cfg)
+        catch
+            Dict{String,Any}()
+        end
+    ) : Dict{String,Any}()
     raw = get(data, "grep_paths", nothing)
     list = String[]
     raw isa AbstractVector && for p in raw

@@ -26,12 +26,20 @@ context — must be called before any socket is created on it. Default libzmq is
 more can raise message throughput when one I/O thread saturates."""
 function _apply_io_threads!(ctx::ZMQ.Context)
     n = tryparse(Int, get(ENV, "KAIMON_ZMQ_IO_THREADS", ""))
-    n === nothing || n < 1 || (try; ctx.io_threads = n; catch e; @debug "io_threads set failed" exception=e; end)
+    n === nothing || n < 1 || (
+        try
+            ctx.io_threads = n
+        catch e
+            @debug "io_threads set failed" exception=e
+        end
+    )
     return ctx
 end
 
-function ConnectionManager(; sock_dir::String = joinpath(kaimon_cache_dir(), "sock"),
-                             task_queue = nothing)
+function ConnectionManager(;
+    sock_dir::String = joinpath(kaimon_cache_dir(), "sock"),
+    task_queue = nothing,
+)
     ConnectionManager(
         REPLConnection[],
         _apply_io_threads!(Context()),
@@ -54,12 +62,12 @@ end
 # Accumulates push_panel() messages from gate sessions so the TUI ext_panel
 # can read them on the next frame without polling.
 
-const _PANEL_PUSH_BUFFER = Dict{String, Dict{String, Any}}()  # session_key -> key -> value
+const _PANEL_PUSH_BUFFER = Dict{String,Dict{String,Any}}()  # session_key -> key -> value
 const _PANEL_PUSH_LOCK = ReentrantLock()
 
 function _buffer_panel_push!(session_key::String, key::String, value)
     lock(_PANEL_PUSH_LOCK) do
-        buf = get!(() -> Dict{String, Any}(), _PANEL_PUSH_BUFFER, session_key)
+        buf = get!(() -> Dict{String,Any}(), _PANEL_PUSH_BUFFER, session_key)
         buf[key] = value
     end
 end
@@ -73,7 +81,7 @@ Called by ext_panel update loop on the TUI thread.
 function drain_panel_pushes!(session_key::String)
     lock(_PANEL_PUSH_LOCK) do
         buf = get(_PANEL_PUSH_BUFFER, session_key, nothing)
-        buf === nothing && return Dict{String, Any}()
+        buf === nothing && return Dict{String,Any}()
         result = copy(buf)
         empty!(buf)
         return result
@@ -88,8 +96,8 @@ end
 # singleton) uses a fixed TCP loopback port there — the analog of the single fixed
 # `kaimon-events.sock` path on Unix. Extension SUB sockets connect to this same port
 # (see `_build_extension_script`). (#41)
-const _EVENT_PUB_TCP_PORT = Ref{Int}(
-    something(tryparse(Int, get(ENV, "KAIMON_EVENT_PUB_TCP_PORT", "")), 9878))
+const _EVENT_PUB_TCP_PORT =
+    Ref{Int}(something(tryparse(Int, get(ENV, "KAIMON_EVENT_PUB_TCP_PORT", "")), 9878))
 
 """Start the global event PUB socket. Extensions SUB to this."""
 function _start_event_pub!(mgr::ConnectionManager)
@@ -120,15 +128,26 @@ function _stop_event_pub!(mgr::ConnectionManager)
     # ipc:// only — Windows uses TCP, so there's no socket file to clean up.
     if !Sys.iswindows()
         sock_path = joinpath(mgr.sock_dir, "kaimon-events.sock")
-        ispath(sock_path) && try; rm(sock_path); catch; end
+        ispath(sock_path) && try
+            rm(sock_path)
+        catch
+        end
     end
 end
 
 """Re-publish a gate event on the global PUB socket (2-frame: topic + payload)."""
-function _republish_event!(mgr::ConnectionManager, channel::String, data::String, session_name::String)
+function _republish_event!(
+    mgr::ConnectionManager,
+    channel::String,
+    data::String,
+    session_name::String,
+)
     mgr.event_pub_socket === nothing && return
     io = IOBuffer()
-    Serialization.serialize(io, (channel=channel, data=data, session_name=session_name))
+    Serialization.serialize(
+        io,
+        (channel = channel, data = data, session_name = session_name),
+    )
     payload = take!(io)
     # ZMQ sockets are NOT thread-safe. The TUI render thread (drain_stream_messages!)
     # and every agent relay task (agent_session.jl) both publish here, so concurrent
@@ -139,7 +158,7 @@ function _republish_event!(mgr::ConnectionManager, channel::String, data::String
         pub = mgr.event_pub_socket
         pub === nothing && return
         try
-            send(pub, channel, more=true)    # frame 1: topic for ZMQ filtering
+            send(pub, channel, more = true)    # frame 1: topic for ZMQ filtering
             send(pub, payload)               # frame 2: serialized payload
         catch
         end
@@ -172,7 +191,12 @@ end
 const _EVAL_HISTORY_MAX = 64
 
 """Record the start of an eval in the history ring buffer."""
-function _record_eval_start!(mgr::ConnectionManager, eval_id::String, session_key::String, code::String)
+function _record_eval_start!(
+    mgr::ConnectionManager,
+    eval_id::String,
+    session_key::String,
+    code::String,
+)
     record = EvalRecord(
         eval_id,
         session_key,
@@ -197,8 +221,13 @@ function _record_eval_start!(mgr::ConnectionManager, eval_id::String, session_ke
 end
 
 """Record the completion of an eval in the history ring buffer."""
-function _record_eval_done!(mgr::ConnectionManager, eval_id::String, status::Symbol, result_preview::String;
-                            full_result::String = "")
+function _record_eval_done!(
+    mgr::ConnectionManager,
+    eval_id::String,
+    status::Symbol,
+    result_preview::String;
+    full_result::String = "",
+)
     lock(mgr.eval_history_lock) do
         for r in mgr.eval_history
             if r.eval_id == eval_id
@@ -214,4 +243,3 @@ function _record_eval_done!(mgr::ConnectionManager, eval_id::String, status::Sym
     end
     return nothing
 end
-

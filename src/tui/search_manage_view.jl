@@ -47,7 +47,7 @@ function _view_search_manage(m::KaimonModel, area::Rect, buf::Buffer)
     # Clear interior
     for row = inner.y:bottom(inner)
         for col = inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
+            set_char!(buf, col, row, ' ', Style(bg = Tachikoma.theme().bg))
         end
     end
 
@@ -153,9 +153,7 @@ end
 function _manage_status_icon(status::Symbol)
     status == :connected ? "●" :
     status == :evaluating ? "◐" :
-    status == :disconnected ? "○" :
-    status == :pwd ? "◇" :
-    status == :external ? "◆" : "○"
+    status == :disconnected ? "○" : status == :pwd ? "◇" : status == :external ? "◆" : "○"
 end
 
 """Build/rebuild the DataTable from search_manage_entries."""
@@ -165,7 +163,8 @@ function _sync_search_manage_table!(m::KaimonModel)
     sel = m.search_manage_selected
     existing = Set(m.search_collections)
 
-    needs_rebuild = m.search_manage_table === nothing ||
+    needs_rebuild =
+        m.search_manage_table === nothing ||
         m._search_manage_table_synced != n ||
         m._search_manage_table_sel != sel
 
@@ -228,9 +227,9 @@ function _sync_search_manage_table!(m::KaimonModel)
 
     dt = DataTable(
         [
-            DataColumn("Session", labels; width=22),
-            DataColumn("Collection", collections; width=14),
-            DataColumn("Vectors", vectors; width=8, align=col_right),
+            DataColumn("Session", labels; width = 22),
+            DataColumn("Collection", collections; width = 14),
+            DataColumn("Vectors", vectors; width = 8, align = col_right),
             DataColumn("Status", statuses),
         ];
         selected = clamp(sel, 0, n),
@@ -363,7 +362,7 @@ function _render_config_fields(
         active = field == field_idx
         cursor = active ? "▸ " : "  "
         label_style = active ? tstyle(:accent, bold = true) : tstyle(:text_dim)
-        set_string!(buf, x, y, cursor, label_style; max_x=x+max_w)
+        set_string!(buf, x, y, cursor, label_style; max_x = x+max_w)
         if input !== nothing
             input.tick = m.tick
             input.focused = active
@@ -371,9 +370,15 @@ function _render_config_fields(
             if active
                 render(input, input_area, buf)
             else
-                set_string!(buf, x + 2, y, label, label_style; max_x=x+max_w)
-                set_string!(buf, x + 2 + length(label), y,
-                    Tachikoma.text(input), tstyle(:text); max_x=x+max_w)
+                set_string!(buf, x + 2, y, label, label_style; max_x = x+max_w)
+                set_string!(
+                    buf,
+                    x + 2 + length(label),
+                    y,
+                    Tachikoma.text(input),
+                    tstyle(:text);
+                    max_x = x+max_w,
+                )
             end
         end
         y += 1
@@ -389,9 +394,14 @@ function _render_config_fields(
     _config_field!(3, "Exclude: ", m.search_manage_exclude_input)
 
     if y <= max_y
-        set_string!(buf, x + 2, y,
+        set_string!(
+            buf,
+            x + 2,
+            y,
             "(comma-separated, relative to project root)",
-            tstyle(:text_dim); max_x=x+max_w)
+            tstyle(:text_dim);
+            max_x = x+max_w,
+        )
         y += 1
     end
 

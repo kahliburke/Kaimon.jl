@@ -308,8 +308,9 @@ function _resolve_namespace!(conn::REPLConnection, mgr::ConnectionManager)
     # Find colliding connections
     colliders = lock(mgr.lock) do
         [
-            c for c in mgr.connections if
-            c !== conn && c.namespace == base_ns && c.status in (:connected, :evaluating, :stalled, :connecting)
+            c for c in mgr.connections if c !== conn &&
+                c.namespace == base_ns &&
+                c.status in (:connected, :evaluating, :stalled, :connecting)
         ]
     end
 
@@ -324,7 +325,10 @@ function _resolve_namespace!(conn::REPLConnection, mgr::ConnectionManager)
                 c !== conn && is_extension(c) && c.namespace == base_ns
             ]
             for old in to_evict
-                _push_log!(:info, "Evicting stale extension connection: $(base_ns) $(short_key(old)) → $(short_key(conn))")
+                _push_log!(
+                    :info,
+                    "Evicting stale extension connection: $(base_ns) $(short_key(old)) → $(short_key(conn))",
+                )
                 _unregister_session_tools!(old)
                 disconnect!(old)
                 idx = findfirst(c -> c === old, mgr.connections)

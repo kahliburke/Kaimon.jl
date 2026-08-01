@@ -395,7 +395,7 @@ function view_neuromancer_intro(m::SetupWizardModel, area::Rect, buf::Buffer)
         type_y = bottom(area) - 4
         type_x = area.x + 3
         # Draw a dim box behind the text
-        for dx = 0:min(length(m.typed_target) + 4, area.width - 4)
+        for dx = 0:min(length(m.typed_target)+4, area.width-4)
             for dy = -1:1
                 ty = type_y + dy
                 tx = type_x - 1 + dx
@@ -625,7 +625,7 @@ function view_acknowledge(m::SetupWizardModel, f::Frame)
 
     # Show typed portion bright, remaining portion dim
     set_string!(buf, prompt_x, typed_y, m.ack_typed, typed_style)
-    remaining = m.ack_target[nextind(m.ack_target, 0, length(m.ack_typed) + 1):end]
+    remaining = m.ack_target[nextind(m.ack_target, 0, length(m.ack_typed)+1):end]
     dim_style = Style(; fg = Color256(240), dim = true)
     set_string!(buf, prompt_x + length(m.ack_typed), typed_y, remaining, dim_style)
 
@@ -679,4 +679,3 @@ function view_acknowledge(m::SetupWizardModel, f::Frame)
     hint = " Hold SPACE or type to acknowledge    Esc  quit"
     set_string!(buf, rows[3].x + 1, rows[3].y, hint, tstyle(:text_dim))
 end
-

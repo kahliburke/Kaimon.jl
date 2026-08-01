@@ -123,8 +123,11 @@ function update_api_key!(m::SetupWizardModel, evt::KeyEvent)
         try
             clipboard_cmd =
                 Sys.isapple() ? `pbcopy` :
-                Sys.islinux() ? (haskey(ENV, "WAYLAND_DISPLAY") ? `wl-copy` : `xclip -selection clipboard`) :
-                nothing
+                Sys.islinux() ?
+                (
+                    haskey(ENV, "WAYLAND_DISPLAY") ? `wl-copy` :
+                    `xclip -selection clipboard`
+                ) : nothing
             if clipboard_cmd !== nothing
                 open(clipboard_cmd, "w") do io
                     print(io, m.api_key)
@@ -317,7 +320,7 @@ function update_dragon_anim!(m::SetupWizardModel)
                 m.fire_particles,
                 FireParticle(
                     Float64(mouth_col) + rand(-1.0:0.5:1.0),  # spawn AT the mouth
-                    Float64(mouth_row) + rand(-spread:0.3:spread),
+                    Float64(mouth_row) + rand((-spread):0.3:spread),
                     rand(1:length(FIRE_COLORS)),
                     rand(20:50),
                     -rand(0.8:0.2:3.0) * (0.6 + intensity * 0.5),  # stream LEFT
@@ -329,7 +332,7 @@ function update_dragon_anim!(m::SetupWizardModel)
 
     # Lingering smoke between breaths
     for gap_start in (171, 311)
-        if t in gap_start:gap_start+5
+        if t in gap_start:(gap_start+5)
             for _ = 1:2
                 push!(
                     m.fire_particles,
@@ -412,12 +415,7 @@ function do_save!(m::SetupWizardModel)
     end
     try
         api_keys = m.sec_mode == :lax ? String[] : [m.api_key]
-        config = SecurityConfig(
-            m.sec_mode,
-            api_keys,
-            m.allowed_ips,
-            m.port,
-        )
+        config = SecurityConfig(m.sec_mode, api_keys, m.allowed_ips, m.port)
         global_path = get_global_config_path()
         global_dir = dirname(global_path)
         if !isdir(global_dir)
@@ -427,7 +425,8 @@ function do_save!(m::SetupWizardModel)
         # Save personality mode as extra metadata in the config JSON
         _save_personality(global_path, m.mode)
         # Persist the theme matching the personality
-        theme_name = m.mode == STANDARD ? "kaneda" : m.mode == GENTLE ? "catppuccin" : "neuromancer"
+        theme_name =
+            m.mode == STANDARD ? "kaneda" : m.mode == GENTLE ? "catppuccin" : "neuromancer"
         Tachikoma.save_theme(theme_name)
         m.save_success = true
         m.save_message = "Config saved to $global_path"
@@ -436,4 +435,3 @@ function do_save!(m::SetupWizardModel)
         m.save_message = "Save failed: $(sprint(showerror, e))"
     end
 end
-

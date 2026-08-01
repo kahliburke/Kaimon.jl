@@ -30,7 +30,7 @@ println()
 
 function ipc_endpoint(name)
     path = joinpath(SOCK_DIR, "$name.sock")
-    isfile(path) && rm(path; force=true)
+    isfile(path) && rm(path; force = true)
     return "ipc://$path"
 end
 
@@ -42,7 +42,7 @@ function make_pub(ctx, endpoint)
     return pub
 end
 
-function make_sub(ctx, endpoint; timeout_ms=3000)
+function make_sub(ctx, endpoint; timeout_ms = 3000)
     sub = Socket(ctx, SUB)
     sub.linger = 0
     sub.rcvhwm = 0
@@ -60,7 +60,7 @@ function make_rep(ctx, endpoint)
     return rep
 end
 
-function make_req(ctx, endpoint; timeout_ms=5000)
+function make_req(ctx, endpoint; timeout_ms = 5000)
     req = Socket(ctx, REQ)
     req.linger = 0
     req.rcvtimeo = timeout_ms
@@ -74,7 +74,8 @@ FDWatcher it blocks on (the DEALER-reader pattern). No `poll_fd`-per-iteration
 (which re-acquires an FDWatcher + creates/closes a Timer every call → iolock +
 timer churn). Returns the number of messages PUB'd."""
 function run_io_loop(
-    pub::Socket, rep::Socket,
+    pub::Socket,
+    rep::Socket,
     outbox::Channel{Vector{UInt8}},
     rep_inbox::Channel,
 )::Int
@@ -100,10 +101,15 @@ function run_io_loop(
                 msg = deserialize(IOBuffer(data))
                 put!(rep_inbox, msg)
                 io = IOBuffer()
-                serialize(io, (ack=true,))
+                serialize(io, (ack = true,))
                 send(rep, Message(take!(io)))
             catch e
-                (e isa StateError || e isa EOFError || e isa Base.IOError || e isa ZMQ.TimeoutError) || @warn "REP error" exception=e
+                (
+                    e isa StateError ||
+                    e isa EOFError ||
+                    e isa Base.IOError ||
+                    e isa ZMQ.TimeoutError
+                ) || @warn "REP error" exception=e
             end
         end
     end
@@ -120,8 +126,14 @@ function run_io_loop(
     end
     # Outbox closed → stop the receiver: closing the watcher wakes its `wait`.
     recv_on[] = false
-    try; close(rep_fdw); catch; end
-    try; wait(recv_task); catch; end
+    try
+        close(rep_fdw)
+    catch
+    end
+    try
+        wait(recv_task)
+    catch
+    end
     return pub_sent
 end
 
@@ -161,10 +173,12 @@ end
     io_task = Threads.@spawn :interactive run_io_loop(pub, rep, outbox, rep_inbox)
 
     n_msgs = 5_000 * SCALE
-    for i in 1:n_msgs
-        put!(outbox, pack((seq=i,)))
+    for i = 1:n_msgs
+        put!(outbox, pack((seq = i,)))
     end
-    while isready(outbox); sleep(0.01); end
+    while isready(outbox)
+        sleep(0.01)
+    end
     sleep(0.2)
 
     received = drain_sub(sub, n_msgs)
@@ -175,7 +189,10 @@ end
     @test received == n_msgs
     println("  IPC single producer: sent $pub_sent, received $received / $n_msgs")
 
-    close(sub); close(pub); close(rep); close(ctx)
+    close(sub)
+    close(pub)
+    close(rep)
+    close(ctx)
 end
 
 # ── Test 2: IPC multi-threaded concurrent producers ──────────────────────
@@ -186,7 +203,7 @@ end
     rep_ep = ipc_endpoint("t2-rep")
     pub = make_pub(ctx, pub_ep)
     rep = make_rep(ctx, rep_ep)
-    sub = make_sub(ctx, pub_ep; timeout_ms=5000)
+    sub = make_sub(ctx, pub_ep; timeout_ms = 5000)
     sleep(0.1)
 
     outbox = Channel{Vector{UInt8}}(4096)
@@ -198,13 +215,19 @@ end
     total_expected = msgs_per_thread * n_producers
 
     tasks = [Threads.@spawn begin
-        for i in 1:msgs_per_thread
-            try; put!(outbox, pack((seq=i, t=t))); catch; break; end
+        for i = 1:msgs_per_thread
+            try
+                put!(outbox, pack((seq = i, t = t)))
+            catch
+                break
+            end
         end
-    end for t in 1:n_producers]
+    end for t = 1:n_producers]
     foreach(wait, tasks)
 
-    while isready(outbox); sleep(0.01); end
+    while isready(outbox)
+        sleep(0.01)
+    end
     sleep(0.2)
 
     received = 0
@@ -213,7 +236,9 @@ end
             data = recv(sub)
             msg = deserialize(IOBuffer(data))
             haskey(msg, :seq) && (received += 1)
-        catch; break; end
+        catch
+            break
+        end
     end
 
     close(outbox)
@@ -221,9 +246,14 @@ end
 
     @test pub_sent == total_expected
     @test received == total_expected
-    println("  IPC $n_producers producers x $msgs_per_thread = $total_expected, received $received")
+    println(
+        "  IPC $n_producers producers x $msgs_per_thread = $total_expected, received $received",
+    )
 
-    close(sub); close(pub); close(rep); close(ctx)
+    close(sub)
+    close(pub)
+    close(rep)
+    close(ctx)
 end
 
 # ── Test 3: IPC simultaneous PUB + REP ───────────────────────────────────
@@ -234,8 +264,8 @@ end
     rep_ep = ipc_endpoint("t3-rep")
     pub = make_pub(ctx, pub_ep)
     rep = make_rep(ctx, rep_ep)
-    sub = make_sub(ctx, pub_ep; timeout_ms=5000)
-    req = make_req(ctx, rep_ep; timeout_ms=10000)
+    sub = make_sub(ctx, pub_ep; timeout_ms = 5000)
+    req = make_req(ctx, rep_ep; timeout_ms = 10000)
     sleep(0.1)
 
     outbox = Channel{Vector{UInt8}}(4096)
@@ -248,21 +278,31 @@ end
     handler = @async begin
         count = 0
         while true
-            try; take!(rep_inbox); count += 1; catch; break; end
+            try
+                take!(rep_inbox)
+                count += 1
+            catch
+                break
+            end
         end
         count
     end
 
     producer = Threads.@spawn begin
-        for i in 1:n_pub
-            try; put!(outbox, pack((seq=i,))); catch; break; end
+        for i = 1:n_pub
+            try
+                put!(outbox, pack((seq = i,)))
+            catch
+                break
+            end
         end
     end
 
     req_acks = 0
-    for i in 1:n_req
+    for i = 1:n_req
         try
-            io = IOBuffer(); serialize(io, (req_seq=i,))
+            io = IOBuffer()
+            serialize(io, (req_seq = i,))
             send(req, Message(take!(io)))
             reply = deserialize(IOBuffer(recv(req)))
             reply.ack == true && (req_acks += 1)
@@ -273,21 +313,31 @@ end
     end
 
     wait(producer)
-    while isready(outbox); sleep(0.01); end
+    while isready(outbox)
+        sleep(0.01)
+    end
     sleep(0.2)
 
     pub_received = drain_sub(sub, n_pub)
     close(outbox)
     pub_sent = fetch(io_task)
     close(rep_inbox)
-    rep_count = try; fetch(handler); catch; 0; end
+    rep_count = try
+        fetch(handler)
+    catch
+        0
+    end
 
     @test pub_sent == n_pub
     @test pub_received == n_pub
     @test req_acks == n_req
     println("  IPC PUB: $pub_sent/$n_pub, REQ: $req_acks/$n_req, REP handled: $rep_count")
 
-    close(sub); close(req); close(pub); close(rep); close(ctx)
+    close(sub)
+    close(req)
+    close(pub)
+    close(rep)
+    close(ctx)
 end
 
 # ── Test 4: Two-process IPC (child hosts ZMQ, parent sends/recvs) ────────
@@ -352,7 +402,7 @@ end
     kaimon_dir = dirname(@__DIR__)
     cmd = `$(Base.julia_cmd()) --project=$kaimon_dir --startup-file=no $child_file $rep_ep $pub_ep $n_roundtrips $n_pub`
     child_out = Pipe()
-    proc = run(pipeline(cmd, stdout=child_out, stderr=stderr), wait=false)
+    proc = run(pipeline(cmd, stdout = child_out, stderr = stderr), wait = false)
     close(child_out.in)
 
     # Wait for READY
@@ -362,15 +412,16 @@ end
 
     # Parent: connect as client
     ctx = Context()
-    req = make_req(ctx, rep_ep; timeout_ms=10000)
-    sub = make_sub(ctx, pub_ep; timeout_ms=5000)
+    req = make_req(ctx, rep_ep; timeout_ms = 10000)
+    sub = make_sub(ctx, pub_ep; timeout_ms = 5000)
     sleep(0.1)
 
     # Send REQ/REP roundtrips
     req_ok = 0
-    for i in 1:n_roundtrips
+    for i = 1:n_roundtrips
         try
-            io = IOBuffer(); serialize(io, (val=i,))
+            io = IOBuffer()
+            serialize(io, (val = i,))
             send(req, Message(take!(io)))
             reply = deserialize(IOBuffer(recv(req)))
             reply.ack == true && reply.echo == i && (req_ok += 1)
@@ -385,9 +436,13 @@ end
 
     @test req_ok == n_roundtrips
     @test pub_received == n_pub
-    println("  Two-process IPC: $req_ok/$n_roundtrips roundtrips, $pub_received/$n_pub pub msgs")
+    println(
+        "  Two-process IPC: $req_ok/$n_roundtrips roundtrips, $pub_received/$n_pub pub msgs",
+    )
 
-    close(sub); close(req); close(ctx)
+    close(sub)
+    close(req)
+    close(ctx)
     wait(proc)
 end
 
@@ -485,7 +540,7 @@ end
     # Create multiple ZMQ contexts to amplify the foreign C thread count.
     # Each Context() spawns a Reaper thread + I/O worker thread.
     # Eva + SMMonitoring + Kaimon = 3 contexts in practice.
-    extra_contexts = [Context() for _ in 1:3]
+    extra_contexts = [Context() for _ = 1:3]
     # Bind dummy sockets so the I/O threads have work registered
     extra_sockets = Socket[]
     for (i, ectx) in enumerate(extra_contexts)
@@ -524,7 +579,8 @@ end
     kaimon_dir = dirname(@__DIR__)
     pinger_cmd = `$(Base.julia_cmd()) --project=$kaimon_dir --startup-file=no $pinger_file $rep_ep $pub_ep $compile_duration`
     pinger_out = Pipe()
-    pinger_proc = run(pipeline(pinger_cmd, stdout=pinger_out, stderr=stderr), wait=false)
+    pinger_proc =
+        run(pipeline(pinger_cmd, stdout = pinger_out, stderr = stderr), wait = false)
     close(pinger_out.in)
 
     ready_line = readline(pinger_out.out)
@@ -538,16 +594,19 @@ end
 
     # Pre-define a @generated function that forces Cartesian unrolling
     # (like Eva's get_prefix_count with NTuple{H, Head})
-    Core.eval(Main, quote
-        @generated function _stress_unroll(::Val{N}, data::NTuple{N, Float64}) where {N}
-            exprs = [:(s += data[$i] * $i) for i in 1:N]
-            quote
-                s = 0.0
-                $(exprs...)
-                return s
+    Core.eval(
+        Main,
+        quote
+            @generated function _stress_unroll(::Val{N}, data::NTuple{N,Float64}) where {N}
+                exprs = [:(s += data[$i] * $i) for i = 1:N]
+                quote
+                    s = 0.0
+                    $(exprs...)
+                    return s
+                end
             end
-        end
-    end)
+        end,
+    )
 
     compile_rounds = 0
     gc_collections = 0
@@ -555,18 +614,18 @@ end
 
     while time() - t0 < compile_duration
         # 1. Deeply nested parametric types (like StaticArrays in physics code)
-        for N in 2:8
-            T = NTuple{N, Float64}
+        for N = 2:8
+            T = NTuple{N,Float64}
             val = ntuple(Float64, N)
             arr = Vector{T}(undef, 100)
             fill!(arr, val)
-            sort!(arr; by=x -> x[1])
+            sort!(arr; by = x -> x[1])
 
             # Dict with parametric key/value
-            d = Dict{NTuple{N,Int}, Vector{T}}()
-            for j in 1:10
+            d = Dict{NTuple{N,Int},Vector{T}}()
+            for j = 1:10
                 key = ntuple(i -> i + j, N)
-                d[key] = [ntuple(i -> Float64(i * j), N) for _ in 1:20]
+                d[key] = [ntuple(i -> Float64(i * j), N) for _ = 1:20]
             end
 
             # Serialize/deserialize (exercises type reconstruction in the compiler)
@@ -579,35 +638,46 @@ end
         # 2. Generate unique struct types + @generated specializations each round
         sym = Symbol("_StressType_$(compile_rounds)")
         Core.eval(Main, quote
-            struct $sym{T, N}
-                data::NTuple{N, T}
-                meta::Dict{Symbol, Any}
+            struct $sym{T,N}
+                data::NTuple{N,T}
+                meta::Dict{Symbol,Any}
             end
         end)
         ST = Core.eval(Main, sym)
 
         # Force method compilation on the new type
         for N in (2, 4, 6, 8, 16, 32)
-            inst = Base.invokelatest(ST{Float64, N}, ntuple(Float64, N), Dict(:round => compile_rounds))
+            inst = Base.invokelatest(
+                ST{Float64,N},
+                ntuple(Float64, N),
+                Dict(:round => compile_rounds),
+            )
             buf = IOBuffer()
             Base.invokelatest(show, buf, inst)
             # Trigger @generated unrolling for each N (new specialization each time)
-            Base.invokelatest(Core.eval(Main, :(_stress_unroll)), Val(N), ntuple(Float64, N))
+            Base.invokelatest(
+                Core.eval(Main, :(_stress_unroll)),
+                Val(N),
+                ntuple(Float64, N),
+            )
         end
 
         # 3. Generate unique @generated functions to force fresh LLVM codegen
         if compile_rounds % 5 == 0
             gsym = Symbol("_stress_gen_$(compile_rounds)")
-            Core.eval(Main, quote
-                @generated function $gsym(x::NTuple{N, T}) where {N, T}
-                    exprs = [:(acc += x[$i]^2 + sin(x[$i])) for i in 1:N]
-                    quote
-                        acc = zero($T)
-                        $(exprs...)
-                        return acc
+            Core.eval(
+                Main,
+                quote
+                    @generated function $gsym(x::NTuple{N,T}) where {N,T}
+                        exprs = [:(acc += x[$i]^2 + sin(x[$i])) for i = 1:N]
+                        quote
+                            acc = zero($T)
+                            $(exprs...)
+                            return acc
+                        end
                     end
-                end
-            end)
+                end,
+            )
             gf = Core.eval(Main, gsym)
             for N in (4, 8, 16, 32, 64)
                 Base.invokelatest(gf, ntuple(Float64, N))
@@ -615,8 +685,8 @@ end
         end
 
         # 4. Allocate and drop lots of objects → GC pressure
-        for _ in 1:50
-            v = [rand(100, 100) for _ in 1:5]  # ~400KB per iteration
+        for _ = 1:50
+            v = [rand(100, 100) for _ = 1:5]  # ~400KB per iteration
             sum(sum.(v))  # prevent optimization
         end
 
@@ -631,8 +701,12 @@ end
         end
 
         # 6. PUB some data while compiling (exercises I/O thread)
-        for i in 1:10
-            try; put!(outbox, pack((seq=compile_rounds * 10 + i,))); catch; break; end
+        for i = 1:10
+            try
+                put!(outbox, pack((seq = compile_rounds * 10 + i,)))
+            catch
+                break
+            end
         end
 
         compile_rounds += 1
@@ -644,7 +718,10 @@ end
     close(outbox)
     fetch(io_task)
     close(rep_inbox)
-    try; wait(handler); catch; end
+    try
+        wait(handler)
+    catch
+    end
 
     println("  Compilation rounds: $compile_rounds")
     println("  GC collections: $gc_collections")
@@ -654,16 +731,28 @@ end
     @test ping_count[] > 0
     println("  ZMQ IPC + heavy compilation + GC stress passed")
 
-    close(pub); close(rep); close(ctx)
-    for s in extra_sockets; try; close(s); catch; end; end
-    for c in extra_contexts; try; close(c); catch; end; end
+    close(pub)
+    close(rep)
+    close(ctx)
+    for s in extra_sockets
+        try
+            close(s)
+        catch
+        end
+    end
+    for c in extra_contexts
+        try
+            close(c)
+        catch
+        end
+    end
 end
 
 # ── Test 6: Rapid IPC start/stop cycles ──────────────────────────────────
 
 @testset "Rapid IPC start/stop cycles" begin
     n_cycles = 20 * SCALE
-    for cycle in 1:n_cycles
+    for cycle = 1:n_cycles
         ctx = Context()
         pub = make_pub(ctx, ipc_endpoint("t6-c$cycle-pub"))
         rep = make_rep(ctx, ipc_endpoint("t6-c$cycle-rep"))
@@ -672,18 +761,20 @@ end
         rep_inbox = Channel{Any}(64)
         io_task = Threads.@spawn :interactive run_io_loop(pub, rep, outbox, rep_inbox)
 
-        for i in 1:10
-            put!(outbox, pack((cycle=cycle, i=i)))
+        for i = 1:10
+            put!(outbox, pack((cycle = cycle, i = i)))
         end
         close(outbox)
         fetch(io_task)
 
-        close(pub); close(rep); close(ctx)
+        close(pub)
+        close(rep)
+        close(ctx)
     end
     @test true
     println("  $n_cycles rapid IPC start/stop cycles completed")
 end
 
 # ── Cleanup ──────────────────────────────────────────────────────────────
-rm(SOCK_DIR; recursive=true, force=true)
+rm(SOCK_DIR; recursive = true, force = true)
 println("\n=== All IPC stress tests passed ===")

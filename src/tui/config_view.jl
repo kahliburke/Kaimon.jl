@@ -48,23 +48,23 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
         status_icon = m.server_running ? "●" : "○"
         status_style = m.server_running ? tstyle(:success) : tstyle(:error)
         srx = right(srv)
-        set_string!(buf, x, y, "$status_icon ", status_style; max_x=srx)
-        set_string!(buf, x + 2, y, "Port $(m.server_port)", tstyle(:text); max_x=srx)
+        set_string!(buf, x, y, "$status_icon ", status_style; max_x = srx)
+        set_string!(buf, x + 2, y, "Port $(m.server_port)", tstyle(:text); max_x = srx)
         status_text = m.server_running ? "running" : "stopped"
         status_x = x + 2 + length("Port $(m.server_port)") + 2
         if status_x + length(status_text) <= srx
-            set_string!(buf, status_x, y, status_text, status_style; max_x=srx)
+            set_string!(buf, status_x, y, status_text, status_style; max_x = srx)
         end
         y += 1
-        set_string!(buf, x, y, rpad("Sessions", 14), tstyle(:text_dim); max_x=srx)
+        set_string!(buf, x, y, rpad("Sessions", 14), tstyle(:text_dim); max_x = srx)
         session_str = "$n_conns connected"
         n_exts > 0 && (session_str *= " · $n_exts ext")
-        set_string!(buf, x + 14, y, session_str, tstyle(:text); max_x=srx)
+        set_string!(buf, x + 14, y, session_str, tstyle(:text); max_x = srx)
         y += 1
-        set_string!(buf, x, y, rpad("Tool Calls", 14), tstyle(:text_dim); max_x=srx)
-        set_string!(buf, x + 14, y, string(m.total_tool_calls), tstyle(:text); max_x=srx)
+        set_string!(buf, x, y, rpad("Tool Calls", 14), tstyle(:text_dim); max_x = srx)
+        set_string!(buf, x + 14, y, string(m.total_tool_calls), tstyle(:text); max_x = srx)
         y += 1
-        set_string!(buf, x, y, rpad("Uptime", 14), tstyle(:text_dim); max_x=srx)
+        set_string!(buf, x, y, rpad("Uptime", 14), tstyle(:text_dim); max_x = srx)
         uptime_s = round(Int, (time() - m.start_time))
         uptime_str = if uptime_s < 60
             "$(uptime_s)s"
@@ -75,7 +75,7 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
             mins = (uptime_s % 3600) ÷ 60
             "$(h)h $(mins)m"
         end
-        set_string!(buf, x + 14, y, uptime_str, tstyle(:text); max_x=srx)
+        set_string!(buf, x + 14, y, uptime_str, tstyle(:text); max_x = srx)
     end
 
     # Actions
@@ -91,50 +91,57 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
         x = act.x + 1
         arx = right(act)
         # Row 0: [g] Global gate
-        set_string!(buf, x, y, "[g]", tstyle(:accent, bold = true); max_x=arx)
-        set_string!(buf, x + 4, y, "Global gate (startup.jl)", tstyle(:text); max_x=arx)
+        set_string!(buf, x, y, "[g]", tstyle(:accent, bold = true); max_x = arx)
+        set_string!(buf, x + 4, y, "Global gate (startup.jl)", tstyle(:text); max_x = arx)
         y += 1
         # Row 1: [i] Install MCP
-        set_string!(buf, x, y, "[i]", tstyle(:accent, bold = true); max_x=arx)
-        set_string!(buf, x + 4, y, "Install MCP client config", tstyle(:text); max_x=arx)
+        set_string!(buf, x, y, "[i]", tstyle(:accent, bold = true); max_x = arx)
+        set_string!(buf, x + 4, y, "Install MCP client config", tstyle(:text); max_x = arx)
         y += 1
         # Row 2: [m] Mirror
-        set_string!(buf, x, y, "[m]", tstyle(:accent, bold = true); max_x=arx)
-        set_string!(buf, x + 4, y, "Mirror host REPL output", tstyle(:text); max_x=arx)
+        set_string!(buf, x, y, "[m]", tstyle(:accent, bold = true); max_x = arx)
+        set_string!(buf, x + 4, y, "Mirror host REPL output", tstyle(:text); max_x = arx)
         y += 1
         mirror_status = m.gate_mirror_repl ? "enabled" : "disabled"
         mirror_style = m.gate_mirror_repl ? tstyle(:success) : tstyle(:text_dim)
-        set_string!(buf, x + 4, y, "status: $mirror_status", mirror_style; max_x=arx)
+        set_string!(buf, x + 4, y, "status: $mirror_status", mirror_style; max_x = arx)
         y += 1
         # Row 4: [E] Editor
-        set_string!(buf, x, y, "[E]", tstyle(:accent, bold = true); max_x=arx)
-        set_string!(buf, x + 4, y, "Editor for file links", tstyle(:text); max_x=arx)
+        set_string!(buf, x, y, "[E]", tstyle(:accent, bold = true); max_x = arx)
+        set_string!(buf, x + 4, y, "Editor for file links", tstyle(:text); max_x = arx)
         y += 1
-        set_string!(buf, x + 4, y, "current: $(m.editor)", tstyle(:success); max_x=arx)
+        set_string!(buf, x + 4, y, "current: $(m.editor)", tstyle(:success); max_x = arx)
         y += 1
         # Row 6: [Q] Qdrant prefix
-        set_string!(buf, x, y, "[Q]", tstyle(:accent, bold = true); max_x=arx)
-        set_string!(buf, x + 4, y, "Qdrant collection prefix", tstyle(:text); max_x=arx)
+        set_string!(buf, x, y, "[Q]", tstyle(:accent, bold = true); max_x = arx)
+        set_string!(buf, x + 4, y, "Qdrant collection prefix", tstyle(:text); max_x = arx)
         y += 1
         prefix = get_collection_prefix()
         if isempty(prefix)
-            set_string!(buf, x + 4, y, "none (default)", tstyle(:text_dim); max_x=arx)
+            set_string!(buf, x + 4, y, "none (default)", tstyle(:text_dim); max_x = arx)
         else
-            set_string!(buf, x + 4, y, "prefix: $prefix", tstyle(:success); max_x=arx)
+            set_string!(buf, x + 4, y, "prefix: $prefix", tstyle(:success); max_x = arx)
         end
         y += 1
         # Row 8: [v] VSCode
-        set_string!(buf, x, y, "[v]", tstyle(:accent, bold = true); max_x=arx)
-        set_string!(buf, x + 4, y, "VSCode Remote Control ext", tstyle(:text); max_x=arx)
+        set_string!(buf, x, y, "[v]", tstyle(:accent, bold = true); max_x = arx)
+        set_string!(buf, x + 4, y, "VSCode Remote Control ext", tstyle(:text); max_x = arx)
         y += 1
         # Row 9: [b] Auto-background threshold
-        set_string!(buf, x, y, "[b]", tstyle(:accent, bold = true); max_x=arx)
-        set_string!(buf, x + 4, y, "Auto-background long evals after", tstyle(:text); max_x=arx)
+        set_string!(buf, x, y, "[b]", tstyle(:accent, bold = true); max_x = arx)
+        set_string!(
+            buf,
+            x + 4,
+            y,
+            "Auto-background long evals after",
+            tstyle(:text);
+            max_x = arx,
+        )
         y += 1
         pa = m.gate_promote_after
         pa_status = _promote_after_label(pa)
         pa_style = pa <= 0 ? tstyle(:warning) : tstyle(:success)
-        set_string!(buf, x + 4, y, "after: $pa_status", pa_style; max_x=arx)
+        set_string!(buf, x + 4, y, "after: $pa_status", pa_style; max_x = arx)
     end
 
     # ── Right column: MCP Clients (top) + Projects & TCP Gates side-by-side (bottom) ──
@@ -200,20 +207,33 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
             for (i, entry) in enumerate(m.project_entries)
                 y > bottom(proj_inner) - 2 && break
                 # Check if a session is running for this project
-                running = any(ms -> begin
-                    normalize_path(ms.project_path) == normalize_path(entry.project_path) && ms.status == :running
-                end, managed)
+                running = any(
+                    ms -> begin
+                        normalize_path(ms.project_path) == normalize_path(entry.project_path) && ms.status == :running
+                    end,
+                    managed,
+                )
 
                 marker = i == m.selected_project ? "▸ " : "  "
                 icon = entry.enabled ? (running ? "⚡" : "●") : "○"
-                icon_style = running ? tstyle(:accent) : entry.enabled ? tstyle(:success) : tstyle(:text_dim)
-                name_style = i == m.selected_project ? tstyle(:accent, bold = true) : tstyle(:text)
+                icon_style =
+                    running ? tstyle(:accent) :
+                    entry.enabled ? tstyle(:success) : tstyle(:text_dim)
+                name_style =
+                    i == m.selected_project ? tstyle(:accent, bold = true) : tstyle(:text)
                 status_text = running ? "running" : entry.enabled ? "enabled" : "disabled"
 
                 rx = right(proj_inner)
-                set_string!(buf, x, y, marker, name_style; max_x=rx)
-                set_string!(buf, x + 2, y, "$icon ", icon_style; max_x=rx)
-                set_string!(buf, x + 4, y, _short_path(entry.project_path), name_style; max_x=rx)
+                set_string!(buf, x, y, marker, name_style; max_x = rx)
+                set_string!(buf, x + 2, y, "$icon ", icon_style; max_x = rx)
+                set_string!(
+                    buf,
+                    x + 4,
+                    y,
+                    _short_path(entry.project_path),
+                    name_style;
+                    max_x = rx,
+                )
                 # Show launch config summary after name
                 lc_summary = launch_config_summary(entry.launch_config)
                 if !isempty(lc_summary)
@@ -221,14 +241,16 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
                     lc_x = x + 4 + name_len + 1
                     max_lc_w = rx - length(status_text) - lc_x - 2
                     if max_lc_w > 4
-                        display_lc = length(lc_summary) > max_lc_w ? lc_summary[1:max_lc_w-1] * "…" : lc_summary
-                        set_string!(buf, lc_x, y, display_lc, tstyle(:text_dim); max_x=rx)
+                        display_lc =
+                            length(lc_summary) > max_lc_w ?
+                            lc_summary[1:(max_lc_w-1)] * "…" : lc_summary
+                        set_string!(buf, lc_x, y, display_lc, tstyle(:text_dim); max_x = rx)
                     end
                 end
                 # Show status at the right edge
                 status_x = rx - length(status_text)
                 if status_x > x + 20
-                    set_string!(buf, status_x, y, status_text, icon_style; max_x=rx)
+                    set_string!(buf, status_x, y, status_text, icon_style; max_x = rx)
                 end
                 y += 1
             end
@@ -236,8 +258,14 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
 
         y = bottom(proj_inner)
         if y >= proj_inner.y + 1
-            set_string!(buf, x, y, "[p] Add  [D] Remove  [e] Launch Config", tstyle(:text_dim);
-                max_x=right(proj_inner))
+            set_string!(
+                buf,
+                x,
+                y,
+                "[p] Add  [D] Remove  [e] Launch Config",
+                tstyle(:text_dim);
+                max_x = right(proj_inner),
+            )
         end
     end
 
@@ -262,14 +290,18 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
                 y > bottom(tcp_inner) - 2 && break
                 # Check if connected
                 sid = "tcp-$(entry.host)-$(entry.port)"
-                connected = m.conn_mgr !== nothing && any(
-                    c -> c.session_id == sid && c.status in (:connected, :evaluating),
-                    connected_sessions(m.conn_mgr),
-                )
+                connected =
+                    m.conn_mgr !== nothing && any(
+                        c -> c.session_id == sid && c.status in (:connected, :evaluating),
+                        connected_sessions(m.conn_mgr),
+                    )
                 marker = i == m.selected_tcp_gate ? "▸ " : "  "
                 icon = entry.enabled ? (connected ? "⬤" : "○") : "○"
-                icon_style = connected ? tstyle(:success) : entry.enabled ? tstyle(:warning) : tstyle(:text_dim)
-                name_style = i == m.selected_tcp_gate ? tstyle(:accent, bold = true) : tstyle(:text)
+                icon_style =
+                    connected ? tstyle(:success) :
+                    entry.enabled ? tstyle(:warning) : tstyle(:text_dim)
+                name_style =
+                    i == m.selected_tcp_gate ? tstyle(:accent, bold = true) : tstyle(:text)
 
                 label = isempty(entry.name) ? "$(entry.host):$(entry.port)" : entry.name
                 status_text = if connected
@@ -288,20 +320,20 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
                 end
 
                 trx = right(tcp_inner)
-                set_string!(buf, x, y, marker, name_style; max_x=trx)
-                set_string!(buf, x + 2, y, "$icon ", icon_style; max_x=trx)
-                set_string!(buf, x + 4, y, label, name_style; max_x=trx)
+                set_string!(buf, x, y, marker, name_style; max_x = trx)
+                set_string!(buf, x + 2, y, "$icon ", icon_style; max_x = trx)
+                set_string!(buf, x + 4, y, label, name_style; max_x = trx)
                 # Host:port after name if name is set
                 if !isempty(entry.name)
                     addr = "$(entry.host):$(entry.port)"
                     addr_x = x + 4 + length(label) + 1
                     if addr_x + length(addr) < trx - length(status_text) - 2
-                        set_string!(buf, addr_x, y, addr, tstyle(:text_dim); max_x=trx)
+                        set_string!(buf, addr_x, y, addr, tstyle(:text_dim); max_x = trx)
                     end
                 end
                 status_x = trx - length(status_text)
                 if status_x > x + 20
-                    set_string!(buf, status_x, y, status_text, icon_style; max_x=trx)
+                    set_string!(buf, status_x, y, status_text, icon_style; max_x = trx)
                 end
                 y += 1
             end
@@ -309,8 +341,14 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
 
         y = bottom(tcp_inner)
         if y >= tcp_inner.y + 1
-            set_string!(buf, x, y, "[T] Add  [X] Remove  [v] VSCode ext", tstyle(:text_dim);
-                max_x=right(tcp_inner))
+            set_string!(
+                buf,
+                x,
+                y,
+                "[T] Add  [X] Remove  [v] VSCode ext",
+                tstyle(:text_dim);
+                max_x = right(tcp_inner),
+            )
         end
     end
 end
@@ -389,7 +427,7 @@ function view_config_flow(m::KaimonModel, area::Rect, buf::Buffer)
         if inner.width >= 4
             for row = inner.y:bottom(inner)
                 for col = inner.x:right(inner)
-                    set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
+                    set_char!(buf, col, row, ' ', Style(bg = Tachikoma.theme().bg))
                 end
             end
             y = inner.y
@@ -398,7 +436,13 @@ function view_config_flow(m::KaimonModel, area::Rect, buf::Buffer)
             set_string!(buf, x + 8, y, status_text, status_style)
             y += 1
             if m.client_target == :startup_jl
-                set_string!(buf, x, y, "Installs: ~/.julia/config/startup.jl", tstyle(:text_dim))
+                set_string!(
+                    buf,
+                    x,
+                    y,
+                    "Installs: ~/.julia/config/startup.jl",
+                    tstyle(:text_dim),
+                )
             elseif m.client_target in (:claude, :gemini)
                 set_string!(buf, x, y, "Scope: user (global)", tstyle(:text_dim))
             else
@@ -455,11 +499,12 @@ function view_config_flow(m::KaimonModel, area::Rect, buf::Buffer)
         _render_result_modal(buf, area, m.flow_success, m.flow_message; tick = m.tick)
 
     elseif flow == FLOW_PROJECT_REMOVE_CONFIRM
-        entry = if m.selected_project >= 1 && m.selected_project <= length(m.project_entries)
-            m.project_entries[m.selected_project]
-        else
-            nothing
-        end
+        entry =
+            if m.selected_project >= 1 && m.selected_project <= length(m.project_entries)
+                m.project_entries[m.selected_project]
+            else
+                nothing
+            end
         path_str = entry !== nothing ? _short_path(entry.project_path) : "?"
         msg = "Remove project from allowed list?\n\nPath: $path_str"
         render(
@@ -502,8 +547,14 @@ function _render_qdrant_prefix_modal(m::KaimonModel, buf::Buffer, area::Rect)
 
     border_s = tstyle(:accent, bold = true)
     inner = render(
-        Block(title = "Qdrant Collection Prefix", border_style = border_s, title_style = border_s, box = BOX_HEAVY),
-        rect, buf,
+        Block(
+            title = "Qdrant Collection Prefix",
+            border_style = border_s,
+            title_style = border_s,
+            box = BOX_HEAVY,
+        ),
+        rect,
+        buf,
     )
     inner.width < 4 && return
 
@@ -529,10 +580,24 @@ end
 
 # Launch-config modal rows, in display order. Shared with config_flow.jl so the field list,
 # the key handler's bounds, and the rendered rows can't drift apart.
-const LAUNCH_CONFIG_FIELDS =
-    [:threads, :gcthreads, :heap_size_hint, :sysimage, :julia_bin, :startup_file, :extra_flags]
-const LAUNCH_CONFIG_LABELS = ["Threads (-t):", "GC threads:", "Heap size hint:",
-    "Sysimage (-J):", "Julia binary:", "Run startup.jl:", "Extra flags:"]
+const LAUNCH_CONFIG_FIELDS = [
+    :threads,
+    :gcthreads,
+    :heap_size_hint,
+    :sysimage,
+    :julia_bin,
+    :startup_file,
+    :extra_flags,
+]
+const LAUNCH_CONFIG_LABELS = [
+    "Threads (-t):",
+    "GC threads:",
+    "Heap size hint:",
+    "Sysimage (-J):",
+    "Julia binary:",
+    "Run startup.jl:",
+    "Extra flags:",
+]
 
 function _render_launch_config_modal(m::KaimonModel, buf::Buffer, area::Rect)
     idx = m.selected_project
@@ -571,7 +636,7 @@ function _render_launch_config_modal(m::KaimonModel, buf::Buffer, area::Rect)
     # Clear interior
     for row = inner.y:bottom(inner)
         for col = inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
+            set_char!(buf, col, row, ' ', Style(bg = Tachikoma.theme().bg))
         end
     end
 
@@ -590,8 +655,13 @@ function _render_launch_config_modal(m::KaimonModel, buf::Buffer, area::Rect)
 
         input = m.launch_config_inputs[key]
         if input isa Bool
-            set_string!(buf, x + 2 + label_w, y, input ? "[x] yes" : "[ ] no",
-                        selected ? tstyle(:accent) : tstyle(:text))
+            set_string!(
+                buf,
+                x + 2 + label_w,
+                y,
+                input ? "[x] yes" : "[ ] no",
+                selected ? tstyle(:accent) : tstyle(:text),
+            )
         else
             if selected
                 input.tick = m.tick
@@ -603,7 +673,13 @@ function _render_launch_config_modal(m::KaimonModel, buf::Buffer, area::Rect)
 
     y += 1
     if y <= bottom(inner)
-        set_string!(buf, x, y, "[Space] toggle  [Enter] Save  [Esc] Cancel", tstyle(:text_dim))
+        set_string!(
+            buf,
+            x,
+            y,
+            "[Space] toggle  [Enter] Save  [Esc] Cancel",
+            tstyle(:text_dim),
+        )
     end
 end
 
@@ -654,7 +730,7 @@ function _render_text_input_modal(
     # Clear interior
     for row = inner.y:bottom(inner)
         for col = inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
+            set_char!(buf, col, row, ' ', Style(bg = Tachikoma.theme().bg))
         end
     end
 
@@ -706,7 +782,7 @@ function _render_selection_modal(
     # Clear interior
     for row = inner.y:bottom(inner)
         for col = inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
+            set_char!(buf, col, row, ' ', Style(bg = Tachikoma.theme().bg))
         end
     end
 
@@ -762,7 +838,7 @@ function _render_result_modal(
     # Clear interior
     for row = inner.y:bottom(inner)
         for col = inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
+            set_char!(buf, col, row, ' ', Style(bg = Tachikoma.theme().bg))
         end
     end
 
@@ -788,8 +864,14 @@ function _render_tcp_gate_add_modal(m::KaimonModel, buf::Buffer, area::Rect)
     border_s = tstyle(:accent, bold = true)
     title = "Add TCP Gate"
     inner = render(
-        Block(title = title, border_style = border_s, title_style = border_s, box = BOX_HEAVY),
-        rect, buf,
+        Block(
+            title = title,
+            border_style = border_s,
+            title_style = border_s,
+            box = BOX_HEAVY,
+        ),
+        rect,
+        buf,
     )
     inner.width < 4 && return
 
@@ -807,7 +889,13 @@ function _render_tcp_gate_add_modal(m::KaimonModel, buf::Buffer, area::Rect)
     function _field!(field_idx, label, input)
         y > bottom(inner) && return
         active = m._tcp_gate_field == field_idx
-        set_string!(buf, x, y, rpad(label, label_w), active ? tstyle(:accent) : tstyle(:text_dim))
+        set_string!(
+            buf,
+            x,
+            y,
+            rpad(label, label_w),
+            active ? tstyle(:accent) : tstyle(:text_dim),
+        )
         if input !== nothing
             input.tick = m.tick
             input_area = Rect(x + label_w, y, inner.width - label_w - 2, 1)

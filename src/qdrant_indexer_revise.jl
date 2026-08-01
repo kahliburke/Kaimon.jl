@@ -10,9 +10,9 @@ Only works if Revise is loaded in Main.
 Set silent=true to suppress all output (logs to file only).
 """
 function setup_revise_hook(
-    project_path::String=pwd();
-    collection::Union{String,Nothing}=nothing,
-    silent::Bool=false,
+    project_path::String = pwd();
+    collection::Union{String,Nothing} = nothing,
+    silent::Bool = false,
 )
     if !isdefined(Main, :Revise)
         msg = "Revise.jl not loaded - automatic re-indexing disabled"
@@ -36,13 +36,19 @@ function setup_revise_hook(
         try
             result = sync_index(
                 project_path;
-                collection=col_name,
-                verbose=false,
-                silent=true,  # Always silent in background
+                collection = col_name,
+                verbose = false,
+                silent = true,  # Always silent in background
             )
-            with_index_logger(() -> @info "Auto-sync after Revise event" reindexed = result.reindexed deleted = result.deleted chunks = result.chunks)
+            with_index_logger(
+                () ->
+                    @info "Auto-sync after Revise event" reindexed = result.reindexed deleted =
+                        result.deleted chunks = result.chunks
+            )
         catch e
-            with_index_logger(() -> @warn "Failed to sync index after Revise event" exception = e)
+            with_index_logger(
+                () -> @warn "Failed to sync index after Revise event" exception = e
+            )
         end
     end
 
@@ -74,9 +80,9 @@ Start an event-driven Revise watcher that waits on `Revise.revision_event`,
 applies revisions, and syncs the Qdrant index after each change.
 """
 function start_revise_event_watcher(;
-    project_path::String=pwd(),
-    collection::Union{String,Nothing}=nothing,
-    silent::Bool=false,
+    project_path::String = pwd(),
+    collection::Union{String,Nothing} = nothing,
+    silent::Bool = false,
 )
     if !isdefined(Main, :Revise)
         msg = "Revise.jl not loaded - event watcher disabled"
@@ -112,16 +118,22 @@ function start_revise_event_watcher(;
                 REVISE_EVENT_CHANGES[] += 1
                 result = sync_index(
                     project_path;
-                    collection=col_name,
-                    verbose=false,
-                    silent=true,
+                    collection = col_name,
+                    verbose = false,
+                    silent = true,
                 )
-                with_index_logger(() -> @info "Revise applied changes" total_changes = REVISE_EVENT_CHANGES[] reindexed = result.reindexed deleted = result.deleted chunks = result.chunks)
+                with_index_logger(
+                    () -> @info "Revise applied changes" total_changes =
+                        REVISE_EVENT_CHANGES[] reindexed = result.reindexed deleted =
+                        result.deleted chunks = result.chunks
+                )
             catch e
                 if e isa InterruptException || REVISE_EVENT_STOP[]
                     break
                 end
-                with_index_logger(() -> @error "Revise watcher error" reason = sprint(showerror, e))
+                with_index_logger(
+                    () -> @error "Revise watcher error" reason = sprint(showerror, e)
+                )
                 sleep(1)  # Brief back-off on error
             end
         end
@@ -139,7 +151,7 @@ end
 
 Stop the event-driven Revise watcher if running.
 """
-function stop_revise_event_watcher(; silent::Bool=false)
+function stop_revise_event_watcher(; silent::Bool = false)
     task = REVISE_EVENT_TASK[]
     if task === nothing || istaskdone(task)
         return false

@@ -130,19 +130,24 @@ using Kaimon
         # `x = let … end` and `… do … end` put an `end` on a later line with no opener
         # visible at line start; the old keyword depth-counter underflowed and cut the
         # function off at the first inner `end`. The indent-matched end finder spans full.
-        code = join([
-            "function big(x)",          # 1
-            "    y = let a = x",         # 2
-            "        a + 1",             # 3
-            "    end",                   # 4  (inner end — must NOT terminate `big`)
-            "    z = map(1:3) do i",     # 5
-            "        i * y",             # 6
-            "    end",                   # 7  (inner end — must NOT terminate `big`)
-            "    return z",              # 8
-            "end",                       # 9  (the real end)
-            "const AFTER = 1",           # 10
-        ], "\n")
-        big = only(filter(c -> c["name"] == "big", Kaimon.extract_definitions(code, "test.jl")))
+        code = join(
+            [
+                "function big(x)",          # 1
+                "    y = let a = x",         # 2
+                "        a + 1",             # 3
+                "    end",                   # 4  (inner end — must NOT terminate `big`)
+                "    z = map(1:3) do i",     # 5
+                "        i * y",             # 6
+                "    end",                   # 7  (inner end — must NOT terminate `big`)
+                "    return z",              # 8
+                "end",                       # 9  (the real end)
+                "const AFTER = 1",           # 10
+            ],
+            "\n",
+        )
+        big = only(
+            filter(c -> c["name"] == "big", Kaimon.extract_definitions(code, "test.jl")),
+        )
         @test (big["start_line"], big["end_line"]) == (1, 9)
         @test occursin("return z", big["text"])
     end
@@ -232,8 +237,14 @@ end
 # Size-based chunk splitting, decoupled from embedding (no Ollama). Underpins the
 # FTS-first / embed-second two-pass index.
 @testset "split_to_fit" begin
-    mk(text; sl=1, el=9, name="w") = Dict("file"=>"/a/x.jl", "start_line"=>sl, "end_line"=>el,
-                                          "type"=>"window", "name"=>name, "text"=>text)
+    mk(text; sl = 1, el = 9, name = "w") = Dict(
+        "file"=>"/a/x.jl",
+        "start_line"=>sl,
+        "end_line"=>el,
+        "type"=>"window",
+        "name"=>name,
+        "text"=>text,
+    )
     @testset "in-size chunk returned unchanged" begin
         c = mk("short")
         parts = Kaimon.split_to_fit(c, 1000)
@@ -241,7 +252,7 @@ end
         @test parts[1]["text"] == "short"
     end
     @testset "oversized chunk splits into fitting pieces" begin
-        c = mk(join(["line $i" for i in 1:9], "\n"))
+        c = mk(join(["line $i" for i = 1:9], "\n"))
         parts = Kaimon.split_to_fit(c, 20)
         @test length(parts) > 1
         @test all(p -> length(p["text"]) <= 20, parts)
@@ -260,8 +271,14 @@ end
 # Deterministic point IDs (C): same content+location → same ID (idempotent reindex),
 # any change → new ID. Pure uuid5, no Qdrant/Ollama.
 @testset "deterministic point IDs" begin
-    base = Dict("file"=>"/a/x.jl", "start_line"=>1, "end_line"=>5,
-                "type"=>"function", "name"=>"f", "text"=>"f() = 1")
+    base = Dict(
+        "file"=>"/a/x.jl",
+        "start_line"=>1,
+        "end_line"=>5,
+        "type"=>"function",
+        "name"=>"f",
+        "text"=>"f() = 1",
+    )
     pid = Kaimon._chunk_point_id
     id = pid("proj", base)
     @test id == pid("proj", copy(base))                                   # deterministic
@@ -288,7 +305,7 @@ end
         key = "/tmp/kaimon-coalesce-" * string(rand(UInt32))
         ran = Threads.Atomic{Int}(0)
         f = () -> (Threads.atomic_add!(ran, 1); sleep(0.2); :done)
-        tasks = [Threads.@spawn K._run_coalesced(key, f) for _ in 1:6]
+        tasks = [Threads.@spawn K._run_coalesced(key, f) for _ = 1:6]
         results = fetch.(tasks)
         @test ran[] <= 2                                       # initial + at most one coalesced re-run
         @test any(r -> r === :done, results)                   # the runner returned the value
@@ -303,9 +320,9 @@ end
         # call _run_coalesced directly, so they'd miss a `do`-block arg-order bug in the
         # wrapper). An empty temp project needs no Qdrant/Ollama.
         tmp = mktempdir()
-        r = K.sync_index(tmp; verbose=false, silent=true)
+        r = K.sync_index(tmp; verbose = false, silent = true)
         @test r.reindexed == 0 && r.deleted == 0 && r.chunks == 0
-        rm(tmp; recursive=true)
+        rm(tmp; recursive = true)
     end
     @testset "exception clears the key" begin
         key = "/tmp/kaimon-coalesce-err-" * string(rand(UInt32))
@@ -324,7 +341,7 @@ end
     end
     @testset "retries transient then succeeds" begin
         n = Ref(0)
-        r = Q._with_http_retry(tries=4) do
+        r = Q._with_http_retry(tries = 4) do
             n[] += 1
             n[] < 3 && throw(EOFError())   # fail twice, succeed on the third
             :ok
@@ -334,7 +351,7 @@ end
     end
     @testset "rethrows a non-transient error without retrying" begin
         n = Ref(0)
-        @test_throws ArgumentError Q._with_http_retry(tries=4) do
+        @test_throws ArgumentError Q._with_http_retry(tries = 4) do
             n[] += 1
             throw(ArgumentError("fatal"))
         end

@@ -27,12 +27,23 @@ function ManagedSession(project_path::String; name::String = "")
     log_dir = joinpath(kaimon_cache_dir(), "sessions")
     mkpath(log_dir)
     log_file = joinpath(log_dir, "$(basename(project_path)).log")
-    ManagedSession(project_path, name, nothing, nothing, :stopped, 0.0, "", String[], log_file)
+    ManagedSession(
+        project_path,
+        name,
+        nothing,
+        nothing,
+        :stopped,
+        0.0,
+        "",
+        String[],
+        log_file,
+    )
 end
 
 """Return the PID of a managed session (from PTY or Process)."""
 session_pid(ms::ManagedSession) =
-    ms.pty !== nothing ? Int(ms.pty.child_pid) : (ms.process !== nothing ? getpid(ms.process) : 0)
+    ms.pty !== nothing ? Int(ms.pty.child_pid) :
+    (ms.process !== nothing ? getpid(ms.process) : 0)
 
 # ── Global state ─────────────────────────────────────────────────────────────
 
@@ -41,7 +52,7 @@ const MANAGED_SESSIONS_LOCK = ReentrantLock()
 
 function _push_session_error!(ms::ManagedSession, msg::String)
     push!(ms.error_log, msg)
-    length(ms.error_log) > 20 && deleteat!(ms.error_log, 1:length(ms.error_log) - 20)
+    length(ms.error_log) > 20 && deleteat!(ms.error_log, 1:(length(ms.error_log)-20))
 end
 
 # ── Spawn / Stop ─────────────────────────────────────────────────────────────
@@ -51,9 +62,11 @@ end
 
 Generate the Julia `-e` script that boots a session subprocess.
 """
-function _build_session_script(project_path::String;
-                               name::String = "",
-                               allow_restart::Bool = true)
+function _build_session_script(
+    project_path::String;
+    name::String = "",
+    allow_restart::Bool = true,
+)
     # The subprocess is launched with --project=<target>, so the target project
     # and its deps are the active environment. It boots only the lightweight
     # `KaimonGate` (ZMQ + stdlib) — NOT the heavyweight Kaimon — so a session
@@ -91,8 +104,8 @@ function _build_session_env()
     gate_env = pkgdir(KaimonGate)
     # OS-correct separator (`;` on Windows) — a hardcoded `:` breaks Windows drive
     # letters and drops @stdlib, so the spawned session can't find its stdlibs/gate.
-    load_path = gate_env === nothing ?
-        _join_load_path("@", "@v#.#", "@stdlib") :
+    load_path =
+        gate_env === nothing ? _join_load_path("@", "@v#.#", "@stdlib") :
         _join_load_path("@", "@v#.#", "@stdlib", gate_env)
 
     mirror = try
@@ -167,7 +180,8 @@ Build the Julia command array from a LaunchConfig and boot script.
 function _build_julia_cmd(lc::LaunchConfig, script::String; project::String = "")
     # Default to the Julia running Kaimon; a configured binary may also be a wrapper
     # script, so long as it forwards its arguments to julia.
-    julia_bin = isempty(lc.julia_bin) ? joinpath(Sys.BINDIR, "julia") : expanduser(lc.julia_bin)
+    julia_bin =
+        isempty(lc.julia_bin) ? joinpath(Sys.BINDIR, "julia") : expanduser(lc.julia_bin)
     cmd = [julia_bin, "-i"]
 
     # Custom system image (before the boot script, so `using` in it hits the baked code)
@@ -237,7 +251,10 @@ function spawn_session!(ms::ManagedSession)
         # widget takes over consumption of the channel.
         log_io = try
             io = open(ms.log_file, "a")
-            println(io, "\n--- Session $(ms.name) starting at $(Dates.now()) (PID=$(Int(pty.child_pid))) ---")
+            println(
+                io,
+                "\n--- Session $(ms.name) starting at $(Dates.now()) (PID=$(Int(pty.child_pid))) ---",
+            )
             flush(io)
             io
         catch e
@@ -301,14 +318,14 @@ function spawn_session!(ms::ManagedSession)
             end
         end
 
-        _push_log!(:info, "Session '$(ms.name)' subprocess spawning (PID=$(Int(pty.child_pid)))")
+        _push_log!(
+            :info,
+            "Session '$(ms.name)' subprocess spawning (PID=$(Int(pty.child_pid)))",
+        )
     catch e
         ms.status = :crashed
         _push_session_error!(ms, "Spawn failed: $(sprint(showerror, e))")
-        _push_log!(
-            :error,
-            "Failed to spawn session '$(ms.name)': $(sprint(showerror, e))",
-        )
+        _push_log!(:error, "Failed to spawn session '$(ms.name)': $(sprint(showerror, e))")
     end
 end
 

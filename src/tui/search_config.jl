@@ -33,8 +33,10 @@ function _handle_search_key!(m::KaimonModel, evt::KeyEvent)
             end
         end
         'p' => _pull_embedding_model_async!(m)
-        'l' => (managed_qdrant_running() ? _disable_managed_qdrant!(m) :
-                                           _start_managed_qdrant_async!(m))
+        'l' => (
+            managed_qdrant_running() ? _disable_managed_qdrant!(m) :
+            _start_managed_qdrant_async!(m)
+        )
         'x' => _remove_managed_qdrant_async!(m)
         'c' => begin
             if !isempty(m.search_collections)
@@ -197,7 +199,10 @@ function _execute_search!(m::KaimonModel)
             if is_dim_mismatch
                 err_text *= "\n\nCollection '$collection' was indexed with the '$(resolve_search_model(collection))' model. Press [o] → select that model → Enter to reindex (or reindex from the Collection Manager)."
             end
-            _push_log!(:error, "Search failed on '$collection' (model=$model): $(first(results)["error"])")
+            _push_log!(
+                :error,
+                "Search failed on '$collection' (model=$model): $(first(results)["error"])",
+            )
             return Dict[Dict(
                 "payload" => Dict(
                     "name" => "Error",
@@ -303,7 +308,10 @@ end
 start it in-process — no restart, and the app env / repo are never touched."""
 function _install_managed_qdrant_async!(m::KaimonModel)
     _set_search_status!("Installing Qdrant (downloading binary)...")
-    _push_log!(:info, "Installing Qdrant_jll into Kaimon's service env — this downloads a binary artifact.")
+    _push_log!(
+        :info,
+        "Installing Qdrant_jll into Kaimon's service env — this downloads a binary artifact.",
+    )
     cmd = qdrant_install_command()
     spawn_task!(m._task_queue, :search_install_qdrant) do
         io = IOBuffer()
@@ -315,8 +323,20 @@ function _install_managed_qdrant_async!(m::KaimonModel)
             print(io, "\n", sprint(showerror, e))
             false
         end
-        loaded = installed && (try load_qdrant_jll!() catch; false end)
-        started = loaded && (try ensure_qdrant!() catch; false end)
+        loaded = installed && (
+            try
+                load_qdrant_jll!()
+            catch
+                false
+            end
+        )
+        started = loaded && (
+            try
+                ensure_qdrant!()
+            catch
+                false
+            end
+        )
         out = String(take!(io))
         tail = join(last(split(out, '\n'; keepempty = false), 12), "\n")
         (installed = installed, active = loaded, started = started, output = tail)
@@ -369,12 +389,21 @@ function _open_search_config!(m::KaimonModel)
     # Seed model list immediately (installed status filled async)
     # Add "Custom..." entry at the end
     m.search_config_models = [
-        [(name = n, dims = EMBEDDING_CONFIGS[n].dims, ctx = EMBEDDING_CONFIGS[n].context_tokens, installed = false) for n in model_names];
+        [
+            (
+                name = n,
+                dims = EMBEDDING_CONFIGS[n].dims,
+                ctx = EMBEDDING_CONFIGS[n].context_tokens,
+                installed = false,
+            ) for n in model_names
+        ];
         [(name = "Custom...", dims = 0, ctx = 0, installed = false)]
     ]
     m.search_config_custom_input = TextInput(
         text = is_custom ? m.search_embedding_model : "",
-        label = "Model: ", tick = m.tick)
+        label = "Model: ",
+        tick = m.tick,
+    )
     m.search_config_custom_editing = false
 
     # Fire async task to check Ollama availability + collection info
@@ -427,7 +456,8 @@ function _handle_search_config_key!(m::KaimonModel, evt::KeyEvent)
         elseif evt.key == :escape
             m.search_config_custom_editing = false
         else
-            m.search_config_custom_input !== nothing && handle_key!(m.search_config_custom_input, evt)
+            m.search_config_custom_input !== nothing &&
+                handle_key!(m.search_config_custom_input, evt)
         end
         return
     end
@@ -460,7 +490,10 @@ function _handle_search_config_key!(m::KaimonModel, evt::KeyEvent)
                     m.search_embedding_model = new_model
                     _save_embedding_model(new_model)
                     m.search_model_available = m.search_config_models[sel].installed
-                    _push_log!(:info, "Embedding model set to '$new_model' — applies to new indexing; reindex a collection to switch it.")
+                    _push_log!(
+                        :info,
+                        "Embedding model set to '$new_model' — applies to new indexing; reindex a collection to switch it.",
+                    )
                 end
                 m.search_config_open = false
             end
@@ -478,8 +511,3 @@ end
 
 """Collect (project_path => collection_name) pairs for all connected sessions whose
 collections already exist in Qdrant."""
-
-
-
-
-

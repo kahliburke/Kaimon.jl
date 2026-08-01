@@ -27,7 +27,7 @@ const RG = Kaimon.RateGovernor
         RG.init!(RG.Config(max_concurrency = 2, rate_rps = 1e6, bucket_capacity = 1e6))
         started = Channel{Int}(10)
         release = Channel{Nothing}(10)
-        for i in 1:2
+        for i = 1:2
             @async RG.with_admission(() -> (put!(started, i); take!(release)))
         end
         @test take!(started) in (1, 2)
@@ -44,15 +44,25 @@ const RG = Kaimon.RateGovernor
         sleep(0.25)
         @test isready(admitted3) && take!(admitted3)   # 3rd admitted, nothing dropped
 
-        put!(release, nothing); put!(release, nothing) # drain remaining holders
+        put!(release, nothing)
+        put!(release, nothing) # drain remaining holders
         sleep(0.1)
     end
 
     @testset "AIMD: multiplicative decrease, additive recover" begin
-        RG.init!(RG.Config(rate_rps = 4.0, rate_max = 8.0, rate_min = 0.5,
-                           rate_step = 1.0, decrease_factor = 0.5,
-                           recover_interval_s = 0.0, base_cooldown_s = 0.0,
-                           bucket_capacity = 1e6, max_concurrency = 4))
+        RG.init!(
+            RG.Config(
+                rate_rps = 4.0,
+                rate_max = 8.0,
+                rate_min = 0.5,
+                rate_step = 1.0,
+                decrease_factor = 0.5,
+                recover_interval_s = 0.0,
+                base_cooldown_s = 0.0,
+                bucket_capacity = 1e6,
+                max_concurrency = 4,
+            ),
+        )
         @test RG.status().rate == 4.0
         RG.note_rate_error!()
         @test RG.status().rate == 2.0        # ×0.5
@@ -65,8 +75,14 @@ const RG = Kaimon.RateGovernor
     end
 
     @testset "rate error pauses refills (cooldown)" begin
-        RG.init!(RG.Config(max_concurrency = 4, rate_rps = 100.0,
-                           bucket_capacity = 1.0, base_cooldown_s = 10.0))
+        RG.init!(
+            RG.Config(
+                max_concurrency = 4,
+                rate_rps = 100.0,
+                bucket_capacity = 1.0,
+                base_cooldown_s = 10.0,
+            ),
+        )
         RG.with_admission(() -> nothing)     # drain the one token
         RG.note_rate_error!(5.0)             # explicit retry-after ⇒ 5s pause
         st = RG.status()
@@ -76,8 +92,14 @@ const RG = Kaimon.RateGovernor
     end
 
     @testset "tokens/min budget throttles admission" begin
-        RG.init!(RG.Config(max_concurrency = 4, rate_rps = 1e6, bucket_capacity = 1e6,
-                           tokens_per_min = 100.0))
+        RG.init!(
+            RG.Config(
+                max_concurrency = 4,
+                rate_rps = 1e6,
+                bucket_capacity = 1e6,
+                tokens_per_min = 100.0,
+            ),
+        )
         @test RG.status().tokens_per_min == 0
         RG.record_turn_end!(150)             # over the 100 tok/min budget
         @test RG.status().tokens_per_min == 150

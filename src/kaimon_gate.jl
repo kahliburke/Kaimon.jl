@@ -62,10 +62,12 @@ Push a `notifications/tools/list_changed` notification to the pending queue
 so MCP clients re-fetch the tool list on the next SSE response.
 """
 function _notify_tools_changed()
-    _queue_notification!(Dict{String,Any}(
-        "jsonrpc" => "2.0",
-        "method" => "notifications/tools/list_changed",
-    ))
+    _queue_notification!(
+        Dict{String,Any}(
+            "jsonrpc" => "2.0",
+            "method" => "notifications/tools/list_changed",
+        ),
+    )
 end
 
 # ── Gate mode globals ──────────────────────────────────────────────────────
@@ -107,10 +109,9 @@ function _set_session_agent_id!(sid::AbstractString, agent_id::AbstractString)
 end
 
 """The Kaimon agent_id owning MCP session `sid`, or "" if none."""
-_session_agent_id(sid::AbstractString) =
-    lock(_SESSION_AGENT_ID_LOCK) do
-        get(_SESSION_AGENT_ID, String(sid), "")
-    end
+_session_agent_id(sid::AbstractString) = lock(_SESSION_AGENT_ID_LOCK) do
+    get(_SESSION_AGENT_ID, String(sid), "")
+end
 
 """The Kaimon agent_id for the in-flight tool dispatch, or "" for external/self calls."""
 _current_mcp_agent_id() = string(get(task_local_storage(), :mcp_agent_id, ""))
@@ -133,7 +134,10 @@ function _bind_caller_session!(gate_key::AbstractString)
     if mgr !== nothing
         conn = get_connection_by_key(mgr, String(gate_key))
         if conn !== nothing && !isempty(conn.project_path)
-            try; _persist_session_project!(caller, conn.project_path); catch; end
+            try
+                _persist_session_project!(caller, conn.project_path)
+            catch
+            end
         end
     end
     return nothing
@@ -183,8 +187,11 @@ function _root_uri_to_path(uri)
     uri isa AbstractString || return nothing
     s = String(uri)
     startswith(s, "file://") || return nothing
-    s = s[length("file://")+1:end]
-    s = replace(s, r"%([0-9A-Fa-f]{2})" => m -> string(Char(parse(UInt8, m[2:end], base = 16))))
+    s = s[(length("file://")+1):end]
+    s = replace(
+        s,
+        r"%([0-9A-Fa-f]{2})" => m -> string(Char(parse(UInt8, m[2:end], base = 16))),
+    )
     return isempty(s) ? nothing : s
 end
 
@@ -367,8 +374,12 @@ Connect to a TCP gate at `host:port` using the active ConnectionManager.
 Used by the REST API endpoint to allow browser-driven gate connections.
 Throws if no ConnectionManager is available or connection fails.
 """
-function connect_tcp_to_active_manager(host::String, port::Int; name::String = "remote",
-                                       server_key::String = "")
+function connect_tcp_to_active_manager(
+    host::String,
+    port::Int;
+    name::String = "remote",
+    server_key::String = "",
+)
     mgr = GATE_CONN_MGR[]
     if mgr === nothing
         error("No ConnectionManager available — gate services not running")
@@ -410,7 +421,7 @@ TUI startup after sessions have had time to connect.
 """
 function _reconcile_stale_jobs!(conn_mgr)
     conn_mgr === nothing && return
-    running_jobs = Database.list_jobs(; status="running", limit=50)
+    running_jobs = Database.list_jobs(; status = "running", limit = 50)
     isempty(running_jobs) && return
     _push_log!(:info, "Reconciling $(length(running_jobs)) stale background job(s)")
 
@@ -424,7 +435,7 @@ function _reconcile_stale_jobs!(conn_mgr)
             # Session not connected — mark as lost if old enough
             started = get(job, "started_at", 0.0)
             if started > 0 && time() - started > 3600  # 1 hour
-                Database.update_job!(eval_id; status="lost", finished_at=time())
+                Database.update_job!(eval_id; status = "lost", finished_at = time())
                 _push_log!(:warn, "Job $eval_id marked as lost (session gone)")
             end
             continue
@@ -432,9 +443,11 @@ function _reconcile_stale_jobs!(conn_mgr)
 
         # Try to retrieve cached result from the gate
         try
-            result = _req_send_recv(conn,
+            result = _req_send_recv(
+                conn,
                 (type = :get_job_result, eval_id = eval_id);
-                caller_timeout = 5.0)
+                caller_timeout = 5.0,
+            )
             if result.ok && get(result.response, :type, :error) == :job_result
                 data = get(result.response, :data, "")
                 if !isempty(data)
@@ -442,14 +455,29 @@ function _reconcile_stale_jobs!(conn_mgr)
                     response = try
                         _safe_deserialize(data; label = "job_result")
                     catch
-                        (stdout="", stderr="", value_repr=data, exception=nothing, backtrace=nothing)
+                        (
+                            stdout = "",
+                            stderr = "",
+                            value_repr = data,
+                            exception = nothing,
+                            backtrace = nothing,
+                        )
                     end
-                    formatted = _format_gate_response(response, true, false, Ref(false), 6000)
-                    preview = hasproperty(response, :value_repr) ? string(response.value_repr) : ""
-                    status = hasproperty(response, :exception) && response.exception !== nothing ? "failed" : "completed"
-                    Database.update_job!(eval_id;
-                        status=status, result=formatted,
-                        result_preview=first(preview, 500), finished_at=time())
+                    formatted =
+                        _format_gate_response(response, true, false, Ref(false), 6000)
+                    preview =
+                        hasproperty(response, :value_repr) ? string(response.value_repr) :
+                        ""
+                    status =
+                        hasproperty(response, :exception) &&
+                        response.exception !== nothing ? "failed" : "completed"
+                    Database.update_job!(
+                        eval_id;
+                        status = status,
+                        result = formatted,
+                        result_preview = first(preview, 500),
+                        finished_at = time(),
+                    )
                     _push_log!(:info, "Job $eval_id reconciled: $status")
                 end
             end
@@ -596,7 +624,10 @@ function execute_via_gate_streaming(
             request_id = eval_id,
             main_thread = main_thread,
         )
-        try; put!(result_channel, response); catch; end
+        try
+            put!(result_channel, response)
+        catch
+        end
     end
 
     # Wait for the result, but promote to background job if too slow
@@ -626,13 +657,19 @@ function execute_via_gate_streaming(
         end
 
         # Persist to database so job survives TUI restarts
-        Database.persist_job!(eval_id, short_key(conn), code,
-            mgr !== nothing ? mgr.eval_history[end].started_at : time(), promoted_at)
+        Database.persist_job!(
+            eval_id,
+            short_key(conn),
+            code,
+            mgr !== nothing ? mgr.eval_history[end].started_at : time(),
+            promoted_at,
+        )
 
         # Push activity event and inflight entry so promotion is visible in the TUI
         dname = isempty(conn.display_name) ? conn.name : conn.display_name
         code_preview = length(code) > 60 ? first(code, 60) * "..." : code
-        job_inflight_id = _push_inflight_start!("⏳ job:$eval_id", code_preview, short_key(conn))
+        job_inflight_id =
+            _push_inflight_start!("⏳ job:$eval_id", code_preview, short_key(conn))
         _push_inflight_progress!(job_inflight_id, "running in background")
         _register_job_inflight!(eval_id, job_inflight_id)
 
@@ -651,7 +688,13 @@ function execute_via_gate_streaming(
                     else
                         :completed
                     end
-                    formatted = _format_gate_response(res, show_return_value, quiet, was_stripped, max_output)
+                    formatted = _format_gate_response(
+                        res,
+                        show_return_value,
+                        quiet,
+                        was_stripped,
+                        max_output,
+                    )
                     preview = if hasproperty(res, :value_repr)
                         string(res.value_repr)
                     elseif hasproperty(res, :exception) && res.exception !== nothing
@@ -659,30 +702,52 @@ function execute_via_gate_streaming(
                     else
                         ""
                     end
-                    mgr !== nothing && _record_eval_done!(mgr, eval_id, status, preview; full_result = formatted)
-                    Database.update_job!(eval_id;
+                    mgr !== nothing && _record_eval_done!(
+                        mgr,
+                        eval_id,
+                        status,
+                        preview;
+                        full_result = formatted,
+                    )
+                    Database.update_job!(
+                        eval_id;
                         status = string(status),
                         result = formatted,
                         result_preview = preview,
-                        finished_at = time())
-                    elapsed = round(time() - promoted_at, digits=1)
-                    _push_job_progress!(eval_id,
-                        "$(status == :completed ? "✓" : "✗") $status after $(elapsed)s")
+                        finished_at = time(),
+                    )
+                    elapsed = round(time() - promoted_at, digits = 1)
+                    _push_job_progress!(
+                        eval_id,
+                        "$(status == :completed ? "✓" : "✗") $status after $(elapsed)s",
+                    )
                     _finish_job_inflight!(eval_id)
-                    _push_activity!(status == :completed ? :job_completed : :job_failed,
-                        "ex", dname,
+                    _push_activity!(
+                        status == :completed ? :job_completed : :job_failed,
+                        "ex",
+                        dname,
                         "$(status == :completed ? "✓" : "✗") Job $eval_id $status after $(elapsed)s";
-                        success = status == :completed)
+                        success = status == :completed,
+                    )
                 end
             catch e
                 err_msg = sprint(showerror, e)
                 mgr !== nothing && _record_eval_done!(mgr, eval_id, :failed, err_msg)
-                Database.update_job!(eval_id;
-                    status = "failed", result = err_msg,
-                    result_preview = first(err_msg, 500), finished_at = time())
+                Database.update_job!(
+                    eval_id;
+                    status = "failed",
+                    result = err_msg,
+                    result_preview = first(err_msg, 500),
+                    finished_at = time(),
+                )
                 _finish_job_inflight!(eval_id)
-                _push_activity!(:job_failed, "ex", dname,
-                    "✗ Job $eval_id failed: $(first(err_msg, 80))"; success = false)
+                _push_activity!(
+                    :job_failed,
+                    "ex",
+                    dname,
+                    "✗ Job $eval_id failed: $(first(err_msg, 80))";
+                    success = false,
+                )
             end
         end
 
@@ -692,7 +757,7 @@ function execute_via_gate_streaming(
             end
             return time()
         end
-        elapsed = round(time() - started_at, digits=1)
+        elapsed = round(time() - started_at, digits = 1)
         return "⏳ Computation promoted to background job after $(elapsed)s.\n" *
                "Job ID: $eval_id\n" *
                "Session: $(isempty(conn.display_name) ? conn.name : conn.display_name)\n" *
@@ -724,13 +789,8 @@ function execute_via_gate_streaming(
         _record_eval_done!(mgr, eval_id, status, preview)
     end
 
-    result = _format_gate_response(
-        response,
-        show_return_value,
-        quiet,
-        was_stripped,
-        max_output,
-    )
+    result =
+        _format_gate_response(response, show_return_value, quiet, was_stripped, max_output)
 
     return result
 end
@@ -765,4 +825,3 @@ end
 # ============================================================================
 # Tool Configuration Management
 # ============================================================================
-

@@ -43,7 +43,7 @@ end
     try
         J = "/opt/julia/bin/julia"
         replay(argv...) = (KG._ORIGINAL_ARGV[] = String[argv...]; KG._should_replay_argv())
-        base(argv...)   = (KG._ORIGINAL_ARGV[] = String[argv...]; KG._base_julia_args())
+        base(argv...) = (KG._ORIGINAL_ARGV[] = String[argv...]; KG._base_julia_args())
 
         # A custom sysimage is a launch FLAG, never user code — in every spelling.
         # The separated `--sysimage <path>` form is the trap: its value is a real file,
@@ -62,12 +62,26 @@ end
         @test replay(J, "--load=$img", "-i")
         @test replay(J, "-J$img", img)                   # positional script
         # ...but our own injected restart code does not
-        @test !replay(J, "-i", "-e", "using KaimonGate\nKaimonGate.Gate.serve(session_id=\"ab\")")
+        @test !replay(
+            J,
+            "-i",
+            "-e",
+            "using KaimonGate\nKaimonGate.Gate.serve(session_id=\"ab\")",
+        )
 
         # Reconstruction fuses each flag with its separate value so the value can't be
         # re-parsed as a positional, and preserves every non-injected flag verbatim.
-        b = base(J, "--sysimage", img, "-t", "3", "--heap-size-hint=2G",
-                 "--project=/p", "-i", "--startup-file=no")
+        b = base(
+            J,
+            "--sysimage",
+            img,
+            "-t",
+            "3",
+            "--heap-size-hint=2G",
+            "--project=/p",
+            "-i",
+            "--startup-file=no",
+        )
         @test b[1] == J
         @test "--sysimage=$img" in b
         @test "-t3" in b

@@ -84,7 +84,11 @@ using Kaimon
 
     out = IOBuffer()
     # -t4 forces real concurrency for the correlation check.
-    cmd = pipeline(`$(Base.julia_cmd()) --project=$proj -t4 $path`; stdout = out, stderr = out)
+    cmd = pipeline(
+        `$(Base.julia_cmd()) --project=$proj -t4 $path`;
+        stdout = out,
+        stderr = out,
+    )
     proc = run(cmd; wait = false)
     wait(proc)
     output = String(take!(out))

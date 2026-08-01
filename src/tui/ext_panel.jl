@@ -53,7 +53,7 @@ function ExtPanelContext(ext::ManagedExtension, conn_mgr)
     )
     # Close over ctx so the panel just calls ctx.eval("code")
     ctx.eval = code -> ext_panel_eval(ctx, code)
-    ctx.request = (tool, args=Dict{String,Any}()) -> ext_panel_request(ctx, tool, args)
+    ctx.request = (tool, args = Dict{String,Any}()) -> ext_panel_request(ctx, tool, args)
     return ctx
 end
 
@@ -62,7 +62,11 @@ end
 
 Send a tool call to the extension's gate session. Blocks until response.
 """
-function ext_panel_request(ctx::ExtPanelContext, tool_name::String, args::Dict=Dict{String,Any}())
+function ext_panel_request(
+    ctx::ExtPanelContext,
+    tool_name::String,
+    args::Dict = Dict{String,Any}(),
+)
     isempty(ctx.session_key) && return "Error: extension not connected"
     ctx.conn_mgr === nothing && return "Error: no connection manager"
     conn = get_connection_by_key(ctx.conn_mgr, ctx.session_key)
@@ -77,10 +81,13 @@ Evaluate Julia code in the extension's gate session. Blocks until response.
 Returns `(stdout, stderr, value_repr, ...)` — see `eval_remote` for full shape.
 """
 function ext_panel_eval(ctx::ExtPanelContext, code::String)
-    isempty(ctx.session_key) && return (stdout="", stderr="Error: extension not connected", value_repr="")
-    ctx.conn_mgr === nothing && return (stdout="", stderr="Error: no connection manager", value_repr="")
+    isempty(ctx.session_key) &&
+        return (stdout = "", stderr = "Error: extension not connected", value_repr = "")
+    ctx.conn_mgr === nothing &&
+        return (stdout = "", stderr = "Error: no connection manager", value_repr = "")
     conn = get_connection_by_key(ctx.conn_mgr, ctx.session_key)
-    conn === nothing && return (stdout="", stderr="Error: extension session not found", value_repr="")
+    conn === nothing &&
+        return (stdout = "", stderr = "Error: extension session not found", value_repr = "")
     eval_remote(conn, code)
 end
 
@@ -112,8 +119,8 @@ function open_ext_panel!(m::KaimonModel, ext::ManagedExtension)
     tui_file = ext.config.manifest.tui_file
     isempty(tui_file) && return false
 
-    abs_path = isabspath(tui_file) ? tui_file :
-        joinpath(ext.config.entry.project_path, tui_file)
+    abs_path =
+        isabspath(tui_file) ? tui_file : joinpath(ext.config.entry.project_path, tui_file)
 
     if !isfile(abs_path)
         @warn "Extension TUI file not found" path=abs_path
@@ -136,16 +143,17 @@ function open_ext_panel!(m::KaimonModel, ext::ManagedExtension)
                 Base.include(ext_mod, abs_path)
 
                 for fn in (:init, :view, :cleanup!)
-                    isdefined(ext_mod, fn) || error("TUI module missing required function: $fn")
+                    isdefined(ext_mod, fn) ||
+                        error("TUI module missing required function: $fn")
                 end
 
                 state = Base.invokelatest() do
                     ext_mod.init(ctx)
                 end
 
-                (success=true, ext_mod=ext_mod, state=state)
+                (success = true, ext_mod = ext_mod, state = state)
             catch e
-                (success=false, error_msg=sprint(showerror, e))
+                (success = false, error_msg = sprint(showerror, e))
             end
         end
     end
@@ -186,8 +194,8 @@ function _ext_panel_update!(panel::ActiveExtPanel, tick::Int)
     # so we drain pushes from the correct buffer.
     for ext in get_managed_extensions()
         if ext.config.manifest.namespace == panel.ctx.namespace &&
-                !isempty(ext.session_key) &&
-                ext.session_key != panel.ctx.session_key
+           !isempty(ext.session_key) &&
+           ext.session_key != panel.ctx.session_key
             old_key = panel.ctx.session_key
             panel.ctx.session_key = ext.session_key
             _push_log!(:info, "Panel session key updated: $old_key → $(ext.session_key)")
@@ -224,38 +232,53 @@ function _ext_panel_view!(panel::ActiveExtPanel, area::Rect, buf::Buffer)
     block = Block(
         title = title,
         border_style = tstyle(:accent),
-        title_style = tstyle(:accent, bold=true),
+        title_style = tstyle(:accent, bold = true),
         box = BOX_HEAVY,
     )
     inner = render(block, area, buf)
 
     # Clear inner area
     th = Tachikoma.theme()
-    for row in inner.y:bottom(inner)
-        for col in inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style(bg=th.bg))
+    for row = inner.y:bottom(inner)
+        for col = inner.x:right(inner)
+            set_char!(buf, col, row, ' ', Style(bg = th.bg))
         end
     end
 
     if panel.loading
         si = mod1(panel.ctx.tick ÷ 3, length(_LOADING_FRAMES))
-        set_string!(buf, inner.x + 2, inner.y + 1,
+        set_string!(
+            buf,
+            inner.x + 2,
+            inner.y + 1,
             "$(_LOADING_FRAMES[si]) Loading extension panel...",
             tstyle(:accent);
-            max_x=right(inner))
+            max_x = right(inner),
+        )
         return
     end
 
     if !isempty(panel.error_msg)
-        set_string!(buf, inner.x + 1, inner.y + 1,
-            "Panel error:", tstyle(:error, bold=true);
-            max_x=right(inner))
+        set_string!(
+            buf,
+            inner.x + 1,
+            inner.y + 1,
+            "Panel error:",
+            tstyle(:error, bold = true);
+            max_x = right(inner),
+        )
         lines = split(panel.error_msg, '\n')
         for (i, line) in enumerate(lines)
             y = inner.y + 2 + i
             y > bottom(inner) && break
-            set_string!(buf, inner.x + 1, y, String(line), tstyle(:error);
-                max_x=right(inner))
+            set_string!(
+                buf,
+                inner.x + 1,
+                y,
+                String(line),
+                tstyle(:error);
+                max_x = right(inner),
+            )
         end
         return
     end

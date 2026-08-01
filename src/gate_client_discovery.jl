@@ -19,7 +19,7 @@ function _is_pid_alive(pid::Int)
     # process reads as dead (reaping live local sessions during discovery).
     Sys.iswindows() && return true
     try
-        state = strip(read(pipeline(`ps -o state= -p $pid`; stderr=devnull), String))
+        state = strip(read(pipeline(`ps -o state= -p $pid`; stderr = devnull), String))
         !startswith(state, "Z")
     catch
         false
@@ -35,8 +35,12 @@ remote TCP gate's PID belongs to another machine and must never be reaped here.
 """
 function _is_local_host(host::AbstractString)
     h = lowercase(strip(host))
-    return h == "" || h == "127.0.0.1" || h == "::1" || h == "localhost" ||
-           h == "0.0.0.0" || startswith(h, "127.")
+    return h == "" ||
+           h == "127.0.0.1" ||
+           h == "::1" ||
+           h == "localhost" ||
+           h == "0.0.0.0" ||
+           startswith(h, "127.")
 end
 
 """
@@ -58,7 +62,8 @@ True for a TCP gate whose endpoint resolves to the local machine. Localhost TCP
 gates are subject to PID-liveness reaping just like IPC sessions; remote ones
 are not (their PID is meaningless here).
 """
-_is_local_tcp(conn::REPLConnection) = _is_tcp(conn) && _is_local_host(_endpoint_host(conn.endpoint))
+_is_local_tcp(conn::REPLConnection) =
+    _is_tcp(conn) && _is_local_host(_endpoint_host(conn.endpoint))
 
 """
     _local_gate_token() -> String
@@ -187,7 +192,8 @@ function cleanup_stale_sessions!(sock_dir::String)
         # machine, so their PID can't be checked here and is never reaped. The
         # TCP meta `pid` is the gate's own getpid() once a pong has landed.
         session_mode = Symbol(get(meta, "mode", "ipc"))
-        local_reapable = session_mode != :tcp ||
+        local_reapable =
+            session_mode != :tcp ||
             (_is_local_host(_endpoint_host(get(meta, "endpoint", ""))) && pid > 0)
         if local_reapable && !_is_pid_alive(pid)
             @debug "Cleaning stale session" session_id pid
@@ -292,19 +298,23 @@ function discover_sessions(mgr::ConnectionManager)
             # a TCP session_id is stable per host:port, a same-port restart is adopted by the
             # health checker via its pong, and a different-port restart has a new session_id that
             # IS still discovered.
-            if _tcp_key in registered_tcp || !_is_local_host(_tcp_host) ||
+            if _tcp_key in registered_tcp ||
+               !_is_local_host(_tcp_host) ||
                haskey(known_id_pids, session_id)
                 continue
             end
         end
-        if session_mode != :tcp && haskey(known_id_pids, session_id) && known_id_pids[session_id] == pid
+        if session_mode != :tcp &&
+           haskey(known_id_pids, session_id) &&
+           known_id_pids[session_id] == pid
             continue
         end
 
         # Skip and clean up sessions whose PID is no longer alive. IPC always;
         # localhost TCP gates with a known (>0), dead PID too. Remote TCP gates
         # run elsewhere, so their PID is unverifiable here and never reaped.
-        local_reapable = session_mode != :tcp ||
+        local_reapable =
+            session_mode != :tcp ||
             (_is_local_host(_endpoint_host(get(meta, "endpoint", ""))) && pid > 0)
         if local_reapable && !_is_pid_alive(pid)
             _remove_session_files(mgr.sock_dir, session_id)
@@ -395,9 +405,16 @@ resolved from the gate's pong response (supports ephemeral ports).
 
 Returns the connected `REPLConnection`, or throws on failure.
 """
-function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
-                      name::String = "", token::String = "", stream_port::Int = 0,
-                      server_key::String = "", label::String = "")
+function connect_tcp!(
+    mgr::ConnectionManager,
+    host::String,
+    port::Int;
+    name::String = "",
+    token::String = "",
+    stream_port::Int = 0,
+    server_key::String = "",
+    label::String = "",
+)
     endpoint = "tcp://$(host):$(port)"
     stream_endpoint = stream_port > 0 ? "tcp://$(host):$(stream_port)" : ""
     sid = "tcp-$(host)-$(port)"
@@ -410,7 +427,8 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
     lock(mgr.lock) do
         idx = findfirst(c -> c.session_id == sid, mgr.connections)
         if idx !== nothing
-            if mgr.connections[idx].status in (:connected, :evaluating, :stalled, :connecting)
+            if mgr.connections[idx].status in
+               (:connected, :evaluating, :stalled, :connecting)
                 error("Already connected to $endpoint")
             end
             deleteat!(mgr.connections, idx)
@@ -482,9 +500,10 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
         else
             # A pinned CURVE link that goes silent is indistinguishable in-band
             # from a changed key — the wrong key just fails the handshake. Say so.
-            msg *= " (CURVE: the gate may be down, or its server key may have CHANGED " *
-                   "since it was pinned — verify out-of-band, e.g. " *
-                   "KaimonGate.verify_server_key_via_ssh(\"$host\", $port), then re-pin)"
+            msg *=
+                " (CURVE: the gate may be down, or its server key may have CHANGED " *
+                "since it was pinned — verify out-of-band, e.g. " *
+                "KaimonGate.verify_server_key_via_ssh(\"$host\", $port), then re-pin)"
         end
         error(msg)
     end
@@ -494,7 +513,8 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
 
     # Populate connection from pong
     # Prefer pre-set stream_endpoint (from stream_port config) over pong value
-    pong_stream = !isempty(conn.stream_endpoint) ? conn.stream_endpoint :
+    pong_stream =
+        !isempty(conn.stream_endpoint) ? conn.stream_endpoint :
         string(get(pong, :stream_endpoint, ""))
     # Skip if connect! already wired the SUB (a fixed stream_port sets stream_endpoint
     # before connect!, so it connects there); only ephemeral gates reach it via the pong.
@@ -512,7 +532,10 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
             conn.sub_socket = sub
             _push_log!(:info, "TCP stream connected: $pong_stream ($(conn.display_name))")
         catch e
-            _push_log!(:warn, "TCP stream connect failed: $pong_stream — $(sprint(showerror, e))")
+            _push_log!(
+                :warn,
+                "TCP stream connect failed: $pong_stream — $(sprint(showerror, e))",
+            )
         end
     end
     new_path = string(get(pong, :project_path, ""))
@@ -530,13 +553,20 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
     _fire_sessions_changed(mgr)
 
     # Write a local metadata file so reconnect works after TUI restart
-    KaimonGate.write_metadata(sid, conn.name, endpoint, conn.stream_endpoint; spawned_by = "user", mode = :tcp)
+    KaimonGate.write_metadata(
+        sid,
+        conn.name,
+        endpoint,
+        conn.stream_endpoint;
+        spawned_by = "user",
+        mode = :tcp,
+    )
 
     return conn
 end
 
 # Backoff state for TCP gate polling — keyed by "host:port"
-const _TCP_POLL_BACKOFF = Dict{String, @NamedTuple{failures::Int, next_try::Float64}}()
+const _TCP_POLL_BACKOFF = Dict{String,@NamedTuple{failures::Int,next_try::Float64}}()
 const _TCP_POLL_BACKOFF_SCHEDULE = [5.0, 15.0, 30.0, 60.0, 120.0]  # seconds
 
 """Poll registered TCP gate endpoints with exponential backoff on failure."""
@@ -553,7 +583,12 @@ function _poll_tcp_gates!(mgr::ConnectionManager)
 
         # Already connected?
         already = lock(mgr.lock) do
-            any(c -> c.session_id == sid && c.status in (:connected, :evaluating, :stalled, :connecting), mgr.connections)
+            any(
+                c ->
+                    c.session_id == sid &&
+                    c.status in (:connected, :evaluating, :stalled, :connecting),
+                mgr.connections,
+            )
         end
         if already
             # Reset backoff and sync display name from config
@@ -579,15 +614,27 @@ function _poll_tcp_gates!(mgr::ConnectionManager)
 
         # Try to connect
         try
-            connect_tcp!(mgr, entry.host, entry.port; name = entry.name, token = entry.token, stream_port = entry.stream_port, server_key = entry.server_key)
+            connect_tcp!(
+                mgr,
+                entry.host,
+                entry.port;
+                name = entry.name,
+                token = entry.token,
+                stream_port = entry.stream_port,
+                server_key = entry.server_key,
+            )
             delete!(_TCP_POLL_BACKOFF, backoff_key)
-            _push_log!(:info, "TCP gate connected: $(entry.name) ($(entry.host):$(entry.port))")
+            _push_log!(
+                :info,
+                "TCP gate connected: $(entry.name) ($(entry.host):$(entry.port))",
+            )
         catch
             # Failed — increase backoff
             failures = state !== nothing ? state.failures + 1 : 1
             idx = min(failures, length(_TCP_POLL_BACKOFF_SCHEDULE))
             delay = _TCP_POLL_BACKOFF_SCHEDULE[idx]
-            _TCP_POLL_BACKOFF[backoff_key] = (failures = failures, next_try = time() + delay)
+            _TCP_POLL_BACKOFF[backoff_key] =
+                (failures = failures, next_try = time() + delay)
         end
     end
 end
@@ -598,7 +645,8 @@ function _apply_mirror_pref!(conn::REPLConnection)
     try
         session_prefs = load_session_prefs()
         mirror_val = resolve_session_pref(session_prefs, conn.project_path, :mirror_repl)
-        mirror_enabled = mirror_val !== nothing ? mirror_val : get_gate_mirror_repl_preference()
+        mirror_enabled =
+            mirror_val !== nothing ? mirror_val : get_gate_mirror_repl_preference()
         set_mirror_repl!(conn, mirror_enabled)
     catch e
         @debug "Failed to apply mirror_repl preference to gate" exception = e
@@ -619,8 +667,11 @@ function connect!(mgr::ConnectionManager, conn::REPLConnection)
 
         # Persistent DEALER for this connection (protocol v2) — created once, CURVE
         # applied once. All requests multiplex over it (see RequestChannel).
-        conn.req_channel = RequestChannel(ctx, conn.endpoint;
-            curve! = sock -> _apply_curve_client!(sock, conn))
+        conn.req_channel = RequestChannel(
+            ctx,
+            conn.endpoint;
+            curve! = sock -> _apply_curve_client!(sock, conn),
+        )
 
         # Connect the stream SUB when the endpoint is already known: IPC always, and TCP
         # when it came from session metadata (the watcher/discovery path — a locally-spawned
@@ -678,4 +729,3 @@ function connect!(mgr::ConnectionManager, conn::REPLConnection)
         return false
     end
 end
-

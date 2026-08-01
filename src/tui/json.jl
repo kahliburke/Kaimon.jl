@@ -74,11 +74,11 @@ function _json_parse_value(s, i)
         _json_parse_string(s, i)
     elseif c == '{'
         _json_parse_object(s, i)
-    elseif c == 't' && i + 3 <= length(s) && s[i:i+3] == "true"
+    elseif c == 't' && i + 3 <= length(s) && s[i:(i+3)] == "true"
         (true, i + 4)
-    elseif c == 'f' && i + 4 <= length(s) && s[i:i+4] == "false"
+    elseif c == 'f' && i + 4 <= length(s) && s[i:(i+4)] == "false"
         (false, i + 5)
-    elseif c == 'n' && i + 3 <= length(s) && s[i:i+3] == "null"
+    elseif c == 'n' && i + 3 <= length(s) && s[i:(i+3)] == "null"
         (nothing, i + 4)
     elseif c == '-' || isdigit(c)
         j = i
@@ -86,7 +86,7 @@ function _json_parse_value(s, i)
         while j <= length(s) && (isdigit(s[j]) || s[j] == '.')
             j += 1
         end
-        (parse(Float64, s[i:j-1]), j)
+        (parse(Float64, s[i:(j-1)]), j)
     else
         error("unexpected char '$c' at $i")
     end

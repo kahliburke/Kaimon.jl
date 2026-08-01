@@ -72,7 +72,7 @@ function _start_housekeeping!()
 
     HOUSEKEEPING_TASK[] = Threads.@spawn begin
         # Give gate sessions time to connect before the first index sync.
-        for _ in 1:15
+        for _ = 1:15
             HOUSEKEEPING_STOP[] && break
             sleep(1)
         end
@@ -86,7 +86,7 @@ function _start_housekeeping!()
         end
 
         while !HOUSEKEEPING_STOP[]
-            for _ in 1:HOUSEKEEPING_INTERVAL_SECONDS
+            for _ = 1:HOUSEKEEPING_INTERVAL_SECONDS
                 HOUSEKEEPING_STOP[] && break
                 sleep(1)
             end
@@ -196,8 +196,10 @@ only `wait(Condition())`s, so a Ctrl-C kills it without running teardown —
 leaving gate/extension subprocesses and socket files behind.
 """
 function _headless_wait_and_shutdown(port)
-    printstyled("\n⏻ Headless server on port $port — press Ctrl-Q (or Ctrl-C) to shut down.\n";
-                color = :light_black)
+    printstyled(
+        "\n⏻ Headless server on port $port — press Ctrl-Q (or Ctrl-C) to shut down.\n";
+        color = :light_black,
+    )
     flush(stdout)
     _wait_for_quit_key()
     printstyled("\nShutting down…\n"; color = :light_black)
@@ -220,7 +222,10 @@ our clean shutdown instead of killing the process. With no interactive TTY
 """
 function _wait_for_quit_key()
     if !(stdin isa Base.TTY)
-        try; wait(Condition()); catch; end
+        try
+            wait(Condition())
+        catch
+        end
         return
     end
     term = REPL.Terminals.TTYTerminal(get(ENV, "TERM", "dumb"), stdin, stdout, stderr)
@@ -235,7 +240,10 @@ function _wait_for_quit_key()
             (b == 0x11 || b == 0x03) && break   # Ctrl-Q or Ctrl-C
         end
     finally
-        try; REPL.Terminals.raw!(term, false); catch; end
+        try
+            REPL.Terminals.raw!(term, false)
+        catch
+        end
     end
 end
 
@@ -290,7 +298,8 @@ Generate and add a new API key to the global configuration.
 """
 function generate_key()
     config = load_global_config()
-    config === nothing && error("No configuration found. Run Kaimon.setup_security() first.")
+    config === nothing &&
+        error("No configuration found. Run Kaimon.setup_security() first.")
     new_key = generate_api_key()
     if update_global_config!(api_keys = vcat(config.api_keys, [new_key]))
         println("✅ Added new API key: $new_key")
@@ -422,7 +431,8 @@ function call_tool(tool_id::Symbol, args::Dict)
         result = try
             tool.handler(args)
         catch e
-            if e isa MethodError && hasmethod(tool.handler, Tuple{typeof(args),typeof(nothing)})
+            if e isa MethodError &&
+               hasmethod(tool.handler, Tuple{typeof(args),typeof(nothing)})
                 # Handler supports streaming, call with both parameters
                 tool.handler(args, nothing)
             else
@@ -553,26 +563,47 @@ function _install_profile_hook!()
             try
                 # Wait (event-driven) for the trigger file to appear.
                 if !isfile(req)
-                    try; watch_folder(dir, 3600); catch; sleep(1.0); end
+                    try
+                        watch_folder(dir, 3600)
+                    catch
+                        sleep(1.0)
+                    end
                     isfile(req) || continue
                 end
-                secs = clamp(something(tryparse(Float64, strip(read(req, String))),
-                                       5.0), 0.5, 60.0)
+                secs = clamp(
+                    something(tryparse(Float64, strip(read(req, String))), 5.0),
+                    0.5,
+                    60.0,
+                )
                 rm(req; force = true)
                 Profile.clear()
                 Profile.init(; n = 30_000_000, delay = 0.001)
                 Profile.@profile sleep(secs)
                 open(out, "w") do io
-                    println(io, "# in-process CPU profile, ", secs, "s window, ",
-                            Threads.nthreads(), " threads")
-                    Base.invokelatest(Profile.print, io;
-                        format = :flat, sortedby = :count, mincount = 5)
+                    println(
+                        io,
+                        "# in-process CPU profile, ",
+                        secs,
+                        "s window, ",
+                        Threads.nthreads(),
+                        " threads",
+                    )
+                    Base.invokelatest(
+                        Profile.print,
+                        io;
+                        format = :flat,
+                        sortedby = :count,
+                        mincount = 5,
+                    )
                 end
                 Profile.clear()
             catch e
-                try; open(out, "w") do io
-                    println(io, "profile hook error: ", sprint(showerror, e))
-                end; catch; end
+                try
+                    open(out, "w") do io
+                        println(io, "profile hook error: ", sprint(showerror, e))
+                    end
+                catch
+                end
                 sleep(1.0)
             end
         end
@@ -587,7 +618,7 @@ function (@main)(ARGS)
     kaimon_dir = dirname(@__DIR__)
     julia = joinpath(Sys.BINDIR, "julia")
     cmd = `$julia --startup-file=no --project=$kaimon_dir -e "using Pkg; Pkg.resolve(io=devnull); Pkg.instantiate(io=devnull)"`
-    run(pipeline(cmd; stdout=devnull, stderr=devnull); wait=false)
+    run(pipeline(cmd; stdout = devnull, stderr = devnull); wait = false)
 
     cli_port = nothing
     theme = nothing
@@ -614,18 +645,20 @@ function (@main)(ARGS)
             println("Reset: Kaimon will re-check your gate setup on next start.")
             return
         elseif arg in ("--help", "-h")
-            println("""
-            Kaimon — persistent MCP server with terminal dashboard
+            println(
+                """
+        Kaimon — persistent MCP server with terminal dashboard
 
-            Usage: kaimon [options]
+        Usage: kaimon [options]
 
-            Options:
-              -p, --port PORT             MCP HTTP server port (default: 2828)
-              -t, --theme NAME            Theme: kokaku, esper, motoko, neuromancer (default: kokaku)
-              -r, --revise                Load Revise for live code reloading
-              --headless                  Run without TUI (headless MCP server)
-              --reset-global-prompt       Re-enable the "add to global env" prompt
-              -h, --help                  Show this help""")
+        Options:
+          -p, --port PORT             MCP HTTP server port (default: 2828)
+          -t, --theme NAME            Theme: kokaku, esper, motoko, neuromancer (default: kokaku)
+          -r, --revise                Load Revise for live code reloading
+          --headless                  Run without TUI (headless MCP server)
+          --reset-global-prompt       Re-enable the "add to global env" prompt
+          -h, --help                  Show this help""",
+            )
             return
         else
             println("Unknown argument: $arg")
@@ -638,7 +671,11 @@ function (@main)(ARGS)
     port = if cli_port !== nothing
         cli_port
     else
-        cfg = try; load_global_config(); catch; nothing; end
+        cfg = try
+            load_global_config()
+        catch
+            nothing
+        end
         (cfg !== nothing && cfg.port != 0) ? cfg.port : 2828
     end
 
@@ -646,15 +683,21 @@ function (@main)(ARGS)
     # isolated environment, so temporarily add the user's shared env to LOAD_PATH.
     _Revise = nothing
     if use_revise
-        shared_env = joinpath(homedir(), ".julia", "environments",
-                              "v$(VERSION.major).$(VERSION.minor)")
+        shared_env = joinpath(
+            homedir(),
+            ".julia",
+            "environments",
+            "v$(VERSION.major).$(VERSION.minor)",
+        )
         added_shared = false
         if isdir(shared_env) && shared_env ∉ Base.load_path()
             pushfirst!(LOAD_PATH, shared_env)
             added_shared = true
         end
         try
-            _Revise = Base.require(Base.PkgId(Base.UUID("295af30f-e4ad-537b-8983-00126c2a3abe"), "Revise"))
+            _Revise = Base.require(
+                Base.PkgId(Base.UUID("295af30f-e4ad-537b-8983-00126c2a3abe"), "Revise"),
+            )
             pkgid = Base.PkgId(@__MODULE__)
             pkgdata = Base.invokelatest(_Revise.watch_package, pkgid)
             if pkgdata !== nothing
@@ -671,10 +714,16 @@ function (@main)(ARGS)
     end
 
     # Load optional extensions
-    try Main.eval(:(using PDFIO)) catch end
+    try
+        Main.eval(:(using PDFIO))
+    catch
+    end
 
     # Diagnostic: file-triggered in-process CPU profiler (covers TUI + headless).
-    try _install_profile_hook!() catch end
+    try
+        _install_profile_hook!()
+    catch
+    end
 
     if headless
         start!(; port = port)
@@ -710,7 +759,11 @@ function (@main)(ARGS)
             Base.invokelatest(_start_revise_watcher!, _Revise)
         end
 
-        tui(; port = port, theme_name = theme, revise_polling = _revise_active, revise_mod = _Revise)
+        tui(;
+            port = port,
+            theme_name = theme,
+            revise_polling = _revise_active,
+            revise_mod = _Revise,
+        )
     end
 end
-

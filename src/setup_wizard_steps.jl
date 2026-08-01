@@ -239,7 +239,7 @@ function view_api_key_step(m::SetupWizardModel, area::Rect, buf::Buffer)
 
         # Display key with accent color (truncate if needed)
         key_display =
-            length(m.api_key) > area.width - 4 ? m.api_key[1:area.width-7] * "..." :
+            length(m.api_key) > area.width - 4 ? m.api_key[1:(area.width-7)] * "..." :
             m.api_key
         set_string!(buf, area.x + 2, y, key_display, tstyle(:warning, bold = true))
         y += 2
@@ -470,4 +470,3 @@ function view_done(m::SetupWizardModel, f::Frame)
         tstyle(:text_dim),
     )
 end
-

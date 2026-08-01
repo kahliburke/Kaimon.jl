@@ -14,8 +14,8 @@ const _SERVICE_SOCKET = Ref{Union{ZMQ.Socket,Nothing}}(nothing)
 # singleton) uses a fixed TCP loopback port there — the direct analog of the single
 # fixed `kaimon-service.sock` path on Unix. Kaimon's `start_service_endpoint!` binds
 # this same port. (#41)
-const _SERVICE_TCP_PORT = Ref{Int}(
-    something(tryparse(Int, get(ENV, "KAIMON_SERVICE_TCP_PORT", "")), 9877))
+const _SERVICE_TCP_PORT =
+    Ref{Int}(something(tryparse(Int, get(ENV, "KAIMON_SERVICE_TCP_PORT", "")), 9877))
 
 # Per-call REQ recv timeout (ms). Must exceed the worst case admission-wait +
 # slowest-tool timeout (agent_run defaults to 600s and is caller-settable). Kept
@@ -23,7 +23,8 @@ const _SERVICE_TCP_PORT = Ref{Int}(
 # mid-recv (e.g. an /mcp reconnect); a finite one lets a dead server be noticed.
 # A per-call socket can't wedge, so on timeout we just fail that one call cleanly.
 const _SERVICE_RCV_TIMEOUT_MS = Ref{Int}(
-    something(tryparse(Int, get(ENV, "KAIMON_SERVICE_RCV_TIMEOUT_MS", "")), 660_000))
+    something(tryparse(Int, get(ENV, "KAIMON_SERVICE_RCV_TIMEOUT_MS", "")), 660_000),
+)
 
 """
     _service_request(request::NamedTuple) -> Any
@@ -49,7 +50,8 @@ function _service_request(request)
         ispath(sock_path) || error(
             "Kaimon service endpoint not available — no socket at $sock_path. " *
             "Either the Kaimon server isn't running, or its service endpoint was torn " *
-            "down (check the server log for 'Service endpoint stopping' / 'stale … socket').")
+            "down (check the server log for 'Service endpoint stopping' / 'stale … socket').",
+        )
         endpoint = "ipc://$(sock_path)"
     end
 

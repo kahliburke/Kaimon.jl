@@ -86,8 +86,10 @@ end
     @testset "managed_qdrant_installed reflects the service-env manifest" begin
         _with_temp_cache() do dir
             @test K.managed_qdrant_installed() == false
-            write(joinpath(K.qdrant_service_env(), "Manifest.toml"),
-                  "[[deps.Qdrant_jll]]\nuuid = \"49d5a0a8-0cca-57b3-8548-a2cd8c16dcd0\"\n")
+            write(
+                joinpath(K.qdrant_service_env(), "Manifest.toml"),
+                "[[deps.Qdrant_jll]]\nuuid = \"49d5a0a8-0cca-57b3-8548-a2cd8c16dcd0\"\n",
+            )
             @test K.managed_qdrant_installed() == true
         end
     end

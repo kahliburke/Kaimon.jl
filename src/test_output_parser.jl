@@ -106,8 +106,20 @@ mutable struct _ParserState
 end
 
 _ParserState() = _ParserState(
-    false, "", 0, "", "", "", String[], false, "",
-    false, "", false, "", false,
+    false,
+    "",
+    0,
+    "",
+    "",
+    "",
+    String[],
+    false,
+    "",
+    false,
+    "",
+    false,
+    "",
+    false,
     0,
 )
 
@@ -179,10 +191,10 @@ function _parse_test_line_inner!(run::TestRun, line::String)::Bool
     if state.in_failure_block
         stripped = lstrip(line)
         if startswith(stripped, "Expression:")
-            state.failure_expression = strip(stripped[length("Expression:")+1:end])
+            state.failure_expression = strip(stripped[(length("Expression:")+1):end])
             return true
         elseif startswith(stripped, "Evaluated:")
-            state.failure_evaluated = strip(stripped[length("Evaluated:")+1:end])
+            state.failure_evaluated = strip(stripped[(length("Evaluated:")+1):end])
             return true
         elseif startswith(stripped, "Test threw exception") ||
                startswith(stripped, "Got exception outside of a @test")
@@ -203,8 +215,9 @@ function _parse_test_line_inner!(run::TestRun, line::String)::Bool
             # ACTUAL exception type + message (e.g. "UndefVarError: `x` not defined")
             # plus any continuation (world-age hints, etc.). Surface these instead of a
             # generic "error happened" placeholder.
-            state.failure_exception = isempty(state.failure_exception) ?
-                strip(stripped) : state.failure_exception * "\n" * strip(stripped)
+            state.failure_exception =
+                isempty(state.failure_exception) ? strip(stripped) :
+                state.failure_exception * "\n" * strip(stripped)
             return true
         else
             # End of failure block
@@ -318,7 +331,7 @@ end
 
 """Parse structured lines from our runner script (TEST_RUNNER: prefix)."""
 function _parse_runner_line!(run::TestRun, state::_ParserState, line::String)::Bool
-    payload = strip(line[length("TEST_RUNNER:")+1:end])
+    payload = strip(line[(length("TEST_RUNNER:")+1):end])
 
     if startswith(payload, "START")
         run.status = RUN_RUNNING
@@ -326,7 +339,7 @@ function _parse_runner_line!(run::TestRun, state::_ParserState, line::String)::B
     elseif startswith(payload, "TESTSET_START")
         name_idx = findfirst("name=", payload)
         if name_idx !== nothing
-            state.current_testset = strip(payload[last(name_idx)+1:end])
+            state.current_testset = strip(payload[(last(name_idx)+1):end])
         end
         return true
     elseif startswith(payload, "TESTSET_DONE")
@@ -336,7 +349,7 @@ function _parse_runner_line!(run::TestRun, state::_ParserState, line::String)::B
         # Extract everything after " name=" rather than using _parse_kv.
         name_idx = findfirst(" name=", payload)
         name = if name_idx !== nothing
-            strip(payload[last(name_idx)+1:end])
+            strip(payload[(last(name_idx)+1):end])
         else
             get(kv, "name", "")
         end
@@ -400,8 +413,8 @@ every parsed row, so totals are correct even without an end-of-run marker."""
 function _recompute_totals!(run::TestRun)
     min_depth = Dict{Int,Int}()
     for r in run.results
-        min_depth[r.block] = haskey(min_depth, r.block) ?
-            min(min_depth[r.block], r.depth) : r.depth
+        min_depth[r.block] =
+            haskey(min_depth, r.block) ? min(min_depth[r.block], r.depth) : r.depth
     end
     p = f = e = t = 0
     for r in run.results
@@ -424,10 +437,10 @@ function _header_column_edges(header::AbstractString)::Vector{Tuple{Symbol,Int}}
     edges = Tuple{Symbol,Int}[]
     for m in eachmatch(r"Passed|Pass|Failed|Fail|Errors|Error|Broken|Total"i, header)
         name = lowercase(m.match)
-        sym = startswith(name, "pass") ? :pass :
-              startswith(name, "fail") ? :fail :
-              startswith(name, "error") ? :error :
-              name == "broken" ? :broken : :total
+        sym =
+            startswith(name, "pass") ? :pass :
+            startswith(name, "fail") ? :fail :
+            startswith(name, "error") ? :error : name == "broken" ? :broken : :total
         push!(edges, (sym, m.offset + length(m.match) - 1))
     end
     return edges
@@ -499,11 +512,11 @@ function _parse_summary_line!(run::TestRun, state::_ParserState, line::String)::
         pipe_pos = findfirst('|', line)
         pipe_pos === nothing && return false
 
-        name_part = strip(line[1:pipe_pos-1])
-        values_part = line[pipe_pos+1:end]
+        name_part = strip(line[1:(pipe_pos-1)])
+        values_part = line[(pipe_pos+1):end]
 
         # Calculate depth from leading whitespace in the name section
-        leading = length(line[1:pipe_pos-1]) - length(lstrip(line[1:pipe_pos-1]))
+        leading = length(line[1:(pipe_pos-1)]) - length(lstrip(line[1:(pipe_pos-1)]))
         depth = div(leading, 2)  # normalize to levels
 
         # Extract all integers from the values section
@@ -550,7 +563,10 @@ function _parse_summary_line!(run::TestRun, state::_ParserState, line::String)::
 
         status = (fail > 0 || err > 0) ? TEST_FAIL : TEST_PASS
 
-        push!(run.results, TestResult(name_part, status, pass, fail, err, total, depth, state.block_id))
+        push!(
+            run.results,
+            TestResult(name_part, status, pass, fail, err, total, depth, state.block_id),
+        )
 
         # Totals = per-block sum of the shallowest rows (cumulative over their children).
         # Recompute from results so it stays correct mid-stream, with no end-of-run marker.
@@ -634,7 +650,7 @@ function format_test_summary(run::TestRun)::String
                 indent = "  "^(r.depth + 1)
                 counts = "$(r.fail_count) fail"
                 r.error_count > 0 && (counts *= ", $(r.error_count) error")
-                r.pass_count > 0  && (counts *= ", $(r.pass_count) pass")
+                r.pass_count > 0 && (counts *= ", $(r.pass_count) pass")
                 println(buf, "$(indent)[X] $(r.name): $counts")
             end
         end
@@ -674,9 +690,9 @@ function format_test_summary(run::TestRun)::String
 
         for (i, f) in enumerate(tier1)
             println(buf, "  $i) $(f.file):$(f.line)")
-            !isempty(f.testset)    && println(buf, "     Testset:    $(f.testset)")
+            !isempty(f.testset) && println(buf, "     Testset:    $(f.testset)")
             !isempty(f.expression) && println(buf, "     Expression: $(f.expression)")
-            !isempty(f.evaluated)  && println(buf, "     Evaluated:  $(f.evaluated)")
+            !isempty(f.evaluated) && println(buf, "     Evaluated:  $(f.evaluated)")
             if !isempty(f.exception)
                 exlines = split(f.exception, '\n')
                 println(buf, "     Error:      $(exlines[1])")
@@ -692,8 +708,9 @@ function format_test_summary(run::TestRun)::String
             for (i, f) in enumerate(tier2)
                 loc = "$(f.file):$(f.line)"
                 # Prefer the real exception message for an errored test; fall back to the expression.
-                detail = !isempty(f.exception) ? "  " * first(split(f.exception, '\n')) :
-                         (isempty(f.expression) ? "" : "  $(f.expression)")
+                detail =
+                    !isempty(f.exception) ? "  " * first(split(f.exception, '\n')) :
+                    (isempty(f.expression) ? "" : "  $(f.expression)")
                 println(buf, "    $(i + 3)) $loc$detail")
             end
             println(buf)

@@ -226,7 +226,9 @@ tool_help_tool = @mcp_tool(
                     end
                 end
             end
-            tool === nothing && haskey(server.tools, tool_id) && (tool = server.tools[tool_id])
+            tool === nothing &&
+                haskey(server.tools, tool_id) &&
+                (tool = server.tools[tool_id])
             if tool === nothing
                 return "Error: Tool ':$tool_id' not found. Use list_tools() to see available tools."
             end
@@ -257,4 +259,3 @@ tool_help_tool = @mcp_tool(
         end
     end
 )
-

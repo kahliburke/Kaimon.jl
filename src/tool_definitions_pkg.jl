@@ -181,8 +181,12 @@ one session is connected, that session's project is used.""",
             on_progress("Spawning test subprocess for $(basename(project_path))...")
 
         # Spawn ephemeral test subprocess
-        run = spawn_test_run(project_path; pattern = pattern, verbose = verbose,
-                             coverage = coverage_enabled === true)
+        run = spawn_test_run(
+            project_path;
+            pattern = pattern,
+            verbose = verbose,
+            coverage = coverage_enabled === true,
+        )
 
         # Push to TUI buffer so the Tests tab picks it up
         _push_test_update!(:update, run)
@@ -194,12 +198,14 @@ one session is connected, that session's project is used.""",
             if on_progress !== nothing
                 # total_pass/total_fail are only set when the top-level testset
                 # finishes; during the run, accumulate from individual results.
-                p = run.total_pass > 0 ? run.total_pass : sum((r.pass_count for r in run.results), init=0)
-                f = run.total_fail > 0 ? run.total_fail : sum((r.fail_count for r in run.results), init=0)
+                p =
+                    run.total_pass > 0 ? run.total_pass :
+                    sum((r.pass_count for r in run.results), init = 0)
+                f =
+                    run.total_fail > 0 ? run.total_fail :
+                    sum((r.fail_count for r in run.results), init = 0)
                 n_sets = length(run.results)
-                on_progress(
-                    "$p passed, $f failed ($n_sets testsets done)",
-                )
+                on_progress("$p passed, $f failed ($n_sets testsets done)")
             end
             if time() > deadline
                 cancel_test_run!(run)
@@ -226,7 +232,8 @@ one session is connected, that session's project is used.""",
 
         # Return focused summary (not raw output dump), prefixed with the
         # pattern-ignored warning when the filter could not be applied.
-        warning = pattern_ignored ?
+        warning =
+            pattern_ignored ?
             "⚠️  pattern \"$pattern\" was NOT applied — the whole suite ran. Only a " *
             "runtests.jl that reads ARGS (ReTest's `retest(ARGS...)`) filters by " *
             "pattern; Test.jl / SafeTestsets / TestItemRunner ignore it.\n\n" : ""
@@ -274,9 +281,8 @@ With name: detailed view of one extension including per-tool documentation and p
             for ext in extensions
                 ns = ext.config.manifest.namespace
                 desc = ext.config.manifest.description
-                status_icon = ext.status == :running ? "●" :
-                              ext.status == :crashed ? "●" :
-                              "○"
+                status_icon =
+                    ext.status == :running ? "●" : ext.status == :crashed ? "●" : "○"
 
                 # Get tool names if connected
                 tool_names = String[]
@@ -310,20 +316,24 @@ With name: detailed view of one extension including per-tool documentation and p
             entry = ext.config.entry
 
             # Status info
-            status_icon = ext.status == :running ? "●" :
-                          ext.status == :crashed ? "●" :
-                          "○"
+            status_icon =
+                ext.status == :running ? "●" : ext.status == :crashed ? "●" : "○"
             pid_str = if ext.process !== nothing && Base.process_running(ext.process)
-                string(getpid(ext.process))
-            else
-                "—"
-            end
-            uptime_str = ext.status == :running ? format_uptime(time() - ext.started_at) : "—"
+                    string(getpid(ext.process))
+                else
+                    "—"
+                end
+            uptime_str =
+                ext.status == :running ? format_uptime(time() - ext.started_at) : "—"
 
             lines = String[]
             push!(lines, "$(manifest.namespace) — $(manifest.module_name)")
-            push!(lines, "Status: $status_icon $(ext.status) (PID $pid_str, uptime $uptime_str)")
-            !isempty(manifest.description) && push!(lines, "Description: $(manifest.description)")
+            push!(
+                lines,
+                "Status: $status_icon $(ext.status) (PID $pid_str, uptime $uptime_str)",
+            )
+            !isempty(manifest.description) &&
+                push!(lines, "Description: $(manifest.description)")
             push!(lines, "Project: $(entry.project_path)")
 
             # Tool documentation
@@ -397,11 +407,21 @@ Returns the extension's resulting {status, enabled, auto_start}.""",
     Dict(
         "type" => "object",
         "properties" => Dict(
-            "name" => Dict("type" => "string", "description" => "Extension namespace (see extension_info)."),
+            "name" => Dict(
+                "type" => "string",
+                "description" => "Extension namespace (see extension_info).",
+            ),
             "action" => Dict(
                 "type" => "string",
-                "enum" => ["start", "stop", "restart", "enable", "disable",
-                           "enable_auto_start", "disable_auto_start"],
+                "enum" => [
+                    "start",
+                    "stop",
+                    "restart",
+                    "enable",
+                    "disable",
+                    "enable_auto_start",
+                    "disable_auto_start",
+                ],
                 "description" => "Lifecycle action to apply.",
             ),
         ),
@@ -437,13 +457,15 @@ Returns the extension's resulting {status, enabled, auto_start}.""",
             else
                 return "Error: unknown action '$action'. Use start|stop|restart|enable|disable|enable_auto_start|disable_auto_start."
             end
-            JSON.json(Dict(
-                "extension" => name,
-                "action" => action,
-                "status" => string(ext.status),
-                "enabled" => ext.config.entry.enabled,
-                "auto_start" => ext.config.entry.auto_start,
-            ))
+            JSON.json(
+                Dict(
+                    "extension" => name,
+                    "action" => action,
+                    "status" => string(ext.status),
+                    "enabled" => ext.config.entry.enabled,
+                    "auto_start" => ext.config.entry.auto_start,
+                ),
+            )
         catch e
             "Error managing extension: $(sprint(showerror, e))"
         end
@@ -618,7 +640,10 @@ and `tool_args` directly for a custom gate tool call.
             catch
             end
         catch e
-            push!(output_lines, "ERROR agent=0 elapsed=0.0 message=$(sprint(showerror, e))")
+            push!(
+                output_lines,
+                "ERROR agent=0 elapsed=0.0 message=$(sprint(showerror, e))",
+            )
         end
 
         total_wall_time = time() - t_start
@@ -649,4 +674,3 @@ and `tool_args` directly for a custom gate tool call.
         )
     end
 )
-

@@ -443,7 +443,10 @@ function _flush_notifications_for_session!(sid::AbstractString)::Vector{Dict{Str
     lock(_PENDING_NOTIFICATIONS_LOCK) do
         isempty(_PENDING_NOTIFICATIONS) && return Dict{String,Any}[]
         cursor = get(_SESSION_NOTIF_CURSOR, String(sid), 0)
-        due = sort!([sn for sn in values(_PENDING_NOTIFICATIONS) if sn[1] > cursor]; by = first)
+        due = sort!(
+            [sn for sn in values(_PENDING_NOTIFICATIONS) if sn[1] > cursor];
+            by = first,
+        )
         isempty(due) && return Dict{String,Any}[]
         _SESSION_NOTIF_CURSOR[String(sid)] = due[end][1]
         return Dict{String,Any}[n for (_, n) in due]
@@ -483,7 +486,12 @@ function _register_session_stream!(session_id::AbstractString)
     ch = Channel{Dict{String,Any}}(64)
     lock(_SESSION_OUTBOX_LOCK) do
         old = get(_SESSION_OUTBOX, String(session_id), nothing)
-        old === nothing || (try; close(old); catch; end)
+        old === nothing || (
+            try
+                close(old)
+            catch
+            end
+        )
         _SESSION_OUTBOX[String(session_id)] = ch
     end
     return ch
@@ -495,7 +503,10 @@ function _unregister_session_stream!(session_id::AbstractString, ch::Channel)
         get(_SESSION_OUTBOX, String(session_id), nothing) === ch &&
             delete!(_SESSION_OUTBOX, String(session_id))
     end
-    try; close(ch); catch; end
+    try
+        close(ch)
+    catch
+    end
     return nothing
 end
 
@@ -505,7 +516,12 @@ function _push_to_session_outbox!(session_id::AbstractString, msg::Dict{String,A
     lock(_SESSION_OUTBOX_LOCK) do
         ch = get(_SESSION_OUTBOX, String(session_id), nothing)
         ch === nothing && return false
-        try; put!(ch, msg); return true; catch; return false; end
+        try
+            put!(ch, msg)
+            return true
+        catch
+            return false
+        end
     end
 end
 
@@ -530,13 +546,21 @@ function _deliver_to_client!(session_id::AbstractString, msg::Dict{String,Any}, 
     delivered = lock(_SESSION_OUTBOX_LOCK) do
         ok = false
         for ch in values(_SESSION_OUTBOX)
-            try; put!(ch, msg); ok = true; catch; end
+            try
+                put!(ch, msg)
+                ok = true
+            catch
+            end
         end
         ok
     end
     delivered && return true
     writer === nothing && return false
-    return try; writer(msg) === true; catch; false; end
+    return try
+        writer(msg) === true
+    catch
+        false
+    end
 end
 
 """If `parsed` is a JSON-RPC *response* to a server-issued request (id + result/
@@ -554,7 +578,10 @@ function _route_server_response!(parsed)
     payload =
         haskey(parsed, "result") ? parsed["result"] :
         Dict{String,Any}("error" => parsed["error"])
-    try; put!(ch, payload); catch; end
+    try
+        put!(ch, payload)
+    catch
+    end
     return true
 end
 
@@ -571,8 +598,12 @@ elicitation restriction — no nested objects/arrays-of-objects). Returns the
 parsed `result` (`Dict("action"=>"accept"|"decline"|"cancel", "content"=>…)`),
 or `nothing` on timeout / no open receive stream. The default timeout is generous
 because a human has to answer."""
-function request_elicitation(session_id::AbstractString, message::AbstractString,
-                             requested_schema::AbstractDict; timeout::Float64 = 120.0)
+function request_elicitation(
+    session_id::AbstractString,
+    message::AbstractString,
+    requested_schema::AbstractDict;
+    timeout::Float64 = 120.0,
+)
     params = Dict{String,Any}(
         "message" => String(message),
         "requestedSchema" => requested_schema,
@@ -584,8 +615,12 @@ end
 block until the correlated response POSTs back (routed via
 `_route_server_response!`). Returns the parsed `result`, or `nothing` on timeout
 / no open receive stream. Shared by `request_roots` / `request_elicitation`."""
-function _request_from_client(session_id::AbstractString, method::AbstractString,
-                              params; timeout::Float64)
+function _request_from_client(
+    session_id::AbstractString,
+    method::AbstractString,
+    params;
+    timeout::Float64,
+)
     rid = "srv-" * string(UUIDs.uuid4())
     sink = Channel{Any}(1)
     lock(_PENDING_SERVER_REQUESTS_LOCK) do
@@ -617,7 +652,10 @@ function _request_from_client(session_id::AbstractString, method::AbstractString
         lock(_PENDING_SERVER_REQUESTS_LOCK) do
             delete!(_PENDING_SERVER_REQUESTS, rid)
         end
-        try; close(sink); catch; end
+        try
+            close(sink)
+        catch
+        end
     end
 end
 
@@ -629,10 +667,12 @@ Wire up `mgr.on_sessions_changed` so it enqueues a
 """
 function register_sessions_changed_callback!(mgr)
     mgr.on_sessions_changed =
-        () -> _queue_notification!(Dict{String,Any}(
-            "jsonrpc" => "2.0",
-            "method" => "notifications/resources/list_changed",
-        ))
+        () -> _queue_notification!(
+            Dict{String,Any}(
+                "jsonrpc" => "2.0",
+                "method" => "notifications/resources/list_changed",
+            ),
+        )
 end
 
 # ============================================================================
@@ -981,48 +1021,48 @@ function _handle_gate_tool_sse(
     sse_request_sink = (msg::Dict{String,Any}) -> (send_sse_event(msg); true)
 
     result_text = try
-      task_local_storage(:mcp_caller, caller) do
-       task_local_storage(:mcp_agent_id, agent_id) do
-        task_local_storage(:mcp_sse_request, sse_request_sink) do
-        # Call tool handler with progress callback piped through
-        # The tool handler calls execute_via_gate_streaming which accepts on_progress
-        # We inject on_progress into the args dict as a special key that execute_via_gate_streaming
-        # will pick up. However, tool handlers don't pass on_progress directly.
-        # Instead, we'll call the tool handler normally — the progress comes from
-        # execute_via_gate_streaming being called within the tool handler.
-        # For the `ex` tool specifically, we can call execute_via_gate_streaming directly.
-        if tool_name_str == "ex"
-            # Direct streaming path for the ex tool. The code MUST be `e` (see
-            # _ex_code_or_error); a call without it is malformed — return a clear error
-            # instead of dispatching an empty eval (which runs nothing, returns no value,
-            # and shows only a bare `agent>` in the shared REPL).
-            code, ex_err = _ex_code_or_error(args)
-            if ex_err !== nothing
-                ex_err
-            else
-                quiet = get(args, "q", true)
-                silent = get(args, "s", false)
-                max_output = min(get(args, "max_output", 6000), 25000)
-                ses = get(args, "ses", "")
-                main_thread = get(args, "mt", false)
-                execute_via_gate_streaming(
-                    code;
-                    quiet = quiet,
-                    silent = silent,
-                    max_output = max_output,
-                    session = ses,
-                    main_thread = main_thread,
-                    on_progress = send_progress,
-                )
-            end
-        else
-            # All other tools (including session tools): inject progress callback
-            args["_on_progress"] = send_progress
-            Base.invokelatest(tool.handler, args)
-        end
-        end  # task_local_storage(:mcp_sse_request) do
-       end  # task_local_storage(:mcp_agent_id) do
-      end  # task_local_storage(:mcp_caller) do
+        task_local_storage(:mcp_caller, caller) do
+            task_local_storage(:mcp_agent_id, agent_id) do
+                task_local_storage(:mcp_sse_request, sse_request_sink) do
+                    # Call tool handler with progress callback piped through
+                    # The tool handler calls execute_via_gate_streaming which accepts on_progress
+                    # We inject on_progress into the args dict as a special key that execute_via_gate_streaming
+                    # will pick up. However, tool handlers don't pass on_progress directly.
+                    # Instead, we'll call the tool handler normally — the progress comes from
+                    # execute_via_gate_streaming being called within the tool handler.
+                    # For the `ex` tool specifically, we can call execute_via_gate_streaming directly.
+                    if tool_name_str == "ex"
+                        # Direct streaming path for the ex tool. The code MUST be `e` (see
+                        # _ex_code_or_error); a call without it is malformed — return a clear error
+                        # instead of dispatching an empty eval (which runs nothing, returns no value,
+                        # and shows only a bare `agent>` in the shared REPL).
+                        code, ex_err = _ex_code_or_error(args)
+                        if ex_err !== nothing
+                            ex_err
+                        else
+                            quiet = get(args, "q", true)
+                            silent = get(args, "s", false)
+                            max_output = min(get(args, "max_output", 6000), 25000)
+                            ses = get(args, "ses", "")
+                            main_thread = get(args, "mt", false)
+                            execute_via_gate_streaming(
+                                code;
+                                quiet = quiet,
+                                silent = silent,
+                                max_output = max_output,
+                                session = ses,
+                                main_thread = main_thread,
+                                on_progress = send_progress,
+                            )
+                        end
+                    else
+                        # All other tools (including session tools): inject progress callback
+                        args["_on_progress"] = send_progress
+                        Base.invokelatest(tool.handler, args)
+                    end
+                end  # task_local_storage(:mcp_sse_request) do
+            end  # task_local_storage(:mcp_agent_id) do
+        end  # task_local_storage(:mcp_caller) do
     catch e
         tool_ok = false
         "ERROR: $(sprint(showerror, e))"
@@ -1043,7 +1083,16 @@ function _handle_gate_tool_sse(
         rt = _tool_result_log_text(string(result_text))
         ok = tool_ok && !startswith(rt, "ERROR:")
         sk = string(get(args, "ses", get(args, "session", "")))
-        tcr = ToolCallResult(now(), tool.name, args_json, rt, time_str, ok, sk, _sse_eval_id[])
+        tcr = ToolCallResult(
+            now(),
+            tool.name,
+            args_json,
+            rt,
+            time_str,
+            ok,
+            sk,
+            _sse_eval_id[],
+        )
         _push_tool_result!(tcr)
         _persist_tool_complete!(db_request_id, tcr)
     catch e
@@ -1057,13 +1106,7 @@ function _handle_gate_tool_sse(
     if !isempty(_sse_eval_id[])
         result_dict["eval_id"] = _sse_eval_id[]
     end
-    send_sse_event(
-        Dict(
-            "jsonrpc" => "2.0",
-            "id" => request_id,
-            "result" => result_dict,
-        ),
-    )
+    send_sse_event(Dict("jsonrpc" => "2.0", "id" => request_id, "result" => result_dict))
 
     return nothing
 end
@@ -1181,13 +1224,20 @@ function start_mcp_server(
                 # Record the owning Kaimon agent (from the X-Kaimon-Agent-Id header the
                 # agent's generated MCP config carries), so tool dispatch can tag this
                 # session's extension calls with the agent_id.
-                let aid = try; extract_agent_id(req); catch; ""; end
+                let aid = try
+                        extract_agent_id(req)
+                    catch
+                        ""
+                    end
                     isempty(aid) || _set_session_agent_id!(session.id, aid)
                 end
                 # Restore the agent→gate binding for a session brought back from
                 # persistence after a restart (no re-initialize). Fast no-op once bound.
                 if !is_new_session
-                    try; _ensure_session_binding!(session); catch; end
+                    try
+                        _ensure_session_binding!(session)
+                    catch
+                    end
                 end
             end
 
@@ -1247,13 +1297,17 @@ function start_mcp_server(
             # so we can send both the notifications and the JSON-RPC result as separate
             # events. (Shared cursor with the session's GET/tool-call streams — see
             # `_flush_notifications_for_session!`.)
-            pending = _flush_notifications_for_session!(session !== nothing ? session.id : "")
+            pending =
+                _flush_notifications_for_session!(session !== nothing ? session.id : "")
 
             if !isempty(pending)
                 HTTP.setstatus(http, 200)
                 HTTP.setheader(http, "Content-Type" => "text/event-stream")
                 HTTP.setheader(http, "Cache-Control" => "no-cache")
-                HTTP.setheader(http, "Mcp-Session-Id" => session !== nothing ? session.id : "")
+                HTTP.setheader(
+                    http,
+                    "Mcp-Session-Id" => session !== nothing ? session.id : "",
+                )
                 HTTP.startwrite(http)
                 for notif in pending
                     notif_json = JSON.json(notif)
@@ -1305,7 +1359,8 @@ function start_mcp_server(
                 error_response = Dict(
                     "jsonrpc" => "2.0",
                     "id" => request_id,
-                    "error" => Dict("code" => -32603, "message" => "Internal error: $e"),
+                    "error" =>
+                        Dict("code" => -32603, "message" => "Internal error: $e"),
                 )
                 write(http, JSON.json(error_response))
             catch

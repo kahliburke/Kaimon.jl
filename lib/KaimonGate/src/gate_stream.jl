@@ -80,7 +80,13 @@ end
 # Drain all pending XPUB sub/unsub events in one pass (owner-only recv). Checks
 # `events & POLLIN` before each recv to avoid the costly throw path when empty.
 function _drain_xpub_events(sock::ZMQ.Socket)
-    while (try (sock.events & ZMQ.POLLIN) != 0 catch; false end)
+    while (
+        try
+            (sock.events & ZMQ.POLLIN) != 0
+        catch
+            false
+        end
+    )
         frame = try
             _zmq_recv(sock)
         catch e
@@ -104,7 +110,10 @@ end
 function _stream_broadcaster(sock::ZMQ.Socket)
     last_reconcile = time()
     tick = Timer(_STREAM_SUBPOLL_INTERVAL[]; interval = _STREAM_SUBPOLL_INTERVAL[]) do _
-        try; put!(_STREAM_OUTBOX, _STREAM_WAKE); catch; end
+        try
+            put!(_STREAM_OUTBOX, _STREAM_WAKE)
+        catch
+        end
     end
     try
         while _RUNNING[]
@@ -119,7 +128,11 @@ function _stream_broadcaster(sock::ZMQ.Socket)
             _safe_stream_send(sock, frames)
             # Coalesce any further-queued publishes (owner-only send).
             while isready(_STREAM_OUTBOX)
-                f = try; take!(_STREAM_OUTBOX); catch; break; end
+                f = try
+                    take!(_STREAM_OUTBOX)
+                catch
+                    break
+                end
                 _safe_stream_send(sock, f)
             end
             # Service all pending XPUB sub/unsub events on every wake.
@@ -136,7 +149,11 @@ function _stream_broadcaster(sock::ZMQ.Socket)
     # Final bounded drain so late lifecycle messages (eval_complete) flush.
     deadline = time() + 1.0
     while isready(_STREAM_OUTBOX) && time() < deadline
-        f = try; take!(_STREAM_OUTBOX); catch; break; end
+        f = try
+            take!(_STREAM_OUTBOX)
+        catch
+            break
+        end
         _safe_stream_send(sock, f)
     end
     return nothing
@@ -151,7 +168,9 @@ Register `f(topic::String)` to be called when a topic gains its FIRST subscriber
 (0->1). Invoked on the broadcaster's owning thread, so keep `f` cheap (or hand
 off to a channel). Use to e.g. publish a keyframe the moment a viewer attaches.
 """
-on_stream_subscribe(f) = (lock(_STREAM_SUBS_LOCK) do; push!(_ON_STREAM_SUBSCRIBE, f); end; nothing)
+on_stream_subscribe(f) = (lock(_STREAM_SUBS_LOCK) do ;
+    push!(_ON_STREAM_SUBSCRIBE, f)
+end; nothing)
 
 """
     on_stream_unsubscribe(f) -> nothing
@@ -159,26 +178,32 @@ on_stream_subscribe(f) = (lock(_STREAM_SUBS_LOCK) do; push!(_ON_STREAM_SUBSCRIBE
 Register `f(topic::String)` to be called when a topic loses its LAST subscriber
 (1->0). Invoked on the broadcaster's owning thread; keep `f` cheap.
 """
-on_stream_unsubscribe(f) = (lock(_STREAM_SUBS_LOCK) do; push!(_ON_STREAM_UNSUBSCRIBE, f); end; nothing)
+on_stream_unsubscribe(f) = (lock(_STREAM_SUBS_LOCK) do ;
+    push!(_ON_STREAM_UNSUBSCRIBE, f)
+end; nothing)
 
 """    stream_subscribed(topic) -> Bool
 
 True if at least one subscriber is currently attached to `topic`."""
-stream_subscribed(topic::AbstractString) =
-    lock(_STREAM_SUBS_LOCK) do; get(_STREAM_SUBS, String(topic), 0) > 0 end
+stream_subscribed(topic::AbstractString) = lock(_STREAM_SUBS_LOCK) do ;
+    get(_STREAM_SUBS, String(topic), 0) > 0
+end
 
 """    stream_subscriber_count(topic) -> Int
 
 Current subscriber count for `topic` (via XPUB_VERBOSER). Reliable on clean
 closes/IPC; on hard TCP-viewer disconnects the count self-corrects once libzmq's
 keepalive detects the dead peer."""
-stream_subscriber_count(topic::AbstractString) =
-    lock(_STREAM_SUBS_LOCK) do; get(_STREAM_SUBS, String(topic), 0) end
+stream_subscriber_count(topic::AbstractString) = lock(_STREAM_SUBS_LOCK) do ;
+    get(_STREAM_SUBS, String(topic), 0)
+end
 
 """    stream_topics() -> Vector{String}
 
 All topics with at least one subscriber, sorted."""
-stream_topics() = lock(_STREAM_SUBS_LOCK) do; sort!(collect(keys(_STREAM_SUBS))) end
+stream_topics() = lock(_STREAM_SUBS_LOCK) do ;
+    sort!(collect(keys(_STREAM_SUBS)))
+end
 
 # ── Publishing (enqueue-only; the broadcaster owns the socket) ───────────────
 
@@ -221,12 +246,16 @@ everything else.
 function _publish_stream_raw(channel::AbstractString, payload::Vector{UInt8})
     _STREAM_SOCKET[] === nothing && return
     cb = codeunits(String(channel))
-    length(cb) <= 255 || throw(ArgumentError("_publish_stream_raw: channel name too long ($(length(cb)) > 255)"))
+    length(cb) <= 255 || throw(
+        ArgumentError("_publish_stream_raw: channel name too long ($(length(cb)) > 255)"),
+    )
     header = Vector{UInt8}(undef, 2 + length(cb))
     @inbounds begin
         header[1] = _STREAM_BIN_MAGIC
         header[2] = length(cb) % UInt8
-        for i in eachindex(cb); header[2 + i] = cb[i]; end
+        for i in eachindex(cb)
+            header[2+i] = cb[i]
+        end
     end
     try
         put!(_STREAM_OUTBOX, Vector{UInt8}[header, payload])
@@ -311,7 +340,10 @@ function _qualified_ref_bases(expr)
         x isa Expr || return
         if x.head in (:using, :import)
             for a in x.args
-                a isa Expr && a.head === :. && !isempty(a.args) && a.args[1] isa Symbol &&
+                a isa Expr &&
+                    a.head === :. &&
+                    !isempty(a.args) &&
+                    a.args[1] isa Symbol &&
                     push!(skip, a.args[1])
             end
             return
@@ -381,8 +413,8 @@ end
 @inline _current_sink() = get(task_local_storage(), :gate_eval_sink, nothing)
 
 const _CAPTURE_INSTALLED = Ref{Bool}(false)
-const _CAPTURE_ORIG_OUT  = Ref{IO}(devnull)
-const _CAPTURE_ORIG_ERR  = Ref{IO}(devnull)
+const _CAPTURE_ORIG_OUT = Ref{IO}(devnull)
+const _CAPTURE_ORIG_ERR = Ref{IO}(devnull)
 
 """Install the persistent capture mux as stdout/stderr (idempotent, gate-lifetime)."""
 function _ensure_capture_installed!()
@@ -420,8 +452,14 @@ function _restore_capture!()
     _CAPTURE_INSTALLED[] || return nothing
     lock(_EVAL_SEM_LOCK) do
         _CAPTURE_INSTALLED[] || return nothing
-        try; setglobal!(Base, :stdout, _CAPTURE_ORIG_OUT[]); catch; end
-        try; setglobal!(Base, :stderr, _CAPTURE_ORIG_ERR[]); catch; end
+        try
+            setglobal!(Base, :stdout, _CAPTURE_ORIG_OUT[])
+        catch
+        end
+        try
+            setglobal!(Base, :stderr, _CAPTURE_ORIG_ERR[])
+        catch
+        end
         _CAPTURE_INSTALLED[] = false
     end
     return nothing
@@ -447,8 +485,8 @@ end
 # while streams are restored, any *concurrent* non-loading eval's output goes to
 # the terminal uncaptured; loads are infrequent and brief, so this is acceptable
 # versus crashing the eval and losing the true error.
-const _UNCAPTURE_LOCK      = ReentrantLock()
-const _UNCAPTURE_DEPTH     = Ref{Int}(0)
+const _UNCAPTURE_LOCK = ReentrantLock()
+const _UNCAPTURE_DEPTH = Ref{Int}(0)
 const _UNCAPTURE_SAVED_OUT = Ref{IO}(devnull)
 const _UNCAPTURE_SAVED_ERR = Ref{IO}(devnull)
 
@@ -462,8 +500,14 @@ function _with_uncaptured_streams(f)
         if _UNCAPTURE_DEPTH[] == 0
             _UNCAPTURE_SAVED_OUT[] = getglobal(Base, :stdout)
             _UNCAPTURE_SAVED_ERR[] = getglobal(Base, :stderr)
-            try; setglobal!(Base, :stdout, _CAPTURE_ORIG_OUT[]); catch; end
-            try; setglobal!(Base, :stderr, _CAPTURE_ORIG_ERR[]); catch; end
+            try
+                setglobal!(Base, :stdout, _CAPTURE_ORIG_OUT[])
+            catch
+            end
+            try
+                setglobal!(Base, :stderr, _CAPTURE_ORIG_ERR[])
+            catch
+            end
         end
         _UNCAPTURE_DEPTH[] += 1
     end
@@ -473,8 +517,14 @@ function _with_uncaptured_streams(f)
         lock(_UNCAPTURE_LOCK) do
             _UNCAPTURE_DEPTH[] -= 1
             if _UNCAPTURE_DEPTH[] == 0
-                try; setglobal!(Base, :stdout, _UNCAPTURE_SAVED_OUT[]); catch; end
-                try; setglobal!(Base, :stderr, _UNCAPTURE_SAVED_ERR[]); catch; end
+                try
+                    setglobal!(Base, :stdout, _UNCAPTURE_SAVED_OUT[])
+                catch
+                end
+                try
+                    setglobal!(Base, :stderr, _UNCAPTURE_SAVED_ERR[])
+                catch
+                end
             end
         end
     end
@@ -487,9 +537,9 @@ end
 # `_with_uncaptured_streams` as its stream guard, so it runs the TUI with the real
 # fd streams restored (mux suspended) and restores cleanly. Requires a Tachikoma
 # new enough to define `set_stream_guard!`; older versions are a silent no-op.
-const _TACHIKOMA_UUID          = Base.UUID("468859d6-42d8-48b7-8ad9-1d312e0e3b0a")
-const _WEDGE_GUARD_OPT_OUT     = Ref{Bool}(false)
-const _WEDGE_GUARD_REGISTERED  = Ref{Bool}(false)
+const _TACHIKOMA_UUID = Base.UUID("468859d6-42d8-48b7-8ad9-1d312e0e3b0a")
+const _WEDGE_GUARD_OPT_OUT = Ref{Bool}(false)
+const _WEDGE_GUARD_REGISTERED = Ref{Bool}(false)
 
 _loaded_tachikoma() =
     get(Base.loaded_modules, Base.PkgId(_TACHIKOMA_UUID, "Tachikoma"), nothing)
@@ -536,8 +586,8 @@ end
 # `using`/`import` (which trigger precompilation) can only appear at top level, so
 # their presence anywhere in the eval's AST means this eval may load a package.
 _expr_uses_packages(@nospecialize(x)) =
-    x isa Expr && (x.head === :using || x.head === :import ||
-                   any(_expr_uses_packages, x.args))
+    x isa Expr &&
+    (x.head === :using || x.head === :import || any(_expr_uses_packages, x.args))
 
 # Mirror one completed line to the terminal (if enabled) + publish it, tagged
 # with the eval's request_id so the client can attribute concurrent streams.
@@ -550,12 +600,21 @@ function _sink_emit_line!(sink::_EvalSink, kind::Symbol, line::String, orig::IO)
             e isa Base.IOError && (_MIRROR_REPL[] = false)
         end
     end
-    _publish_stream(kind === :stderr ? "stderr" : "stdout", line; request_id = sink.request_id)
+    _publish_stream(
+        kind === :stderr ? "stderr" : "stdout",
+        line;
+        request_id = sink.request_id,
+    )
     return nothing
 end
 
-function _sink_consume!(sink::_EvalSink, kind::Symbol, bytes::AbstractVector{UInt8}, orig::IO)
-    full  = kind === :stderr ? sink.err : sink.out
+function _sink_consume!(
+    sink::_EvalSink,
+    kind::Symbol,
+    bytes::AbstractVector{UInt8},
+    orig::IO,
+)
+    full = kind === :stderr ? sink.err : sink.out
     lineb = kind === :stderr ? sink.err_line : sink.out_line
     write(full, bytes)
     for b in bytes
@@ -567,8 +626,10 @@ end
 
 """Flush a trailing partial (no-newline) line at eval end."""
 function _sink_finish!(sink::_EvalSink, orig_out::IO, orig_err::IO)
-    position(sink.out_line) > 0 && _sink_emit_line!(sink, :stdout, String(take!(sink.out_line)), orig_out)
-    position(sink.err_line) > 0 && _sink_emit_line!(sink, :stderr, String(take!(sink.err_line)), orig_err)
+    position(sink.out_line) > 0 &&
+        _sink_emit_line!(sink, :stdout, String(take!(sink.out_line)), orig_out)
+    position(sink.err_line) > 0 &&
+        _sink_emit_line!(sink, :stderr, String(take!(sink.err_line)), orig_err)
     return nothing
 end
 
@@ -583,24 +644,40 @@ end
 # runtime to this code; the persistent custom binding does.)
 Base.isopen(::_CaptureIO) = true
 Base.iswritable(::_CaptureIO) = true
-Base.displaysize(io::_CaptureIO) = try; displaysize(io.orig); catch; (24, 80); end
+Base.displaysize(io::_CaptureIO) =
+    try
+        displaysize(io.orig)
+    catch
+        (24, 80)
+    end
 function Base.get(io::_CaptureIO, key::Symbol, default)
     # Captured output must be PLAIN (the old pipe wasn't color-capable). Only
     # passthrough (no active sink → real terminal) keeps the terminal's color.
     key === :color && _current_sink() !== nothing && return false
-    return try; get(io.orig, key, default); catch; default; end
+    return try
+        get(io.orig, key, default)
+    catch
+        default
+    end
 end
 function Base.flush(io::_CaptureIO)
-    _current_sink() === nothing && try; flush(io.orig); catch; end
+    _current_sink() === nothing && try
+        flush(io.orig)
+    catch
+    end
     return nothing
 end
 function Base.write(io::_CaptureIO, b::UInt8)
     sink = _current_sink()
     if sink === nothing
-        try; return write(io.orig, b); catch; return 1; end
+        try
+            return write(io.orig, b)
+        catch
+            return 1
+        end
     end
     try
-        full  = io.kind === :stderr ? sink.err : sink.out
+        full = io.kind === :stderr ? sink.err : sink.out
         lineb = io.kind === :stderr ? sink.err_line : sink.out_line
         write(full, b)
         write(lineb, b)
@@ -612,7 +689,11 @@ end
 function Base.unsafe_write(io::_CaptureIO, p::Ptr{UInt8}, n::UInt)
     sink = _current_sink()
     if sink === nothing
-        try; return unsafe_write(io.orig, p, n); catch; return Int(n); end
+        try
+            return unsafe_write(io.orig, p, n)
+        catch
+            return Int(n)
+        end
     end
     try
         bytes = Vector{UInt8}(undef, Int(n))
@@ -706,7 +787,8 @@ function _eval_with_capture(expr; mirror::Bool = false)
     stderr_extra = ""
     if !isempty(autoimported)
         pkgs = join(string.(autoimported), ", ")
-        stderr_extra = "[kaimon] auto-imported $pkgs — a freshly connected session's Main starts " *
+        stderr_extra =
+            "[kaimon] auto-imported $pkgs — a freshly connected session's Main starts " *
             "empty; `using`/`import` once at session start (idempotent) to make this explicit.\n"
     end
 
@@ -718,4 +800,3 @@ function _eval_with_capture(expr; mirror::Bool = false)
         backtrace = nothing,
     )
 end
-

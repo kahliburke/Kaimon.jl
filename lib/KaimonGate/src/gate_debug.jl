@@ -36,7 +36,10 @@ function _breakpoint_hook(locals::Dict{Symbol,Any}; file::String = "unknown", li
     info = (
         file = file,
         line = line,
-        locals = Dict(string(k) => sprint(show, MIME"text/plain"(), v; context = :limit => true) for (k, v) in locals),
+        locals = Dict(
+            string(k) => sprint(show, MIME"text/plain"(), v; context = :limit => true)
+            for (k, v) in locals
+        ),
         locals_types = Dict(string(k) => string(typeof(v)) for (k, v) in locals),
     )
     _publish_stream("breakpoint_hit", _serialize_result(info))
@@ -56,12 +59,16 @@ function _breakpoint_hook(locals::Dict{Symbol,Any}; file::String = "unknown", li
     # Import Infiltrator exports (@exfiltrate etc.) if available
     try
         Core.eval(eval_mod, :(using Infiltrator))
-    catch; end
+    catch
+    end
     @async begin
         for (code, result_ch) in eval_ch
             try
                 val = Base.invokelatest(Core.eval, eval_mod, Meta.parse(code))
-                put!(result_ch, sprint(show, MIME"text/plain"(), val; context = :limit => true))
+                put!(
+                    result_ch,
+                    sprint(show, MIME"text/plain"(), val; context = :limit => true),
+                )
             catch e
                 put!(result_ch, "ERROR: " * sprint(showerror, e))
             end
@@ -127,15 +134,31 @@ function _install_infiltrator_hook!()
     # breakpoint hit after Gate.stop() opens the normal Infiltrator REPL instead
     # of hanging on a dead gate (#34).
     @eval function ($Infiltrator).start_prompt(
-        mod, locals::Dict{Symbol,Any}, file, fileline, ex = nothing, bt = nothing;
-        terminal = nothing, repl = nothing, nostack = false,
+        mod,
+        locals::Dict{Symbol,Any},
+        file,
+        fileline,
+        ex = nothing,
+        bt = nothing;
+        terminal = nothing,
+        repl = nothing,
+        nostack = false,
     )
         M = $(@__MODULE__)
         if M._INFILTRATOR_DISABLED[] || !M._RUNNING[]
             orig = M._INFILTRATOR_ORIG_PROMPT[]
             return orig === nothing ? nothing :
-                   orig(mod, locals, file, fileline, ex, bt;
-                        terminal = terminal, repl = repl, nostack = nostack)
+                   orig(
+                mod,
+                locals,
+                file,
+                fileline,
+                ex,
+                bt;
+                terminal = terminal,
+                repl = repl,
+                nostack = nostack,
+            )
         end
         M._breakpoint_hook(locals; file = string(file), line = Int(fileline))
     end
@@ -157,11 +180,27 @@ function uninstall_infiltrator_hook!()
     orig = _INFILTRATOR_ORIG_PROMPT[]
     if orig !== nothing
         @eval function ($Infiltrator).start_prompt(
-            mod, locals::Dict{Symbol,Any}, file, fileline, ex = nothing, bt = nothing;
-            terminal = nothing, repl = nothing, nostack = false,
+            mod,
+            locals::Dict{Symbol,Any},
+            file,
+            fileline,
+            ex = nothing,
+            bt = nothing;
+            terminal = nothing,
+            repl = nothing,
+            nostack = false,
         )
-            ($orig)(mod, locals, file, fileline, ex, bt;
-                    terminal = terminal, repl = repl, nostack = nostack)
+            ($orig)(
+                mod,
+                locals,
+                file,
+                fileline,
+                ex,
+                bt;
+                terminal = terminal,
+                repl = repl,
+                nostack = nostack,
+            )
         end
     end
     _INFILTRATOR_HOOKED[] = false
@@ -183,6 +222,5 @@ Flip it off to poke around a long-running computation yourself, then back on to 
 debugging to the agent — no `restart()`/`serve()` needed. (`on = true` requires
 Infiltrator to be loaded.)
 """
-infiltrator_routing(on::Bool) = on ? _install_infiltrator_hook!() : uninstall_infiltrator_hook!()
-
-
+infiltrator_routing(on::Bool) =
+    on ? _install_infiltrator_hook!() : uninstall_infiltrator_hook!()

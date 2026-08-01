@@ -15,7 +15,7 @@
 """Simulate a long-running computation with progress output."""
 function demo_compute_with_progress(n::Int)
     total = 0.0
-    for i in 1:n
+    for i = 1:n
         println("Processing batch $i/$n...")
         total += sum(rand(1000))
         sleep(0.1)

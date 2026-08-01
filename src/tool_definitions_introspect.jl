@@ -587,4 +587,3 @@ lint_tool = @mcp_tool(
         end
     end
 )
-

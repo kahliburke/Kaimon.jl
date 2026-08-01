@@ -125,7 +125,9 @@ Call from any Julia REPL where Kaimon is available:
 """
 function connect!()
     try
-        Base.require(Base.PkgId(Base.UUID("295af30f-e4ad-537b-8983-00126c2a3abe"), "Revise"))
+        Base.require(
+            Base.PkgId(Base.UUID("295af30f-e4ad-537b-8983-00126c2a3abe"), "Revise"),
+        )
         @info "Revise loaded"
     catch
         @info "Revise not available (optional)"
@@ -220,17 +222,18 @@ function _maybe_run_setup_update()
     _get_gate_setup_version() >= GATE_SETUP_VERSION && return
 
     # Inspect the current setup to decide whether anything needs doing.
-    global_env = joinpath(homedir(), ".julia", "environments",
-                          "v$(VERSION.major).$(VERSION.minor)")
+    global_env =
+        joinpath(homedir(), ".julia", "environments", "v$(VERSION.major).$(VERSION.minor)")
     global_proj = joinpath(global_env, "Project.toml")
-    global_deps = isfile(global_proj) ?
-        get(Pkg.TOML.parsefile(global_proj), "deps", Dict()) : Dict()
+    global_deps =
+        isfile(global_proj) ? get(Pkg.TOML.parsefile(global_proj), "deps", Dict()) : Dict()
     gate_in_global = haskey(global_deps, "KaimonGate")
     kaimon_in_global = haskey(global_deps, "Kaimon")
 
     startup_file = joinpath(homedir(), ".julia", "config", "startup.jl")
     startup = isfile(startup_file) ? read(startup_file, String) : ""
-    legacy_startup = occursin("# Kaimon Gate — auto-connect", startup) &&
+    legacy_startup =
+        occursin("# Kaimon Gate — auto-connect", startup) &&
         !occursin("using KaimonGate", startup)
 
     needs_action = !gate_in_global || kaimon_in_global || legacy_startup
@@ -266,8 +269,10 @@ function _maybe_run_setup_update()
     You can undo this anytime: delete the block from startup.jl and run
     `]rm KaimonGate` in your global env. Choose "never" to stop being asked.
     """)
-    print(is_migration ? "Apply this update now? [Y/n/never]: " :
-                         "Set this up now? [Y/n/never]: ")
+    print(
+        is_migration ? "Apply this update now? [Y/n/never]: " :
+        "Set this up now? [Y/n/never]: ",
+    )
     response = lowercase(strip(readline()))
     if isempty(response) || response in ("y", "yes")
         @info "Applying Kaimon setup update..."
@@ -280,7 +285,9 @@ function _maybe_run_setup_update()
         end
     elseif response == "never"
         _set_gate_setup_version(GATE_SETUP_VERSION)
-        println("\nGot it — won't ask again. Run `kaimon --reset-global-prompt` to re-check.\n")
+        println(
+            "\nGot it — won't ask again. Run `kaimon --reset-global-prompt` to re-check.\n",
+        )
     else
         # "n"/"no" (not now): leave the version so we ask again next start.
         println()
@@ -288,8 +295,13 @@ function _maybe_run_setup_update()
 end
 
 """Path to the user's global (shared) environment Manifest for the running Julia."""
-_global_manifest_path() = joinpath(homedir(), ".julia", "environments",
-                                   "v$(VERSION.major).$(VERSION.minor)", "Manifest.toml")
+_global_manifest_path() = joinpath(
+    homedir(),
+    ".julia",
+    "environments",
+    "v$(VERSION.major).$(VERSION.minor)",
+    "Manifest.toml",
+)
 
 """
     _global_kaimongate_version(manifest_path=<global env manifest>)
@@ -315,11 +327,16 @@ function _global_kaimongate_version(manifest_path::AbstractString = _global_mani
     table isa AbstractDict || return nothing
     entries = get(table, "KaimonGate", nothing)
     entries === nothing && return nothing
-    entry = entries isa AbstractVector ? (isempty(entries) ? nothing : first(entries)) : entries
+    entry =
+        entries isa AbstractVector ? (isempty(entries) ? nothing : first(entries)) : entries
     entry isa AbstractDict || return nothing
     vstr = get(entry, "version", nothing)
     vstr === nothing && return nothing
-    v = try; VersionNumber(String(vstr)); catch; return nothing; end
+    v = try
+        VersionNumber(String(vstr))
+    catch
+        return nothing
+    end
     return (version = v, is_dev = haskey(entry, "path"))
 end
 
@@ -351,7 +368,11 @@ records the target version so it isn't re-asked until a newer `kaimon` ships.
 """
 function _maybe_run_gate_upgrade()
     isa(stdin, Base.TTY) || return
-    bundled = try; pkgversion(KaimonGate); catch; nothing; end
+    bundled = try
+        pkgversion(KaimonGate)
+    catch
+        nothing
+    end
     bundled === nothing && return
     info = _global_kaimongate_version()
     info === nothing && return          # not installed globally
@@ -359,8 +380,8 @@ function _maybe_run_gate_upgrade()
     info.version >= bundled && return   # already current or newer
     _get_gate_upgrade_dismissed_version() == string(bundled) && return  # already declined
 
-    global_env = joinpath(homedir(), ".julia", "environments",
-                          "v$(VERSION.major).$(VERSION.minor)")
+    global_env =
+        joinpath(homedir(), ".julia", "environments", "v$(VERSION.major).$(VERSION.minor)")
     println("""
 
     Your global KaimonGate is out of date: v$(info.version) installed, v$(bundled)
@@ -377,15 +398,20 @@ function _maybe_run_gate_upgrade()
         @info "Updating KaimonGate in your global environment…"
         try
             _update_gate_global()
-            println("\nDone — restart your Julia REPL sessions to load KaimonGate v$(bundled).\n")
+            println(
+                "\nDone — restart your Julia REPL sessions to load KaimonGate v$(bundled).\n",
+            )
         catch e
-            @warn "KaimonGate update failed — run `]update KaimonGate` in your global env manually" exception = e
+            @warn "KaimonGate update failed — run `]update KaimonGate` in your global env manually" exception =
+                e
         end
     else
         # Decline: remember this target version so we don't nag every launch. A later
         # kaimon with a higher bundled version will re-prompt.
         _set_gate_upgrade_dismissed_version(string(bundled))
-        println("\nGot it — won't ask again for v$(bundled). Run `]update KaimonGate` anytime.\n")
+        println(
+            "\nGot it — won't ask again for v$(bundled). Run `]update KaimonGate` anytime.\n",
+        )
     end
     return
 end
@@ -440,4 +466,3 @@ macro mcp_tool(id, description, params, handler)
         end,
     )
 end
-

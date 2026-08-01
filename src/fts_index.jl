@@ -77,83 +77,107 @@ Open the lexical index DB and create the schema if absent. Idempotent.
 function init!(path::String = default_db_path())
     mkpath(dirname(path))
     return lock(LOCK) do
-    db = SQLite.DB(path)
-    DB[] = db
-    DB_PATH[] = path
+        db = SQLite.DB(path)
+        DB[] = db
+        DB_PATH[] = path
 
-    # WAL + a busy timeout so concurrent readers (search) never block on the
-    # indexer's write bursts, and a brief writer contention just waits.
-    SQLite.execute(db, "PRAGMA journal_mode=WAL;")
-    SQLite.execute(db, "PRAGMA busy_timeout=5000;")
-    SQLite.execute(db, "PRAGMA synchronous=NORMAL;")
+        # WAL + a busy timeout so concurrent readers (search) never block on the
+        # indexer's write bursts, and a brief writer contention just waits.
+        SQLite.execute(db, "PRAGMA journal_mode=WAL;")
+        SQLite.execute(db, "PRAGMA busy_timeout=5000;")
+        SQLite.execute(db, "PRAGMA synchronous=NORMAL;")
 
-    # `coltok` is a VIRTUAL generated column (no storage) so the external-content
-    # FTS5 table below can carry a matching `coltok` column — FTS5 reads original
-    # column values from this content table for snippet()/bm25(), so every FTS column
-    # MUST exist here. Keep the expression byte-identical to `_coltok` and the triggers.
-    SQLite.execute(db, """
-        CREATE TABLE IF NOT EXISTS chunks(
-            id         INTEGER PRIMARY KEY,
-            point_id   TEXT,
-            collection TEXT NOT NULL,
-            file       TEXT NOT NULL,
-            name       TEXT,
-            type       TEXT,
-            start_line INTEGER,
-            end_line   INTEGER,
-            text       TEXT NOT NULL,
-            metadata   TEXT,  -- optional JSON blob for opt-in filterable fields (e.g. {"module":"X"})
-            coltok     TEXT GENERATED ALWAYS AS
-                       ('zc'||replace(replace(lower(collection),'_',''),'-','')) VIRTUAL
-        );
-    """)
-    SQLite.execute(db, "CREATE INDEX IF NOT EXISTS idx_chunks_cf ON chunks(collection, file);")
-    SQLite.execute(db, "CREATE INDEX IF NOT EXISTS idx_chunks_pid ON chunks(point_id);")
+        # `coltok` is a VIRTUAL generated column (no storage) so the external-content
+        # FTS5 table below can carry a matching `coltok` column — FTS5 reads original
+        # column values from this content table for snippet()/bm25(), so every FTS column
+        # MUST exist here. Keep the expression byte-identical to `_coltok` and the triggers.
+        SQLite.execute(
+            db,
+            """
+    CREATE TABLE IF NOT EXISTS chunks(
+        id         INTEGER PRIMARY KEY,
+        point_id   TEXT,
+        collection TEXT NOT NULL,
+        file       TEXT NOT NULL,
+        name       TEXT,
+        type       TEXT,
+        start_line INTEGER,
+        end_line   INTEGER,
+        text       TEXT NOT NULL,
+        metadata   TEXT,  -- optional JSON blob for opt-in filterable fields (e.g. {"module":"X"})
+        coltok     TEXT GENERATED ALWAYS AS
+                   ('zc'||replace(replace(lower(collection),'_',''),'-','')) VIRTUAL
+    );
+""",
+        )
+        SQLite.execute(
+            db,
+            "CREATE INDEX IF NOT EXISTS idx_chunks_cf ON chunks(collection, file);",
+        )
+        SQLite.execute(db, "CREATE INDEX IF NOT EXISTS idx_chunks_pid ON chunks(point_id);")
 
-    # code_fts carries a separator-free `coltok` column so a collection-scoped search
-    # can prune the scan via `coltok:<tok>` in the MATCH (see _coltok).
-    SQLite.execute(db, """
-        CREATE VIRTUAL TABLE IF NOT EXISTS code_fts USING fts5(
-            text, name, file, coltok, content='chunks', content_rowid='id'
-        );
-    """)
-    # code_tri carries the same `coltok` column as code_fts so a scoped trigram
-    # search can prune the MATCH to one collection (cost ∝ collection size, not corpus
-    # size) instead of scanning whole-corpus and filtering after.
-    SQLite.execute(db, """
-        CREATE VIRTUAL TABLE IF NOT EXISTS code_tri USING fts5(
-            text, name, coltok, content='chunks', content_rowid='id', tokenize='trigram'
-        );
-    """)
+        # code_fts carries a separator-free `coltok` column so a collection-scoped search
+        # can prune the scan via `coltok:<tok>` in the MATCH (see _coltok).
+        SQLite.execute(
+            db,
+            """
+    CREATE VIRTUAL TABLE IF NOT EXISTS code_fts USING fts5(
+        text, name, file, coltok, content='chunks', content_rowid='id'
+    );
+""",
+        )
+        # code_tri carries the same `coltok` column as code_fts so a scoped trigram
+        # search can prune the MATCH to one collection (cost ∝ collection size, not corpus
+        # size) instead of scanning whole-corpus and filtering after.
+        SQLite.execute(
+            db,
+            """
+    CREATE VIRTUAL TABLE IF NOT EXISTS code_tri USING fts5(
+        text, name, coltok, content='chunks', content_rowid='id', tokenize='trigram'
+    );
+""",
+        )
 
-    # Keep the FTS shadow tables in sync with `chunks` (insert + delete only;
-    # reindex is delete-then-insert, so no update trigger is needed).
-    SQLite.execute(db, """
-        CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
-            INSERT INTO code_fts(rowid, text, name, file, coltok)
-                VALUES (new.id, new.text, new.name, new.file, new.coltok);
-        END;
-    """)
-    SQLite.execute(db, """
-        CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
-            INSERT INTO code_fts(code_fts, rowid, text, name, file, coltok)
-                VALUES('delete', old.id, old.text, old.name, old.file, old.coltok);
-        END;
-    """)
-    SQLite.execute(db, """
-        CREATE TRIGGER IF NOT EXISTS chunks_ai_tri AFTER INSERT ON chunks BEGIN
-            INSERT INTO code_tri(rowid, text, name, coltok)
-                VALUES (new.id, new.text, new.name, new.coltok);
-        END;
-    """)
-    SQLite.execute(db, """
-        CREATE TRIGGER IF NOT EXISTS chunks_ad_tri AFTER DELETE ON chunks BEGIN
-            INSERT INTO code_tri(code_tri, rowid, text, name, coltok)
-                VALUES('delete', old.id, old.text, old.name, old.coltok);
-        END;
-    """)
+        # Keep the FTS shadow tables in sync with `chunks` (insert + delete only;
+        # reindex is delete-then-insert, so no update trigger is needed).
+        SQLite.execute(
+            db,
+            """
+    CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
+        INSERT INTO code_fts(rowid, text, name, file, coltok)
+            VALUES (new.id, new.text, new.name, new.file, new.coltok);
+    END;
+""",
+        )
+        SQLite.execute(
+            db,
+            """
+    CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
+        INSERT INTO code_fts(code_fts, rowid, text, name, file, coltok)
+            VALUES('delete', old.id, old.text, old.name, old.file, old.coltok);
+    END;
+""",
+        )
+        SQLite.execute(
+            db,
+            """
+    CREATE TRIGGER IF NOT EXISTS chunks_ai_tri AFTER INSERT ON chunks BEGIN
+        INSERT INTO code_tri(rowid, text, name, coltok)
+            VALUES (new.id, new.text, new.name, new.coltok);
+    END;
+""",
+        )
+        SQLite.execute(
+            db,
+            """
+    CREATE TRIGGER IF NOT EXISTS chunks_ad_tri AFTER DELETE ON chunks BEGIN
+        INSERT INTO code_tri(code_tri, rowid, text, name, coltok)
+            VALUES('delete', old.id, old.text, old.name, old.coltok);
+    END;
+""",
+        )
 
-    db
+        db
     end  # lock
 end
 
@@ -168,7 +192,8 @@ end
 
 # ── Writes ────────────────────────────────────────────────────────────────────
 
-_field(row, k, default = nothing) = row isa AbstractDict ? get(row, k, default) :
+_field(row, k, default = nothing) =
+    row isa AbstractDict ? get(row, k, default) :
     (hasproperty(row, Symbol(k)) ? getproperty(row, Symbol(k)) : default)
 
 # Encode a row's optional `metadata` for storage: a Dict/NamedTuple → JSON text, a
@@ -192,44 +217,51 @@ row is a Dict/NamedTuple with: `point_id`, `collection`, `file`, `name`, `type`,
 function add_chunks!(rows)
     isempty(rows) && return 0
     return _run_off_interactive() do
-    lock(LOCK) do
-    db = _db()
-    n = 0
-    SQLite.transaction(db) do
-        stmt = """
-            INSERT INTO chunks(point_id, collection, file, name, type, start_line, end_line, text, metadata)
-            VALUES (?,?,?,?,?,?,?,?,?)
-        """
-        for r in rows
-            txt = _field(r, "text", "")
-            (txt === nothing || isempty(txt)) && continue
-            DBInterface.execute(db, stmt, (
-                something(_field(r, "point_id"), missing),
-                String(_field(r, "collection", "")),
-                String(_field(r, "file", "")),
-                something(_field(r, "name"), missing),
-                something(_field(r, "type"), missing),
-                something(_field(r, "start_line"), missing),
-                something(_field(r, "end_line"), missing),
-                String(txt),
-                _metadata_json(r),
-            ))
-            n += 1
-        end
-    end
-    n
-    end  # lock
+        lock(LOCK) do
+            db = _db()
+            n = 0
+            SQLite.transaction(db) do
+                stmt = """
+                    INSERT INTO chunks(point_id, collection, file, name, type, start_line, end_line, text, metadata)
+                    VALUES (?,?,?,?,?,?,?,?,?)
+                """
+                for r in rows
+                    txt = _field(r, "text", "")
+                    (txt === nothing || isempty(txt)) && continue
+                    DBInterface.execute(
+                        db,
+                        stmt,
+                        (
+                            something(_field(r, "point_id"), missing),
+                            String(_field(r, "collection", "")),
+                            String(_field(r, "file", "")),
+                            something(_field(r, "name"), missing),
+                            something(_field(r, "type"), missing),
+                            something(_field(r, "start_line"), missing),
+                            something(_field(r, "end_line"), missing),
+                            String(txt),
+                            _metadata_json(r),
+                        ),
+                    )
+                    n += 1
+                end
+            end
+            n
+        end  # lock
     end  # off-interactive
 end
 
 """Remove all chunks for one file in one collection (the reindex delete step)."""
 function delete_file!(collection::AbstractString, file::AbstractString)
     _run_off_interactive() do
-    lock(LOCK) do
-        db = _db()
-        DBInterface.execute(db, "DELETE FROM chunks WHERE collection = ? AND file = ?",
-            (String(collection), String(file)))
-    end
+        lock(LOCK) do
+            db = _db()
+            DBInterface.execute(
+                db,
+                "DELETE FROM chunks WHERE collection = ? AND file = ?",
+                (String(collection), String(file)),
+            )
+        end
     end  # off-interactive
     return nothing
 end
@@ -243,21 +275,30 @@ reconciliation to find indexed files that no longer exist on disk.
 """
 function distinct_files(collection::AbstractString)
     _run_off_interactive() do
-    lock(LOCK) do
-        db = _db()
-        return String[String(r.file) for r in DBInterface.execute(db,
-            "SELECT DISTINCT file FROM chunks WHERE collection = ?", (String(collection),))]
-    end
+        lock(LOCK) do
+            db = _db()
+            return String[
+                String(r.file) for r in DBInterface.execute(
+                    db,
+                    "SELECT DISTINCT file FROM chunks WHERE collection = ?",
+                    (String(collection),),
+                )
+            ]
+        end
     end  # off-interactive
 end
 
 """Drop every chunk for a collection (used on collection recreate / backfill reset)."""
 function clear_collection!(collection::AbstractString)
     _run_off_interactive() do
-    lock(LOCK) do
-        db = _db()
-        DBInterface.execute(db, "DELETE FROM chunks WHERE collection = ?", (String(collection),))
-    end
+        lock(LOCK) do
+            db = _db()
+            DBInterface.execute(
+                db,
+                "DELETE FROM chunks WHERE collection = ?",
+                (String(collection),),
+            )
+        end
     end  # off-interactive
     return nothing
 end
@@ -294,10 +335,12 @@ _i(x, default = 0) = x === missing || x === nothing ? default : Int(x)
 # FTS5 boolean keywords, honored when written out in full (any case).
 const _FTS_KEYWORDS = ("AND", "OR", "NOT", "NEAR")
 # Standalone punctuation treated as operator aliases (programmer intuition).
-const _FTS_OP_ALIAS = Dict("!" => "NOT", "&" => "AND", "&&" => "AND", "|" => "OR", "||" => "OR")
+const _FTS_OP_ALIAS =
+    Dict("!" => "NOT", "&" => "AND", "&&" => "AND", "|" => "OR", "||" => "OR")
 
 # Split a query into whitespace-separated tokens, keeping "quoted phrases" whole.
-_fts_tokens(s::AbstractString) = String[String(m.match) for m in eachmatch(r"\"[^\"]*\"|\S+", s)]
+_fts_tokens(s::AbstractString) =
+    String[String(m.match) for m in eachmatch(r"\"[^\"]*\"|\S+", s)]
 # Clean identifier-ish token (alnum + _), optional trailing prefix `*`.
 _fts_clean(t::AbstractString) = occursin(r"^[A-Za-z0-9_]+\*?$", t)
 _fts_quote(t::AbstractString) = "\"" * replace(t, "\"" => "\"\"") * "\""
@@ -312,7 +355,9 @@ const _MAX_OR_TERMS = 8
 # underscores, camelCase, digits — are far more selective than short dictionary words,
 # so they're the ones worth keeping when we have to drop terms.
 _fts_distinctiveness(t::AbstractString) =
-    length(t) + (occursin('_', t) ? 4 : 0) + (occursin(r"[A-Z]", t) ? 3 : 0) +
+    length(t) +
+    (occursin('_', t) ? 4 : 0) +
+    (occursin(r"[A-Z]", t) ? 3 : 0) +
     (occursin(r"[0-9]", t) ? 2 : 0)
 
 # Render each query token to its FTS5 form, reporting whether any explicit operator
@@ -322,13 +367,16 @@ function _fts_render(query::AbstractString)
     has_op = false
     for t in _fts_tokens(query)
         if uppercase(t) in _FTS_KEYWORDS
-            push!(rendered, uppercase(t)); has_op = true
+            push!(rendered, uppercase(t))
+            has_op = true
         elseif haskey(_FTS_OP_ALIAS, t)
-            push!(rendered, _FTS_OP_ALIAS[t]); has_op = true
+            push!(rendered, _FTS_OP_ALIAS[t])
+            has_op = true
         elseif startswith(t, '"') && endswith(t, '"') && length(t) >= 2
             push!(rendered, t)                       # already a phrase
         elseif !occursin(r"[A-Za-z0-9]", t)
-            push!(rendered, t); has_op = true        # standalone punctuation → operator
+            push!(rendered, t)
+            has_op = true        # standalone punctuation → operator
         elseif _fts_clean(t)
             push!(rendered, t)                       # clean identifier / prefix term
         else
@@ -360,7 +408,9 @@ function _fts_normalize(query::AbstractString; max_terms::Int = _MAX_OR_TERMS)
     isempty(rendered) && return String(query)
     has_op && return join(rendered, " ")
     if length(rendered) > max_terms
-        keep = sort(partialsortperm(rendered, 1:max_terms; by = _fts_distinctiveness, rev = true))
+        keep = sort(
+            partialsortperm(rendered, 1:max_terms; by = _fts_distinctiveness, rev = true),
+        )
         rendered = rendered[keep]
     end
     join(rendered, " OR ")
@@ -379,8 +429,8 @@ end
 # decomposes into ~one ANDed 3-gram per character and scans the whole index — the
 # shape behind the multi-minute search hang. Whole-sentence substring match is never
 # what an agent wants.
-_tri_eligible(query::AbstractString) = (s = strip(query);
-    !occursin(r"\s", s) && 3 <= length(s) <= 64)
+_tri_eligible(query::AbstractString) =
+    (s = strip(query); !occursin(r"\s", s) && 3 <= length(s) <= 64)
 
 # Execute an FTS MATCH and build FtsHits, reading each row's columns DURING
 # iteration — SQLite.jl `Row`s are only valid for the current step, so they must
@@ -391,13 +441,21 @@ function _match_hits(db, sql, query::AbstractString, tail::Tuple, source::Symbol
     build(q) = begin
         out = FtsHit[]
         for r in DBInterface.execute(db, sql, (String(q), tail...))
-            push!(out, FtsHit(
-                r.point_id === missing ? nothing : String(r.point_id),
-                _s(r.file), _s(r.name), _s(r.type),
-                _i(r.start_line), _i(r.end_line),
-                _s(r.text), _s(r.snip),
-                Float64(r.rank), source,
-            ))
+            push!(
+                out,
+                FtsHit(
+                    r.point_id === missing ? nothing : String(r.point_id),
+                    _s(r.file),
+                    _s(r.name),
+                    _s(r.type),
+                    _i(r.start_line),
+                    _i(r.end_line),
+                    _s(r.text),
+                    _s(r.snip),
+                    Float64(r.rank),
+                    source,
+                ),
+            )
         end
         out
     end
@@ -409,7 +467,11 @@ function _match_hits(db, sql, query::AbstractString, tail::Tuple, source::Symbol
         # literal phrase so we still match something, and report the fallback so
         # callers can warn the agent that boolean/operator syntax was NOT honored.
         quoted = "\"" * replace(String(query), "\"" => "\"\"") * "\""
-        try; return (build(quoted), true); catch; return (FtsHit[], true); end
+        try
+            return (build(quoted), true)
+        catch
+            return (FtsHit[], true)
+        end
     end
 end
 
@@ -448,71 +510,83 @@ function _filter_clause(filters)
     (join(frags, " "), params)
 end
 
-function search(query::AbstractString; collection::Union{AbstractString,Nothing} = nothing,
-                limit::Int = 20, chunk_type::AbstractString = "all",
-                filters::Union{Nothing,AbstractDict} = nothing)
-    isempty(strip(query)) && return (word = FtsHit[], tri = FtsHit[], fellback = false, capped = 0)
+function search(
+    query::AbstractString;
+    collection::Union{AbstractString,Nothing} = nothing,
+    limit::Int = 20,
+    chunk_type::AbstractString = "all",
+    filters::Union{Nothing,AbstractDict} = nothing,
+)
+    isempty(strip(query)) &&
+        return (word = FtsHit[], tri = FtsHit[], fellback = false, capped = 0)
     return _run_off_interactive() do
-    lock(LOCK) do
-    db = _db()
-    tclause = _type_clause(chunk_type)
-    cclause = collection === nothing ? "" : "AND c.collection = ?"
-    ctail = collection === nothing ? () : (String(collection),)
-    # Opt-in metadata filter (AND across fields, any-of within). Applied IN the query
-    # so LIMIT/top-k is post-filter (no recall loss). Params bound — incl. the JSON path.
-    fclause, fparams = _filter_clause(filters)
-    # Scope the MATCH itself to the collection (prunes the scan), keeping the JOIN
-    # filter above as a cheap correctness backstop. Skipped when unscoped (cross-project).
-    scope = collection !== nothing ? _coltok(collection) : nothing
-    capped = _fts_or_dropped(query)
+        lock(LOCK) do
+            db = _db()
+            tclause = _type_clause(chunk_type)
+            cclause = collection === nothing ? "" : "AND c.collection = ?"
+            ctail = collection === nothing ? () : (String(collection),)
+            # Opt-in metadata filter (AND across fields, any-of within). Applied IN the query
+            # so LIMIT/top-k is post-filter (no recall loss). Params bound — incl. the JSON path.
+            fclause, fparams = _filter_clause(filters)
+            # Scope the MATCH itself to the collection (prunes the scan), keeping the JOIN
+            # filter above as a cheap correctness backstop. Skipped when unscoped (cross-project).
+            scope = collection !== nothing ? _coltok(collection) : nothing
+            capped = _fts_or_dropped(query)
 
-    # CROSS JOIN pins the FTS table as the join driver. Without it SQLite sees the
-    # `c.collection` filter, judges idx_chunks_cf selective, and drives from chunks —
-    # evaluating the FTS MATCH per-collection-row (whole-corpus per-row cost for common
-    # terms: ~2 s on 1,315 docs). Driving from the FTS index instead is index-pruned
-    # (sub-ms). The MATCH is always the most selective path, so forcing it is safe for
-    # both the scoped (coltok) and unscoped (cross-project) cases.
-    word_sql = """
-        SELECT c.point_id, c.file, c.name, c.type, c.start_line, c.end_line, c.text,
-               snippet(code_fts, 0, char(2), char(3), '…', 12) AS snip,
-               bm25(code_fts) AS rank
-        FROM code_fts CROSS JOIN chunks c ON c.id = code_fts.rowid
-        WHERE code_fts MATCH ? $cclause $fclause $tclause
-        ORDER BY rank LIMIT ?
-    """
-    # Normalize Julia punctuation / operators into valid FTS5 before MATCH (and cap
-    # the OR fan-out); the _match_hits fallback then only fires on genuinely
-    # unparseable input. Append the collection scope as an ANDed column filter.
-    word_expr = _fts_normalize(query)
-    scope !== nothing && (word_expr = "($word_expr) AND coltok:$scope")
-    word, fellback = _match_hits(db, word_sql, word_expr, (ctail..., fparams..., limit), :lexical)
+            # CROSS JOIN pins the FTS table as the join driver. Without it SQLite sees the
+            # `c.collection` filter, judges idx_chunks_cf selective, and drives from chunks —
+            # evaluating the FTS MATCH per-collection-row (whole-corpus per-row cost for common
+            # terms: ~2 s on 1,315 docs). Driving from the FTS index instead is index-pruned
+            # (sub-ms). The MATCH is always the most selective path, so forcing it is safe for
+            # both the scoped (coltok) and unscoped (cross-project) cases.
+            word_sql = """
+                SELECT c.point_id, c.file, c.name, c.type, c.start_line, c.end_line, c.text,
+                       snippet(code_fts, 0, char(2), char(3), '…', 12) AS snip,
+                       bm25(code_fts) AS rank
+                FROM code_fts CROSS JOIN chunks c ON c.id = code_fts.rowid
+                WHERE code_fts MATCH ? $cclause $fclause $tclause
+                ORDER BY rank LIMIT ?
+            """
+            # Normalize Julia punctuation / operators into valid FTS5 before MATCH (and cap
+            # the OR fan-out); the _match_hits fallback then only fires on genuinely
+            # unparseable input. Append the collection scope as an ANDed column filter.
+            word_expr = _fts_normalize(query)
+            scope !== nothing && (word_expr = "($word_expr) AND coltok:$scope")
+            word, fellback = _match_hits(
+                db,
+                word_sql,
+                word_expr,
+                (ctail..., fparams..., limit),
+                :lexical,
+            )
 
-    tri = FtsHit[]
-    if _tri_eligible(query)
-        tri_sql = """
-            SELECT c.point_id, c.file, c.name, c.type, c.start_line, c.end_line, c.text,
-                   snippet(code_tri, 0, char(2), char(3), '…', 12) AS snip,
-                   bm25(code_tri) AS rank
-            FROM code_tri CROSS JOIN chunks c ON c.id = code_tri.rowid
-            WHERE code_tri MATCH ? $cclause $fclause $tclause
-            ORDER BY rank LIMIT ?
-        """
-        # Trigram does substring containment; quote the (single, bounded) token as a
-        # phrase so punctuation in identifiers (`!`, `_`) matches literally.
-        phrase = "\"" * replace(String(query), "\"" => "\"\"") * "\""
-        # Scope the MATCH to the collection's coltok (prunes the scan to collection
-        # size, not corpus size). Trigram substring-matches coltok, so it can over-
-        # include prefix-sibling collections — but the `cclause` JOIN filter above is
-        # the correctness backstop (same pattern as the word query).
-        collection !== nothing &&
-            (phrase = "($phrase) AND coltok:$(_coltok(collection))")
-        # Trigram input is always a pre-quoted phrase, so its fallback isn't a
-        # syntax signal — discard it; only the word query reflects bad FTS5 syntax.
-        tri, _ = _match_hits(db, tri_sql, phrase, (ctail..., fparams..., limit), :substr)
-    end
+            tri = FtsHit[]
+            if _tri_eligible(query)
+                tri_sql = """
+                    SELECT c.point_id, c.file, c.name, c.type, c.start_line, c.end_line, c.text,
+                           snippet(code_tri, 0, char(2), char(3), '…', 12) AS snip,
+                           bm25(code_tri) AS rank
+                    FROM code_tri CROSS JOIN chunks c ON c.id = code_tri.rowid
+                    WHERE code_tri MATCH ? $cclause $fclause $tclause
+                    ORDER BY rank LIMIT ?
+                """
+                # Trigram does substring containment; quote the (single, bounded) token as a
+                # phrase so punctuation in identifiers (`!`, `_`) matches literally.
+                phrase = "\"" * replace(String(query), "\"" => "\"\"") * "\""
+                # Scope the MATCH to the collection's coltok (prunes the scan to collection
+                # size, not corpus size). Trigram substring-matches coltok, so it can over-
+                # include prefix-sibling collections — but the `cclause` JOIN filter above is
+                # the correctness backstop (same pattern as the word query).
+                collection !== nothing &&
+                    (phrase = "($phrase) AND coltok:$(_coltok(collection))")
+                # Trigram input is always a pre-quoted phrase, so its fallback isn't a
+                # syntax signal — discard it; only the word query reflects bad FTS5 syntax.
+                tri, _ =
+                    _match_hits(db, tri_sql, phrase, (ctail..., fparams..., limit), :substr)
+            end
 
-    (word = word, tri = tri, fellback = fellback, capped = capped)
-    end  # lock
+            (word = word, tri = tri, fellback = fellback, capped = capped)
+        end  # lock
     end  # off-interactive
 end
 
@@ -521,14 +595,18 @@ end
 """Per-collection chunk counts + total, for the search-health surface."""
 function coverage()
     return _run_off_interactive() do
-    lock(LOCK) do
-        db = _db()
-        # Materialize during iteration (see _match_hits note on transient Rows).
-        per = [(collection = String(r.collection), n = Int(r.n))
-               for r in DBInterface.execute(db,
-                   "SELECT collection, COUNT(*) AS n FROM chunks GROUP BY collection ORDER BY n DESC")]
-        (collections = per, total = sum(p -> p.n, per; init = 0))
-    end
+        lock(LOCK) do
+            db = _db()
+            # Materialize during iteration (see _match_hits note on transient Rows).
+            per = [
+                (collection = String(r.collection), n = Int(r.n)) for
+                r in DBInterface.execute(
+                    db,
+                    "SELECT collection, COUNT(*) AS n FROM chunks GROUP BY collection ORDER BY n DESC",
+                )
+            ]
+            (collections = per, total = sum(p -> p.n, per; init = 0))
+        end
     end  # off-interactive
 end
 

@@ -16,8 +16,8 @@ using KaimonGate
 
 # A mock host with the hook, recording what guard it was handed.
 module _MockTachi
-    const LAST = Ref{Any}(:unset)
-    set_stream_guard!(f) = (LAST[] = f; nothing)
+const LAST = Ref{Any}(:unset)
+set_stream_guard!(f) = (LAST[] = f; nothing)
 end
 
 # A host too old to support the hook (no `set_stream_guard!`).

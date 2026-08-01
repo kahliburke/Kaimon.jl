@@ -19,13 +19,12 @@ import JSON
 # ToolCallStatus and PlanEntryStatus, which would clash as @enum members).
 
 const TOOL_CALL_STATUSES = (:pending, :in_progress, :completed, :failed)
-const TOOL_KINDS         = (:read, :edit, :delete, :move, :search, :execute,
-                            :think, :fetch, :switch_mode, :other)
-const STOP_REASONS       = (:end_turn, :max_tokens, :max_turn_requests,
-                            :refusal, :cancelled)
-const PERMISSION_KINDS   = (:allow_once, :allow_always, :reject_once, :reject_always)
-const PLAN_PRIORITIES    = (:high, :medium, :low)
-const PLAN_STATUSES      = (:pending, :in_progress, :completed)
+const TOOL_KINDS =
+    (:read, :edit, :delete, :move, :search, :execute, :think, :fetch, :switch_mode, :other)
+const STOP_REASONS = (:end_turn, :max_tokens, :max_turn_requests, :refusal, :cancelled)
+const PERMISSION_KINDS = (:allow_once, :allow_always, :reject_once, :reject_always)
+const PLAN_PRIORITIES = (:high, :medium, :low)
+const PLAN_STATUSES = (:pending, :in_progress, :completed)
 
 """Coerce a JSON string / Symbol to one of `allowed`, falling back to `fallback`."""
 function as_enum(x, allowed::Tuple, fallback::Symbol)
@@ -189,11 +188,17 @@ struct AgentThoughtChunk <: AgentEvent
 end
 AgentThoughtChunk(content::ContentBlock) = AgentThoughtChunk(content, false)
 "sessionUpdate=user_message_chunk — echo of the user's own input."
-struct UserMessageChunk <: AgentEvent; content::ContentBlock; end
+struct UserMessageChunk <: AgentEvent
+    content::ContentBlock
+end
 "sessionUpdate=tool_call — a new tool invocation."
-struct ToolCallStarted <: AgentEvent; call::ToolCall; end
+struct ToolCallStarted <: AgentEvent
+    call::ToolCall
+end
 "sessionUpdate=tool_call_update — status/result delta for a call."
-struct ToolCallUpdated <: AgentEvent; update::ToolCallUpdate; end
+struct ToolCallUpdated <: AgentEvent
+    update::ToolCallUpdate
+end
 """Kaimon extension (not an ACP sessionUpdate): a streamed fragment of a tool call's
 input JSON, emitted token-by-token for liveness while the model writes the call's
 arguments. `partial_json` chunks concatenate to the tool's full input (not valid JSON
@@ -204,13 +209,17 @@ struct ToolInputDelta <: AgentEvent
     partial_json::String
 end
 "sessionUpdate=plan / plan_update — the agent's execution plan."
-struct PlanUpdated <: AgentEvent; entries::Vector{PlanEntry}; end
+struct PlanUpdated <: AgentEvent
+    entries::Vector{PlanEntry}
+end
 "sessionUpdate=usage_update — running token/cost usage."
-struct UsageUpdated <: AgentEvent; usage::Usage; end
+struct UsageUpdated <: AgentEvent
+    usage::Usage
+end
 
 # Turn-level / lifecycle (not ACP sessionUpdate, but needed by consumers):
 "Turn began (we wrote a prompt; agent started working)."
-struct TurnStarted <: AgentEvent; end
+struct TurnStarted <: AgentEvent end
 """Turn finished. `stop_reason` ∈ STOP_REASONS; `usage` is the turn total
 (from Claude's `result` event / ACP PromptResponse)."""
 struct TurnEnded <: AgentEvent
@@ -218,10 +227,15 @@ struct TurnEnded <: AgentEvent
     usage::Union{Usage,Nothing}
 end
 "A backend/process error (parse failure, crash, non-zero exit)."
-struct AgentError <: AgentEvent; message::String; data::Any; end
+struct AgentError <: AgentEvent
+    message::String
+    data::Any
+end
 AgentError(message::AbstractString) = AgentError(String(message), nothing)
 "Session status transition (:starting/:idle/:working/:dead)."
-struct StatusChanged <: AgentEvent; status::Symbol; end
+struct StatusChanged <: AgentEvent
+    status::Symbol
+end
 """Agent is asking the user to approve a tool call (schema:
 RequestPermissionRequest). `request_id` lets the consumer route the answer back."""
 struct PermissionRequested <: AgentEvent
@@ -235,73 +249,97 @@ end
 # JSON-ready Dict. The gate publishes these on channel "agent:<id>"; consumers
 # (KaimonSlate→SSE) JSON-encode `payload` at the browser edge.
 
-event_kind(::AgentMessageChunk)  = :assistant_text
-event_kind(::AgentThoughtChunk)  = :thought
-event_kind(::UserMessageChunk)   = :user_text
-event_kind(::ToolCallStarted)    = :tool_use
-event_kind(::ToolCallUpdated)    = :tool_result
-event_kind(::ToolInputDelta)     = :tool_input_delta
-event_kind(::PlanUpdated)        = :plan
-event_kind(::UsageUpdated)       = :usage
-event_kind(::TurnStarted)        = :turn_started
-event_kind(::TurnEnded)          = :result
-event_kind(::AgentError)         = :error
-event_kind(::StatusChanged)      = :status
-event_kind(::PermissionRequested)= :permission
+event_kind(::AgentMessageChunk) = :assistant_text
+event_kind(::AgentThoughtChunk) = :thought
+event_kind(::UserMessageChunk) = :user_text
+event_kind(::ToolCallStarted) = :tool_use
+event_kind(::ToolCallUpdated) = :tool_result
+event_kind(::ToolInputDelta) = :tool_input_delta
+event_kind(::PlanUpdated) = :plan
+event_kind(::UsageUpdated) = :usage
+event_kind(::TurnStarted) = :turn_started
+event_kind(::TurnEnded) = :result
+event_kind(::AgentError) = :error
+event_kind(::StatusChanged) = :status
+event_kind(::PermissionRequested) = :permission
 
 # content block → Dict
-to_dict(b::TextBlock)         = Dict("type"=>"text", "text"=>b.text)
-to_dict(b::ImageBlock)        = Dict("type"=>"image", "data"=>b.data, "mimeType"=>b.mime_type, "uri"=>b.uri)
-to_dict(b::AudioBlock)        = Dict("type"=>"audio", "data"=>b.data, "mimeType"=>b.mime_type)
-to_dict(b::ResourceLinkBlock) = Dict("type"=>"resource_link", "uri"=>b.uri, "name"=>b.name, "mimeType"=>b.mime_type)
-to_dict(b::ResourceBlock)     = Dict("type"=>"resource", "uri"=>b.uri, "text"=>b.text, "blob"=>b.blob, "mimeType"=>b.mime_type)
+to_dict(b::TextBlock) = Dict("type"=>"text", "text"=>b.text)
+to_dict(b::ImageBlock) =
+    Dict("type"=>"image", "data"=>b.data, "mimeType"=>b.mime_type, "uri"=>b.uri)
+to_dict(b::AudioBlock) = Dict("type"=>"audio", "data"=>b.data, "mimeType"=>b.mime_type)
+to_dict(b::ResourceLinkBlock) =
+    Dict("type"=>"resource_link", "uri"=>b.uri, "name"=>b.name, "mimeType"=>b.mime_type)
+to_dict(b::ResourceBlock) = Dict(
+    "type"=>"resource",
+    "uri"=>b.uri,
+    "text"=>b.text,
+    "blob"=>b.blob,
+    "mimeType"=>b.mime_type,
+)
 
 to_dict(l::ToolCallLocation) = Dict("path"=>l.path, "line"=>l.line)
-to_dict(c::ContentToolContent)  = Dict("type"=>"content", "content"=>to_dict(c.content))
-to_dict(c::DiffToolContent)     = Dict("type"=>"diff", "path"=>c.path, "oldText"=>c.old_text, "newText"=>c.new_text)
+to_dict(c::ContentToolContent) = Dict("type"=>"content", "content"=>to_dict(c.content))
+to_dict(c::DiffToolContent) =
+    Dict("type"=>"diff", "path"=>c.path, "oldText"=>c.old_text, "newText"=>c.new_text)
 to_dict(c::TerminalToolContent) = Dict("type"=>"terminal", "terminalId"=>c.terminal_id)
 
 to_dict(t::ToolCall) = Dict(
-    "toolCallId"=>t.tool_call_id, "title"=>t.title, "kind"=>string(t.kind),
-    "status"=>string(t.status), "content"=>[to_dict(c) for c in t.content],
+    "toolCallId"=>t.tool_call_id,
+    "title"=>t.title,
+    "kind"=>string(t.kind),
+    "status"=>string(t.status),
+    "content"=>[to_dict(c) for c in t.content],
     "locations"=>[to_dict(l) for l in t.locations],
-    "rawInput"=>t.raw_input, "rawOutput"=>t.raw_output)
+    "rawInput"=>t.raw_input,
+    "rawOutput"=>t.raw_output,
+)
 
 function to_dict(t::ToolCallUpdate)
     d = Dict{String,Any}("toolCallId"=>t.tool_call_id)
-    t.title    !== nothing && (d["title"]   = t.title)
-    t.kind     !== nothing && (d["kind"]    = string(t.kind))
-    t.status   !== nothing && (d["status"]  = string(t.status))
-    t.content  !== nothing && (d["content"] = [to_dict(c) for c in t.content])
-    t.locations!== nothing && (d["locations"]= [to_dict(l) for l in t.locations])
-    t.raw_input  !== nothing && (d["rawInput"]  = t.raw_input)
+    t.title !== nothing && (d["title"] = t.title)
+    t.kind !== nothing && (d["kind"] = string(t.kind))
+    t.status !== nothing && (d["status"] = string(t.status))
+    t.content !== nothing && (d["content"] = [to_dict(c) for c in t.content])
+    t.locations !== nothing && (d["locations"] = [to_dict(l) for l in t.locations])
+    t.raw_input !== nothing && (d["rawInput"] = t.raw_input)
     t.raw_output !== nothing && (d["rawOutput"] = t.raw_output)
     d
 end
 
-to_dict(e::PlanEntry)       = Dict("content"=>e.content, "priority"=>string(e.priority), "status"=>string(e.status))
-to_dict(o::PermissionOption)= Dict("optionId"=>o.option_id, "name"=>o.name, "kind"=>string(o.kind))
+to_dict(e::PlanEntry) =
+    Dict("content"=>e.content, "priority"=>string(e.priority), "status"=>string(e.status))
+to_dict(o::PermissionOption) =
+    Dict("optionId"=>o.option_id, "name"=>o.name, "kind"=>string(o.kind))
 to_dict(u::Usage) = Dict(
-    "inputTokens"=>u.input_tokens, "outputTokens"=>u.output_tokens,
-    "cacheReadTokens"=>u.cache_read_tokens, "cacheCreationTokens"=>u.cache_creation_tokens,
-    "costUsd"=>u.cost_usd)
+    "inputTokens"=>u.input_tokens,
+    "outputTokens"=>u.output_tokens,
+    "cacheReadTokens"=>u.cache_read_tokens,
+    "cacheCreationTokens"=>u.cache_creation_tokens,
+    "costUsd"=>u.cost_usd,
+)
 
 event_payload(e::AgentMessageChunk) = Dict("delta"=>e.delta, "content"=>to_dict(e.content))
 event_payload(e::AgentThoughtChunk) = Dict("delta"=>e.delta, "content"=>to_dict(e.content))
-event_payload(e::UserMessageChunk)  = Dict("content"=>to_dict(e.content))
-event_payload(e::ToolCallStarted)   = Dict("call"=>to_dict(e.call))
-event_payload(e::ToolCallUpdated)   = Dict("update"=>to_dict(e.update))
-event_payload(e::ToolInputDelta)    = Dict("toolCallId"=>e.tool_call_id, "partialJson"=>e.partial_json)
-event_payload(e::PlanUpdated)       = Dict("entries"=>[to_dict(x) for x in e.entries])
-event_payload(e::UsageUpdated)      = Dict("usage"=>to_dict(e.usage))
-event_payload(::TurnStarted)        = Dict{String,Any}()
-event_payload(e::TurnEnded)         = Dict("stopReason"=>string(e.stop_reason),
-                                           "usage"=>(e.usage === nothing ? nothing : to_dict(e.usage)))
-event_payload(e::AgentError)        = Dict("message"=>e.message, "data"=>e.data)
-event_payload(e::StatusChanged)     = Dict("status"=>string(e.status))
-event_payload(e::PermissionRequested)= Dict("toolCall"=>to_dict(e.tool_call),
-                                            "options"=>[to_dict(o) for o in e.options],
-                                            "requestId"=>e.request_id)
+event_payload(e::UserMessageChunk) = Dict("content"=>to_dict(e.content))
+event_payload(e::ToolCallStarted) = Dict("call"=>to_dict(e.call))
+event_payload(e::ToolCallUpdated) = Dict("update"=>to_dict(e.update))
+event_payload(e::ToolInputDelta) =
+    Dict("toolCallId"=>e.tool_call_id, "partialJson"=>e.partial_json)
+event_payload(e::PlanUpdated) = Dict("entries"=>[to_dict(x) for x in e.entries])
+event_payload(e::UsageUpdated) = Dict("usage"=>to_dict(e.usage))
+event_payload(::TurnStarted) = Dict{String,Any}()
+event_payload(e::TurnEnded) = Dict(
+    "stopReason"=>string(e.stop_reason),
+    "usage"=>(e.usage === nothing ? nothing : to_dict(e.usage)),
+)
+event_payload(e::AgentError) = Dict("message"=>e.message, "data"=>e.data)
+event_payload(e::StatusChanged) = Dict("status"=>string(e.status))
+event_payload(e::PermissionRequested) = Dict(
+    "toolCall"=>to_dict(e.tool_call),
+    "options"=>[to_dict(o) for o in e.options],
+    "requestId"=>e.request_id,
+)
 
 """
     envelope(e::AgentEvent, turn::Int) -> NamedTuple
@@ -309,6 +347,7 @@ event_payload(e::PermissionRequested)= Dict("toolCall"=>to_dict(e.tool_call),
 The `{kind, turn, data}` wire message published on the gate stream channel
 `agent:<id>`. `data` is a JSON-ready Dict.
 """
-envelope(e::AgentEvent, turn::Int) = (kind = event_kind(e), turn = turn, data = event_payload(e))
+envelope(e::AgentEvent, turn::Int) =
+    (kind = event_kind(e), turn = turn, data = event_payload(e))
 
 end # module ACP

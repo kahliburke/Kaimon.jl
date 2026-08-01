@@ -293,10 +293,10 @@ function initialize_session!(session::MCPSession, params::Dict)
     # guess. Extensions surface by their reverse-DNS ids when present.
     @info "MCP client initialized" client = get(session.client_info, "name", "?") client_version =
         get(session.client_info, "version", "?") protocol = protocol_version capabilities =
-        sort!(collect(string.(keys(session.client_capabilities)))) extensions = let e =
-            get(session.client_capabilities, "extensions", nothing)
-        e isa AbstractDict ? sort!(collect(string.(keys(e)))) : e
-    end
+        sort!(collect(string.(keys(session.client_capabilities)))) extensions =
+        let e = get(session.client_capabilities, "extensions", nothing)
+            e isa AbstractDict ? sort!(collect(string.(keys(e)))) : e
+        end
 
     # Return initialization response
     return Dict{String,Any}(

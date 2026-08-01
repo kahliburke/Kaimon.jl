@@ -174,7 +174,9 @@ using Kaimon
         @test contains(string(cleaned), "print(io")
 
         # IO-targeted in let block — kept
-        expr = Meta.parse("let buf = IOBuffer(); print(buf, \"hello\"); String(take!(buf)) end")
+        expr = Meta.parse(
+            "let buf = IOBuffer(); print(buf, \"hello\"); String(take!(buf)) end",
+        )
         cleaned = Kaimon.remove_println_calls(expr)
         @test contains(string(cleaned), "print(buf")
     end

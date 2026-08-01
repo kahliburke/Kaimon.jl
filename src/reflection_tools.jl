@@ -32,11 +32,11 @@ function extract_symbol_at_position(file_path::String, line::Int, col::Int)::Str
     # Scan forwards to find end of identifier (include . for dotted names)
     end_col = col
     while end_col <= length(text_line) &&
-        occursin(r"[A-Za-z0-9_!.]", string(text_line[end_col]))
+          occursin(r"[A-Za-z0-9_!.]", string(text_line[end_col]))
         end_col += 1
     end
 
-    sym = text_line[start_col:end_col-1]
+    sym = text_line[start_col:(end_col-1)]
     # Strip leading/trailing dots
     sym = strip(sym, '.')
     return sym
@@ -191,7 +191,7 @@ end
                     raw_str = strip(string(raw))
                     # Strip surrounding quotes from string result
                     if startswith(raw_str, "\"") && endswith(raw_str, "\"")
-                        raw_str = raw_str[2:end-1]
+                        raw_str = raw_str[2:(end-1)]
                     end
                     if raw_str != "NOT_FOUND" && !isempty(raw_str)
                         gate_results = filter(!isempty, split(raw_str, "|||"))
@@ -388,7 +388,7 @@ end
             raw_str = strip(string(raw))
             # Strip surrounding quotes from string result
             if startswith(raw_str, "\"") && endswith(raw_str, "\"")
-                raw_str = raw_str[2:end-1]
+                raw_str = raw_str[2:(end-1)]
             end
             if raw_str == "NO_MATCHES" || isempty(raw_str)
                 return "No symbols matching `$query` found in loaded modules"

@@ -257,7 +257,7 @@ end
 """Probe a process for RSS and CPU% via `ps`. Returns `nothing` on failure."""
 function _probe_process(pid::Int)::Union{ProcessDiagnostics,Nothing}
     try
-        out = read(pipeline(`ps -o rss=,%cpu= -p $pid`; stderr=devnull), String)
+        out = read(pipeline(`ps -o rss=,%cpu= -p $pid`; stderr = devnull), String)
         parts = split(strip(out))
         length(parts) >= 2 || return nothing
         rss_kb = parse(Float64, parts[1])
@@ -284,7 +284,7 @@ function trigger_backtrace(conn::REPLConnection)::Union{String,Nothing}
     Sys.iswindows() && return nothing
     bt_path = joinpath(KaimonGate.sock_dir(), "$(conn.session_id)-backtrace.txt")
     # Remove stale file from previous trigger
-    rm(bt_path; force=true)
+    rm(bt_path; force = true)
     # Send SIGINFO (macOS) or SIGUSR1 (Linux) via POSIX kill(2)
     sig = Sys.isbsd() ? 29 : 10
     ret = ccall(:kill, Cint, (Cint, Cint), conn.pid, sig)
@@ -294,7 +294,7 @@ function trigger_backtrace(conn::REPLConnection)::Union{String,Nothing}
     end
     # Poll for the file (profile peek takes ~1s by default + write time)
     # Wait up to 5s — peek_duration default is 1s but writing can take time
-    for _ in 1:50
+    for _ = 1:50
         if isfile(bt_path) && filesize(bt_path) > 0
             sleep(0.3)  # let it finish writing
             try
@@ -322,4 +322,3 @@ function _diagnose_activity(diag::ProcessDiagnostics)::String
         "low activity"
     end
 end
-

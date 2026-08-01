@@ -41,7 +41,10 @@ label diverges from the name).
 function drain_stream_messages!(mgr::ConnectionManager)
     # `data` is normally a String, but a BINARY stream frame (a raw numeric buffer published as
     # `Vector{UInt8}`) is preserved as bytes — see the decode below; downstream routes it un-stringified.
-    messages = NamedTuple{(:channel, :data, :session_name, :conn_name),Tuple{String,Union{String,Vector{UInt8}},String,String}}[]
+    messages = NamedTuple{
+        (:channel, :data, :session_name, :conn_name),
+        Tuple{String,Union{String,Vector{UInt8}},String,String},
+    }[]
     pub_events = Tuple{String,String,String}[]  # (channel, data, session_name) for global PUB re-broadcast
     lock(mgr.lock) do
         for conn in mgr.connections
@@ -77,16 +80,46 @@ function drain_stream_messages!(mgr::ConnectionManager)
                     # its payload routes as bytes with no deserialize — and observe-channel
                     # broadcasts (`KaimonGate.publish`: [topic, payload]) which the Kaimon client
                     # doesn't consume, so we drain + skip. Internal stream messages are single-blob.
-                    if (try; conn.sub_socket.rcvmore; catch; false; end)
+                    if (
+                        try
+                            conn.sub_socket.rcvmore
+                        catch
+                            false
+                        end
+                    )
                         if !isempty(r) && @inbounds(r[1]) == _STREAM_BIN_MAGIC
-                            payload = try; _zmq_recv(conn.sub_socket); catch; UInt8[]; end
-                            while (try; conn.sub_socket.rcvmore; catch; false; end)
-                                try; _zmq_recv(conn.sub_socket); catch; break; end   # keep the socket frame-aligned
+                            payload = try
+                                _zmq_recv(conn.sub_socket)
+                            catch
+                                UInt8[]
+                            end
+                            while (
+                                try
+                                    conn.sub_socket.rcvmore
+                                catch
+                                    false
+                                end
+                            )
+                                try
+                                    _zmq_recv(conn.sub_socket)
+                                catch
+                                    break
+                                end   # keep the socket frame-aligned
                             end
                             return (:binframe, r, payload)
                         end
-                        while (try; conn.sub_socket.rcvmore; catch; false; end)
-                            try; _zmq_recv(conn.sub_socket); catch; break; end
+                        while (
+                            try
+                                conn.sub_socket.rcvmore
+                            catch
+                                false
+                            end
+                        )
+                            try
+                                _zmq_recv(conn.sub_socket)
+                            catch
+                                break
+                            end
                         end
                         return :skip
                     end
@@ -98,11 +131,20 @@ function drain_stream_messages!(mgr::ConnectionManager)
                 # (panel_push / eval-inbox / job_stash / pub_events). Header = [MAGIC|u8 chanLen|chan];
                 # the payload rides straight through as bytes (zero-copy — passed by reference).
                 if raw isa Tuple && @inbounds(raw[1]) === :binframe
-                    hdr = raw[2]::Vector{UInt8}; payload = raw[3]::Vector{UInt8}
+                    hdr = raw[2]::Vector{UInt8}
+                    payload = raw[3]::Vector{UInt8}
                     clen = length(hdr) >= 2 ? Int(hdr[2]) : 0
-                    ch = length(hdr) >= 2 + clen ? String(@view hdr[3:2+clen]) : "stdout"
+                    ch = length(hdr) >= 2 + clen ? String(@view hdr[3:(2+clen)]) : "stdout"
                     dname = isempty(conn.display_name) ? conn.name : conn.display_name
-                    push!(messages, (channel = ch, data = payload, session_name = dname, conn_name = conn.name))
+                    push!(
+                        messages,
+                        (
+                            channel = ch,
+                            data = payload,
+                            session_name = dname,
+                            conn_name = conn.name,
+                        ),
+                    )
                     continue
                 end
                 msg = try
@@ -118,9 +160,15 @@ function drain_stream_messages!(mgr::ConnectionManager)
                     skey = short_key(conn)
                     if raw_data isa NamedTuple && hasfield(typeof(raw_data), :key)
                         _buffer_panel_push!(skey, string(raw_data.key), raw_data.value)
-                        _push_log!(:info, "panel_push received: key=$(raw_data.key) session=$skey")
+                        _push_log!(
+                            :info,
+                            "panel_push received: key=$(raw_data.key) session=$skey",
+                        )
                     else
-                        _push_log!(:warn, "panel_push malformed: session=$skey data=$(repr(raw_data))")
+                        _push_log!(
+                            :warn,
+                            "panel_push malformed: session=$skey data=$(repr(raw_data))",
+                        )
                     end
                     continue
                 end
@@ -165,8 +213,8 @@ function drain_stream_messages!(mgr::ConnectionManager)
                 if ch == "job_stash" && !isempty(msg_request_id)
                     eq_idx = findfirst('=', data)
                     if eq_idx !== nothing
-                        skey = data[1:eq_idx-1]
-                        sval = data[eq_idx+1:end]
+                        skey = data[1:(eq_idx-1)]
+                        sval = data[(eq_idx+1):end]
                         lock(mgr.eval_history_lock) do
                             for r in mgr.eval_history
                                 if r.eval_id == msg_request_id
@@ -181,7 +229,13 @@ function drain_stream_messages!(mgr::ConnectionManager)
                     lock(mgr.eval_history_lock) do
                         for r in mgr.eval_history
                             if r.eval_id == msg_request_id && !isempty(r.stash)
-                                summary = join(["$k=$v" for (k,v) in sort(collect(r.stash); by=first)], " ")
+                                summary = join(
+                                    [
+                                        "$k=$v" for
+                                        (k, v) in sort(collect(r.stash); by = first)
+                                    ],
+                                    " ",
+                                )
                                 if length(summary) > 80
                                     summary = first(summary, 80) * "…"
                                 end
@@ -202,7 +256,15 @@ function drain_stream_messages!(mgr::ConnectionManager)
 
                 if !routed
                     dname = isempty(conn.display_name) ? conn.name : conn.display_name
-                    push!(messages, (channel = ch, data = data, session_name = dname, conn_name = conn.name))
+                    push!(
+                        messages,
+                        (
+                            channel = ch,
+                            data = data,
+                            session_name = dname,
+                            conn_name = conn.name,
+                        ),
+                    )
                 end
 
                 # Forward stdout/stderr/breakpoint_hit to all active inboxes during
@@ -210,7 +272,8 @@ function drain_stream_messages!(mgr::ConnectionManager)
                 # These aren't tagged with request_id (they come from the REPL's
                 # shared stdout/stderr, or from _breakpoint_hook which doesn't
                 # know which eval triggered it), so broadcast to all.
-                if ch in ("stdout", "stderr", "breakpoint_hit") && conn.eval_state[] == EVAL_STREAMING
+                if ch in ("stdout", "stderr", "breakpoint_hit") &&
+                   conn.eval_state[] == EVAL_STREAMING
                     lock(conn._eval_inboxes_lock) do
                         for (_, inbox) in conn._eval_inboxes
                             try
@@ -253,14 +316,24 @@ function wait_stream_messages!(mgr::ConnectionManager; idle_timeout::Real = 0.25
     # Nothing pending — arm one watcher per live SUB fd, then block until the first is readable.
     # Draining above already re-read each socket's EVENTS, re-arming the edge-triggered ZMQ_FD, so
     # a frame that lands after the drain still asserts the fd and wakes the watcher (no lost wakeup).
-    conns = lock(mgr.lock) do; copy(mgr.connections) end
+    conns = lock(mgr.lock) do ;
+        copy(mgr.connections)
+    end
     watchers = FileWatching.FDWatcher[]
     for conn in conns
         sub = conn.sub_socket
         sub === nothing && continue
-        fd = try; Cint(sub.fd); catch; Cint(-1); end
+        fd = try
+            Cint(sub.fd)
+        catch
+            Cint(-1)
+        end
         fd < 0 && continue
-        w = try; FileWatching.FDWatcher(RawFD(fd), true, false); catch; nothing; end
+        w = try
+            FileWatching.FDWatcher(RawFD(fd), true, false)
+        catch
+            nothing
+        end
         w === nothing || push!(watchers, w)
     end
     if isempty(watchers)                       # all SUBs mid-recreation — fall back to a plain sleep
@@ -271,16 +344,25 @@ function wait_stream_messages!(mgr::ConnectionManager; idle_timeout::Real = 0.25
     timer = Timer(_ -> notify(ready), Float64(idle_timeout))
     for w in watchers
         Threads.@spawn begin
-            try; wait(w); catch; end            # a close() below unblocks a still-parked wait → throws → exits
+            try
+                wait(w)
+            catch
+            end            # a close() below unblocks a still-parked wait → throws → exits
             notify(ready)
         end
     end
     try
         wait(ready)
     finally
-        try; close(timer); catch; end
+        try
+            close(timer)
+        catch
+        end
         for w in watchers
-            try; close(w); catch; end
+            try
+                close(w)
+            catch
+            end
         end
     end
     return drain_stream_messages!(mgr)          # readable (or timed out) — pull whatever arrived
@@ -308,17 +390,37 @@ function _sub_reader(mgr::ConnectionManager, conn::REPLConnection)
     try
         while mgr.running && conn.status !== :disconnected
             sub = conn.sub_socket
-            fd = sub === nothing ? Cint(-1) : (try Cint(sub.fd) catch; Cint(-1) end)
+            fd = sub === nothing ? Cint(-1) : (
+                try
+                    Cint(sub.fd)
+                catch
+                    Cint(-1)
+                end
+            )
             if fd < 0
                 # SUB not connected yet / mid-recreation — brief settle, retry.
-                fdw === nothing || (try; close(fdw); catch; end)
+                fdw === nothing || (
+                    try
+                        close(fdw)
+                    catch
+                    end
+                )
                 fdw = nothing
                 sleep(0.1)
                 continue
             end
             if fdw === nothing || watched_fd != fd
-                fdw === nothing || (try; close(fdw); catch; end)
-                fdw = try FileWatching.FDWatcher(RawFD(fd), true, false) catch; nothing end
+                fdw === nothing || (
+                    try
+                        close(fdw)
+                    catch
+                    end
+                )
+                fdw = try
+                    FileWatching.FDWatcher(RawFD(fd), true, false)
+                catch
+                    nothing
+                end
                 watched_fd = fd
                 fdw === nothing && (sleep(0.1); continue)
                 # Buffered data may already be present — drain before parking
@@ -337,9 +439,12 @@ function _sub_reader(mgr::ConnectionManager, conn::REPLConnection)
             woke && drain_stream_messages!(mgr)
         end
     finally
-        fdw === nothing || (try; close(fdw); catch; end)
+        fdw === nothing || (
+            try
+                close(fdw)
+            catch
+            end
+        )
     end
     return nothing
 end
-
-

@@ -157,4 +157,3 @@ const _WIZ_B_ART = raw"""
 
 const COMPANION_WIZ = split(_WIZ_ART, '\n')
 const COMPANION_WIZ_B = split(_WIZ_B_ART, '\n')
-

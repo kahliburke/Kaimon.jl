@@ -167,7 +167,7 @@ Reads the editor setting from the global config (`~/.config/kaimon/config.json`)
 
 Supported editors: vscode, cursor, zed, windsurf — all use `<scheme>://file/path:line:col`.
 """
-function editor_file_url(path::String; line::Int=0, col::Int=0)::String
+function editor_file_url(path::String; line::Int = 0, col::Int = 0)::String
     isempty(path) && return ""
     cfg = load_global_config()
     editor = cfg !== nothing ? cfg.editor : "vscode"
@@ -217,4 +217,3 @@ function build_vscode_uri(
     end
     return uri
 end
-

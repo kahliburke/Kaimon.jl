@@ -95,27 +95,35 @@ end
 # ── _type_to_meta: Union{T, Nothing} ─────────────────────────────────────────
 
 @testset "_type_to_meta Union{T,Nothing}" begin
-    m = KaimonGate._type_to_meta(Union{Int, Nothing})
+    m = KaimonGate._type_to_meta(Union{Int,Nothing})
     # Should unwrap to Int metadata
     @test m["kind"] == "integer"
 
-    m2 = KaimonGate._type_to_meta(Union{String, Nothing})
+    m2 = KaimonGate._type_to_meta(Union{String,Nothing})
     @test m2["kind"] == "string"
 end
 
 # ── _type_to_meta: depth limit ────────────────────────────────────────────────
 
 # Build a deeply nested struct chain
-struct _D5; end
-struct _D4; v::_D5; end
-struct _D3; v::_D4; end
-struct _D2; v::_D3; end
-struct _D1; v::_D2; end
+struct _D5 end
+struct _D4
+    v::_D5
+end
+struct _D3
+    v::_D4
+end
+struct _D2
+    v::_D3
+end
+struct _D1
+    v::_D2
+end
 
 @testset "_type_to_meta depth limit" begin
     # With max_depth=1, _D1 (depth=0) is a struct but its field _D2 (depth=1)
     # hits the limit and falls back to "any".
-    m = KaimonGate._type_to_meta(_D1; max_depth=1)
+    m = KaimonGate._type_to_meta(_D1; max_depth = 1)
     @test m["kind"] == "struct"
     inner = m["fields"][1]["type_meta"]  # _D2 at depth=1, which equals max_depth → "any"
     @test inner["kind"] == "any"
@@ -124,8 +132,8 @@ end
 # ── _is_optional_type ────────────────────────────────────────────────────────
 
 @testset "_is_optional_type" begin
-    @test KaimonGate._is_optional_type(Union{Int, Nothing}) == true
-    @test KaimonGate._is_optional_type(Union{String, Nothing}) == true
+    @test KaimonGate._is_optional_type(Union{Int,Nothing}) == true
+    @test KaimonGate._is_optional_type(Union{String,Nothing}) == true
     @test KaimonGate._is_optional_type(Int) == false
     @test KaimonGate._is_optional_type(String) == false
     @test KaimonGate._is_optional_type(Any) == false

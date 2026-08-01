@@ -22,7 +22,7 @@ function write_metadata(
     spawned_by::AbstractString = "user",
     mode::Symbol = :ipc,
 )
-    meta_path = joinpath(sock_dir(),"$(session_id).json")
+    meta_path = joinpath(sock_dir(), "$(session_id).json")
     meta = Dict{String,Any}(
         "session_id" => session_id,
         "name" => name,
@@ -53,7 +53,7 @@ end
 function cleanup_files(session_id::String)
     # Always clean up the metadata JSON. Socket files only exist in IPC mode.
     for ext in [".sock", "-stream.sock", ".json"]
-        path = joinpath(sock_dir(),"$(session_id)$(ext)")
+        path = joinpath(sock_dir(), "$(session_id)$(ext)")
         isfile(path) && rm(path; force = true)
     end
 end
@@ -78,7 +78,7 @@ function _utf16_ptr_to_string(p::Ptr{UInt16})
         len += 1
     end
     units = Vector{UInt16}(undef, len)
-    @inbounds for i in 1:len
+    @inbounds for i = 1:len
         units[i] = unsafe_load(p, i)
     end
     return transcode(String, units)
@@ -108,12 +108,18 @@ function _capture_original_argv()
             # an app/-e launch, falling back to a reconstructed command.
             p_cmd = ccall((:GetCommandLineW, "kernel32"), Ptr{UInt16}, ())
             argc = Ref{Cint}(0)
-            p_argv = ccall((:CommandLineToArgvW, "shell32"), Ptr{Ptr{UInt16}},
-                           (Ptr{UInt16}, Ptr{Cint}), p_cmd, argc)
+            p_argv = ccall(
+                (:CommandLineToArgvW, "shell32"),
+                Ptr{Ptr{UInt16}},
+                (Ptr{UInt16}, Ptr{Cint}),
+                p_cmd,
+                argc,
+            )
             if p_argv != C_NULL
                 try
-                    _ORIGINAL_ARGV[] =
-                        String[_utf16_ptr_to_string(unsafe_load(p_argv, i)) for i in 1:argc[]]
+                    _ORIGINAL_ARGV[] = String[
+                        _utf16_ptr_to_string(unsafe_load(p_argv, i)) for i = 1:argc[]
+                    ]
                 finally
                     ccall((:LocalFree, "kernel32"), Ptr{Cvoid}, (Ptr{Cvoid},), p_argv)
                 end
@@ -133,14 +139,25 @@ end
 #   * `_base_julia_args` must fuse flag+value into one token so the value isn't re-parsed as
 #     a positional on restart.
 const _VALUE_FLAGS = Set([
-    "-t", "--threads",
-    "-C", "--cpu-target",
-    "-J", "--sysimage",
-    "-O", "--optimize",
-    "-L", "--load",
-    "-p", "--procs",
-    "-g", "--debug-info",
-    "--gcthreads", "--heap-size-hint", "--machine-file", "--project", "--bind-to",
+    "-t",
+    "--threads",
+    "-C",
+    "--cpu-target",
+    "-J",
+    "--sysimage",
+    "-O",
+    "--optimize",
+    "-L",
+    "--load",
+    "-p",
+    "--procs",
+    "-g",
+    "--debug-info",
+    "--gcthreads",
+    "--heap-size-hint",
+    "--machine-file",
+    "--project",
+    "--bind-to",
 ])
 
 # Flags that carry user code/startup work which a restart must re-run verbatim.
@@ -166,8 +183,7 @@ function _should_replay_argv()
         end
         # Combined forms: --eval=..., --load=...
         for f in ("--eval=", "--print=", "--load=")
-            startswith(arg, f) &&
-                (occursin("Gate.serve(session_id=", arg) || return true)
+            startswith(arg, f) && (occursin("Gate.serve(session_id=", arg) || return true)
         end
         if startswith(arg, "-")
             # A value-taking flag consumes the next token, so it is never a script path
@@ -242,15 +258,21 @@ terminal, fresh Julia state. The `-i` flag keeps the REPL interactive.
 # IPC→TCP on Windows (`coerced`) must instead restart as a plain :ipc gate (empty kwargs)
 # so it re-coerces, binds a fresh ephemeral port, and re-writes discovery metadata — else
 # the restarted gate advertises nothing and is never rediscovered (orphaned session).
-function _restart_tcp_kwargs(mode::Symbol, coerced::Bool, host::AbstractString,
-                             port::Integer, stream_port::Integer,
-                             curve_enabled::Bool, curve_allow_any::Bool)
+function _restart_tcp_kwargs(
+    mode::Symbol,
+    coerced::Bool,
+    host::AbstractString,
+    port::Integer,
+    stream_port::Integer,
+    curve_enabled::Bool,
+    curve_allow_any::Bool,
+)
     (mode == :tcp && !coerced) || return ""
     base = ", mode=:tcp, host=$(repr(String(host))), port=$port, stream_port=$stream_port"
     # CURVE: replay the flag; the server secret + allow-list persist on disk (curve/ dir)
     # so the gate rebinds with the same identity.
-    curve_kw = curve_enabled ?
-        ", curve=true" * (curve_allow_any ? ", allow_any=true" : "") : ""
+    curve_kw =
+        curve_enabled ? ", curve=true" * (curve_allow_any ? ", allow_any=true" : "") : ""
     return base * curve_kw
 end
 
@@ -271,15 +293,22 @@ function _exec_restart(name::String, session_id::String, project_path::String)
         # all launch flags (-t, --heap-size-hint, --gcthreads, -O, etc.), then
         # inject our own --project / -i / -e serve(...).
         julia_args = _base_julia_args()
-        ns      = _SESSION_NAMESPACE[]
-        mirror  = _ALLOW_MIRROR[]
+        ns = _SESSION_NAMESPACE[]
+        mirror = _ALLOW_MIRROR[]
         restart = _ALLOW_RESTART[]
-        mode    = _MODE[]
-        ns_kwarg      = isempty(ns) ? "" : ", namespace=$(repr(ns))"
-        mirror_kwarg  = mirror  ? "" : ", allow_mirror=false"
+        mode = _MODE[]
+        ns_kwarg = isempty(ns) ? "" : ", namespace=$(repr(ns))"
+        mirror_kwarg = mirror ? "" : ", allow_mirror=false"
         restart_kwarg = restart ? "" : ", allow_restart=false"
-        tcp_kwargs = _restart_tcp_kwargs(mode, _LOCAL_TCP_COERCED[], _TCP_HOST[],
-            _TCP_PORT[], _TCP_STREAM_PORT[], _CURVE_ENABLED[], _CURVE_ALLOW_ANY[])
+        tcp_kwargs = _restart_tcp_kwargs(
+            mode,
+            _LOCAL_TCP_COERCED[],
+            _TCP_HOST[],
+            _TCP_PORT[],
+            _TCP_STREAM_PORT[],
+            _CURVE_ENABLED[],
+            _CURVE_ALLOW_ANY[],
+        )
         # The injected -e code runs after startup.jl.  If startup.jl already
         # called serve() and picked up KAIMON_RESTART_SESSION, the gate
         # will already be running with the correct session_id; our serve() call
@@ -388,7 +417,11 @@ function handle_message(request::NamedTuple)
                         exception = nothing,
                         backtrace = nothing,
                     )
-                    _publish_stream("eval_complete", _serialize_result(fallback); request_id)
+                    _publish_stream(
+                        "eval_complete",
+                        _serialize_result(fallback);
+                        request_id,
+                    )
                 end
             catch e
                 error_result = (
@@ -420,7 +453,11 @@ function handle_message(request::NamedTuple)
     elseif msg_type == :ping
         _PING_COUNT[] += 1
         _LAST_PING_TIME[] = time()
-        _kv = try; _VERSION_PROVIDER[](); catch; "unknown"; end
+        _kv = try
+            _VERSION_PROVIDER[]()
+        catch
+            "unknown"
+        end
         return (
             type = :pong,
             pid = getpid(),
@@ -508,7 +545,8 @@ function handle_message(request::NamedTuple)
                 # concise explanation alone. Genuine errors keep their backtrace for debugging.
                 _publish_stream(
                     "tool_error",
-                    e isa ToolArgumentError ? e.msg : sprint(showerror, e, catch_backtrace());
+                    e isa ToolArgumentError ? e.msg :
+                    sprint(showerror, e, catch_backtrace());
                     request_id,
                 )
             end
@@ -544,7 +582,8 @@ function handle_message(request::NamedTuple)
             try
                 _cleanup()  # Close sockets, remove metadata files
             catch e
-                @warn "Restart cleanup failed; proceeding to exec anyway" exception = (e, catch_backtrace())
+                @warn "Restart cleanup failed; proceeding to exec anyway" exception =
+                    (e, catch_backtrace())
             end
             try
                 _exec_restart(old_name, old_session_id, old_project)
@@ -552,12 +591,13 @@ function handle_message(request::NamedTuple)
                 # execvp setup failed before the process could be replaced. Do NOT
                 # exit(1) — that drops to a shell. Leave the (now gate-less) REPL
                 # alive so the user can recover (e.g. call serve() again).
-                @error "Restart exec failed; session left running without a gate — call KaimonGate.serve() to recover" exception = (e, catch_backtrace())
+                @error "Restart exec failed; session left running without a gate — call KaimonGate.serve() to recover" exception =
+                    (e, catch_backtrace())
             end
         end
 
         return (type = :ok, message = "restarting via exec")
-    # ── Debug Protocol ──────────────────────────────────────────────────────
+        # ── Debug Protocol ──────────────────────────────────────────────────────
     elseif msg_type == :debug_status
         paused = _DEBUG_PAUSED[]
         if paused !== nothing
@@ -576,7 +616,10 @@ function handle_message(request::NamedTuple)
         result = take!(result_ch)
         # Publish so TUI can show agent evals in console
         src = get(request, :source, :agent)
-        _publish_stream("debug_eval", _serialize_result((source = src, code = code, result = result)))
+        _publish_stream(
+            "debug_eval",
+            _serialize_result((source = src, code = code, result = result)),
+        )
         return (type = :debug_eval_result, result = result)
 
     elseif msg_type == :debug_continue
@@ -681,8 +724,9 @@ function message_loop(socket::ZMQ.Socket)
             # 2b. pick recv timeout: poll fast while a reply may be in flight (a
             #     worker running, or one already queued between drain and now),
             #     else wait long. Owner-only socket access, so setsockopt is safe.
-            want_rcvtimeo = (_GATE_INFLIGHT[] > 0 || isready(_GATE_OUTBOX)) ?
-                            _GATE_RCVTIMEO_BUSY[] : _GATE_RCVTIMEO_IDLE[]
+            want_rcvtimeo =
+                (_GATE_INFLIGHT[] > 0 || isready(_GATE_OUTBOX)) ? _GATE_RCVTIMEO_BUSY[] :
+                _GATE_RCVTIMEO_IDLE[]
             if want_rcvtimeo != cur_rcvtimeo
                 socket.rcvtimeo = want_rcvtimeo
                 cur_rcvtimeo = want_rcvtimeo
@@ -736,4 +780,3 @@ function message_loop(socket::ZMQ.Socket)
         sleep(0.005)
     end
 end
-

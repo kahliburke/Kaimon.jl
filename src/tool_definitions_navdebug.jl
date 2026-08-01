@@ -57,7 +57,7 @@ or when LSP goto_definition doesn't work.
             end
 
             # Use configured editor URI with line and column position
-            uri = editor_file_url(abs_path; line=line, col=column)
+            uri = editor_file_url(abs_path; line = line, col = column)
             trigger_vscode_uri(uri)
 
             return "Navigated to $abs_path:$line:$column"
@@ -145,7 +145,9 @@ Infiltrator.@withstore. action="clear": drop all captured variables.""",
         if lowercase(String(get(args, "action", "inspect"))) == "clear"
             return execute_repllike(
                 "using Infiltrator; Infiltrator.clear_store!(); \"Safehouse cleared.\"";
-                quiet = false, session = session)
+                quiet = false,
+                session = session,
+            )
         end
         expr = get(args, "expression", "")
         if isempty(expr)
@@ -215,12 +217,15 @@ Actions:
                     types = get(resp, :locals_types, Dict())
                     if !isempty(locals)
                         push!(lines, "  Locals:")
-                        for (name, val) in sort(collect(locals); by=first)
+                        for (name, val) in sort(collect(locals); by = first)
                             t = get(types, name, "Any")
                             push!(lines, "    $name::$t = $val")
                         end
                     end
-                    push!(lines, "\nUse debug_eval to evaluate expressions in this context.")
+                    push!(
+                        lines,
+                        "\nUse debug_eval to evaluate expressions in this context.",
+                    )
                     push!(lines, "Use debug_ctrl with action='continue' to resume.")
                     join(lines, "\n")
                 else
@@ -232,7 +237,8 @@ Actions:
                 # a consent prompt; the response comes back on a Channel.
                 response_ch = Channel{Symbol}(1)
                 session_key = short_key(conn)
-                _DEBUG_CONTINUE_REQUEST[] = (session_key = session_key, action = :continue)
+                _DEBUG_CONTINUE_REQUEST[] =
+                    (session_key = session_key, action = :continue)
                 _DEBUG_CONTINUE_RESPONSE[] = response_ch
                 # Wait for user approval (timeout after 30s)
                 result = timedwait(30.0) do
@@ -247,7 +253,8 @@ Actions:
                 if decision == :denied
                     return "User denied the continue request."
                 end
-                resp = _gate_send_recv(conn, (type = :debug_continue, action = :continue))
+                resp =
+                    _gate_send_recv(conn, (type = :debug_continue, action = :continue))
                 return get(resp, :message, "Resumed execution")
             else
                 return "Error: unknown action '$action'. Use 'status' or 'continue'."
@@ -297,4 +304,3 @@ The expression has access to all local variables at the breakpoint.""",
         end
     end
 )
-

@@ -63,9 +63,9 @@ function _view_activity_filter(m::KaimonModel, area::Rect, buf::Buffer)
     modal_h = min(area.height - 4, n_items + 3)
     pos = center(area, modal_w, modal_h)
 
-    bg = Style(fg=tstyle(:text).fg, bg=Tachikoma.theme().bg)
-    for ry in pos.y:pos.y+pos.height-1
-        for rx in pos.x:pos.x+pos.width-1
+    bg = Style(fg = tstyle(:text).fg, bg = Tachikoma.theme().bg)
+    for ry = pos.y:(pos.y+pos.height-1)
+        for rx = pos.x:(pos.x+pos.width-1)
             set_char!(buf, rx, ry, ' ', bg)
         end
     end
@@ -73,7 +73,7 @@ function _view_activity_filter(m::KaimonModel, area::Rect, buf::Buffer)
     blk = Block(
         title = "Filter by Session",
         border_style = tstyle(:accent),
-        title_style = tstyle(:accent, bold=true),
+        title_style = tstyle(:accent, bold = true),
     )
     inner = render(blk, pos, buf)
     inner.height < 1 && return
@@ -82,14 +82,14 @@ function _view_activity_filter(m::KaimonModel, area::Rect, buf::Buffer)
     list_h < 1 && return
 
     offset = max(0, sel - list_h)
-    for vi in 1:list_h
+    for vi = 1:list_h
         idx = offset + vi
         idx > n_items && break
         ry = inner.y + vi - 1
         is_sel = idx == sel
         active = has_activity[idx]
         style = if is_sel
-            tstyle(:accent, bold=true)
+            tstyle(:accent, bold = true)
         elseif active
             tstyle(:secondary)
         else
@@ -97,15 +97,22 @@ function _view_activity_filter(m::KaimonModel, area::Rect, buf::Buffer)
         end
         marker = is_sel ? '▸' : ' '
         set_char!(buf, inner.x, ry, marker, style)
-        set_string!(buf, inner.x + 2, ry, display_names[idx], style; max_x=right(inner))
+        set_string!(buf, inner.x + 2, ry, display_names[idx], style; max_x = right(inner))
     end
 
     hint_y = inner.y + inner.height - 1
     dim = tstyle(:text_dim)
-    _write_spans!(buf, inner.x, hint_y, [
-        ("[Enter]", tstyle(:accent)), (" select  ", dim),
-        ("[Esc]", tstyle(:accent)), (" close", dim),
-    ])
+    _write_spans!(
+        buf,
+        inner.x,
+        hint_y,
+        [
+            ("[Enter]", tstyle(:accent)),
+            (" select  ", dim),
+            ("[Esc]", tstyle(:accent)),
+            (" close", dim),
+        ],
+    )
 end
 
 """Handle key events for the activity filter popup."""
@@ -124,7 +131,7 @@ function _handle_activity_filter_key!(m::KaimonModel, evt::KeyEvent)
             if sel == 1
                 m.activity_filter = ""
             else
-                m.activity_filter = sessions[sel - 1]
+                m.activity_filter = sessions[sel-1]
             end
             m.activity_filter_open = false
             m.selected_result = 0
@@ -364,7 +371,7 @@ function _view_analytics(m::KaimonModel, area::Rect, buf::Buffer)
     end
 
     spark_w = min(inner.width - 2, 60)
-    spark_data = bins[max(1, 61 - spark_w):60]
+    spark_data = bins[max(1, 61-spark_w):60]
     if any(>(0), spark_data)
         render(
             Sparkline(spark_data; style = tstyle(:accent)),
@@ -528,7 +535,10 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
     n_items = length(col_times)
     if n_items == 0
         push!(col_times, "")
-        push!(col_tools, isempty(filter_key) ? "No tool calls yet" : "No calls for this session")
+        push!(
+            col_tools,
+            isempty(filter_key) ? "No tool calls yet" : "No calls for this session",
+        )
         push!(col_sessions, "")
         push!(col_durations, "")
         push!(col_preview, "")
@@ -542,10 +552,10 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
     if old_dt === nothing || m._activity_table_hash != dt_hash
         dt = DataTable(
             [
-                DataColumn("Time", col_times; width=9),
-                DataColumn("Tool", col_tools; width=18),
-                DataColumn("Session", col_sessions; width=12),
-                DataColumn("Duration", col_durations; width=9),
+                DataColumn("Time", col_times; width = 9),
+                DataColumn("Tool", col_tools; width = 18),
+                DataColumn("Session", col_sessions; width = 12),
+                DataColumn("Duration", col_durations; width = 9),
                 DataColumn("Preview", col_preview),
             ];
             selected = display_sel,
@@ -678,7 +688,8 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
 
         # (Re)build the Paragraph when selection or wrap mode changes — or when a promoted
         # job we're currently viewing just finished (so the result appears without reselect).
-        if m._detail_for_result != m.selected_result || m.detail_paragraph === nothing ||
+        if m._detail_for_result != m.selected_result ||
+           m.detail_paragraph === nothing ||
            (ready && !m._detail_result_resolved)
             spans = Span[]
             _detail_span!(
@@ -887,10 +898,17 @@ end
 
 # Emit `line` as spans with occurrences of `rx` colored `hl` and the rest in `base`.
 # Byte-offset walk (mirrors `_highlight_julia`); zero-width matches are skipped.
-function _grep_hl_line!(spans::Vector{Span}, line::AbstractString, rx, base::Style, hl::Style)
+function _grep_hl_line!(
+    spans::Vector{Span},
+    line::AbstractString,
+    rx,
+    base::Style,
+    hl::Style,
+)
     s = string(line)
     if rx === nothing
-        push!(spans, Span(s * "\n", base)); return
+        push!(spans, Span(s * "\n", base))
+        return
     end
     pos = 1
     for mt in eachmatch(rx, s)
@@ -918,7 +936,15 @@ function _highlight_grep_result(text::String)
         hm = match(r"^🔎 /(.+)/ in ", text)
         if hm !== nothing
             pat = String(hm.captures[1])
-            rx = try; Regex(pat); catch; try; Regex(pat, "i"); catch; nothing; end; end
+            rx = try
+                Regex(pat)
+            catch
+                try
+                    Regex(pat, "i")
+                catch
+                    nothing
+                end
+            end
         end
         base = tstyle(:text)
         hl = tstyle(:accent, bold = true)
@@ -959,7 +985,11 @@ function _highlight_search_result(text::String)
             toks = _query_tokens(String(hm.captures[1]))   # ≥3-char terms, minus FTS operators
             if !isempty(toks)
                 pat = join(sort(unique(toks); by = length, rev = true), "|")   # alnum/_ only, no escaping
-                rx = try; Regex("(?:" * pat * ")", "i"); catch; nothing; end
+                rx = try
+                    Regex("(?:" * pat * ")", "i")
+                catch
+                    nothing
+                end
             end
         end
         base = tstyle(:text)

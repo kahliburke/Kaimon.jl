@@ -75,10 +75,7 @@ function _gate_cache_dir()
     # fix (1cf20a5) on the gate side — the half PR #45 patched in gate.jl that the
     # KaimonGate split didn't carry over. (#42, #45)
     d = if Sys.iswindows()
-        joinpath(
-            get(ENV, "LOCALAPPDATA", joinpath(homedir(), "AppData", "Local")),
-            "Kaimon",
-        )
+        joinpath(get(ENV, "LOCALAPPDATA", joinpath(homedir(), "AppData", "Local")), "Kaimon")
     else
         joinpath(get(ENV, "XDG_CACHE_HOME", joinpath(homedir(), ".cache")), "kaimon")
     end
@@ -103,8 +100,10 @@ deadlocking PTY-backed sessions where the kernel buffer is small.
 """
 function _install_peek_report_override(session_id::String)
     try
-        Profile = Base.require(Base.PkgId(Base.UUID("9abbd945-dff8-562f-b5e8-e1ebf5ef1b79"), "Profile"))
-        bt_path = joinpath(sock_dir(),"$(session_id)-backtrace.txt")
+        Profile = Base.require(
+            Base.PkgId(Base.UUID("9abbd945-dff8-562f-b5e8-e1ebf5ef1b79"), "Profile"),
+        )
+        bt_path = joinpath(sock_dir(), "$(session_id)-backtrace.txt")
         Profile.peek_report[] = function ()
             try
                 open(bt_path, "w") do io
@@ -138,8 +137,9 @@ const GATE_LOCK = ReentrantLock()
 #   _EVAL_QUEUED   — evals blocked waiting for a slot (cap exceeded)
 # Both feed the "ran alongside N concurrent eval(s) (M queued)" note on results.
 const _EVAL_INFLIGHT = Threads.Atomic{Int}(0)
-const _EVAL_QUEUED   = Threads.Atomic{Int}(0)
-_eval_concurrency() = max(1, something(tryparse(Int, get(ENV, "KAIMON_GATE_EVAL_CONCURRENCY", "")), 4))
+const _EVAL_QUEUED = Threads.Atomic{Int}(0)
+_eval_concurrency() =
+    max(1, something(tryparse(Int, get(ENV, "KAIMON_GATE_EVAL_CONCURRENCY", "")), 4))
 const _EVAL_SEM = Ref{Union{Base.Semaphore,Nothing}}(nothing)
 const _EVAL_SEM_LOCK = ReentrantLock()
 """The eval-concurrency semaphore, built lazily from `KAIMON_GATE_EVAL_CONCURRENCY` (default 4)."""
@@ -158,7 +158,7 @@ end
 # NOT written to stdout — so concurrent output never garbles the live terminal.
 const _MIRROR_BUSY = Threads.Atomic{Bool}(false)
 """Claim the terminal-mirror slot. Returns true if this eval won it (is primary)."""
-_claim_mirror!()   = Threads.atomic_cas!(_MIRROR_BUSY, false, true) == false
+_claim_mirror!() = Threads.atomic_cas!(_MIRROR_BUSY, false, true) == false
 _release_mirror!() = Threads.atomic_xchg!(_MIRROR_BUSY, false)
 
 # Global state for the running gate
@@ -216,15 +216,14 @@ const _ON_SHUTDOWN = Ref{Any}(nothing)
 # handler (a multi-second sync eval, or a blocked debug_eval) can't stall intake.
 # Each outbox entry is (identity, corr_id, reply-bytes); the corr_id is echoed
 # back so the client DEALER can demultiplex concurrent in-flight requests.
-const _GATE_OUTBOX =
-    Channel{Tuple{Vector{UInt8},Vector{UInt8},Vector{UInt8}}}(Inf)
+const _GATE_OUTBOX = Channel{Tuple{Vector{UInt8},Vector{UInt8},Vector{UInt8}}}(Inf)
 # Backstop on concurrent worker tasks so a request storm can't spawn unbounded
 # tasks. At the cap the owner stops accepting new requests; pending requests
 # stay queued in the ROUTER (client DEALER blocks in its own recv) until a slot
 # frees. Env-overridable.
 const _GATE_INFLIGHT = Threads.Atomic{Int}(0)
-const _GATE_MAX_WORKERS = Ref{Int}(
-    something(tryparse(Int, get(ENV, "KAIMON_GATE_MAX_WORKERS", "")), 16))
+const _GATE_MAX_WORKERS =
+    Ref{Int}(something(tryparse(Int, get(ENV, "KAIMON_GATE_MAX_WORKERS", "")), 16))
 
 # Adaptive owner-loop recv timeout (ms). The owner blocks in recv, so worker
 # replies queued in _GATE_OUTBOX only flush when the recv returns. A flat 200ms
@@ -235,10 +234,10 @@ const _GATE_MAX_WORKERS = Ref{Int}(
 # waits long (IDLE) when there's nothing outstanding, so an idle gate stays
 # cheap. Intake latency is unaffected either way (recv returns as soon as a
 # request arrives); only reply latency is bounded, now to ~BUSY ms. Env-overridable.
-const _GATE_RCVTIMEO_BUSY = Ref{Int}(
-    something(tryparse(Int, get(ENV, "KAIMON_GATE_RCVTIMEO_BUSY", "")), 5))
-const _GATE_RCVTIMEO_IDLE = Ref{Int}(
-    something(tryparse(Int, get(ENV, "KAIMON_GATE_RCVTIMEO_IDLE", "")), 200))
+const _GATE_RCVTIMEO_BUSY =
+    Ref{Int}(something(tryparse(Int, get(ENV, "KAIMON_GATE_RCVTIMEO_BUSY", "")), 5))
+const _GATE_RCVTIMEO_IDLE =
+    Ref{Int}(something(tryparse(Int, get(ENV, "KAIMON_GATE_RCVTIMEO_IDLE", "")), 200))
 
 # ── Stream broadcaster (XPUB) + subscriber presence ──────────────────────────
 # The stream socket is an XPUB (drop-in for SUB clients) owned by ONE task: the
@@ -272,12 +271,12 @@ const _STREAM_WAKE = Vector{UInt8}[]
 # syscall per tick and woke the whole thread pool (~10% CPU per idle gate).
 # Env-overridable; bounds worst-case presence-event latency.
 const _STREAM_SUBPOLL_INTERVAL = Ref{Float64}(
-    something(tryparse(Float64, get(ENV, "KAIMON_GATE_STREAM_SUBPOLL", "")), 0.5))
+    something(tryparse(Float64, get(ENV, "KAIMON_GATE_STREAM_SUBPOLL", "")), 0.5),
+)
 
 # libzmq socket-option ids (stable ZMTP ABI; see gate_curve.jl for the pattern).
-const _ZMQ_TCP_KEEPALIVE       = 34
-const _ZMQ_TCP_KEEPALIVE_CNT   = 35
-const _ZMQ_TCP_KEEPALIVE_IDLE  = 36
+const _ZMQ_TCP_KEEPALIVE = 34
+const _ZMQ_TCP_KEEPALIVE_CNT = 35
+const _ZMQ_TCP_KEEPALIVE_IDLE = 36
 const _ZMQ_TCP_KEEPALIVE_INTVL = 37
-const _ZMQ_XPUB_VERBOSER       = 78
-
+const _ZMQ_XPUB_VERBOSER = 78

@@ -8,16 +8,19 @@ using Kaimon
     @testset "_grep_parse_rg — per-file counts, totals, verbatim lines" begin
         # foo.jl: 2 matches, bar.jl: 1. `end` messages carry exact per-file counts; the
         # `summary` carries the grand total + files scanned.
-        j = join([
-            "{\"type\":\"begin\",\"data\":{\"path\":{\"text\":\"/a/foo.jl\"}}}",
-            "{\"type\":\"match\",\"data\":{\"path\":{\"text\":\"/a/foo.jl\"},\"lines\":{\"text\":\"  bar()\\n\"},\"line_number\":3,\"submatches\":[{\"match\":{\"text\":\"bar\"}}]}}",
-            "{\"type\":\"match\",\"data\":{\"path\":{\"text\":\"/a/foo.jl\"},\"lines\":{\"text\":\"  baz()\\n\"},\"line_number\":7,\"submatches\":[]}}",
-            "{\"type\":\"end\",\"data\":{\"path\":{\"text\":\"/a/foo.jl\"},\"stats\":{\"matches\":2}}}",
-            "{\"type\":\"begin\",\"data\":{\"path\":{\"text\":\"/a/bar.jl\"}}}",
-            "{\"type\":\"match\",\"data\":{\"path\":{\"text\":\"/a/bar.jl\"},\"lines\":{\"text\":\"q\\n\"},\"line_number\":1,\"submatches\":[]}}",
-            "{\"type\":\"end\",\"data\":{\"path\":{\"text\":\"/a/bar.jl\"},\"stats\":{\"matches\":1}}}",
-            "{\"type\":\"summary\",\"data\":{\"stats\":{\"matches\":3,\"searches\":2}}}",
-        ], "\n")
+        j = join(
+            [
+                "{\"type\":\"begin\",\"data\":{\"path\":{\"text\":\"/a/foo.jl\"}}}",
+                "{\"type\":\"match\",\"data\":{\"path\":{\"text\":\"/a/foo.jl\"},\"lines\":{\"text\":\"  bar()\\n\"},\"line_number\":3,\"submatches\":[{\"match\":{\"text\":\"bar\"}}]}}",
+                "{\"type\":\"match\",\"data\":{\"path\":{\"text\":\"/a/foo.jl\"},\"lines\":{\"text\":\"  baz()\\n\"},\"line_number\":7,\"submatches\":[]}}",
+                "{\"type\":\"end\",\"data\":{\"path\":{\"text\":\"/a/foo.jl\"},\"stats\":{\"matches\":2}}}",
+                "{\"type\":\"begin\",\"data\":{\"path\":{\"text\":\"/a/bar.jl\"}}}",
+                "{\"type\":\"match\",\"data\":{\"path\":{\"text\":\"/a/bar.jl\"},\"lines\":{\"text\":\"q\\n\"},\"line_number\":1,\"submatches\":[]}}",
+                "{\"type\":\"end\",\"data\":{\"path\":{\"text\":\"/a/bar.jl\"},\"stats\":{\"matches\":1}}}",
+                "{\"type\":\"summary\",\"data\":{\"stats\":{\"matches\":3,\"searches\":2}}}",
+            ],
+            "\n",
+        )
         files, total, scanned = Kaimon._grep_parse_rg(j, 40)
         @test total == 3 && scanned == 2
         @test length(files) == 2
@@ -29,10 +32,11 @@ using Kaimon
     end
 
     @testset "_grep_parse_rg retains ≤`retain` lines per file but counts all" begin
-        m(i) = "{\"type\":\"match\",\"data\":{\"path\":{\"text\":\"/a/f.jl\"}," *
-               "\"lines\":{\"text\":\"x\\n\"},\"line_number\":$i,\"submatches\":[]}}"
+        m(i) =
+            "{\"type\":\"match\",\"data\":{\"path\":{\"text\":\"/a/f.jl\"}," *
+            "\"lines\":{\"text\":\"x\\n\"},\"line_number\":$i,\"submatches\":[]}}"
         e = "{\"type\":\"end\",\"data\":{\"path\":{\"text\":\"/a/f.jl\"},\"stats\":{\"matches\":5}}}"
-        files, total, _ = Kaimon._grep_parse_rg(join([[m(i) for i in 1:5]; e], "\n"), 3)
+        files, total, _ = Kaimon._grep_parse_rg(join([[m(i) for i = 1:5]; e], "\n"), 3)
         @test length(files) == 1
         @test files[1].count == 5           # exact count from `end`
         @test length(files[1].hits) == 3    # retained only up to `retain`
@@ -169,19 +173,28 @@ using Kaimon
                     et = Kaimon._grep_enforce_scope(realpath(out1); consent = _ -> :timeout)
                     @test et !== nothing && occursin("within", et)
                     # Approve once → allowed, and NOT persisted.
-                    @test Kaimon._grep_enforce_scope(realpath(out1); consent = _ -> :once) ===
-                          nothing
+                    @test Kaimon._grep_enforce_scope(
+                        realpath(out1);
+                        consent = _ -> :once,
+                    ) === nothing
                     @test isempty(Kaimon.grep_allowed_paths())
                     # Approve always → allowed AND persisted to the whitelist.
-                    @test Kaimon._grep_enforce_scope(realpath(out2); consent = _ -> :always) ===
-                          nothing
-                    @test Kaimon.normalize_path(realpath(out2)) in Kaimon.grep_allowed_paths()
+                    @test Kaimon._grep_enforce_scope(
+                        realpath(out2);
+                        consent = _ -> :always,
+                    ) === nothing
+                    @test Kaimon.normalize_path(realpath(out2)) in
+                          Kaimon.grep_allowed_paths()
                     # Now out2 is in scope — a declining consent isn't even consulted.
-                    @test Kaimon._grep_enforce_scope(realpath(out2); consent = _ -> :denied) ===
-                          nothing
+                    @test Kaimon._grep_enforce_scope(
+                        realpath(out2);
+                        consent = _ -> :denied,
+                    ) === nothing
                     # ...but out1 (approved only once) still refuses.
-                    @test Kaimon._grep_enforce_scope(realpath(out1); consent = _ -> :denied) !==
-                          nothing
+                    @test Kaimon._grep_enforce_scope(
+                        realpath(out1);
+                        consent = _ -> :denied,
+                    ) !== nothing
                 end
                 rm(proj; recursive = true)
                 rm(out1; recursive = true)
@@ -291,7 +304,10 @@ using Kaimon
             @test occursin("target_token", out)
             @test occursin("hello", out)        # enclosing symbol enrichment
             @test occursin("L2", out)
-            @test occursin("No matches", Kaimon._grep_code(Dict("pattern" => "zzz_absent_qqq", "path" => dir)))
+            @test occursin(
+                "No matches",
+                Kaimon._grep_code(Dict("pattern" => "zzz_absent_qqq", "path" => dir)),
+            )
             rm(dir; recursive = true)
         end
     end
@@ -302,8 +318,10 @@ using Kaimon
         else
             dir = mktempdir()
             # `NEEDLE_TOK` appears on the const's OWN line (def line) and again in a function body.
-            write(joinpath(dir, "a.jl"),
-                "const NEEDLE_TOK = 1\n\nfunction wrap()\n    y = NEEDLE_TOK + 1\nend\n")
+            write(
+                joinpath(dir, "a.jl"),
+                "const NEEDLE_TOK = 1\n\nfunction wrap()\n    y = NEEDLE_TOK + 1\nend\n",
+            )
             out = Kaimon._grep_code(Dict("pattern" => "NEEDLE_TOK", "path" => dir))
             # Def-line hit: no `const NEEDLE_TOK` label duplicating the line text.
             @test occursin("L1  const NEEDLE_TOK = 1", out)
@@ -321,9 +339,13 @@ using Kaimon
             dir = mktempdir()
             # big.jl: 10 matches, small.jl: 2. With budget 6, waterfill gives big 4 and small
             # its full 2 — the small file must NOT be dropped by depth-first truncation.
-            write(joinpath(dir, "big.jl"), join(["z$i = 1  # NEEDLE" for i in 1:10], "\n") * "\n")
+            write(
+                joinpath(dir, "big.jl"),
+                join(["z$i = 1  # NEEDLE" for i = 1:10], "\n") * "\n",
+            )
             write(joinpath(dir, "small.jl"), "a = 1 # NEEDLE\nb = 2 # NEEDLE\n")
-            out = Kaimon._grep_code(Dict("pattern" => "NEEDLE", "path" => dir, "limit" => 6))
+            out =
+                Kaimon._grep_code(Dict("pattern" => "NEEDLE", "path" => dir, "limit" => 6))
             @test occursin("12 matches in 2 files, showing 6", out)   # global honesty header
             @test occursin("small.jl", out)                            # small file survives fair-share
             @test occursin("(showing 4 of 10)", out)                   # big.jl clipped: 6 − 2 = 4
@@ -345,7 +367,9 @@ using Kaimon
             @test occursin("search_code", out)
             # A glob matching nothing → 0 files in scope, flagged as a scoping issue, and the
             # glob is echoed back so the caller sees what was actually searched.
-            out2 = Kaimon._grep_code(Dict("pattern" => "hello", "path" => dir, "glob" => ["*.nomatch"]))
+            out2 = Kaimon._grep_code(
+                Dict("pattern" => "hello", "path" => dir, "glob" => ["*.nomatch"]),
+            )
             @test occursin("0 files in scope", out2) && occursin("glob=", out2)
             # A scoping mistake (0 files searched) is NOT a missing symbol → no search_code nudge.
             @test !occursin("search_code", out2)
@@ -365,16 +389,27 @@ using Kaimon
         else
             dir = mktempdir()
             mkpath(joinpath(dir, "sub"))
-            write(joinpath(dir, "sub", "deep.jl"), "function g()\n    tok_glob_zz = 1\nend\n")
+            write(
+                joinpath(dir, "sub", "deep.jl"),
+                "function g()\n    tok_glob_zz = 1\nend\n",
+            )
             write(joinpath(dir, "top.jl"), "tok_glob_zz = 2\n")
             foreign = mktempdir()
             orig = pwd()
             try
                 cd(foreign)   # cwd ≠ searched root, and `dir` is outside it → root-anchored
-                star = Kaimon._grep_code(Dict("pattern" => "tok_glob_zz", "path" => dir, "glob" => ["sub/*.jl"]))
+                star = Kaimon._grep_code(
+                    Dict("pattern" => "tok_glob_zz", "path" => dir, "glob" => ["sub/*.jl"]),
+                )
                 @test occursin("deep.jl", star)      # slash glob now matches
                 @test !occursin("top.jl", star)      # and correctly excludes the top-level file
-                globstar = Kaimon._grep_code(Dict("pattern" => "tok_glob_zz", "path" => dir, "glob" => ["sub/**/*.jl"]))
+                globstar = Kaimon._grep_code(
+                    Dict(
+                        "pattern" => "tok_glob_zz",
+                        "path" => dir,
+                        "glob" => ["sub/**/*.jl"],
+                    ),
+                )
                 @test occursin("deep.jl", globstar)
             finally
                 cd(orig)
@@ -394,22 +429,33 @@ using Kaimon
         else
             dir = mktempdir()
             mkpath(joinpath(dir, "src"))
-            write(joinpath(dir, "src", "worker.jl"), "function g()\n    memo_tok_zz = 1\nend\n")
+            write(
+                joinpath(dir, "src", "worker.jl"),
+                "function g()\n    memo_tok_zz = 1\nend\n",
+            )
             write(joinpath(dir, "top.jl"), "memo_tok_zz = 2\n")
             orig = pwd()
             try
                 cd(dir)   # bound project == searched tree → base == this dir
                 # path narrows to src/, glob is written project-relative (repeats `src/`).
-                anchored = Kaimon._grep_code(Dict("pattern" => "memo_tok_zz",
-                    "path" => "src", "glob" => ["src/**/*.jl"]))
+                anchored = Kaimon._grep_code(
+                    Dict(
+                        "pattern" => "memo_tok_zz",
+                        "path" => "src",
+                        "glob" => ["src/**/*.jl"],
+                    ),
+                )
                 @test occursin("worker.jl", anchored)   # no `src/src/…` double-anchor
                 # Same glob without a redundant `path` — still project-relative.
-                nopath = Kaimon._grep_code(Dict("pattern" => "memo_tok_zz",
-                    "glob" => ["src/**/*.jl"]))
+                nopath = Kaimon._grep_code(
+                    Dict("pattern" => "memo_tok_zz", "glob" => ["src/**/*.jl"]),
+                )
                 @test occursin("worker.jl", nopath)
                 @test !occursin("top.jl", nopath)        # top-level file excluded by glob
                 # Basename glob (no `/`) still matches at any depth.
-                base = Kaimon._grep_code(Dict("pattern" => "memo_tok_zz", "glob" => ["worker.jl"]))
+                base = Kaimon._grep_code(
+                    Dict("pattern" => "memo_tok_zz", "glob" => ["worker.jl"]),
+                )
                 @test occursin("worker.jl", base)
             finally
                 cd(orig)
@@ -429,19 +475,32 @@ using Kaimon
             repo = mktempdir()
             mkpath(joinpath(repo, ".git"))            # marks the repo root for _grep_repo_root
             mkpath(joinpath(repo, "src"))
-            write(joinpath(repo, "src", "worker.jl"), "function g()\n    memo_tok_zz = 1\nend\n")
+            write(
+                joinpath(repo, "src", "worker.jl"),
+                "function g()\n    memo_tok_zz = 1\nend\n",
+            )
             elsewhere = mktempdir()                    # bound cwd, a different (non-repo) tree
             orig = pwd()
             try
                 cd(elsewhere)
                 src = joinpath(repo, "src")
                 # Repo-root-relative slash glob now matches across the repo boundary.
-                anchored = Kaimon._grep_code(Dict("pattern" => "memo_tok_zz",
-                    "path" => src, "glob" => ["src/worker.jl"]))
+                anchored = Kaimon._grep_code(
+                    Dict(
+                        "pattern" => "memo_tok_zz",
+                        "path" => src,
+                        "glob" => ["src/worker.jl"],
+                    ),
+                )
                 @test occursin("worker.jl", anchored)
                 # Basename glob works regardless.
-                basen = Kaimon._grep_code(Dict("pattern" => "memo_tok_zz",
-                    "path" => src, "glob" => ["worker.jl"]))
+                basen = Kaimon._grep_code(
+                    Dict(
+                        "pattern" => "memo_tok_zz",
+                        "path" => src,
+                        "glob" => ["worker.jl"],
+                    ),
+                )
                 @test occursin("worker.jl", basen)
             finally
                 cd(orig)
@@ -472,10 +531,15 @@ using Kaimon
         @test !cs("echo 'run grep foo src to find it'")
         @test !cs("git commit -F - <<'EOF'\nfix: improve grep && rg detection\nEOF")
         # Payload: nudge JSON when matched, "" otherwise, fail-open on junk.
-        yes = Kaimon._hook_nudge_payload("/hook/nudge?agent=claude",
-            "{\"tool_input\":{\"command\":\"grep foo src\"}}")
+        yes = Kaimon._hook_nudge_payload(
+            "/hook/nudge?agent=claude",
+            "{\"tool_input\":{\"command\":\"grep foo src\"}}",
+        )
         @test occursin("additionalContext", yes) && occursin("grep_code", yes)
-        @test Kaimon._hook_nudge_payload("/hook/nudge", "{\"tool_input\":{\"command\":\"ls\"}}") == ""
+        @test Kaimon._hook_nudge_payload(
+            "/hook/nudge",
+            "{\"tool_input\":{\"command\":\"ls\"}}",
+        ) == ""
         @test Kaimon._hook_nudge_payload("/hook/nudge", "not json") == ""
     end
 
@@ -488,9 +552,11 @@ using Kaimon
         @test Kaimon._grep_enclosing_span(5, defs) === nothing   # blank line between defs
         # Two hits sharing an enclosing def collapse into one group (rep + rest); a hit in
         # a different def is its own group; encounter order preserved.
-        hits = Any[(file = f, line = 2, text = "a + 1"),
-                   (file = f, line = 3, text = "a + 2"),
-                   (file = f, line = 6, text = "x")]
+        hits = Any[
+            (file = f, line = 2, text = "a + 1"),
+            (file = f, line = 3, text = "a + 2"),
+            (file = f, line = 6, text = "x"),
+        ]
         groups = Kaimon._grep_group_by_enclosing(hits, defs)
         @test length(groups) == 2
         @test groups[1][1].line == 2 && [h.line for h in groups[1][2]] == [3]   # outer: rep L2 (+L3)
@@ -506,12 +572,16 @@ using Kaimon
             @test_skip "ripgrep not available"
         else
             dir = mktempdir()
-            write(joinpath(dir, "a.jl"), "function many()\n    z = 1\n    z = 2\n    z = 3\nend\n")
+            write(
+                joinpath(dir, "a.jl"),
+                "function many()\n    z = 1\n    z = 2\n    z = 3\nend\n",
+            )
             out = Kaimon._grep_code(Dict("pattern" => "z =", "path" => dir))
             @test occursin("many", out)          # enclosing symbol shown once
             @test occursin("(+2 more", out)       # 3 hits in one fn → rep + "(+2 more: L3, L4)"
             # A forced context= renders every hit instead of collapsing.
-            ctxout = Kaimon._grep_code(Dict("pattern" => "z =", "path" => dir, "context" => 1))
+            ctxout =
+                Kaimon._grep_code(Dict("pattern" => "z =", "path" => dir, "context" => 1))
             @test !occursin("(+2 more", ctxout) && occursin("L4", ctxout)
             rm(dir; recursive = true)
         end
@@ -535,7 +605,9 @@ using Kaimon
             @test occursin("code.jl", d) && occursin("f  ", d)      # "L2  f  zz_tok_zz = 1"
             @test !occursin("app.log", d)
             # no_ignore: the .log is searched too (file:line, no enclosing symbol)
-            n = Kaimon._grep_code(Dict("pattern" => "zz_tok_zz", "path" => dir, "no_ignore" => true))
+            n = Kaimon._grep_code(
+                Dict("pattern" => "zz_tok_zz", "path" => dir, "no_ignore" => true),
+            )
             @test occursin("app.log", n) && occursin("L2", n)
             rm(dir; recursive = true)
         end

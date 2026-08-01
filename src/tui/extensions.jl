@@ -54,7 +54,13 @@ function _view_extensions_list(m::KaimonModel, area::Rect, buf::Buffer)
     inner.width < 4 && return
 
     if isempty(extensions)
-        set_string!(buf, inner.x + 1, inner.y, "No extensions configured.", tstyle(:text_dim))
+        set_string!(
+            buf,
+            inner.x + 1,
+            inner.y,
+            "No extensions configured.",
+            tstyle(:text_dim),
+        )
         set_string!(
             buf,
             inner.x + 1,
@@ -97,7 +103,7 @@ function _view_extensions_list(m::KaimonModel, area::Rect, buf::Buffer)
             hint_y,
             "[a]dd [d]el [e]nable [t]auto [s] [x] [r] [u]i",
             tstyle(:text_dim);
-            max_x=right(inner),
+            max_x = right(inner),
         )
     end
 end
@@ -158,7 +164,10 @@ function _sync_ext_detail_side_pane!(m::KaimonModel, extensions)
 
     # Rebuild detection: hash key fields that change
     h = hash((
-        m.ext_selected, ext.status, ext.restart_count, ext.session_key,
+        m.ext_selected,
+        ext.status,
+        ext.restart_count,
+        ext.session_key,
         ext.process !== nothing && process_running(ext.process),
         length(ext.error_log),
         ext.status == :running ? round(Int, time() - ext.started_at) : 0,
@@ -171,7 +180,7 @@ function _sync_ext_detail_side_pane!(m::KaimonModel, extensions)
     lines = Vector{Span}[]
     label_w = 14
 
-    function _row!(label, value, vstyle=tstyle(:text))
+    function _row!(label, value, vstyle = tstyle(:text))
         push!(lines, [Span(rpad(label, label_w), tstyle(:text_dim)), Span(value, vstyle)])
     end
 
@@ -183,11 +192,14 @@ function _sync_ext_detail_side_pane!(m::KaimonModel, extensions)
     if !isempty(manifest.description)
         desc_lines = _wrap_text(manifest.description, 50)
         if !isempty(desc_lines)
-            push!(lines, [
-                Span(rpad("Description", label_w), tstyle(:text_dim)),
-                Span(desc_lines[1], tstyle(:text)),
-            ])
-            for i in 2:length(desc_lines)
+            push!(
+                lines,
+                [
+                    Span(rpad("Description", label_w), tstyle(:text_dim)),
+                    Span(desc_lines[1], tstyle(:text)),
+                ],
+            )
+            for i = 2:length(desc_lines)
                 push!(lines, [Span(" " ^ label_w * desc_lines[i], tstyle(:text))])
             end
         end
@@ -211,10 +223,16 @@ function _sync_ext_detail_side_pane!(m::KaimonModel, extensions)
     sess = isempty(ext.session_key) ? "—" : ext.session_key
     _row!("Session", sess)
 
-    _row!("Enabled", entry.enabled ? "yes" : "no",
-        tstyle(entry.enabled ? :success : :text_dim))
-    _row!("Auto-start", entry.auto_start ? "yes" : "no",
-        tstyle(entry.auto_start ? :success : :text_dim))
+    _row!(
+        "Enabled",
+        entry.enabled ? "yes" : "no",
+        tstyle(entry.enabled ? :success : :text_dim),
+    )
+    _row!(
+        "Auto-start",
+        entry.auto_start ? "yes" : "no",
+        tstyle(entry.auto_start ? :success : :text_dim),
+    )
 
     push!(lines, Span[])  # blank line
 
@@ -227,7 +245,7 @@ function _sync_ext_detail_side_pane!(m::KaimonModel, extensions)
     if !isempty(ext.error_log)
         push!(lines, Span[])
         push!(lines, [Span("Recent Errors:", tstyle(:error, bold = true))])
-        for err in ext.error_log[max(1, end - 4):end]
+        for err in ext.error_log[max(1, end-4):end]
             push!(lines, [Span("  $err", tstyle(:error))])
         end
     end
@@ -302,7 +320,7 @@ function _tail_lines(path::AbstractString, n::Int; window::Int = 65536)
                 nl !== nothing && (data = SubString(data, nextind(data, nl)))
             end
             ls = split(data, '\n'; keepempty = false)
-            String.(length(ls) > n ? ls[end-n+1:end] : ls)
+            String.(length(ls) > n ? ls[(end-n+1):end] : ls)
         end
     catch
         return String[]
@@ -316,7 +334,10 @@ function _build_ext_detail_lines(ext::ManagedExtension, conn_mgr)
     entry = ext.config.entry
 
     # Header
-    push!(lines, ("$(manifest.module_name) — $(manifest.namespace)", tstyle(:accent, bold = true)))
+    push!(
+        lines,
+        ("$(manifest.module_name) — $(manifest.namespace)", tstyle(:accent, bold = true)),
+    )
     push!(lines, ("═" ^ 60, tstyle(:border)))
 
     # Description
@@ -337,7 +358,13 @@ function _build_ext_detail_lines(ext::ManagedExtension, conn_mgr)
     end
     uptime_str = ext.status == :running ? format_uptime(time() - ext.started_at) : "—"
 
-    push!(lines, ("Status: $status_icon $(ext.status)    PID: $pid_str    Uptime: $uptime_str", tstyle(:text)))
+    push!(
+        lines,
+        (
+            "Status: $status_icon $(ext.status)    PID: $pid_str    Uptime: $uptime_str",
+            tstyle(:text),
+        ),
+    )
     push!(lines, ("Project: $(_short_path(entry.project_path))", tstyle(:text_dim)))
     push!(lines, ("", Style()))
 
@@ -395,7 +422,7 @@ function _build_ext_detail_lines(ext::ManagedExtension, conn_mgr)
     if !isempty(ext.error_log)
         push!(lines, ("", Style()))
         push!(lines, ("Recent Errors:", tstyle(:error, bold = true)))
-        for err in ext.error_log[max(1, end - 4):end]
+        for err in ext.error_log[max(1, end-4):end]
             push!(lines, ("  $err", tstyle(:error)))
         end
     end
@@ -459,7 +486,8 @@ end
 
 function begin_ext_add!(m::KaimonModel)
     m.ext_flow = :add_path
-    m.ext_path_input = TextInput(text = string(homedir()) * "/", label = "Path: ", tick = m.tick)
+    m.ext_path_input =
+        TextInput(text = string(homedir()) * "/", label = "Path: ", tick = m.tick)
 end
 
 function begin_ext_remove!(m::KaimonModel)
@@ -591,7 +619,13 @@ function _view_ext_flow(m::KaimonModel, area::Rect, buf::Buffer)
         )
 
     elseif m.ext_flow == :add_result
-        _render_result_modal(buf, area, m.ext_flow_success, m.ext_flow_message; tick = m.tick)
+        _render_result_modal(
+            buf,
+            area,
+            m.ext_flow_success,
+            m.ext_flow_message;
+            tick = m.tick,
+        )
 
     elseif m.ext_flow == :remove_confirm
         ext = _get_selected_ext(m)
@@ -610,7 +644,13 @@ function _view_ext_flow(m::KaimonModel, area::Rect, buf::Buffer)
         )
 
     elseif m.ext_flow == :remove_result
-        _render_result_modal(buf, area, m.ext_flow_success, m.ext_flow_message; tick = m.tick)
+        _render_result_modal(
+            buf,
+            area,
+            m.ext_flow_success,
+            m.ext_flow_message;
+            tick = m.tick,
+        )
     end
 end
 
@@ -701,7 +741,8 @@ function _handle_extensions_key!(m::KaimonModel, evt::KeyEvent)
         end
         'x' => begin
             ext = _get_selected_ext(m)
-            ext !== nothing && ext.status in (:running, :starting, :crashed) &&
+            ext !== nothing &&
+                ext.status in (:running, :starting, :crashed) &&
                 stop_extension!(ext)
         end
         'r' => begin
@@ -710,7 +751,8 @@ function _handle_extensions_key!(m::KaimonModel, evt::KeyEvent)
         end
         'u' => begin
             ext = _get_selected_ext(m)
-            ext !== nothing && ext.status == :running &&
+            ext !== nothing &&
+                ext.status == :running &&
                 !isempty(ext.config.manifest.tui_file) &&
                 open_ext_panel!(m, ext)
         end

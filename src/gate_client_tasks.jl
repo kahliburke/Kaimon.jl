@@ -12,8 +12,11 @@ function start!(mgr::ConnectionManager)
     _start_event_pub!(mgr)
 
     # Clean up stale per-extension event sockets from old PUSH/PULL system
-    for f in readdir(mgr.sock_dir; join=true)
-        endswith(f, ".events.sock") && try; rm(f); catch; end
+    for f in readdir(mgr.sock_dir; join = true)
+        endswith(f, ".events.sock") && try
+            rm(f)
+        catch
+        end
     end
 
     # Socket directory watcher — discovers new gate sessions
@@ -24,10 +27,16 @@ function start!(mgr::ConnectionManager)
                 new_conns = discover_sessions(mgr)
                 if !isempty(new_conns)
                     # Connect all discovered sessions in parallel
-                    connect_tasks = [(conn, Threads.@spawn connect!(mgr, conn)) for conn in new_conns]
+                    connect_tasks = [
+                        (conn, Threads.@spawn connect!(mgr, conn)) for conn in new_conns
+                    ]
                     added = false
                     for (conn, task) in connect_tasks
-                        ok = try; fetch(task); catch; false; end
+                        ok = try
+                            fetch(task)
+                        catch
+                            false
+                        end
                         if ok
                             lock(mgr.lock) do
                                 old_idx = findfirst(
@@ -71,7 +80,7 @@ function start!(mgr::ConnectionManager)
     # blocks health checks for others.
     mgr.health_task = Threads.@spawn begin
         # Outstanding ping tasks keyed by session_id
-        pending_pings = Dict{String, Task}()
+        pending_pings = Dict{String,Task}()
 
         while mgr.running
             try
@@ -92,7 +101,11 @@ function start!(mgr::ConnectionManager)
                             task = pending_pings[sid]
                             if istaskdone(task)
                                 delete!(pending_pings, sid)
-                                result = try; fetch(task); catch; nothing; end
+                                result = try
+                                    fetch(task)
+                                catch
+                                    nothing
+                                end
                                 _process_health_result!(mgr, conn, result, to_remove)
                             else
                                 # Still waiting — check if it's been too long
@@ -160,7 +173,9 @@ function start!(mgr::ConnectionManager)
             readers = Dict{UInt,Task}()   # objectid(conn) → reader task
             while mgr.running
                 try
-                    conns = lock(mgr.lock) do; copy(mgr.connections) end
+                    conns = lock(mgr.lock) do ;
+                        copy(mgr.connections)
+                    end
                     live = Set{UInt}()
                     for conn in conns
                         key = objectid(conn)
@@ -188,21 +203,32 @@ end
 # Track which sessions we've already warned about to avoid spamming
 const _VERSION_WARNED = Set{String}()
 
-function _protocol_mismatch_warning!(mgr::ConnectionManager, conn::REPLConnection, app_proto::Int, gate_proto::Int, gate_ver::String)
+function _protocol_mismatch_warning!(
+    mgr::ConnectionManager,
+    conn::REPLConnection,
+    app_proto::Int,
+    gate_proto::Int,
+    gate_ver::String,
+)
     conn.session_id in _VERSION_WARNED && return
     push!(_VERSION_WARNED, conn.session_id)
     name = isempty(conn.display_name) ? conn.session_id : conn.display_name
     gv = isempty(gate_ver) ? "?" : gate_ver
-    msg = "Gate protocol mismatch: kaimon speaks gate protocol v$app_proto but session " *
-          "'$name' (reports v$gv) speaks v$gate_proto. Update KaimonGate (`]up KaimonGate`) " *
-          "or the kaimon app so both sides match."
+    msg =
+        "Gate protocol mismatch: kaimon speaks gate protocol v$app_proto but session " *
+        "'$name' (reports v$gv) speaks v$gate_proto. Update KaimonGate (`]up KaimonGate`) " *
+        "or the kaimon app so both sides match."
     @warn msg
-    _emit_event!(mgr, :version_mismatch, (
-        session_id = conn.session_id,
-        display_name = name,
-        app_version = string(app_proto),
-        gate_version = string(gate_proto),
-    ))
+    _emit_event!(
+        mgr,
+        :version_mismatch,
+        (
+            session_id = conn.session_id,
+            display_name = name,
+            app_version = string(app_proto),
+            gate_version = string(gate_proto),
+        ),
+    )
 end
 
 # Once-per-message throttle for gate-error health replies (session_id → last message),
@@ -218,17 +244,25 @@ function _note_gate_error!(conn::REPLConnection, message::AbstractString)
         _GATE_ERROR_NOTED[conn.session_id] = String(message)
         return true
     end
-    changed && _push_log!(:warn,
-        "Gate '$(conn.display_name)' answered a health ping with an error — not ready: $message")
+    changed && _push_log!(
+        :warn,
+        "Gate '$(conn.display_name)' answered a health ping with an error — not ready: $message",
+    )
 end
 
 """Clear the gate-error throttle for a session (on a real pong, or when it's removed),
 so a later error logs afresh instead of being suppressed as a duplicate."""
-_clear_gate_error!(conn::REPLConnection) =
-    lock(_GATE_ERROR_NOTED_LOCK) do; delete!(_GATE_ERROR_NOTED, conn.session_id); end
+_clear_gate_error!(conn::REPLConnection) = lock(_GATE_ERROR_NOTED_LOCK) do ;
+    delete!(_GATE_ERROR_NOTED, conn.session_id)
+end
 
 """Process the result of a health check ping for one connection."""
-function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, result, to_remove::Vector{REPLConnection})
+function _process_health_result!(
+    mgr::ConnectionManager,
+    conn::REPLConnection,
+    result,
+    to_remove::Vector{REPLConnection},
+)
     if result === :busy
         if !_is_tcp(conn) && !_is_pid_alive(conn.pid)
             disconnect!(conn)
@@ -277,26 +311,39 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
         # without a protocol_version (older gates) are assumed compatible.
         gate_proto = get(result, :protocol_version, nothing)
         if gate_proto isa Integer && Int(gate_proto) != KaimonGate.PROTOCOL_VERSION
-            _protocol_mismatch_warning!(mgr, conn, KaimonGate.PROTOCOL_VERSION, Int(gate_proto), gate_kv)
+            _protocol_mismatch_warning!(
+                mgr,
+                conn,
+                KaimonGate.PROTOCOL_VERSION,
+                Int(gate_proto),
+                gate_kv,
+            )
         end
 
         # Update metadata file with fresh pong data
-        _update_session_metadata!(mgr.sock_dir, conn.session_id;
+        _update_session_metadata!(
+            mgr.sock_dir,
+            conn.session_id;
             last_pong = Dates.format(now(), Dates.ISODateTimeFormat),
             failed_pongs = 0,
             project_path = conn.project_path,
             pid = conn.pid,
             name = conn.display_name,
-            julia_version = conn.julia_version)
+            julia_version = conn.julia_version,
+        )
 
         # Notify TUI of successful pong
-        _emit_event!(mgr, :session_pong, (
-            session_id = conn.session_id,
-            display_name = conn.display_name,
-            pid = Int(get(result, :pid, 0)),
-            uptime = Float64(get(result, :uptime, 0.0)),
-            tools = length(get(result, :tools, [])),
-        ))
+        _emit_event!(
+            mgr,
+            :session_pong,
+            (
+                session_id = conn.session_id,
+                display_name = conn.display_name,
+                pid = Int(get(result, :pid, 0)),
+                uptime = Float64(get(result, :uptime, 0.0)),
+                tools = length(get(result, :tools, [])),
+            ),
+        )
 
         # Worker-reported display label (e.g. a notebook filename) is authoritative — it names the session
         # regardless of the project (several notebooks share one project), so it wins over project derivation.
@@ -306,7 +353,12 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
             existing = lock(mgr.lock) do
                 [c.display_name for c in mgr.connections if c !== conn]
             end
-            conn.display_name = _derive_display_name(conn.project_path, conn.julia_version, existing; label = pong_label)
+            conn.display_name = _derive_display_name(
+                conn.project_path,
+                conn.julia_version,
+                existing;
+                label = pong_label,
+            )
             _fire_sessions_changed(mgr)
         end
 
@@ -319,8 +371,11 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
                     [c.display_name for c in mgr.connections if c !== conn]
                 end
                 conn.display_name = _derive_display_name(
-                    new_path, conn.julia_version, existing;
-                    namespace = conn.namespace, label = conn.label,
+                    new_path,
+                    conn.julia_version,
+                    existing;
+                    namespace = conn.namespace,
+                    label = conn.label,
                 )
             end
             _fire_sessions_changed(mgr)
@@ -344,8 +399,11 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
                             [c.display_name for c in mgr.connections if c !== conn]
                         end
                         conn.display_name = _derive_display_name(
-                            conn.project_path, conn.julia_version, existing;
-                            namespace = pong_ns, label = conn.label,
+                            conn.project_path,
+                            conn.julia_version,
+                            existing;
+                            namespace = pong_ns,
+                            label = conn.label,
                         )
                     end
                 end
@@ -368,7 +426,10 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
             needs_sub = conn.sub_socket === nothing
             if !needs_sub && pong_stream != conn.stream_endpoint
                 # Gate restarted — PUB port changed. Close the stale SUB socket.
-                _push_log!(:info, "TCP stream endpoint changed: $(conn.stream_endpoint) → $pong_stream ($(conn.display_name))")
+                _push_log!(
+                    :info,
+                    "TCP stream endpoint changed: $(conn.stream_endpoint) → $pong_stream ($(conn.display_name))",
+                )
                 # Serialize with the drain (which recvs sub_socket under req_lock)
                 # so we never close it mid-recv (#51).
                 lock(conn.req_lock) do
@@ -393,13 +454,22 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
                     lock(conn.req_lock) do
                         conn.sub_socket = sub
                     end
-                    _push_log!(:info, "TCP stream connected: $pong_stream ($(conn.display_name))")
+                    _push_log!(
+                        :info,
+                        "TCP stream connected: $pong_stream ($(conn.display_name))",
+                    )
                 catch e
-                    _push_log!(:warn, "TCP stream connect failed: $pong_stream — $(sprint(showerror, e))")
+                    _push_log!(
+                        :warn,
+                        "TCP stream connect failed: $pong_stream — $(sprint(showerror, e))",
+                    )
                 end
                 # Update metadata file with new stream_endpoint
-                _update_session_metadata!(mgr.sock_dir, conn.session_id;
-                    stream_endpoint = pong_stream)
+                _update_session_metadata!(
+                    mgr.sock_dir,
+                    conn.session_id;
+                    stream_endpoint = pong_stream,
+                )
             end
         end
     else
@@ -407,17 +477,24 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
         meta_path = joinpath(mgr.sock_dir, "$(conn.session_id).json")
         prev_fails = 0
         try
-            isfile(meta_path) && (prev_fails = get(JSON.parsefile(meta_path), "failed_pongs", 0))
-        catch; end
-        _update_session_metadata!(mgr.sock_dir, conn.session_id;
+            isfile(meta_path) &&
+                (prev_fails = get(JSON.parsefile(meta_path), "failed_pongs", 0))
+        catch
+        end
+        _update_session_metadata!(
+            mgr.sock_dir,
+            conn.session_id;
             failed_pongs = prev_fails + 1,
-            last_failed_pong = Dates.format(now(), Dates.ISODateTimeFormat))
+            last_failed_pong = Dates.format(now(), Dates.ISODateTimeFormat),
+        )
         # Reap a session whose own process is provably dead: IPC, or a localhost
         # TCP gate (getpid() checkable here). Remote TCP, a live local PID, or an
         # unknown PID (≤0, not yet ponged) stays :stalled. Relies on conn.pid being
         # the gate's own getpid() (refreshed above) so port-reuse reaps correctly.
         local_pid_dead =
-            (!_is_tcp(conn) || _is_local_tcp(conn)) && conn.pid > 0 && !_is_pid_alive(conn.pid)
+            (!_is_tcp(conn) || _is_local_tcp(conn)) &&
+            conn.pid > 0 &&
+            !_is_pid_alive(conn.pid)
         if local_pid_dead
             disconnect!(conn)
             push!(to_remove, conn)
@@ -530,8 +607,11 @@ not found. Includes stalled sessions so tools can still interact with them, but
 excludes extension runtimes by default (see `is_extension`) — an agent must not be
 able to resolve an extension via `ses=`. Pass `include_extensions=true` from the
 extension-management machinery that legitimately addresses them."""
-function get_connection_by_key(mgr::ConnectionManager, key::String;
-                               include_extensions::Bool = false)
+function get_connection_by_key(
+    mgr::ConnectionManager,
+    key::String;
+    include_extensions::Bool = false,
+)
     lock(mgr.lock) do
         for conn in mgr.connections
             if conn.status in (:connected, :evaluating, :stalled) &&
@@ -543,4 +623,3 @@ function get_connection_by_key(mgr::ConnectionManager, key::String;
         return nothing
     end
 end
-

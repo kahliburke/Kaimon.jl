@@ -20,8 +20,8 @@ end
 Return accent/underline style with an OSC 8 hyperlink to the configured editor,
 or dim style if no URL can be constructed.
 """
-function file_link_style(path::String; line::Int=0)
-    url = editor_file_url(path; line=line)
+function file_link_style(path::String; line::Int = 0)
+    url = editor_file_url(path; line = line)
     if isempty(url)
         return tstyle(:text_dim, italic = true)
     else
@@ -51,7 +51,7 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         if inner.width >= 4
             for row = inner.y:bottom(inner)
                 for col = inner.x:right(inner)
-                    set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
+                    set_char!(buf, col, row, ' ', Style(bg = Tachikoma.theme().bg))
                 end
             end
             si = mod1(m.tick ÷ 2, length(SPINNER_BRAILLE))
@@ -195,9 +195,9 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
                         verbose = false,
                         security_config = security_config,
                     )
-                    (success=true, server=server, tools=tools, port=port)
+                    (success = true, server = server, tools = tools, port = port)
                 catch e
-                    (success=false, error_msg=sprint(showerror, e))
+                    (success = false, error_msg = sprint(showerror, e))
                 end
             end
         end
@@ -267,7 +267,13 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
     main = render(outer, f.area, buf)
     main.width < 4 && return
 
-    rows = tsplit(Layout(Vertical, [Fixed(tab_height(m.tab_bar.tab_style.decoration)), Fill(), Fixed(1)]), main)
+    rows = tsplit(
+        Layout(
+            Vertical,
+            [Fixed(tab_height(m.tab_bar.tab_style.decoration)), Fill(), Fixed(1)],
+        ),
+        main,
+    )
     length(rows) < 3 && return
     tab_area = rows[1]
     content_area = rows[2]
@@ -286,7 +292,7 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         ts = m.tab_bar.tab_style
         m.tab_bar.tab_style = TabBarStyle(
             decoration = ts.decoration,
-            active = tstyle(:accent, bold=true),
+            active = tstyle(:accent, bold = true),
             inactive = tstyle(:text_dim),
             separator = ts.separator,
             overflow_char = ts.overflow_char,
@@ -455,31 +461,46 @@ function view_server(m::KaimonModel, area::Rect, f::Frame)
         txt = tstyle(:text)
 
         status_icon = m.server_running ? "●" : m.server_started ? "○" : "◌"
-        status_text = m.server_running ? "running" : m.server_started ? "stopped" : "starting…"
+        status_text =
+            m.server_running ? "running" : m.server_started ? "stopped" : "starting…"
         status_style = m.server_running ? tstyle(:success) : tstyle(:error)
         n_conns = m.conn_mgr !== nothing ? length(connected_sessions(m.conn_mgr)) : 0
 
         kver = _kaimon_version_str()
         # Row 1: name + version + status + port + uptime
-        _write_spans!(buf, x, y, [
-            (status_icon * " ", status_style),
-            ("Server", txt),
-            (isempty(kver) ? "" : " $kver", tstyle(:accent)),
-            (sep, dim),
-            (":", dim), (string(m.server_port), txt),
-            (sep, dim),
-            (status_text, status_style),
-            (sep, dim),
-            ("⏱ ", dim), (format_uptime(time() - m.start_time), txt),
-        ])
+        _write_spans!(
+            buf,
+            x,
+            y,
+            [
+                (status_icon * " ", status_style),
+                ("Server", txt),
+                (isempty(kver) ? "" : " $kver", tstyle(:accent)),
+                (sep, dim),
+                (":", dim),
+                (string(m.server_port), txt),
+                (sep, dim),
+                (status_text, status_style),
+                (sep, dim),
+                ("⏱ ", dim),
+                (format_uptime(time() - m.start_time), txt),
+            ],
+        )
         y += 1
 
         # Row 2: gate + tools
-        _write_spans!(buf, x, y, [
-            ("Gate: ", dim), ("$n_conns sessions", txt),
-            (sep, dim),
-            ("Tool Calls: ", dim), (string(m.total_tool_calls), txt),
-        ])
+        _write_spans!(
+            buf,
+            x,
+            y,
+            [
+                ("Gate: ", dim),
+                ("$n_conns sessions", txt),
+                (sep, dim),
+                ("Tool Calls: ", dim),
+                (string(m.total_tool_calls), txt),
+            ],
+        )
     end
 
     # ── Bottom: Server log (ScrollPane) ──
@@ -536,7 +557,10 @@ function _detect_claude_configured()::Bool
     # Check CLI first (most authoritative).
     if Sys.which("claude") !== nothing
         try
-            out = read(pipeline(Utils.launch_cmd(`claude mcp list`); stderr = devnull), String)
+            out = read(
+                pipeline(Utils.launch_cmd(`claude mcp list`); stderr = devnull),
+                String,
+            )
             for ln in split(out, '\n')
                 s = strip(lowercase(ln))
                 startswith(s, "kaimon:") && return true
@@ -634,16 +658,13 @@ function _refresh_client_status_async!(m::KaimonModel)
 
     # Cursor
     spawn_task!(q, :client_status) do
-        "Cursor" => _detect_in_files(
-            joinpath(homedir(), ".cursor", "mcp.json"),
-        )
+        "Cursor" => _detect_in_files(joinpath(homedir(), ".cursor", "mcp.json"))
     end
 
     # OpenCode
     spawn_task!(q, :client_status) do
-        "OpenCode" => _detect_in_files(
-            joinpath(homedir(), ".config", "opencode", "opencode.json"),
-        )
+        "OpenCode" =>
+            _detect_in_files(joinpath(homedir(), ".config", "opencode", "opencode.json"))
     end
 
 end
@@ -725,7 +746,7 @@ function _complete_relative_dir!(input::TextInput, project_root::String)
     # Find the last comma-separated entry to complete
     last_comma = findlast(',', text)
     prefix_before = last_comma !== nothing ? text[1:last_comma] * " " : ""
-    partial = last_comma !== nothing ? strip(text[last_comma+1:end]) : strip(text)
+    partial = last_comma !== nothing ? strip(text[(last_comma+1):end]) : strip(text)
 
     # Resolve relative to project root
     if isempty(partial)
@@ -750,8 +771,8 @@ function _complete_relative_dir!(input::TextInput, project_root::String)
     entries = try
         filter(readdir(search_dir)) do name
             startswith(name, search_prefix) &&
-            !startswith(name, ".") &&
-            isdir(joinpath(search_dir, name))
+                !startswith(name, ".") &&
+                isdir(joinpath(search_dir, name))
         end
     catch
         return
@@ -811,7 +832,7 @@ end
 function _short_path(path::AbstractString)
     home = homedir()
     if startswith(path, home)
-        return "~" * path[length(home)+1:end]
+        return "~" * path[(length(home)+1):end]
     end
     return path
 end
@@ -870,4 +891,3 @@ function _reap_stale_sessions!(max_idle_secs::Float64)
         end
     end
 end
-

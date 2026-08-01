@@ -22,9 +22,17 @@ _call_tool_saved_xdg = get(ENV, "XDG_CONFIG_HOME", nothing)
         # (the wizard requires a TTY which isn't available in CI).
         test_port = 13100  # Use unique port to avoid conflicts
         ENV["XDG_CONFIG_HOME"] = mktempdir()
-        Kaimon.save_global_config(Kaimon.KaimonConfig(
-            :lax, String[], ["127.0.0.1", "::1"], test_port, round(Int64, time()), "vscode", "",
-        ))
+        Kaimon.save_global_config(
+            Kaimon.KaimonConfig(
+                :lax,
+                String[],
+                ["127.0.0.1", "::1"],
+                test_port,
+                round(Int64, time()),
+                "vscode",
+                "",
+            ),
+        )
 
         @testset "call_tool with Symbol" begin
             # Start server for testing on an ephemeral port (call_tool runs

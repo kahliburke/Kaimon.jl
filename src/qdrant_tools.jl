@@ -34,7 +34,7 @@ function get_ollama_embedding(
     # otherwise fail under load — especially larger models. These are recoverable,
     # so retry a couple of times with a short backoff before giving up (which
     # leaves the chunk lexical-only). A truly bad input fails all attempts.
-    for attempt in 0:retries
+    for attempt = 0:retries
         try
             response = HTTP.post(
                 "http://localhost:11434/api/embed",
@@ -284,14 +284,25 @@ qdrant_list_collections_tool = @mcp_tool(
         # can see which `ses=`/project a collection belongs to, and which is likely
         # its own. (Hints only — full list always shown.)
         K = parentmodule(@__MODULE__)
-        mgr = try; K.GATE_CONN_MGR[]; catch; nothing; end
+        mgr = try
+            K.GATE_CONN_MGR[]
+        catch
+            nothing
+        end
         sessions = mgr === nothing ? () : K.connected_sessions(mgr)
         by_col = Dict{String,Any}()
         for c in sessions
-            rn, _ = _resolve_collection(get_project_collection_name(c.project_path), collections)
+            rn, _ = _resolve_collection(
+                get_project_collection_name(c.project_path),
+                collections,
+            )
             rn in collections && (by_col[rn] = c)
         end
-        caller_proj = try; K._last_session_project_path(); catch; ""; end
+        caller_proj = try
+            K._last_session_project_path()
+        catch
+            ""
+        end
         caller_col = if isempty(caller_proj)
             ""
         else
@@ -308,7 +319,8 @@ qdrant_list_collections_tool = @mcp_tool(
                 c = by_col[name]
                 result *= "  ↔ ses=$(K.short_key(c)) ($(c.project_path))"
             end
-            name == caller_col && !isempty(caller_col) &&
+            name == caller_col &&
+                !isempty(caller_col) &&
                 (result *= "  ← likely this agent's project")
             result *= "\n"
         end
@@ -423,7 +435,8 @@ const _SEARCH_CODE_PARAMS = Dict(
         "filters" => Dict(
             "type" => "object",
             "description" => "Optional metadata filter applied to indexed chunks that carry a `metadata` payload. An object of field → allowed-values: a result must match, for EVERY field, at least one of its values (AND across fields, any-of within). Applied in-query on both engines, so the limit is honored after filtering. Example: {\"module\": [\"DataFrames\", \"Plots\"]}. No effect on chunks without that metadata field.",
-            "additionalProperties" => Dict("type" => "array", "items" => Dict("type" => "string")),
+            "additionalProperties" =>
+                Dict("type" => "array", "items" => Dict("type" => "string")),
         ),
     ),
     "required" => ["query"],
@@ -471,11 +484,26 @@ const _GREP_CODE_PARAMS = Dict(
             "type" => "integer",
             "description" => "Lines of surrounding context to show on every hit (default: 0 — one tight line per hit; semantically-relevant hits already auto-expand when `query` is set).",
         ),
-        "ignore_case" => Dict("type" => "boolean", "description" => "Case-insensitive match (default: false)."),
-        "word" => Dict("type" => "boolean", "description" => "Match whole words only (default: false)."),
-        "fixed" => Dict("type" => "boolean", "description" => "Treat the pattern as a literal string, not a regex (default: false)."),
-        "no_ignore" => Dict("type" => "boolean", "description" => "Also search .gitignored and hidden files — logs, build/generated output, dotfiles (default: false, which keeps code search free of build noise). Use this to grep logs or generated text without falling back to shell grep."),
-        "limit" => Dict("type" => "integer", "description" => "Budget of match lines to show (default: 20). Split FAIRLY across matching files (max-min water-fill), not depth-first, so every matching file stays visible — a clipped file is headed `(showing X of N)` and the global header reads `T matches in F files, showing S`. Files past a display cap collapse into a `…and K more files` stub. Raise it for more depth/breadth; a broad search is also hard-capped at ~8 KB of output."),
+        "ignore_case" => Dict(
+            "type" => "boolean",
+            "description" => "Case-insensitive match (default: false).",
+        ),
+        "word" => Dict(
+            "type" => "boolean",
+            "description" => "Match whole words only (default: false).",
+        ),
+        "fixed" => Dict(
+            "type" => "boolean",
+            "description" => "Treat the pattern as a literal string, not a regex (default: false).",
+        ),
+        "no_ignore" => Dict(
+            "type" => "boolean",
+            "description" => "Also search .gitignored and hidden files — logs, build/generated output, dotfiles (default: false, which keeps code search free of build noise). Use this to grep logs or generated text without falling back to shell grep.",
+        ),
+        "limit" => Dict(
+            "type" => "integer",
+            "description" => "Budget of match lines to show (default: 20). Split FAIRLY across matching files (max-min water-fill), not depth-first, so every matching file stays visible — a clipped file is headed `(showing X of N)` and the global header reads `T matches in F files, showing S`. Files past a display cap collapse into a `…and K more files` stub. Raise it for more depth/breadth; a broad search is also hard-capped at ~8 KB of output.",
+        ),
     ),
     "required" => ["pattern"],
 )
@@ -579,17 +607,28 @@ function _run_index_as_job(description::AbstractString, work::Function)
                 (done == total || t - last[] >= 0.5) || return
                 last[] = t
                 pct = total > 0 ? round(Int, 100 * done / total) : 0
-                msg = "Pass $phase/2 · $done/$total files ($pct%)" *
-                      (chunks > 0 ? " · $chunks chunks" : "")
+                msg =
+                    "Pass $phase/2 · $done/$total files ($pct%)" *
+                    (chunks > 0 ? " · $chunks chunks" : "")
                 Database.update_job!(job_id; result_preview = msg)
             end
             summary = work(progress)
-            Database.update_job!(job_id; status = "completed", result = summary,
-                result_preview = summary, finished_at = time())
+            Database.update_job!(
+                job_id;
+                status = "completed",
+                result = summary,
+                result_preview = summary,
+                finished_at = time(),
+            )
         catch e
             msg = "Indexing failed: " * sprint(showerror, e)
-            Database.update_job!(job_id; status = "failed", result = msg,
-                result_preview = msg, finished_at = time())
+            Database.update_job!(
+                job_id;
+                status = "failed",
+                result = msg,
+                result_preview = msg,
+                finished_at = time(),
+            )
             @debug "Background index job failed" job_id exception = (e, catch_backtrace())
         end
     end
@@ -637,8 +676,12 @@ qdrant_index_project_tool = @mcp_tool(
 
         project_path = get(args, "project_path", pwd())
         collection = get(args, "collection", nothing)
-        recreate = let v = get(args, "recreate", false); v isa Bool ? v : v == "true"; end
-        wait_flag = let v = get(args, "wait", false); v isa Bool ? v : v == "true"; end
+        recreate = let v = get(args, "recreate", false)
+            v isa Bool ? v : v == "true"
+        end
+        wait_flag = let v = get(args, "wait", false)
+            v isa Bool ? v : v == "true"
+        end
 
         # Convert to Vector{String} (args from JSON may be Vector{Any})
         extra_dirs = Vector{String}(get(args, "extra_dirs", String[]))
@@ -668,7 +711,8 @@ qdrant_index_project_tool = @mcp_tool(
 
         wait_flag && return work(nothing)
 
-        job_id = _run_index_as_job("index_project $col_name (recreate=$recreate)", work)
+        job_id =
+            _run_index_as_job("index_project $col_name (recreate=$recreate)", work)
         return "🔄 Indexing '$col_name' started in the background (job `$job_id`) — returns immediately so the request won't time out.\n" *
                "Poll: list_jobs() or check_eval(eval_id=\"$job_id\"). Watch growth: qdrant_collection_info(collection=\"$col_name\")."
     end
@@ -788,8 +832,10 @@ qdrant_collection_exists_tool = @mcp_tool(
     Dict(
         "type" => "object",
         "properties" => Dict(
-            "collection" =>
-                Dict("type" => "string", "description" => "Name of the collection to check"),
+            "collection" => Dict(
+                "type" => "string",
+                "description" => "Name of the collection to check",
+            ),
         ),
         "required" => ["collection"],
     ),
@@ -810,8 +856,10 @@ qdrant_create_collection_tool = @mcp_tool(
     Dict(
         "type" => "object",
         "properties" => Dict(
-            "collection" =>
-                Dict("type" => "string", "description" => "Name of the collection to create"),
+            "collection" => Dict(
+                "type" => "string",
+                "description" => "Name of the collection to create",
+            ),
             "vector_size" => Dict(
                 "type" => "integer",
                 "description" => "Dimension of vectors (default: 768)",
@@ -832,8 +880,13 @@ qdrant_create_collection_tool = @mcp_tool(
         vector_size = Int(get(args, "vector_size", 768))
         distance = get(args, "distance", "Cosine")
 
-        ok = QdrantClient.create_collection(collection; vector_size = vector_size, distance = distance)
-        return ok ? "Created collection '$collection' (dim=$vector_size, distance=$distance)" :
+        ok = QdrantClient.create_collection(
+            collection;
+            vector_size = vector_size,
+            distance = distance,
+        )
+        return ok ?
+               "Created collection '$collection' (dim=$vector_size, distance=$distance)" :
                "Error: failed to create collection '$collection'"
     end
 )
@@ -844,8 +897,10 @@ qdrant_delete_collection_tool = @mcp_tool(
     Dict(
         "type" => "object",
         "properties" => Dict(
-            "collection" =>
-                Dict("type" => "string", "description" => "Name of the collection to delete"),
+            "collection" => Dict(
+                "type" => "string",
+                "description" => "Name of the collection to delete",
+            ),
         ),
         "required" => ["collection"],
     ),
@@ -857,7 +912,8 @@ qdrant_delete_collection_tool = @mcp_tool(
         isempty(collection) && return "Error: collection name is required"
 
         ok = QdrantClient.delete_collection(collection)
-        return ok ? "Deleted collection '$collection'" : "Collection '$collection' not found or already deleted"
+        return ok ? "Deleted collection '$collection'" :
+               "Collection '$collection' not found or already deleted"
     end
 )
 
@@ -938,8 +994,10 @@ qdrant_ensure_fts_coverage_tool = @mcp_tool(
     Dict(
         "type" => "object",
         "properties" => Dict(
-            "collection" =>
-                Dict("type" => "string", "description" => "Name of the collection to FTS-cover"),
+            "collection" => Dict(
+                "type" => "string",
+                "description" => "Name of the collection to FTS-cover",
+            ),
         ),
         "required" => ["collection"],
     ),
@@ -953,7 +1011,10 @@ qdrant_ensure_fts_coverage_tool = @mcp_tool(
         n = ensure_fts_coverage(String(collection))
         # Structured JSON (parses cleanly for _kt); `collection` is normalized to the
         # name the chunks are stored under (matches qdrant_fts_search's scoping).
-        return JSON.json((collection = normalize_collection_name(String(collection)), chunks = n))
+        return JSON.json((
+            collection = normalize_collection_name(String(collection)),
+            chunks = n,
+        ))
     end
 )
 
@@ -1010,8 +1071,7 @@ ollama_embed_tool = @mcp_tool(
     Dict(
         "type" => "object",
         "properties" => Dict(
-            "text" =>
-                Dict("type" => "string", "description" => "Text to embed"),
+            "text" => Dict("type" => "string", "description" => "Text to embed"),
             "model" => Dict(
                 "type" => "string",
                 "description" => "Ollama embedding model (default: $DEFAULT_EMBEDDING_MODEL)",

@@ -14,24 +14,24 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # ── ZMQ option ids (ZMTP ABI — fixed; mirrors ZMQ/src/bindings.jl :750-766) ────
-const _ZMQ_CURVE_SERVER    = 47
+const _ZMQ_CURVE_SERVER = 47
 const _ZMQ_CURVE_PUBLICKEY = 48
 const _ZMQ_CURVE_SECRETKEY = 49
 const _ZMQ_CURVE_SERVERKEY = 50
-const _ZMQ_ZAP_DOMAIN      = 55
+const _ZMQ_ZAP_DOMAIN = 55
 
 # The well-known inproc endpoint libzmq calls for authentication (RFC 27 / ZAP).
 # NOTE: it is "zeromq.zap.01", not "zmq.zap.01".
 const _ZAP_ENDPOINT = "inproc://zeromq.zap.01"
-const _ZAP_DOMAIN   = "kaimon"
+const _ZAP_DOMAIN = "kaimon"
 
 # CURVE server state (set in serve() when curve=true) + ZAP handler handles.
 const _CURVE_SERVER_SECRET = Ref{String}("")
 const _CURVE_SERVER_PUBLIC = Ref{String}("")
-const _CURVE_ENABLED   = Ref{Bool}(false)   # remembered for restart replay
+const _CURVE_ENABLED = Ref{Bool}(false)   # remembered for restart replay
 const _CURVE_ALLOW_ANY = Ref{Bool}(false)   # remembered for restart replay
 const _ZAP_SOCKET = Ref{Union{ZMQ.Socket,Nothing}}(nothing)
-const _ZAP_TASK   = Ref{Union{Task,Nothing}}(nothing)
+const _ZAP_TASK = Ref{Union{Task,Nothing}}(nothing)
 
 # ── Low-level setsockopt helpers ──────────────────────────────────────────────
 
@@ -111,8 +111,12 @@ end
 """Make `sock` a CURVE client pinned to `server_pub`, presenting its own keypair.
 Call before `connect`. Ephemeral client keys are fine unless a ZAP allow-list is
 in force, in which case the client pubkey must be enrolled."""
-function make_curve_client!(sock::ZMQ.Socket, server_pub::AbstractString,
-                            client_pub::AbstractString, client_sec::AbstractString)
+function make_curve_client!(
+    sock::ZMQ.Socket,
+    server_pub::AbstractString,
+    client_pub::AbstractString,
+    client_sec::AbstractString,
+)
     _setsockopt_str(sock, _ZMQ_CURVE_SERVERKEY, server_pub)
     _setsockopt_str(sock, _ZMQ_CURVE_PUBLICKEY, client_pub)
     _setsockopt_str(sock, _ZMQ_CURVE_SECRETKEY, client_sec)
@@ -142,7 +146,10 @@ function _write_keypair(path::String, public::AbstractString, secret::AbstractSt
         println(io, public)
         println(io, secret)
     end
-    try; chmod(path, 0o600); catch; end
+    try
+        chmod(path, 0o600)
+    catch
+    end
     return nothing
 end
 
@@ -249,7 +256,10 @@ end
 SSH to `ssh_target`). Reads only the first line of the keypair file (`head -n1`),
 so the remote *secret* never crosses the wire. Returns the trimmed Z85 string, or
 throws on an SSH/IO error."""
-function _fetch_server_pubkey_ssh(ssh_target::AbstractString, remote_key_path::AbstractString)
+function _fetch_server_pubkey_ssh(
+    ssh_target::AbstractString,
+    remote_key_path::AbstractString,
+)
     cmd = `ssh -o BatchMode=yes -o ConnectTimeout=10 $ssh_target head -n1 $remote_key_path`
     out = IOBuffer()
     err = IOBuffer()
@@ -292,25 +302,44 @@ Returns `(; status, key, old_pin, ssh_target, message)` where `status` is:
 
 `fetch(ssh_target, remote_key_path) -> String` is injectable for testing.
 """
-function verify_server_key_via_ssh(host::AbstractString, port::Integer;
-        ssh_target::AbstractString = String(host),
-        remote_key_path::AbstractString = "~/.cache/kaimon/curve/server.key",
-        repin::Bool = false,
-        fetch::Function = _fetch_server_pubkey_ssh)
+function verify_server_key_via_ssh(
+    host::AbstractString,
+    port::Integer;
+    ssh_target::AbstractString = String(host),
+    remote_key_path::AbstractString = "~/.cache/kaimon/curve/server.key",
+    repin::Bool = false,
+    fetch::Function = _fetch_server_pubkey_ssh,
+)
     old_pin = _pinned_server(host, port)
     key = try
         String(fetch(ssh_target, remote_key_path))
     catch e
-        return (; status = :error, key = "", old_pin,
-                  ssh_target = String(ssh_target), message = sprint(showerror, e))
+        return (;
+            status = :error,
+            key = "",
+            old_pin,
+            ssh_target = String(ssh_target),
+            message = sprint(showerror, e),
+        )
     end
     if length(key) != 40
-        return (; status = :error, key = "", old_pin, ssh_target = String(ssh_target),
-                  message = "expected a 40-char Z85 key, got $(length(key)) chars")
+        return (;
+            status = :error,
+            key = "",
+            old_pin,
+            ssh_target = String(ssh_target),
+            message = "expected a 40-char Z85 key, got $(length(key)) chars",
+        )
     end
     if old_pin === nothing
         pin_server!(host, port, key)
-        return (; status = :pinned, key, old_pin, ssh_target = String(ssh_target), message = "")
+        return (;
+            status = :pinned,
+            key,
+            old_pin,
+            ssh_target = String(ssh_target),
+            message = "",
+        )
     elseif old_pin == key
         return (; status = :ok, key, old_pin, ssh_target = String(ssh_target), message = "")
     else
@@ -318,7 +347,13 @@ function verify_server_key_via_ssh(host::AbstractString, port::Integer;
             unpin_server!("$(host):$(port)")
             pin_server!(host, port, key)
         end
-        return (; status = :changed, key, old_pin, ssh_target = String(ssh_target), message = "")
+        return (;
+            status = :changed,
+            key,
+            old_pin,
+            ssh_target = String(ssh_target),
+            message = "",
+        )
     end
 end
 
@@ -383,8 +418,12 @@ end
 # ZAP 1.0 request frames: version, request_id, domain, address, identity,
 # mechanism, credentials...  For CURVE the single credentials frame is the
 # client's 32 raw key bytes.
-function _handle_zap_request(zap::ZMQ.Socket, frames::Vector{Vector{UInt8}},
-                             allow::Set{String}, allow_any::Bool)
+function _handle_zap_request(
+    zap::ZMQ.Socket,
+    frames::Vector{Vector{UInt8}},
+    allow::Set{String},
+    allow_any::Bool,
+)
     length(frames) >= 7 || return
     request_id = frames[2]
     client_key = frames[7]
@@ -424,7 +463,7 @@ connected until it (re)connects (ZMQ exposes no per-peer disconnect).
 
 Must be started BEFORE the CURVE-server sockets bind.
 """
-function _start_zap_handler!(ctx::ZMQ.Context; allow_any::Bool=false)
+function _start_zap_handler!(ctx::ZMQ.Context; allow_any::Bool = false)
     zap = _zmq_socket(ctx, ZMQ.REP)
     ZMQ.bind(zap, _ZAP_ENDPOINT)
     zap.rcvtimeo = 250
@@ -451,7 +490,10 @@ function _start_zap_handler!(ctx::ZMQ.Context; allow_any::Bool=false)
                 end
             end
         finally
-            try; close(zap); catch; end
+            try
+                close(zap)
+            catch
+            end
             _ZAP_SOCKET[] = nothing
         end
     end
@@ -473,16 +515,20 @@ per-ghost key that must be enrolled in the server's allow-list — otherwise an
 ephemeral keypair (which only works under `allow_any`). The caller `recv`s framed
 messages (`publish` sends 2-frame `[topic, payload]`) and `close`s when done.
 """
-function subscribe(endpoint::AbstractString; topic::AbstractString = "",
-                   serverkey::Union{AbstractString,Nothing} = nothing,
-                   clientkey::Union{Tuple,Nothing} = nothing,
-                   ctx::ZMQ.Context = ZMQ.Context())
+function subscribe(
+    endpoint::AbstractString;
+    topic::AbstractString = "",
+    serverkey::Union{AbstractString,Nothing} = nothing,
+    clientkey::Union{Tuple,Nothing} = nothing,
+    ctx::ZMQ.Context = ZMQ.Context(),
+)
     sub = _zmq_socket(ctx, ZMQ.SUB)
     sub.rcvhwm = 0
     sub.linger = 0
     if serverkey !== nothing
-        cpub, csec = clientkey === nothing ? curve_keypair() :
-                     (String(clientkey[1]), String(clientkey[2]))
+        cpub, csec =
+            clientkey === nothing ? curve_keypair() :
+            (String(clientkey[1]), String(clientkey[2]))
         make_curve_client!(sub, serverkey, cpub, csec)
     end
     ZMQ.subscribe(sub, topic)

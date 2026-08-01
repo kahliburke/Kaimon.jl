@@ -19,18 +19,9 @@ jobs:
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1'
-      - name: Install JuliaFormatter
-        run: julia -e 'using Pkg; Pkg.add("JuliaFormatter")'
-      - name: Check formatting
-        run: |
-          julia -e '
-          using JuliaFormatter
-          formatted = format(".", verbose=true)
-          if formatted
-            @error "Code is not formatted. Run `julia -e \"using JuliaFormatter; format(\\\".\\\")\"`"
-            exit(1)
-          end
-          '
+      - uses: julia-actions/julia-format@v3
+        with:
+          version: '2'
   test:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

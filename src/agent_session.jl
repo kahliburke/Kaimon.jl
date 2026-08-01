@@ -49,7 +49,9 @@ struct RunWaiter
 end
 const AGENT_RUN_WAITERS = Dict{String,RunWaiter}()
 const AGENT_RUN_LOCK = ReentrantLock()
-_run_waiter(id) = lock(AGENT_RUN_LOCK) do; get(AGENT_RUN_WAITERS, id, nothing); end
+_run_waiter(id) = lock(AGENT_RUN_LOCK) do ;
+    get(AGENT_RUN_WAITERS, id, nothing)
+end
 
 _gen_agent_id() = bytes2hex(rand(UInt8, 4))
 
@@ -66,10 +68,10 @@ channel `agent:<id>`.
 # recursion guard (disallowed agent_* tools) stays on regardless.
 function _permission_preset(p::AbstractString)
     pl = lowercase(p)
-    pl == "lab"    ? ("acceptEdits", ["mcp__kaimon"], false) :      # drive the lab: slate.*/ex/...
-    pl == "auto"   ? ("auto", String[], false) :                   # model classifier self-governs
+    pl == "lab" ? ("acceptEdits", ["mcp__kaimon"], false) :      # drive the lab: slate.*/ex/...
+    pl == "auto" ? ("auto", String[], false) :                   # model classifier self-governs
     pl == "bypass" ? ("bypassPermissions", String[], true) :       # no checks (sandbox/trusted only)
-                     ("acceptEdits", String[], false)              # "default": edits only
+    ("acceptEdits", String[], false)              # "default": edits only
 end
 
 """Split an optional inline effort suffix off a Claude model string:
@@ -101,7 +103,11 @@ function _agent_mcp_config(agent_id::AbstractString)::Union{String,Nothing}
     end
     port == 0 && return nothing
     headers = Dict{String,Any}("X-Kaimon-Agent-Id" => String(agent_id))
-    key = try; _get_api_key(); catch; nothing; end
+    key = try
+        _get_api_key()
+    catch
+        nothing
+    end
     key === nothing || (headers["Authorization"] = "Bearer $key")
     cfg = Dict(
         "mcpServers" => Dict(
@@ -123,16 +129,18 @@ function _agent_mcp_config(agent_id::AbstractString)::Union{String,Nothing}
     end
 end
 
-function agent_open(; cwd::String,
-                    model::String = "sonnet",   # family alias → the CLI's latest Sonnet
-                    permission::String = "default",
-                    permission_mode::Union{String,Nothing} = nothing,
-                    allowed_tools::Vector{String} = String[],
-                    disallowed_tools::Vector{String} = copy(AGENT_SELF_TOOLS),
-                    mcp_config::Union{String,Nothing} = nothing,
-                    system_prompt::Union{String,Nothing} = nothing,
-                    effort::Union{String,Nothing} = nothing,
-                    id::Union{String,Nothing} = nothing)
+function agent_open(;
+    cwd::String,
+    model::String = "sonnet",   # family alias → the CLI's latest Sonnet
+    permission::String = "default",
+    permission_mode::Union{String,Nothing} = nothing,
+    allowed_tools::Vector{String} = String[],
+    disallowed_tools::Vector{String} = copy(AGENT_SELF_TOOLS),
+    mcp_config::Union{String,Nothing} = nothing,
+    system_prompt::Union{String,Nothing} = nothing,
+    effort::Union{String,Nothing} = nothing,
+    id::Union{String,Nothing} = nothing,
+)
     aid = id === nothing ? _gen_agent_id() : id
     lock(AGENT_SESSIONS_LOCK) do
         existing = get(AGENT_SESSIONS, aid, nothing)
@@ -152,15 +160,21 @@ function agent_open(; cwd::String,
     # wire protocol; vmlx is Ollama-compatible and defaults to its own port (:8000),
     # so no OLLAMA_HOST env hack. Anything else is the claude CLI.
     backend = if startswith(model, VMLX_PREFIX)
-        OllamaBackend(; model = chop(model; head = length(VMLX_PREFIX), tail = 0),
-                      host = get(ENV, "VMLX_HOST", "http://127.0.0.1:8000"),
-                      label = "vmlx",
-                      allowed_tools = final_allowed, disallowed_tools = disallowed_tools,
-                      system_prompt = system_prompt)
+        OllamaBackend(;
+            model = chop(model; head = length(VMLX_PREFIX), tail = 0),
+            host = get(ENV, "VMLX_HOST", "http://127.0.0.1:8000"),
+            label = "vmlx",
+            allowed_tools = final_allowed,
+            disallowed_tools = disallowed_tools,
+            system_prompt = system_prompt,
+        )
     elseif startswith(model, OLLAMA_PREFIX)
-        OllamaBackend(; model = chop(model; head = length(OLLAMA_PREFIX), tail = 0),
-                      allowed_tools = final_allowed, disallowed_tools = disallowed_tools,
-                      system_prompt = system_prompt)
+        OllamaBackend(;
+            model = chop(model; head = length(OLLAMA_PREFIX), tail = 0),
+            allowed_tools = final_allowed,
+            disallowed_tools = disallowed_tools,
+            system_prompt = system_prompt,
+        )
     else
         # Optional inline effort suffix, e.g. "claude-sonnet-5/high" or "sonnet/low".
         # An explicit `effort=` arg wins over the suffix.
@@ -168,11 +182,16 @@ function agent_open(; cwd::String,
         # No explicit mcp_config → generate one that points at this Kaimon server with
         # this agent's id header, so its tool calls are attributable (_agent_mcp_config).
         agent_mcp = mcp_config === nothing ? _agent_mcp_config(aid) : mcp_config
-        ClaudeBackend(; model = base_model, permission_mode = final_mode,
-                      allowed_tools = final_allowed, disallowed_tools = disallowed_tools,
-                      mcp_config = agent_mcp, system_prompt = system_prompt,
-                      effort = effort !== nothing ? effort : suffix_effort,
-                      dangerously_skip = dangerous)
+        ClaudeBackend(;
+            model = base_model,
+            permission_mode = final_mode,
+            allowed_tools = final_allowed,
+            disallowed_tools = disallowed_tools,
+            mcp_config = agent_mcp,
+            system_prompt = system_prompt,
+            effort = effort !== nothing ? effort : suffix_effort,
+            dangerously_skip = dangerous,
+        )
     end
     handle = backend_start(backend; cwd = cwd, agent_id = aid)
     apid = backend_pid(handle)                       # nothing for process-less backends
@@ -185,15 +204,31 @@ function agent_open(; cwd::String,
     catch
     end
 
-    s = AgentSession(aid, backend, handle, cwd, model, :starting,
-                     Task(() -> nothing), time(), time(), ACP.Usage(), Any[],
-                     String[], String[], ReentrantLock())
+    s = AgentSession(
+        aid,
+        backend,
+        handle,
+        cwd,
+        model,
+        :starting,
+        Task(() -> nothing),
+        time(),
+        time(),
+        ACP.Usage(),
+        Any[],
+        String[],
+        String[],
+        ReentrantLock(),
+    )
     s.relay = _start_relay!(s)
     lock(AGENT_SESSIONS_LOCK) do
         AGENT_SESSIONS[aid] = s
     end
     _set_status!(s, :idle)
-    _push_log!(:info, "Agent '$aid' opened (model=$model, cwd=$cwd$(apid === nothing ? "" : ", pid=$apid"))")
+    _push_log!(
+        :info,
+        "Agent '$aid' opened (model=$model, cwd=$cwd$(apid === nothing ? "" : ", pid=$apid"))",
+    )
     aid
 end
 
@@ -210,7 +245,9 @@ function _start_relay!(s::AgentSession)
                     # budget (§5.5). Guarded — governor accounting must never break the relay.
                     if ev.usage !== nothing
                         try
-                            RateGovernor.record_turn_end!(ev.usage.input_tokens + ev.usage.output_tokens)
+                            RateGovernor.record_turn_end!(
+                                ev.usage.input_tokens + ev.usage.output_tokens,
+                            )
                         catch
                         end
                     end
@@ -223,7 +260,9 @@ function _start_relay!(s::AgentSession)
                     # branch (commit 33eb0b7).
                     if RateGovernor.is_rate_limited(ev.message)
                         try
-                            RateGovernor.note_rate_error!(RateGovernor.retry_after_seconds(ev.message))
+                            RateGovernor.note_rate_error!(
+                                RateGovernor.retry_after_seconds(ev.message),
+                            )
                         catch
                         end
                     end
@@ -237,7 +276,8 @@ function _start_relay!(s::AgentSession)
                 # deltas and emit an empty final `thinking` block — only a signature).
                 lock(s.lock) do
                     if ev isa ACP.TurnStarted
-                        empty!(s.stream_text); empty!(s.stream_think)
+                        empty!(s.stream_text)
+                        empty!(s.stream_think)
                     elseif ev isa ACP.AgentMessageChunk && ev.delta
                         push!(s.stream_text, _txt(ev.content))
                     elseif ev isa ACP.AgentThoughtChunk && ev.delta
@@ -247,9 +287,13 @@ function _start_relay!(s::AgentSession)
                 # Authoritative thought with empty text: backfill from the streamed
                 # thinking, or drop it entirely so the feed/log isn't littered with bare
                 # "thought" markers.
-                if ev isa ACP.AgentThoughtChunk && !ev.delta && isempty(strip(_txt(ev.content)))
+                if ev isa ACP.AgentThoughtChunk &&
+                   !ev.delta &&
+                   isempty(strip(_txt(ev.content)))
                     buffered = lock(s.lock) do
-                        t = join(s.stream_think); empty!(s.stream_think); t
+                        t = join(s.stream_think)
+                        empty!(s.stream_think)
+                        t
                     end
                     isempty(strip(buffered)) && continue
                     ev = ACP.AgentThoughtChunk(ACP.TextBlock(buffered))
@@ -262,8 +306,13 @@ function _start_relay!(s::AgentSession)
                         if ev isa ACP.AgentMessageChunk && !ev.delta
                             push!(w.buf, _txt(ev.content))
                         elseif ev isa ACP.TurnEnded
-                            lock(AGENT_RUN_LOCK) do; delete!(AGENT_RUN_WAITERS, s.id); end
-                            try; put!(w.done, join(w.buf, "\n")); catch; end
+                            lock(AGENT_RUN_LOCK) do ;
+                                delete!(AGENT_RUN_WAITERS, s.id)
+                            end
+                            try
+                                put!(w.done, join(w.buf, "\n"))
+                            catch
+                            end
                         end
                     end
                 end
@@ -271,8 +320,11 @@ function _start_relay!(s::AgentSession)
                 # persisted to the event log or pushed to the TUI ring buffer — the
                 # authoritative delta=false copy covers reload-replay and the monitor.
                 # Keeps both compact under thousands of token chunks. See docs/src/agents.md.
-                is_delta = ev isa ACP.ToolInputDelta ||
-                           ((ev isa ACP.AgentMessageChunk || ev isa ACP.AgentThoughtChunk) && ev.delta)
+                is_delta =
+                    ev isa ACP.ToolInputDelta || (
+                        (ev isa ACP.AgentMessageChunk || ev isa ACP.AgentThoughtChunk) &&
+                        ev.delta
+                    )
                 is_delta || _push_recent!(s, ev)
                 env = ACP.envelope(ev, current_turn(s.handle))
                 is_delta || _log_event!(s.id, env)           # Kaimon-owned JSONL (we control the schema)
@@ -289,8 +341,13 @@ function _start_relay!(s::AgentSession)
             # TurnEnded (agent died/closed), so signal :dead rather than hang to timeout.
             let w = _run_waiter(s.id)
                 if w !== nothing
-                    lock(AGENT_RUN_LOCK) do; delete!(AGENT_RUN_WAITERS, s.id); end
-                    try; put!(w.done, :dead); catch; end
+                    lock(AGENT_RUN_LOCK) do ;
+                        delete!(AGENT_RUN_WAITERS, s.id)
+                    end
+                    try
+                        put!(w.done, :dead)
+                    catch
+                    end
                 end
             end
             _forget_agent_pid!(s.id)
@@ -307,17 +364,19 @@ _txt(b) = "[" * string(nameof(typeof(b))) * "]"
 
 _event_summary(e::ACP.AgentMessageChunk) = _txt(e.content)
 _event_summary(e::ACP.AgentThoughtChunk) = "💭 " * _txt(e.content)
-_event_summary(e::ACP.UserMessageChunk)  = "» " * _txt(e.content)
-_event_summary(e::ACP.ToolCallStarted)   = "▶ $(e.call.title) ($(e.call.kind))"
-_event_summary(e::ACP.ToolCallUpdated)   = "↳ $(something(e.update.status, :update)) $(e.update.tool_call_id)"
-_event_summary(e::ACP.PlanUpdated)       = "plan: $(length(e.entries)) step(s)"
-_event_summary(::ACP.UsageUpdated)       = "usage update"
-_event_summary(::ACP.TurnStarted)        = "— turn started —"
-_event_summary(e::ACP.TurnEnded)         = "— turn ended ($(e.stop_reason)) —"  # cost WIP/zeroed
-_event_summary(e::ACP.StatusChanged)     = "status: $(e.status)"
-_event_summary(e::ACP.AgentError)        = "error: $(e.message)"
-_event_summary(::ACP.PermissionRequested)= "permission requested"
-_event_summary(e::ACP.AgentEvent)        = string(ACP.event_kind(e))
+_event_summary(e::ACP.UserMessageChunk) = "» " * _txt(e.content)
+_event_summary(e::ACP.ToolCallStarted) = "▶ $(e.call.title) ($(e.call.kind))"
+_event_summary(
+    e::ACP.ToolCallUpdated,
+) = "↳ $(something(e.update.status, :update)) $(e.update.tool_call_id)"
+_event_summary(e::ACP.PlanUpdated) = "plan: $(length(e.entries)) step(s)"
+_event_summary(::ACP.UsageUpdated) = "usage update"
+_event_summary(::ACP.TurnStarted) = "— turn started —"
+_event_summary(e::ACP.TurnEnded) = "— turn ended ($(e.stop_reason)) —"  # cost WIP/zeroed
+_event_summary(e::ACP.StatusChanged) = "status: $(e.status)"
+_event_summary(e::ACP.AgentError) = "error: $(e.message)"
+_event_summary(::ACP.PermissionRequested) = "permission requested"
+_event_summary(e::ACP.AgentEvent) = string(ACP.event_kind(e))
 
 # ── Rich per-event detail (shown when a feed row is opened in the monitor) ─────
 # `summary` is the one-line the feed renders; `detail` is the full, multi-line body
@@ -326,11 +385,17 @@ _event_summary(e::ACP.AgentEvent)        = string(ACP.event_kind(e))
 const _EVENT_DETAIL_CAP = 8000
 
 _cap_detail(s::AbstractString) =
-    length(s) <= _EVENT_DETAIL_CAP ? String(s) : first(s, _EVENT_DETAIL_CAP) * "\n… (truncated)"
+    length(s) <= _EVENT_DETAIL_CAP ? String(s) :
+    first(s, _EVENT_DETAIL_CAP) * "\n… (truncated)"
 
 # Detail is rendered as PLAIN TEXT in a word-wrapping ScrollPane (not markdown), so a
 # line-numbered file read or JSON keeps its line structure instead of being collapsed.
-_pretty_json(x) = try; JSON.json(x, 2); catch; string(x); end
+_pretty_json(x) =
+    try
+        JSON.json(x, 2)
+    catch
+        string(x)
+    end
 
 _tool_content_text(c::ACP.ContentToolContent) = _txt(c.content)
 _tool_content_text(c::ACP.DiffToolContent) =
@@ -380,26 +445,39 @@ end
 function _push_recent!(s::AgentSession, ev::ACP.AgentEvent)
     kind = ACP.event_kind(ev)
     tcid = _event_tcid(ev)
-    entry = (t = time(), kind = kind, summary = _event_summary(ev),
-             detail = _event_detail(ev), tcid = tcid)
+    entry = (
+        t = time(),
+        kind = kind,
+        summary = _event_summary(ev),
+        detail = _event_detail(ev),
+        tcid = tcid,
+    )
     lock(s.lock) do
         # A streamed tool call is announced twice (first with no input, then the
         # authoritative copy with full input — same toolCallId). Coalesce them into
         # one feed row, keeping the richer detail, so the popup always has the input.
         if kind === :tool_use && !isempty(tcid)
-            i = findlast(e -> get(e, :kind, nothing) === :tool_use &&
-                              get(e, :tcid, "") == tcid, s.recent)
+            i = findlast(
+                e -> get(e, :kind, nothing) === :tool_use && get(e, :tcid, "") == tcid,
+                s.recent,
+            )
             if i !== nothing
                 old = s.recent[i]
-                detail = length(entry.detail) >= length(old.detail) ? entry.detail : old.detail
-                s.recent[i] = (t = old.t, kind = kind, summary = entry.summary,
-                               detail = detail, tcid = tcid)
+                detail =
+                    length(entry.detail) >= length(old.detail) ? entry.detail : old.detail
+                s.recent[i] = (
+                    t = old.t,
+                    kind = kind,
+                    summary = entry.summary,
+                    detail = detail,
+                    tcid = tcid,
+                )
                 return
             end
         end
         push!(s.recent, entry)
         n = length(s.recent)
-        n > 200 && deleteat!(s.recent, 1:(n - 200))
+        n > 200 && deleteat!(s.recent, 1:(n-200))
     end
 end
 
@@ -418,7 +496,8 @@ end
 # ~/.cache/kaimon/agents/<id>.events.jsonl. Consumers can tail it instead of (or
 # alongside) the live bus, and it survives restarts.
 
-_event_log_path(id::AbstractString) = joinpath(kaimon_cache_dir(), "agents", "$(id).events.jsonl")
+_event_log_path(id::AbstractString) =
+    joinpath(kaimon_cache_dir(), "agents", "$(id).events.jsonl")
 
 function _log_event!(id::AbstractString, env)
     try
@@ -491,22 +570,32 @@ function agent_run(id::String, text::AbstractString; timeout::Real = 600.0)
     s === nothing && error("no such agent: $id")
     s.status === :dead && error("agent '$id' is dead")
     lock(AGENT_RUN_LOCK) do
-        haskey(AGENT_RUN_WAITERS, id) && error("agent '$id' already has a synchronous run in flight")
+        haskey(AGENT_RUN_WAITERS, id) &&
+            error("agent '$id' already has a synchronous run in flight")
     end
     w = RunWaiter(String[], Channel{Any}(1))
-    lock(AGENT_RUN_LOCK) do; AGENT_RUN_WAITERS[id] = w; end
+    lock(AGENT_RUN_LOCK) do ;
+        AGENT_RUN_WAITERS[id] = w
+    end
     timer = nothing
     try
         _emit_user_turn!(s, text)
         backend_send(s.handle, text)                       # the relay tap collects the reply
-        timer = Timer(_ -> (try put!(w.done, :timeout); catch; end), float(timeout))
+        timer = Timer(_ -> (
+            try
+                put!(w.done, :timeout)
+            catch
+            end
+        ), float(timeout))
         result = take!(w.done)
         result === :timeout && error("agent '$id' run timed out after $(timeout)s")
         result === :dead && error("agent '$id' died during the turn")
         return String(result)
     finally
         timer === nothing || close(timer)
-        lock(AGENT_RUN_LOCK) do; delete!(AGENT_RUN_WAITERS, id); end
+        lock(AGENT_RUN_LOCK) do ;
+            delete!(AGENT_RUN_WAITERS, id)
+        end
         close(w.done)                                      # unblock any late relay put! (it catches)
     end
 end
@@ -545,7 +634,7 @@ function _prune_dead_agents!()
         dead = [(id, s.last_activity) for (id, s) in AGENT_SESSIONS if s.status === :dead]
         length(dead) <= MAX_DEAD_AGENTS && return
         sort!(dead, by = x -> x[2])
-        for (id, _) in dead[1:(length(dead) - MAX_DEAD_AGENTS)]
+        for (id, _) in dead[1:(length(dead)-MAX_DEAD_AGENTS)]
             delete!(AGENT_SESSIONS, id)
         end
     end
@@ -596,8 +685,10 @@ end
 
 function _tool_summary(kind::Symbol, data)
     g(d, k, def = "") = d isa AbstractDict ? get(d, k, def) : def
-    kind === :tool_use   && return "→ tool: $(g(g(data, "call", Dict()), "title", "?")) ($(g(g(data, "call", Dict()), "kind", "?")))"
-    kind === :tool_result && return "← result: $(g(g(data, "update", Dict()), "status", "?"))"
+    kind === :tool_use &&
+        return "→ tool: $(g(g(data, "call", Dict()), "title", "?")) ($(g(g(data, "call", Dict()), "kind", "?")))"
+    kind === :tool_result &&
+        return "← result: $(g(g(data, "update", Dict()), "status", "?"))"
     ""
 end
 
@@ -610,9 +701,13 @@ still-working turn). `which` ∈ `"last_message"` (the turn's final assistant te
 `"full_turn"` (all assistant text of the turn), or `"all"` (every turn). Returns
 `{agent_id, turn, status, done, which, text, truncated, dropped_chars, usage?}`.
 """
-function agent_output(id::AbstractString; turn::Union{Int,Nothing} = nothing,
-                      which::AbstractString = "last_message", include_tools::Bool = false,
-                      max_chars::Int = 20000)
+function agent_output(
+    id::AbstractString;
+    turn::Union{Int,Nothing} = nothing,
+    which::AbstractString = "last_message",
+    include_tools::Bool = false,
+    max_chars::Int = 20000,
+)
     s = _get_agent(id)
     logpath = _event_log_path(id)
     (s === nothing && !isfile(logpath)) && error("no such agent: $id")
@@ -623,8 +718,19 @@ function agent_output(id::AbstractString; turn::Union{Int,Nothing} = nothing,
     if isfile(logpath)
         for ln in eachline(logpath)
             isempty(strip(ln)) && continue
-            rec = try; JSON.parse(ln); catch; continue; end
-            push!(records, (Int(get(rec, "turn", 0)), Symbol(get(rec, "kind", "?")), get(rec, "data", Dict())))
+            rec = try
+                JSON.parse(ln)
+            catch
+                continue
+            end
+            push!(
+                records,
+                (
+                    Int(get(rec, "turn", 0)),
+                    Symbol(get(rec, "kind", "?")),
+                    get(rec, "data", Dict()),
+                ),
+            )
         end
     end
     maxlog = isempty(records) ? 0 : maximum(r[1] for r in records)
@@ -636,20 +742,25 @@ function agent_output(id::AbstractString; turn::Union{Int,Nothing} = nothing,
         for (rt, kind, data) in records
             rt == tn || continue
             if kind === :assistant_text
-                t = _env_text(data); isempty(t) || push!(out, (:text, t))
+                t = _env_text(data)
+                isempty(t) || push!(out, (:text, t))
             elseif include_tools && (kind === :tool_use || kind === :tool_result)
-                sm = _tool_summary(kind, data); isempty(sm) || push!(out, (kind, sm))
+                sm = _tool_summary(kind, data)
+                isempty(sm) || push!(out, (kind, sm))
             end
         end
         out
     end
-    partial() = lock(s.lock) do; join(s.stream_text); end
+    partial() = lock(s.lock) do ;
+        join(s.stream_text)
+    end
 
     text = if which == "all"
         parts = String[]
-        for tn in 1:max(maxlog, cur)
-            body = (working && tn == cur) ? partial() :
-                   join([t for (_, t) in turn_lines(tn)], "\n\n")
+        for tn = 1:max(maxlog, cur)
+            body =
+                (working && tn == cur) ? partial() :
+                join([t for (_, t) in turn_lines(tn)], "\n\n")
             isempty(strip(body)) || push!(parts, "— turn $tn —\n\n" * body)
         end
         join(parts, "\n\n")
@@ -666,8 +777,14 @@ function agent_output(id::AbstractString; turn::Union{Int,Nothing} = nothing,
     dropped = truncated ? length(text) - max_chars : 0
     truncated && (text = first(text, max_chars))
     out = Dict{String,Any}(
-        "agent_id" => id, "turn" => target, "status" => status, "done" => !working,
-        "which" => which, "text" => text, "truncated" => truncated, "dropped_chars" => dropped,
+        "agent_id" => id,
+        "turn" => target,
+        "status" => status,
+        "done" => !working,
+        "which" => which,
+        "text" => text,
+        "truncated" => truncated,
+        "dropped_chars" => dropped,
     )
     s === nothing || (out["usage"] = ACP.to_dict(s.usage))
     out
@@ -704,14 +821,22 @@ end
 function _write_pid_file(d::AbstractDict)
     f = _agent_pid_file()
     mkpath(dirname(f))
-    try; write(f, JSON.json(d)); catch; end
+    try
+        write(f, JSON.json(d))
+    catch
+    end
 end
 
 function _record_agent_pid!(id::String, pid::Integer)
-    d = _read_pid_file(); d[id] = Int(pid); _write_pid_file(d)
+    d = _read_pid_file()
+    d[id] = Int(pid)
+    _write_pid_file(d)
 end
 function _forget_agent_pid!(id::String)
-    d = _read_pid_file(); haskey(d, id) || return; delete!(d, id); _write_pid_file(d)
+    d = _read_pid_file()
+    haskey(d, id) || return
+    delete!(d, id)
+    _write_pid_file(d)
 end
 
 """
@@ -742,6 +867,9 @@ function stop_all_agents!()
         collect(keys(AGENT_SESSIONS))
     end
     for id in ids
-        try; agent_close(id); catch; end
+        try
+            agent_close(id)
+        catch
+        end
     end
 end

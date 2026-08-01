@@ -55,17 +55,22 @@ and the result if completed.""",
                 result_preview = get(db_job, "result_preview", "")
                 started = get(db_job, "started_at", 0.0)
                 finished = get(db_job, "finished_at", 0.0)
-                elapsed_str = _fmt_elapsed(finished > 0 ? finished - started : time() - started)
+                elapsed_str = _fmt_elapsed(
+                    finished > 0 ? finished - started : time() - started,
+                )
                 out = "$eval_id $status $(elapsed_str)\n$(first(code, 80))"
                 !isempty(result) && (out *= "\n\n$result")
-                !isempty(result) || !isempty(result_preview) && (out *= "\n\n$result_preview")
+                !isempty(result) ||
+                    !isempty(result_preview) && (out *= "\n\n$result_preview")
                 return out
             end
         end
 
         record === nothing && return "No eval matching '$eval_id'."
 
-        elapsed = record.finished_at > 0 ? record.finished_at - record.started_at : time() - record.started_at
+        elapsed =
+            record.finished_at > 0 ? record.finished_at - record.started_at :
+            time() - record.started_at
         display_status = record.status == :promoted ? :running : record.status
         code_preview = first(record.code, 80) * (length(record.code) > 80 ? "..." : "")
 
@@ -79,12 +84,15 @@ and the result if completed.""",
 
         # Stash summary (compact: key=value pairs on one line)
         if !isempty(record.stash)
-            stash_parts = ["$(k)=$(v)" for (k, v) in sort(collect(record.stash); by=first)]
+            stash_parts =
+                ["$(k)=$(v)" for (k, v) in sort(collect(record.stash); by = first)]
             push!(parts, join(stash_parts, ", "))
         end
 
         # Result — only for completed/failed jobs
-        if record.promoted && record.status in (:completed, :failed) && !isempty(record.full_result)
+        if record.promoted &&
+           record.status in (:completed, :failed) &&
+           !isempty(record.full_result)
             push!(parts, record.full_result)
         elseif !isempty(record.result_preview)
             push!(parts, record.result_preview)
@@ -135,9 +143,11 @@ the running code must check `KaimonGate.is_cancelled()` periodically.""",
                 conn = get_connection_by_key(mgr, session_key)
                 if conn !== nothing
                     try
-                        _req_send_recv(conn,
+                        _req_send_recv(
+                            conn,
                             (type = :cancel_job, eval_id = eval_id);
-                            caller_timeout = 5.0)
+                            caller_timeout = 5.0,
+                        )
                     catch
                     end
                 end
@@ -145,7 +155,12 @@ the running code must check `KaimonGate.is_cancelled()` periodically.""",
         end
 
         # Update database
-        Database.update_job!(eval_id; status="cancelled", cancelled=true, finished_at=time())
+        Database.update_job!(
+            eval_id;
+            status = "cancelled",
+            cancelled = true,
+            finished_at = time(),
+        )
 
         "Job $eval_id marked as cancelled. Running code can check KaimonGate.is_cancelled() to stop cooperatively."
     end
@@ -189,7 +204,10 @@ to see only running, completed, failed, or cancelled jobs.""",
         end
 
         lines = String[]
-        push!(lines, "Background Jobs ($(length(jobs))$(isempty(status) ? "" : ", status=$status")):\n")
+        push!(
+            lines,
+            "Background Jobs ($(length(jobs))$(isempty(status) ? "" : ", status=$status")):\n",
+        )
 
         for job in jobs
             jid = get(job, "eval_id", "?")
@@ -204,9 +222,13 @@ to see only running, completed, failed, or cancelled jobs.""",
             else
                 time() - started
             end
-            elapsed_str = elapsed < 60.0 ? "$(round(elapsed; digits=1))s" : "$(round(Int, elapsed ÷ 60))m $(round(Int, elapsed % 60))s"
+            elapsed_str =
+                elapsed < 60.0 ? "$(round(elapsed; digits=1))s" :
+                "$(round(Int, elapsed ÷ 60))m $(round(Int, elapsed % 60))s"
 
-            icon = jstatus == "completed" ? "✓" : jstatus == "running" ? "⏳" : jstatus == "failed" ? "✗" : "⊘"
+            icon =
+                jstatus == "completed" ? "✓" :
+                jstatus == "running" ? "⏳" : jstatus == "failed" ? "✗" : "⊘"
             code_preview = length(code) > 60 ? first(code, 60) * "..." : code
 
             line = "$icon $jid [$jstatus] $(elapsed_str) — $code_preview"
@@ -227,9 +249,13 @@ to see only running, completed, failed, or cancelled jobs.""",
                 push!(lines, "  Failed: $(get(stats, "failed", 0))")
                 push!(lines, "  Cancelled: $(get(stats, "cancelled", 0))")
                 avg = get(stats, "avg_duration", nothing)
-                avg !== nothing && avg !== missing && push!(lines, "  Avg duration: $(round(avg; digits=1))s")
+                avg !== nothing &&
+                    avg !== missing &&
+                    push!(lines, "  Avg duration: $(round(avg; digits=1))s")
                 maxd = get(stats, "max_duration", nothing)
-                maxd !== nothing && maxd !== missing && push!(lines, "  Max duration: $(round(maxd; digits=1))s")
+                maxd !== nothing &&
+                    maxd !== missing &&
+                    push!(lines, "  Max duration: $(round(maxd; digits=1))s")
             end
         end
 

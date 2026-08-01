@@ -19,8 +19,8 @@
 const PREF_QDRANT_MANAGED = "qdrant_managed"
 
 # Qdrant_jll — the JLL we install into the service env for the `qdrant` binary.
-const _QDRANT_JLL = Base.PkgId(
-    Base.UUID("49d5a0a8-0cca-57b3-8548-a2cd8c16dcd0"), "Qdrant_jll")
+const _QDRANT_JLL =
+    Base.PkgId(Base.UUID("49d5a0a8-0cca-57b3-8548-a2cd8c16dcd0"), "Qdrant_jll")
 # Lower bound only — install the newest registered Qdrant_jll so we track upstream
 # JLL updates automatically (the JLL itself lags mainline Qdrant; bumping it is a
 # Yggdrasil build change, out of Kaimon's hands).
@@ -55,8 +55,7 @@ function qdrant_managed_mode()::Symbol
     raw = get(ENV, "KAIMON_QDRANT_MANAGED", "")
     isempty(raw) && (raw = @load_preference(PREF_QDRANT_MANAGED, "auto"))
     v = lowercase(strip(String(raw)))
-    v == "always" ? :always :
-    v == "off"    ? :off    : :auto
+    v == "always" ? :always : v == "off" ? :off : :auto
 end
 
 """
@@ -122,8 +121,9 @@ function qdrant_install_command()::Cmd
     env = qdrant_service_env()
     # No version pin → newest registered Qdrant_jll (currently 1.17.1; picks up
     # future bumps automatically). `_QDRANT_JLL_MIN` documents the floor we've tested.
-    code = "import Pkg; Pkg.activate(raw\"$env\"); " *
-           "Pkg.add(Pkg.PackageSpec(name=\"Qdrant_jll\"))"
+    code =
+        "import Pkg; Pkg.activate(raw\"$env\"); " *
+        "Pkg.add(Pkg.PackageSpec(name=\"Qdrant_jll\"))"
     return `$(Base.julia_cmd()) --startup-file=no --color=no -e $code`
 end
 
@@ -180,8 +180,10 @@ function _spawn_managed_qdrant(; storage_path::String, http_port::Int, log_path:
     # working dir; without this it inherits the launching process's cwd — e.g. the
     # user's repo — and litters it.
     workdir = dirname(log_path)
-    return run(pipeline(setenv(qdrant_cmd, env; dir = workdir);
-                        stdout = logio, stderr = logio); wait = false)
+    return run(
+        pipeline(setenv(qdrant_cmd, env; dir = workdir); stdout = logio, stderr = logio);
+        wait = false,
+    )
 end
 
 """True if the managed child we started (this session) is still alive."""
@@ -197,7 +199,10 @@ _qdrant_child_alive() =
 _qdrant_pid_file() = joinpath(mkpath(joinpath(kaimon_cache_dir(), "qdrant")), "qdrant.pid")
 
 function _write_qdrant_pid(pid::Integer)
-    try; write(_qdrant_pid_file(), string(pid)); catch; end
+    try
+        write(_qdrant_pid_file(), string(pid))
+    catch
+    end
 end
 
 function _read_qdrant_pid()::Union{Int,Nothing}
@@ -237,8 +242,13 @@ end
 function _kill_pid(pid::Integer; force::Bool = false)
     try
         if Sys.iswindows()
-            run(pipeline(`taskkill $(force ? ["/F"] : String[]) /PID $pid`;
-                         stdout = devnull, stderr = devnull))
+            run(
+                pipeline(
+                    `taskkill $(force ? ["/F"] : String[]) /PID $pid`;
+                    stdout = devnull,
+                    stderr = devnull,
+                ),
+            )
         else
             ccall(:kill, Cint, (Cint, Cint), pid, force ? Base.SIGKILL : Base.SIGTERM)
         end
@@ -258,7 +268,10 @@ function managed_qdrant_running()::Bool
     pid = _read_qdrant_pid()
     pid === nothing && return false
     _pid_alive(pid) && return true
-    try; rm(_qdrant_pid_file(); force = true); catch; end
+    try
+        rm(_qdrant_pid_file(); force = true)
+    catch
+    end
     return false
 end
 
@@ -301,7 +314,10 @@ function ensure_qdrant!(; timeout::Real = 30.0)::Bool
             @info "Starting managed Qdrant" port storage = qdrant_storage_dir() log
             try
                 _QDRANT_PROC[] = _spawn_managed_qdrant(;
-                    storage_path = qdrant_storage_dir(), http_port = port, log_path = log)
+                    storage_path = qdrant_storage_dir(),
+                    http_port = port,
+                    log_path = log,
+                )
                 _write_qdrant_pid(getpid(_QDRANT_PROC[]))
             catch e
                 @error "Failed to launch managed Qdrant" exception = (e, catch_backtrace())
@@ -347,7 +363,7 @@ function shutdown_qdrant!()
             @info "Stopping managed Qdrant" pid
             try
                 kill(proc)           # SIGTERM — Qdrant flushes and exits cleanly
-                for _ in 1:20
+                for _ = 1:20
                     Base.process_running(proc) || break
                     sleep(0.1)
                 end
@@ -360,7 +376,10 @@ function shutdown_qdrant!()
         # before we could read its pid, at a process that is no longer alive.
         stale = _read_qdrant_pid()
         if stale !== nothing && (stale == pid || (pid === nothing && !_pid_alive(stale)))
-            try; rm(_qdrant_pid_file(); force = true); catch; end
+            try
+                rm(_qdrant_pid_file(); force = true)
+            catch
+            end
         end
         _QDRANT_PROC[] = nothing
     end
@@ -382,14 +401,17 @@ function stop_managed_qdrant!()
         if pid !== nothing && _pid_alive(pid)
             @info "Stopping managed Qdrant" pid
             _kill_pid(pid; force = false)
-            for _ in 1:20
+            for _ = 1:20
                 _pid_alive(pid) || break
                 sleep(0.1)
             end
             _pid_alive(pid) && _kill_pid(pid; force = true)
         end
         _QDRANT_PROC[] = nothing
-        try; rm(_qdrant_pid_file(); force = true); catch; end
+        try
+            rm(_qdrant_pid_file(); force = true)
+        catch
+        end
     end
 end
 

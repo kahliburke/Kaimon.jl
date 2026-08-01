@@ -109,8 +109,10 @@ using TOML
         # The gate lives in the KaimonGate package, split across gate_*.jl files.
         srcdir = joinpath(pkgdir(Kaimon.KaimonGate), "src")
         gate_src = join(
-            (read(joinpath(srcdir, f), String)
-             for f in readdir(srcdir) if startswith(f, "gate") && endswith(f, ".jl")),
+            (
+                read(joinpath(srcdir, f), String) for
+                f in readdir(srcdir) if startswith(f, "gate") && endswith(f, ".jl")
+            ),
             "\n",
         )
         @test occursin("kaimon_version", gate_src)
@@ -122,8 +124,10 @@ using TOML
         # that stamps the version now lives in mcp_rpc_methods.jl).
         srcdir = joinpath(pkgdir(Kaimon), "src")
         mcp_src = join(
-            (read(joinpath(srcdir, f), String)
-             for f in readdir(srcdir) if startswith(f, "mcp") || f == "MCPServer.jl"),
+            (
+                read(joinpath(srcdir, f), String) for
+                f in readdir(srcdir) if startswith(f, "mcp") || f == "MCPServer.jl"
+            ),
             "\n",
         )
         @test occursin("PACKAGE_VERSION", mcp_src)
@@ -138,46 +142,58 @@ using TOML
             @test Kaimon._global_kaimongate_version(mpath) === nothing
 
             # Format 2.0, registry-tracked (no `path`) → (version, is_dev=false).
-            write(mpath, """
-            manifest_format = "2.0"
-            [[deps.KaimonGate]]
-            uuid = "5ee84a8c-75bd-412f-a7b8-4e6463aa635f"
-            version = "1.0.1"
-            """)
+            write(
+                mpath,
+                """
+   manifest_format = "2.0"
+   [[deps.KaimonGate]]
+   uuid = "5ee84a8c-75bd-412f-a7b8-4e6463aa635f"
+   version = "1.0.1"
+   """,
+            )
             info = Kaimon._global_kaimongate_version(mpath)
             @test info !== nothing
             @test info.version == v"1.0.1"
             @test info.is_dev == false
 
             # Format 2.0, dev/path install → is_dev=true (never treated as stale).
-            write(mpath, """
-            manifest_format = "2.0"
-            [[deps.KaimonGate]]
-            path = "/somewhere/lib/KaimonGate"
-            uuid = "5ee84a8c-75bd-412f-a7b8-4e6463aa635f"
-            version = "1.1.0"
-            """)
+            write(
+                mpath,
+                """
+   manifest_format = "2.0"
+   [[deps.KaimonGate]]
+   path = "/somewhere/lib/KaimonGate"
+   uuid = "5ee84a8c-75bd-412f-a7b8-4e6463aa635f"
+   version = "1.1.0"
+   """,
+            )
             info = Kaimon._global_kaimongate_version(mpath)
             @test info !== nothing
             @test info.is_dev == true
 
             # Older flat manifest layout (package tables at top level).
-            write(mpath, """
-            [[KaimonGate]]
-            uuid = "5ee84a8c-75bd-412f-a7b8-4e6463aa635f"
-            version = "1.0.0"
-            """)
+            write(
+                mpath,
+                """
+   [[KaimonGate]]
+   uuid = "5ee84a8c-75bd-412f-a7b8-4e6463aa635f"
+   version = "1.0.0"
+   """,
+            )
             info = Kaimon._global_kaimongate_version(mpath)
             @test info !== nothing
             @test info.version == v"1.0.0"
 
             # KaimonGate absent from a populated manifest → nothing.
-            write(mpath, """
-            manifest_format = "2.0"
-            [[deps.SomethingElse]]
-            uuid = "00000000-0000-0000-0000-000000000000"
-            version = "1.2.3"
-            """)
+            write(
+                mpath,
+                """
+   manifest_format = "2.0"
+   [[deps.SomethingElse]]
+   uuid = "00000000-0000-0000-0000-000000000000"
+   version = "1.2.3"
+   """,
+            )
             @test Kaimon._global_kaimongate_version(mpath) === nothing
 
             # Unparseable manifest → nothing (not a throw).

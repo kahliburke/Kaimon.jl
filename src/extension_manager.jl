@@ -39,7 +39,7 @@ const MANAGED_EXTENSIONS_LOCK = ReentrantLock()
 
 function _push_error!(ext::ManagedExtension, msg::String)
     push!(ext.error_log, msg)
-    length(ext.error_log) > 20 && deleteat!(ext.error_log, 1:length(ext.error_log) - 20)
+    length(ext.error_log) > 20 && deleteat!(ext.error_log, 1:(length(ext.error_log)-20))
 end
 
 """Send SIGTERM, wait up to 3s, then SIGKILL if still alive."""
@@ -93,7 +93,13 @@ function _kill_orphan_extension_processes_windows!(namespace::String)
     }
     """
     out = try
-        read(pipeline(`powershell -NoProfile -NonInteractive -Command $ps`; stderr = devnull), String)
+        read(
+            pipeline(
+                `powershell -NoProfile -NonInteractive -Command $ps`;
+                stderr = devnull,
+            ),
+            String,
+        )
     catch
         return   # PowerShell/CIM unavailable — best-effort, leave orphans rather than throw
     end
@@ -127,9 +133,9 @@ function _kill_orphan_extension_processes!(project_path::String, namespace::Stri
             # On macOS, ps -E shows environment. Use pgrep to find julia processes,
             # then check their environment via /proc simulation or launchctl.
             # Simpler: check command line for the spawned_by marker AND project path
-            out = read(pipeline(`pgrep -f julia`; stderr=devnull), String)
+            out = read(pipeline(`pgrep -f julia`; stderr = devnull), String)
         else
-            out = read(pipeline(`pgrep -f julia`; stderr=devnull), String)
+            out = read(pipeline(`pgrep -f julia`; stderr = devnull), String)
         end
         for line in split(strip(out), '\n')
             isempty(line) && continue
@@ -148,7 +154,8 @@ function _kill_orphan_extension_processes!(project_path::String, namespace::Stri
                     # the command line (`spawned_by="extension"` + `namespace="…"`). This is
                     # independent of `--project`, which for a managed env no longer equals
                     # the registered `project_path`.
-                    cmdline = read(pipeline(`ps -p $pid -o command=`; stderr=devnull), String)
+                    cmdline =
+                        read(pipeline(`ps -p $pid -o command=`; stderr = devnull), String)
                     is_our_extension =
                         occursin("spawned_by=\"extension\"", cmdline) &&
                         occursin("namespace=\"$(namespace)\"", cmdline)
@@ -158,14 +165,16 @@ function _kill_orphan_extension_processes!(project_path::String, namespace::Stri
             if is_our_extension
                 _push_log!(:info, "Killing orphan extension '$namespace' (PID=$pid)")
                 try
-                    run(pipeline(`kill $pid`; stderr=devnull); wait=false)
+                    run(pipeline(`kill $pid`; stderr = devnull); wait = false)
                     sleep(1.0)
                     # Force kill if still alive
                     try
-                        run(pipeline(`kill -0 $pid`; stderr=devnull))
-                        run(pipeline(`kill -9 $pid`; stderr=devnull); wait=false)
-                    catch; end
-                catch; end
+                        run(pipeline(`kill -0 $pid`; stderr = devnull))
+                        run(pipeline(`kill -9 $pid`; stderr = devnull); wait = false)
+                    catch
+                    end
+                catch
+                end
             end
         end
     catch
@@ -186,8 +195,15 @@ An `exception=` kwarg — an exception or an `(exc, backtrace)` tuple — is ren
 with `showerror` so extension failures keep their error message and stack trace.
 """
 function _format_extension_log(io, args)
-    println(io, "[", Dates.format(Dates.now(), _EXT_LOG_TIME_FORMAT), " ", args.level, "] ",
-        args.message)
+    println(
+        io,
+        "[",
+        Dates.format(Dates.now(), _EXT_LOG_TIME_FORMAT),
+        " ",
+        args.level,
+        "] ",
+        args.message,
+    )
     for (k, v) in args.kwargs
         str = try
             _render_extension_log_value(k, v)
@@ -228,7 +244,10 @@ function _build_extension_script(config::ExtensionConfig)
     event_hook = if !isempty(m.event_topics)
         # Subscribe to Kaimon's global event PUB socket with topic filtering.
         # Uses recv(sub, Vector{UInt8}) to avoid Message finalizer segfaults.
-        topics_code = join(["Kaimon.ZMQ.subscribe(sub, $(repr(t)))" for t in m.event_topics], "\n        ")
+        topics_code = join(
+            ["Kaimon.ZMQ.subscribe(sub, $(repr(t)))" for t in m.event_topics],
+            "\n        ",
+        )
         """
     # Event subscription: connect SUB to Kaimon's global event PUB
     using Serialization
@@ -329,15 +348,20 @@ checkout (its own instantiated manifest) is returned unchanged. A manifest-less
 registry/app install gets a Kaimon-managed, instantiated environment (built once,
 cached, rebuilt when the source changes) whose path is returned instead.
 """
-function _ensure_extension_runtime_project(project_path::AbstractString, namespace::AbstractString)
+function _ensure_extension_runtime_project(
+    project_path::AbstractString,
+    namespace::AbstractString,
+)
     _project_has_manifest(project_path) && return project_path
 
     env = _extension_env_dir(namespace)
     stamp_file = joinpath(env, ".kaimon_ext_source")
     fingerprint = _extension_env_fingerprint(project_path)
     lock(_EXT_ENV_BUILD_LOCK) do
-        up_to_date = isfile(joinpath(env, "Manifest.toml")) && isfile(stamp_file) &&
-                     strip(read(stamp_file, String)) == fingerprint
+        up_to_date =
+            isfile(joinpath(env, "Manifest.toml")) &&
+            isfile(stamp_file) &&
+            strip(read(stamp_file, String)) == fingerprint
         if !up_to_date
             _build_extension_env!(env, project_path, namespace)
             write(stamp_file, fingerprint)
@@ -350,7 +374,11 @@ end
 # `Pkg.activate` in the running Kaimon process, which would clobber its own
 # active project. Throws on failure so `spawn_extension!`'s catch marks the
 # extension crashed with the build log surfaced.
-function _build_extension_env!(env::AbstractString, project_path::AbstractString, namespace::AbstractString)
+function _build_extension_env!(
+    env::AbstractString,
+    project_path::AbstractString,
+    namespace::AbstractString,
+)
     mkpath(env)
     julia_bin = joinpath(Sys.BINDIR, "julia")
     code = """
@@ -368,8 +396,13 @@ function _build_extension_env!(env::AbstractString, project_path::AbstractString
     build_env = copy(ENV)
     build_env["JULIA_PKG_PRECOMPILE_AUTO"] = "0"
     open(build_log, "w") do io
-        run(pipeline(setenv(`$julia_bin --startup-file=no --project=$env -e $code`, build_env);
-                     stdout = io, stderr = io))
+        run(
+            pipeline(
+                setenv(`$julia_bin --startup-file=no --project=$env -e $code`, build_env);
+                stdout = io,
+                stderr = io,
+            ),
+        )
     end
     return
 end
@@ -393,7 +426,10 @@ function spawn_extension!(ext::ManagedExtension)
     # Also kill any orphan processes from previous Kaimon instances that match
     # this extension's project path. These survive TUI restarts because the
     # Process handle is lost but the Julia process keeps running.
-    _kill_orphan_extension_processes!(ext.config.entry.project_path, ext.config.manifest.namespace)
+    _kill_orphan_extension_processes!(
+        ext.config.entry.project_path,
+        ext.config.manifest.namespace,
+    )
 
     ext.status = :starting
     ext.started_at = time()
@@ -412,7 +448,9 @@ function spawn_extension!(ext::ManagedExtension)
         # registry/app install gets a Kaimon-managed instantiated env so the
         # extension can resolve its OWN deps (see `_ensure_extension_runtime_project`).
         project = _ensure_extension_runtime_project(
-            ext.config.entry.project_path, ext.config.manifest.namespace)
+            ext.config.entry.project_path,
+            ext.config.manifest.namespace,
+        )
         env = copy(ENV)
         # LOAD_PATH: extension project (@), Kaimon's environment (for Gate, LoggingExtras, etc.),
         # global env (@v#.#), stdlib.  Adding Kaimon's environment ensures extensions can
@@ -440,7 +478,8 @@ function spawn_extension!(ext::ManagedExtension)
         if isempty(flags)
             flags = ["-t", "auto"]
         end
-        cmd = setenv(`$julia_bin $flags --startup-file=no --project=$project -e $script`, env)
+        cmd =
+            setenv(`$julia_bin $flags --startup-file=no --project=$project -e $script`, env)
 
         # Redirect output to log file. Rotate first if it's grown past the cap (across
         # restarts) so it can't accumulate without bound — keep one `.1` backup.
@@ -451,7 +490,10 @@ function spawn_extension!(ext::ManagedExtension)
         catch
         end
         log_io = open(ext.log_file, "a")
-        println(log_io, "\n--- Extension $(ext.config.manifest.namespace) starting at $(Dates.now()) ---")
+        println(
+            log_io,
+            "\n--- Extension $(ext.config.manifest.namespace) starting at $(Dates.now()) ---",
+        )
         flush(log_io)
 
         proc = run(pipeline(cmd; stdout = log_io, stderr = log_io); wait = false)
@@ -469,8 +511,12 @@ function spawn_extension!(ext::ManagedExtension)
             if ext.status in (:starting, :running)
                 prev = ext.status
                 ext.status = :crashed
-                uptime_s = round(time() - ext.started_at, digits=1)
-                exit_code = try; proc.exitcode; catch; "unknown"; end
+                uptime_s = round(time() - ext.started_at, digits = 1)
+                exit_code = try
+                    proc.exitcode
+                catch
+                    "unknown"
+                end
                 _push_error!(ext, "Process exited at $(Dates.now()) (exit=$exit_code)")
                 _push_log!(
                     :warn,
@@ -484,10 +530,16 @@ function spawn_extension!(ext::ManagedExtension)
         end
 
         flags_str = join(flags, " ")
-        _push_log!(:info, "Extension '$(ext.config.manifest.namespace)' spawning (PID=$(getpid(proc)), flags: $flags_str)")
+        _push_log!(
+            :info,
+            "Extension '$(ext.config.manifest.namespace)' spawning (PID=$(getpid(proc)), flags: $flags_str)",
+        )
     catch e
         if log_io !== nothing
-            try; close(log_io); catch; end
+            try
+                close(log_io)
+            catch
+            end
         end
         ext.status = :crashed
         _push_error!(ext, "Spawn failed: $(sprint(showerror, e))")
@@ -571,7 +623,10 @@ function stop_extension!(ext::ManagedExtension; timeout::Float64 = 5.0)
     ext.process = nothing
     ext.status = :stopped
     ext.session_key = ""
-    _push_log!(:info, "Extension '$(ext.config.manifest.namespace)' stopped (uptime: $uptime)")
+    _push_log!(
+        :info,
+        "Extension '$(ext.config.manifest.namespace)' stopped (uptime: $uptime)",
+    )
 end
 
 """
@@ -625,7 +680,11 @@ extension stops it; enabling an auto-start extension that's stopped starts it).
 Pass only the field you want to change. Shared by the TUI Extensions tab and the
 `manage_extension` MCP tool.
 """
-function set_extension_config!(ext::ManagedExtension; enabled = nothing, auto_start = nothing)
+function set_extension_config!(
+    ext::ManagedExtension;
+    enabled = nothing,
+    auto_start = nothing,
+)
     old = ext.config.entry
     new_enabled = enabled === nothing ? old.enabled : enabled
     new_auto = auto_start === nothing ? old.auto_start : auto_start
@@ -697,12 +756,13 @@ const _ext_registry_mtime = Ref{Union{Nothing,Float64}}(nothing)
 const _EXT_REGISTRY_CHECK_SECS = 5.0      # how often the tick stats the registry
 const _ext_registry_last_check = Ref(0.0)
 
-_registry_mtime() = try
-    p = get_extensions_config_path()
-    isfile(p) ? mtime(p) : 0.0
-catch
-    0.0
-end
+_registry_mtime() =
+    try
+        p = get_extensions_config_path()
+        isfile(p) ? mtime(p) : 0.0
+    catch
+        0.0
+    end
 
 # Throttled dispatch for the registry watch: at most once per _EXT_REGISTRY_CHECK_SECS
 # (the tick itself may run every render frame), a cheap `stat`; only on an actual change
@@ -717,8 +777,10 @@ function _maybe_reconcile_registry!()
     Threads.@spawn try
         _rescan_registry_if_changed!()
     catch e
-        _push_log!(:warn,
-            "extension registry rescan failed: $(first(sprint(showerror, e), 200))")
+        _push_log!(
+            :warn,
+            "extension registry rescan failed: $(first(sprint(showerror, e), 200))",
+        )
     end
     return
 end
@@ -734,9 +796,10 @@ function _rescan_registry_if_changed!()
     mt == baseline && return false
     _ext_registry_mtime[] = mt
     r = rescan_extensions!()
-    (isempty(r.added) && isempty(r.removed)) ||
-        _push_log!(:info,
-            "extensions.json changed → rescan (added=$(r.added) removed=$(r.removed))")
+    (isempty(r.added) && isempty(r.removed)) || _push_log!(
+        :info,
+        "extensions.json changed → rescan (added=$(r.added) removed=$(r.removed))",
+    )
     return true
 end
 
@@ -776,7 +839,7 @@ function _monitor_extensions!(conn_mgr)
                         ext.session_key = short_key(conn)
                         ext.last_heartbeat = time()
                         n_tools = length(conn.session_tools)
-                        elapsed = round(time() - ext.started_at, digits=1)
+                        elapsed = round(time() - ext.started_at, digits = 1)
                         _push_log!(
                             :info,
                             "Extension '$ns' ready — $n_tools tools, session=$(ext.session_key), started in $(elapsed)s",
@@ -796,11 +859,18 @@ function _monitor_extensions!(conn_mgr)
                     catch
                         false
                     end
-                    diag = advertised ?
+                    diag =
+                        advertised ?
                         "gate metadata WAS found — the gate served but discovery/connect never completed" :
                         "no gate metadata found — serve() never ran or wrote nothing (extension boot didn't reach the gate)"
-                    _push_error!(ext, "Startup timeout ($(round(Int, timeout))s) at $(Dates.now()); $diag")
-                    _push_log!(:warn, "Extension '$ns' startup timed out after $(round(Int, timeout))s — $diag")
+                    _push_error!(
+                        ext,
+                        "Startup timeout ($(round(Int, timeout))s) at $(Dates.now()); $diag",
+                    )
+                    _push_log!(
+                        :warn,
+                        "Extension '$ns' startup timed out after $(round(Int, timeout))s — $diag",
+                    )
                 end
             end
 
@@ -821,7 +891,10 @@ function _monitor_extensions!(conn_mgr)
                 max_restarts = 5
                 if ext.restart_count >= max_restarts
                     if ext.restart_count == max_restarts  # log once
-                        _push_log!(:warn, "Extension '$ns' exceeded max restarts ($max_restarts), giving up")
+                        _push_log!(
+                            :warn,
+                            "Extension '$ns' exceeded max restarts ($max_restarts), giving up",
+                        )
                         ext.restart_count += 1  # prevent repeat logging
                     end
                     continue
@@ -865,7 +938,10 @@ function start_extensions!()
     if !isempty(configs)
         n_auto = count(c -> c.entry.enabled && c.entry.auto_start, configs)
         names = join([c.manifest.namespace for c in configs], ", ")
-        _push_log!(:info, "Loaded $(length(configs)) extension(s): $names ($n_auto auto-starting)")
+        _push_log!(
+            :info,
+            "Loaded $(length(configs)) extension(s): $names ($n_auto auto-starting)",
+        )
     end
     # Seed the registry watch (see `_monitor_extensions!`) so it reconciles only edits
     # made AFTER this initial load, and only once extensions are actually managed.
@@ -894,7 +970,10 @@ function rescan_extensions!()
         [e for e in MANAGED_EXTENSIONS if !(e.config.manifest.namespace in disk_ns)]
     end
     for e in to_remove
-        try; stop_extension!(e); catch; end
+        try
+            stop_extension!(e)
+        catch
+        end
     end
 
     added = String[]
@@ -937,7 +1016,7 @@ function stop_all_extensions!()
     for ext in exts
         if ext.status in (:running, :starting)
             push!(tasks, Threads.@spawn try
-                stop_extension!(ext; timeout=5.0)
+                stop_extension!(ext; timeout = 5.0)
             catch
             end)
         end
@@ -945,7 +1024,10 @@ function stop_all_extensions!()
 
     # Wait for all to finish (bounded by the per-extension timeout)
     for t in tasks
-        try; wait(t); catch; end
+        try
+            wait(t)
+        catch
+        end
     end
 end
 

@@ -17,8 +17,7 @@ using KaimonGate
 # no-trailing-newline case was deterministically 300/300).
 # ─────────────────────────────────────────────────────────────────────────────
 
-_capture(code::AbstractString) =
-    KaimonGate._eval_with_capture(Base.parse_input_line(code))
+_capture(code::AbstractString) = KaimonGate._eval_with_capture(Base.parse_input_line(code))
 
 @testset "KaimonGate._eval_with_capture stdout completeness" begin
     # Never mirror to the test process's real stdout.
@@ -29,7 +28,7 @@ _capture(code::AbstractString) =
 
         @testset "println (trailing newline)" begin
             miss = 0
-            for i in 1:N
+            for i = 1:N
                 _capture("println(\"MARK$i\")").stdout == "MARK$i\n" || (miss += 1)
             end
             @test miss == 0
@@ -37,7 +36,7 @@ _capture(code::AbstractString) =
 
         @testset "print (no trailing newline)" begin
             miss = 0
-            for i in 1:N
+            for i = 1:N
                 _capture("print(\"MARK$i\")").stdout == "MARK$i" || (miss += 1)
             end
             @test miss == 0
@@ -45,7 +44,7 @@ _capture(code::AbstractString) =
 
         @testset "multi-line output" begin
             miss = 0
-            for i in 1:N
+            for i = 1:N
                 _capture("for j in 1:5; println(\"L\", j); end").stdout ==
                 "L1\nL2\nL3\nL4\nL5\n" || (miss += 1)
             end
@@ -54,9 +53,13 @@ _capture(code::AbstractString) =
 
         @testset "print under async run-queue pressure" begin
             miss = 0
-            for i in 1:N
+            for i = 1:N
                 done = Ref(false)
-                spinners = [@async (while !done[]; yield(); end) for _ in 1:8]
+                spinners = [@async (
+                    while !done[]
+                        yield()
+                    end
+                ) for _ = 1:8]
                 s = _capture("print(\"C$i\")").stdout
                 done[] = true
                 foreach(wait, spinners)
@@ -152,7 +155,7 @@ end
 
         # A world just below where _CaptureIO's byte method activated — what the
         # loading machinery dispatches at.
-        m = which(write, Tuple{typeof(cio_out), UInt8})
+        m = which(write, Tuple{typeof(cio_out),UInt8})
         oldw = m.primary_world > 1 ? UInt(m.primary_world) - UInt(1) : UInt(1)
 
         # Baseline: the capture can't serve a byte write at that world → the exact

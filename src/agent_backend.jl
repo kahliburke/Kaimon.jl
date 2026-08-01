@@ -44,10 +44,15 @@ chat (M1).
 # The agent-management tools an owned agent must NOT be able to call — otherwise an
 # agent could recursively spawn/kill agents (fork-bomb). Blocked by default via
 # --disallowedTools; a caller can override `disallowed_tools` to allow nested agents.
-const AGENT_SELF_TOOLS = ["mcp__kaimon__agent_open", "mcp__kaimon__agent_send",
+const AGENT_SELF_TOOLS = [
+    "mcp__kaimon__agent_open",
+    "mcp__kaimon__agent_send",
     "mcp__kaimon__agent_run",
-    "mcp__kaimon__agent_interrupt", "mcp__kaimon__agent_close",
-    "mcp__kaimon__agent_status", "mcp__kaimon__agent_list"]
+    "mcp__kaimon__agent_interrupt",
+    "mcp__kaimon__agent_close",
+    "mcp__kaimon__agent_status",
+    "mcp__kaimon__agent_list",
+]
 
 Base.@kwdef struct ClaudeBackend <: AgentBackend
     claude_path::String = _find_claude()
@@ -88,15 +93,19 @@ function _agent_spawn_error(e, args::Vector{String}; iswin::Bool = Sys.iswindows
             "Could not launch $cli. If it was installed via npm it exists only as a " *
             "`.cmd`/`.ps1` shim, which may not be resolvable on this process's PATH. Install " *
             "the native CLI so a real executable is on PATH (Claude Code: " *
-            "`irm https://claude.ai/install.ps1 | iex`), then retry.")
+            "`irm https://claude.ai/install.ps1 | iex`), then retry.",
+        )
     elseif notfound
         return ErrorException(
-            "Could not launch $cli — not found on PATH. Install the CLI and ensure it is on PATH.")
+            "Could not launch $cli — not found on PATH. Install the CLI and ensure it is on PATH.",
+        )
     else
         # Any other spawn failure: report the libuv error CODE only, never the message
         # (which carries the command + environment).
         code = e isa Base.IOError ? " (error $(e.code))" : ""
-        return ErrorException("Could not launch $cli$code. Check that it is installed and executable.")
+        return ErrorException(
+            "Could not launch $cli$code. Check that it is installed and executable.",
+        )
     end
 end
 
@@ -115,8 +124,7 @@ mutable struct ClaudeHandle <: AgentHandle
     ctrl_seq::Base.RefValue{Int}           # monotonic id for control requests (interrupts)
 end
 
-backend_status(h::ClaudeHandle) =
-    Base.process_running(h.proc) ? :alive : :dead
+backend_status(h::ClaudeHandle) = Base.process_running(h.proc) ? :alive : :dead
 backend_pid(h::ClaudeHandle) = getpid(h.proc)
 backend_session_id(h::ClaudeHandle) = h.session_id[]
 
@@ -125,22 +133,32 @@ const KAIMON_AGENT_MARKER = "KAIMON_AGENT_SESSION"
 
 "Build the `claude` argv for a backend + cwd (pure; unit-testable without spawning)."
 function _claude_args(b::ClaudeBackend, cwd::AbstractString)
-    args = String[b.claude_path, "-p",
-        "--input-format", "stream-json",
-        "--output-format", "stream-json",
+    args = String[
+        b.claude_path,
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
         "--verbose",
-        "--model", b.model,
-        "--permission-mode", b.permission_mode,
-        "--add-dir", cwd]
+        "--model",
+        b.model,
+        "--permission-mode",
+        b.permission_mode,
+        "--add-dir",
+        cwd,
+    ]
     b.stream && push!(args, "--include-partial-messages")   # token-by-token deltas
     if b.effort !== nothing && !isempty(b.effort)
         push!(args, "--effort", b.effort)                   # less thinking → faster round-trips
     end
     if !isempty(b.allowed_tools)
-        push!(args, "--allowedTools"); append!(args, b.allowed_tools)
+        push!(args, "--allowedTools")
+        append!(args, b.allowed_tools)
     end
     if !isempty(b.disallowed_tools)
-        push!(args, "--disallowedTools"); append!(args, b.disallowed_tools)
+        push!(args, "--disallowedTools")
+        append!(args, b.disallowed_tools)
     end
     b.dangerously_skip && push!(args, "--dangerously-skip-permissions")
     if b.mcp_config !== nothing
@@ -158,8 +176,12 @@ end
 
 Spawn `claude -p` in stream-JSON mode and start the stdout reader task.
 """
-function backend_start(b::ClaudeBackend; cwd::String, agent_id::String,
-                       parent_pid::Integer = getpid())
+function backend_start(
+    b::ClaudeBackend;
+    cwd::String,
+    agent_id::String,
+    parent_pid::Integer = getpid(),
+)
     isdir(cwd) || throw(ArgumentError("agent cwd does not exist: $cwd"))
 
     args = _claude_args(b, cwd)
@@ -177,14 +199,29 @@ function backend_start(b::ClaudeBackend; cwd::String, agent_id::String,
     proc = try
         open(pipeline(cmd; stderr = log_io), "r+")   # proc.in = write, proc.out = read
     catch e
-        try; close(log_io); catch; end
+        try
+            close(log_io)
+        catch
+        end
         # A spawn IOError stringifies `env` (may hold API keys) — re-raise a sanitized error.
         throw(_agent_spawn_error(e, args))
     end
 
     events = Channel{ACP.AgentEvent}(Inf)
-    h = ClaudeHandle(b, proc, proc.in, proc.out, events, Task(() -> nothing),
-                     Ref(0), Ref(""), Dict{Int,String}(), cwd, log_file, Ref(0))
+    h = ClaudeHandle(
+        b,
+        proc,
+        proc.in,
+        proc.out,
+        events,
+        Task(() -> nothing),
+        Ref(0),
+        Ref(""),
+        Dict{Int,String}(),
+        cwd,
+        log_file,
+        Ref(0),
+    )
     h.reader = _start_reader!(h, log_io)
     h
 end
@@ -206,11 +243,17 @@ function _start_reader!(h::ClaudeHandle, log_io::IO)
                 end
             end
         catch e
-            e isa InterruptException || put!(h.events, ACP.AgentError("reader task crashed: $(sprint(showerror, e))"))
+            e isa InterruptException || put!(
+                h.events,
+                ACP.AgentError("reader task crashed: $(sprint(showerror, e))"),
+            )
         finally
             put!(h.events, ACP.StatusChanged(:dead))
             close(h.events)
-            try; close(log_io); catch; end
+            try
+                close(log_io)
+            catch
+            end
         end
     end
 end
@@ -224,9 +267,13 @@ arrive on `events(h)`.
 function backend_send(h::ClaudeHandle, text::AbstractString)
     Base.process_running(h.proc) || throw(ArgumentError("agent process is not running"))
     turn = (h.turn[] += 1)
-    msg = Dict("type" => "user",
-               "message" => Dict("role" => "user",
-                                 "content" => [Dict("type" => "text", "text" => String(text))]))
+    msg = Dict(
+        "type" => "user",
+        "message" => Dict(
+            "role" => "user",
+            "content" => [Dict("type" => "text", "text" => String(text))],
+        ),
+    )
     write(h.in, JSON.json(msg), "\n")
     flush(h.in)
     put!(h.events, ACP.TurnStarted())
@@ -242,11 +289,14 @@ the control request isn't accepted.)
 """
 function backend_interrupt(h::ClaudeHandle)
     Base.process_running(h.proc) || return false
-    ctrl = Dict("type" => "control_request",
-                "request_id" => "int-$(h.ctrl_seq[] += 1)",   # unique per interrupt (no collisions)
-                "request" => Dict("subtype" => "interrupt"))
+    ctrl = Dict(
+        "type" => "control_request",
+        "request_id" => "int-$(h.ctrl_seq[] += 1)",   # unique per interrupt (no collisions)
+        "request" => Dict("subtype" => "interrupt"),
+    )
     try
-        write(h.in, JSON.json(ctrl), "\n"); flush(h.in)
+        write(h.in, JSON.json(ctrl), "\n")
+        flush(h.in)
         true
     catch
         false
@@ -255,7 +305,10 @@ end
 
 """Close stdin (ends the conversation), then SIGTERM→SIGKILL the process."""
 function backend_close(h::ClaudeHandle)
-    try; close(h.in); catch; end
+    try
+        close(h.in)
+    catch
+    end
     if Base.process_running(h.proc)
         try
             kill(h.proc, Base.SIGTERM)
@@ -278,20 +331,23 @@ end
 # claude tool name → ACP ToolKind
 function _tool_kind(name::AbstractString)
     n = lowercase(name)
-    occursin("read", n)                        ? :read    :
-    n in ("edit","write","multiedit","notebookedit") ? :edit    :
+    occursin("read", n) ? :read :
+    n in ("edit", "write", "multiedit", "notebookedit") ? :edit :
     occursin("bash", n) || occursin("exec", n) ? :execute :
-    n in ("grep","glob") || occursin("search", n) ? :search :
+    n in ("grep", "glob") || occursin("search", n) ? :search :
     occursin("fetch", n) || occursin("websearch", n) ? :fetch :
-    n == "todowrite"                           ? :think   : :other
+    n == "todowrite" ? :think : :other
 end
 
-_get(d, k, default=nothing) = d isa AbstractDict ? get(d, k, default) : default
+_get(d, k, default = nothing) = d isa AbstractDict ? get(d, k, default) : default
 
 """Map one stream-JSON object to zero or more ACP events. Takes only the
 `session_id` Ref it needs from the handle (so it's unit-testable without a process)."""
-function _map_claude_event(obj, session_id::Base.RefValue{String},
-                           tool_blocks::Dict{Int,String} = Dict{Int,String}())::Vector{ACP.AgentEvent}
+function _map_claude_event(
+    obj,
+    session_id::Base.RefValue{String},
+    tool_blocks::Dict{Int,String} = Dict{Int,String}(),
+)::Vector{ACP.AgentEvent}
     out = ACP.AgentEvent[]
     t = _get(obj, "type")
     if t == "system"
@@ -303,19 +359,35 @@ function _map_claude_event(obj, session_id::Base.RefValue{String},
         for blk in something(_get(msg, "content"), [])
             bt = _get(blk, "type")
             if bt == "text"
-                push!(out, ACP.AgentMessageChunk(ACP.TextBlock(String(something(_get(blk, "text"), "")))))
+                push!(
+                    out,
+                    ACP.AgentMessageChunk(
+                        ACP.TextBlock(String(something(_get(blk, "text"), ""))),
+                    ),
+                )
             elseif bt == "thinking"
-                push!(out, ACP.AgentThoughtChunk(ACP.TextBlock(String(something(_get(blk, "thinking"), "")))))
+                push!(
+                    out,
+                    ACP.AgentThoughtChunk(
+                        ACP.TextBlock(String(something(_get(blk, "thinking"), ""))),
+                    ),
+                )
             elseif bt == "tool_use"
                 # The authoritative call with full, parsed input. For a streamed call
                 # this is the *second* tool_use for the id — the one announced at
                 # content_block_start had no input yet; consumers replace by toolCallId.
-                push!(out, ACP.ToolCallStarted(ACP.ToolCall(
-                    tool_call_id = String(something(_get(blk, "id"), "")),
-                    title = String(something(_get(blk, "name"), "tool")),
-                    kind = _tool_kind(something(_get(blk, "name"), "")),
-                    status = :in_progress,
-                    raw_input = _get(blk, "input"))))
+                push!(
+                    out,
+                    ACP.ToolCallStarted(
+                        ACP.ToolCall(
+                            tool_call_id = String(something(_get(blk, "id"), "")),
+                            title = String(something(_get(blk, "name"), "tool")),
+                            kind = _tool_kind(something(_get(blk, "name"), "")),
+                            status = :in_progress,
+                            raw_input = _get(blk, "input"),
+                        ),
+                    ),
+                )
             end
         end
     elseif t == "user"
@@ -325,10 +397,18 @@ function _map_claude_event(obj, session_id::Base.RefValue{String},
             for blk in content
                 if _get(blk, "type") == "tool_result"
                     is_err = something(_get(blk, "is_error"), false) === true
-                    push!(out, ACP.ToolCallUpdated(ACP.ToolCallUpdate(
-                        tool_call_id = String(something(_get(blk, "tool_use_id"), "")),
-                        status = is_err ? :failed : :completed,
-                        content = _tool_result_content(_get(blk, "content")))))
+                    push!(
+                        out,
+                        ACP.ToolCallUpdated(
+                            ACP.ToolCallUpdate(
+                                tool_call_id = String(
+                                    something(_get(blk, "tool_use_id"), ""),
+                                ),
+                                status = is_err ? :failed : :completed,
+                                content = _tool_result_content(_get(blk, "content")),
+                            ),
+                        ),
+                    )
                 end
             end
         end
@@ -346,23 +426,46 @@ function _map_claude_event(obj, session_id::Base.RefValue{String},
                 idx = Int(something(_get(sev, "index"), -1))
                 tid = String(something(_get(cb, "id"), ""))
                 tool_blocks[idx] = tid
-                push!(out, ACP.ToolCallStarted(ACP.ToolCall(
-                    tool_call_id = tid,
-                    title = String(something(_get(cb, "name"), "tool")),
-                    kind = _tool_kind(something(_get(cb, "name"), "")),
-                    status = :in_progress)))
+                push!(
+                    out,
+                    ACP.ToolCallStarted(
+                        ACP.ToolCall(
+                            tool_call_id = tid,
+                            title = String(something(_get(cb, "name"), "tool")),
+                            kind = _tool_kind(something(_get(cb, "name"), "")),
+                            status = :in_progress,
+                        ),
+                    ),
+                )
             end
         elseif et == "content_block_delta"
             d = _get(sev, "delta")
             dt = _get(d, "type")
             if dt == "text_delta"
-                push!(out, ACP.AgentMessageChunk(ACP.TextBlock(String(something(_get(d, "text"), ""))), true))
+                push!(
+                    out,
+                    ACP.AgentMessageChunk(
+                        ACP.TextBlock(String(something(_get(d, "text"), ""))),
+                        true,
+                    ),
+                )
             elseif dt == "thinking_delta"
-                push!(out, ACP.AgentThoughtChunk(ACP.TextBlock(String(something(_get(d, "thinking"), ""))), true))
+                push!(
+                    out,
+                    ACP.AgentThoughtChunk(
+                        ACP.TextBlock(String(something(_get(d, "thinking"), ""))),
+                        true,
+                    ),
+                )
             elseif dt == "input_json_delta"
                 idx = Int(something(_get(sev, "index"), -1))
-                push!(out, ACP.ToolInputDelta(get(tool_blocks, idx, ""),
-                                              String(something(_get(d, "partial_json"), ""))))
+                push!(
+                    out,
+                    ACP.ToolInputDelta(
+                        get(tool_blocks, idx, ""),
+                        String(something(_get(d, "partial_json"), "")),
+                    ),
+                )
             end
         end
         # content_block_stop, message_*, signature_delta: ignored — the complete
@@ -379,14 +482,21 @@ function _map_claude_event(obj, session_id::Base.RefValue{String},
         # retries transient 429s internally and only emits this once it has given up.
         if is_err
             subtype = _get(obj, "subtype")          # e.g. "error_during_execution", "error_max_turns"
-            rtext   = _get(obj, "result")           # error description / final text
-            msg = rtext isa AbstractString && !isempty(rtext) ? String(rtext) :
-                  subtype isa AbstractString ? String(subtype) : "agent turn failed"
-            push!(out, ACP.AgentError(msg, Dict("subtype" => subtype, "is_error" => true,
-                                                "result" => rtext)))
+            rtext = _get(obj, "result")           # error description / final text
+            msg =
+                rtext isa AbstractString && !isempty(rtext) ? String(rtext) :
+                subtype isa AbstractString ? String(subtype) : "agent turn failed"
+            push!(
+                out,
+                ACP.AgentError(
+                    msg,
+                    Dict("subtype" => subtype, "is_error" => true, "result" => rtext),
+                ),
+            )
         end
-        stop = sr isa AbstractString ? ACP.as_enum(sr, ACP.STOP_REASONS, :end_turn) :
-               (is_err ? :refusal : :end_turn)
+        stop =
+            sr isa AbstractString ? ACP.as_enum(sr, ACP.STOP_REASONS, :end_turn) :
+            (is_err ? :refusal : :end_turn)
         push!(out, ACP.TurnEnded(stop, usage))
     elseif t == "control_response"
         # Ack for a control request we sent (e.g. an interrupt). Surface failures as an
@@ -394,9 +504,14 @@ function _map_claude_event(obj, session_id::Base.RefValue{String},
         # user-facing event (a real cancel also lands as result{stopReason: cancelled}).
         resp = _get(obj, "response")
         if _get(resp, "subtype") == "error"
-            push!(out, ACP.AgentError(
-                "control request failed: " * String(something(_get(resp, "error"), "unknown")),
-                Dict("request_id" => _get(resp, "request_id"))))
+            push!(
+                out,
+                ACP.AgentError(
+                    "control request failed: " *
+                    String(something(_get(resp, "error"), "unknown")),
+                    Dict("request_id" => _get(resp, "request_id")),
+                ),
+            )
         end
     end
     out
@@ -436,19 +551,30 @@ function _downscale_png_b64(b64::AbstractString, max_edge::Integer)
         factor = cld(long, max_edge)                              # integer box factor → ≤ max_edge
         oh, ow = cld(h, factor), cld(w, factor)
         out = Matrix{RGBA{N0f8}}(undef, oh, ow)
-        @inbounds for oj in 1:ow, oi in 1:oh
-            i0 = (oi - 1) * factor + 1; i1 = min(i0 + factor - 1, h)
-            j0 = (oj - 1) * factor + 1; j1 = min(j0 + factor - 1, w)
-            ar = ag = ab = aa = 0.0f0; n = 0
-            for j in j0:j1, i in i0:i1
+        @inbounds for oj = 1:ow, oi = 1:oh
+            i0 = (oi - 1) * factor + 1
+            i1 = min(i0 + factor - 1, h)
+            j0 = (oj - 1) * factor + 1
+            j1 = min(j0 + factor - 1, w)
+            ar = ag = ab = aa = 0.0f0
+            n = 0
+            for j = j0:j1, i = i0:i1
                 px = img[i, j]
-                ar += Float32(red(px)); ag += Float32(green(px))
-                ab += Float32(blue(px)); aa += Float32(alpha(px)); n += 1
+                ar += Float32(red(px))
+                ag += Float32(green(px))
+                ab += Float32(blue(px))
+                aa += Float32(alpha(px))
+                n += 1
             end
-            out[oi, oj] = RGBA{N0f8}(clamp(ar / n, 0f0, 1f0), clamp(ag / n, 0f0, 1f0),
-                                     clamp(ab / n, 0f0, 1f0), clamp(aa / n, 0f0, 1f0))
+            out[oi, oj] = RGBA{N0f8}(
+                clamp(ar / n, 0.0f0, 1.0f0),
+                clamp(ag / n, 0.0f0, 1.0f0),
+                clamp(ab / n, 0.0f0, 1.0f0),
+                clamp(aa / n, 0.0f0, 1.0f0),
+            )
         end
-        io = IOBuffer(); PNGFiles.save(io, out)
+        io = IOBuffer()
+        PNGFiles.save(io, out)
         return Base64.base64encode(take!(io))
     catch
         return String(b64)
@@ -465,7 +591,12 @@ function _tool_result_content(content)::Vector{ACP.ToolCallContent}
         for blk in content
             bt = _get(blk, "type")
             if bt == "text"
-                push!(out, ACP.ContentToolContent(ACP.TextBlock(String(something(_get(blk, "text"), "")))))
+                push!(
+                    out,
+                    ACP.ContentToolContent(
+                        ACP.TextBlock(String(something(_get(blk, "text"), ""))),
+                    ),
+                )
             elseif bt == "image"
                 src = _get(blk, "source")
                 data = String(something(_get(src, "data"), ""))
@@ -521,7 +652,10 @@ function _build_tool_content(result_text::AbstractString)
         blocks = Any[]
         for b in env["content"]
             if get(b, "type", "") == "image" && get(b, "mimeType", "") == "image/png"
-                b = merge(b, Dict("data" => _downscale_png_b64(String(b["data"]), max_edge)))
+                b = merge(
+                    b,
+                    Dict("data" => _downscale_png_b64(String(b["data"]), max_edge)),
+                )
             end
             push!(blocks, b)
         end
@@ -541,8 +675,11 @@ end
 """Server-side mirror of `KaimonGate.image_result` for native (in-process) Kaimon
 tools — returns the same sentinel envelope so an in-server tool can return an
 image. `png` is raw image bytes (base64-encoded internally)."""
-image_result(png::AbstractVector{UInt8}; mime::AbstractString = "image/png",
-    text::AbstractString = "") = KaimonGate.image_result(png; mime, text)
+image_result(
+    png::AbstractVector{UInt8};
+    mime::AbstractString = "image/png",
+    text::AbstractString = "",
+) = KaimonGate.image_result(png; mime, text)
 
 # WIP: cost is zeroed for now. claude's reported `total_cost_usd` is inaccurate /
 # misleading (especially on subscription plans), so we don't surface it. The
@@ -552,9 +689,10 @@ image_result(png::AbstractVector{UInt8}; mime::AbstractString = "image/png",
 function _claude_usage(u, cost)::ACP.Usage
     u isa AbstractDict || return ACP.Usage(cost_usd = 0.0)
     ACP.Usage(
-        input_tokens         = Int(something(_get(u, "input_tokens"), 0)),
-        output_tokens        = Int(something(_get(u, "output_tokens"), 0)),
-        cache_read_tokens    = Int(something(_get(u, "cache_read_input_tokens"), 0)),
-        cache_creation_tokens= Int(something(_get(u, "cache_creation_input_tokens"), 0)),
-        cost_usd             = 0.0)
+        input_tokens = Int(something(_get(u, "input_tokens"), 0)),
+        output_tokens = Int(something(_get(u, "output_tokens"), 0)),
+        cache_read_tokens = Int(something(_get(u, "cache_read_input_tokens"), 0)),
+        cache_creation_tokens = Int(something(_get(u, "cache_creation_input_tokens"), 0)),
+        cost_usd = 0.0,
+    )
 end

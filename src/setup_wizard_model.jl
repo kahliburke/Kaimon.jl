@@ -252,4 +252,3 @@ function setup_intro_animations!(m::SetupWizardModel)
         m.typed_index = 0
     end
 end
-

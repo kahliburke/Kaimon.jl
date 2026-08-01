@@ -105,12 +105,15 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 
 @testset "Gate async integration: progress + result" begin
-    tool = Kaimon.KaimonGate.GateTool("counted_op", function (n::Int)
-        for i = 1:n
-            Kaimon.KaimonGate.progress("step $i of $n")
-        end
-        return "done:$n"
-    end)
+    tool = Kaimon.KaimonGate.GateTool(
+        "counted_op",
+        function (n::Int)
+            for i = 1:n
+                Kaimon.KaimonGate.progress("step $i of $n")
+            end
+            return "done:$n"
+        end,
+    )
 
     # If a gate is already running (e.g. this test is run via `ex` inside a live
     # session), attach to it non-destructively: temporarily add the test tool to
@@ -125,7 +128,12 @@ end
         # No sleep needed — sockets are already bound
     else
         session_id = "test-async-$(bytes2hex(rand(UInt8, 4)))"
-        Kaimon.KaimonGate._serve(name = "test", session_id = session_id, force = true, tools = [tool])
+        Kaimon.KaimonGate._serve(
+            name = "test",
+            session_id = session_id,
+            force = true,
+            tools = [tool],
+        )
         # Give the gate a moment to bind its IPC sockets
         sleep(0.15)
     end
@@ -376,7 +384,7 @@ end
     key = "192.168.99.99:9999"
 
     # Simulate sequential failures
-    for i in 1:5
+    for i = 1:5
         failures = i
         idx = min(failures, length(Kaimon._TCP_POLL_BACKOFF_SCHEDULE))
         delay = Kaimon._TCP_POLL_BACKOFF_SCHEDULE[idx]
@@ -427,7 +435,9 @@ end
     @testset "errors when restart is disabled" begin
         Kaimon.KaimonGate._RUNNING[] = true
         Kaimon.KaimonGate._ALLOW_RESTART[] = false
-        @test_throws ErrorException("Restart is disabled for this session (allow_restart=false)") Kaimon.KaimonGate.restart()
+        @test_throws ErrorException(
+            "Restart is disabled for this session (allow_restart=false)",
+        ) Kaimon.KaimonGate.restart()
     end
 
     Kaimon.KaimonGate._RUNNING[] = orig_running

@@ -35,8 +35,8 @@ function create_tools(GateTool::Type)
     Return a greeting for the given name.
     """
     function greet(name::String, enthusiastic::Bool = false)::String
-        msg = enthusiastic ?
-            "Hello, $(name)! 🎉 Welcome to Kaimon extensions!" :
+        msg =
+            enthusiastic ? "Hello, $(name)! 🎉 Welcome to Kaimon extensions!" :
             "Hello, $(name)."
         push!(GREETINGS, msg)
         # Push a snapshot to the TUI panel. Must use Main.Kaimon.KaimonGate because

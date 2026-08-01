@@ -32,25 +32,21 @@ function _rpc_initialize(request, session)
                 # under-declare them — keep this in lockstep with get_server_capabilities().
                 "capabilities" => Session.get_server_capabilities(),
                 "instructions" => Session.get_server_instructions(),
-                "serverInfo" =>
-                    Dict("name" => "Kaimon", "title" => "Kaimon MCP Server", "version" => PACKAGE_VERSION),
+                "serverInfo" => Dict(
+                    "name" => "Kaimon",
+                    "title" => "Kaimon MCP Server",
+                    "version" => PACKAGE_VERSION,
+                ),
             )
         end
 
-        response = Dict(
-            "jsonrpc" => "2.0",
-            "id" => request["id"],
-            "result" => init_result,
-        )
+        response = Dict("jsonrpc" => "2.0", "id" => request["id"], "result" => init_result)
 
         # Include Mcp-Session-Id header per Streamable HTTP transport spec
         session_id = session !== nothing ? session.id : string(UUIDs.uuid4())
         return HTTP.Response(
             200,
-            [
-                "Content-Type" => "application/json",
-                "Mcp-Session-Id" => session_id,
-            ],
+            ["Content-Type" => "application/json", "Mcp-Session-Id" => session_id],
             JSON.json(response),
         )
     catch e
@@ -84,16 +80,8 @@ function _rpc_logging_setlevel(request)
     level = get(params, "level", nothing)
 
     # Validate log level according to RFC 5424
-    valid_levels = [
-        "debug",
-        "info",
-        "notice",
-        "warning",
-        "error",
-        "critical",
-        "alert",
-        "emergency",
-    ]
+    valid_levels =
+        ["debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"]
 
     if level === nothing || !(level in valid_levels)
         error_response = Dict(
@@ -130,8 +118,7 @@ function _rpc_logging_setlevel(request)
         global_logger(ConsoleLogger(stderr, julia_level))
         @info "Log level set" level = level julia_level = julia_level
 
-        response =
-            Dict("jsonrpc" => "2.0", "id" => request["id"], "result" => Dict())
+        response = Dict("jsonrpc" => "2.0", "id" => request["id"], "result" => Dict())
         return HTTP.Response(
             200,
             ["Content-Type" => "application/json"],
@@ -141,10 +128,8 @@ function _rpc_logging_setlevel(request)
         error_response = Dict(
             "jsonrpc" => "2.0",
             "id" => request["id"],
-            "error" => Dict(
-                "code" => -32603,
-                "message" => "Internal error: $(string(e))",
-            ),
+            "error" =>
+                Dict("code" => -32603, "message" => "Internal error: $(string(e))"),
         )
         return HTTP.Response(
             500,
@@ -157,11 +142,7 @@ end
 function _rpc_session_info(request, session)
     if session !== nothing
         session_info = get_session_info(session)
-        response = Dict(
-            "jsonrpc" => "2.0",
-            "id" => request["id"],
-            "result" => session_info,
-        )
+        response = Dict("jsonrpc" => "2.0", "id" => request["id"], "result" => session_info)
         return HTTP.Response(
             200,
             ["Content-Type" => "application/json"],
@@ -171,8 +152,7 @@ function _rpc_session_info(request, session)
         error_response = Dict(
             "jsonrpc" => "2.0",
             "id" => request["id"],
-            "error" =>
-                Dict("code" => -32603, "message" => "No session available"),
+            "error" => Dict("code" => -32603, "message" => "No session available"),
         )
         return HTTP.Response(
             500,
@@ -200,11 +180,7 @@ function _rpc_tools_list(request, tools)
         "id" => request["id"],
         "result" => Dict("tools" => tool_list),
     )
-    return HTTP.Response(
-        200,
-        ["Content-Type" => "application/json"],
-        JSON.json(response),
-    )
+    return HTTP.Response(200, ["Content-Type" => "application/json"], JSON.json(response))
 end
 
 function _rpc_resources_list(request)
@@ -213,11 +189,7 @@ function _rpc_resources_list(request)
         "id" => request["id"],
         "result" => Dict("resources" => _list_repl_resources()),
     )
-    return HTTP.Response(
-        200,
-        ["Content-Type" => "application/json"],
-        JSON.json(response),
-    )
+    return HTTP.Response(200, ["Content-Type" => "application/json"], JSON.json(response))
 end
 
 function _rpc_resources_read(request)
@@ -226,10 +198,8 @@ function _rpc_resources_read(request)
         error_response = Dict(
             "jsonrpc" => "2.0",
             "id" => request["id"],
-            "error" => Dict(
-                "code" => -32602,
-                "message" => "Missing required parameter: uri",
-            ),
+            "error" =>
+                Dict("code" => -32602, "message" => "Missing required parameter: uri"),
         )
         return HTTP.Response(
             200,
@@ -251,11 +221,7 @@ function _rpc_resources_read(request)
             ],
         ),
     )
-    return HTTP.Response(
-        200,
-        ["Content-Type" => "application/json"],
-        JSON.json(response),
-    )
+    return HTTP.Response(200, ["Content-Type" => "application/json"], JSON.json(response))
 end
 
 function _rpc_resources_templates_list(request)
@@ -264,11 +230,7 @@ function _rpc_resources_templates_list(request)
         "id" => request["id"],
         "result" => Dict("resourceTemplates" => []),
     )
-    return HTTP.Response(
-        200,
-        ["Content-Type" => "application/json"],
-        JSON.json(response),
-    )
+    return HTTP.Response(200, ["Content-Type" => "application/json"], JSON.json(response))
 end
 
 function _rpc_prompts_list(request)
@@ -278,11 +240,7 @@ function _rpc_prompts_list(request)
         "id" => request["id"],
         "result" => Dict("prompts" => prompts),
     )
-    return HTTP.Response(
-        200,
-        ["Content-Type" => "application/json"],
-        JSON.json(response),
-    )
+    return HTTP.Response(200, ["Content-Type" => "application/json"], JSON.json(response))
 end
 
 function _rpc_prompts_get(request)
@@ -292,10 +250,8 @@ function _rpc_prompts_get(request)
         response = Dict(
             "jsonrpc" => "2.0",
             "id" => request["id"],
-            "error" => Dict(
-                "code" => -32602,
-                "message" => "Missing required parameter: name",
-            ),
+            "error" =>
+                Dict("code" => -32602, "message" => "Missing required parameter: name"),
         )
         return HTTP.Response(
             200,
@@ -310,10 +266,8 @@ function _rpc_prompts_get(request)
         response = Dict(
             "jsonrpc" => "2.0",
             "id" => request["id"],
-            "error" => Dict(
-                "code" => -32602,
-                "message" => "Prompt not found: $prompt_name",
-            ),
+            "error" =>
+                Dict("code" => -32602, "message" => "Prompt not found: $prompt_name"),
         )
         return HTTP.Response(
             200,
@@ -327,8 +281,9 @@ function _rpc_prompts_get(request)
 
     # Return the prompt with messages
     prompt_def = findfirst(p -> p["name"] == prompt_name, Prompts.PROMPT_DEFINITIONS)
-    prompt_description = prompt_def !== nothing ?
-        Prompts.PROMPT_DEFINITIONS[prompt_def]["description"] : prompt_name
+    prompt_description =
+        prompt_def !== nothing ? Prompts.PROMPT_DEFINITIONS[prompt_def]["description"] :
+        prompt_name
     response = Dict(
         "jsonrpc" => "2.0",
         "id" => request["id"],
@@ -337,19 +292,12 @@ function _rpc_prompts_get(request)
             "messages" => [
                 Dict(
                     "role" => "user",
-                    "content" => Dict(
-                        "type" => "text",
-                        "text" => prompt_content,
-                    ),
+                    "content" => Dict("type" => "text", "text" => prompt_content),
                 ),
             ],
         ),
     )
-    return HTTP.Response(
-        200,
-        ["Content-Type" => "application/json"],
-        JSON.json(response),
-    )
+    return HTTP.Response(200, ["Content-Type" => "application/json"], JSON.json(response))
 end
 
 # ── OAuth: intentionally NOT implemented ─────────────────────────────────────
@@ -390,208 +338,189 @@ end
 # ── tools/call (body extracted byte-exact from the original branch) ──────────
 
 function _rpc_tools_call(request, tools, name_to_id, session = nothing)
-                params = get(request, "params", nothing)
-                if params === nothing || !haskey(params, "name")
-                    error_response = Dict(
-                        "jsonrpc" => "2.0",
-                        "id" => get(request, "id", 0),
-                        "error" => Dict(
-                            "code" => -32602,
-                            "message" => "Invalid params: missing 'name' in tools/call request",
-                        ),
-                    )
-                    return HTTP.Response(
-                        200,
-                        ["Content-Type" => "application/json"],
-                        JSON.json(error_response),
-                    )
+    params = get(request, "params", nothing)
+    if params === nothing || !haskey(params, "name")
+        error_response = Dict(
+            "jsonrpc" => "2.0",
+            "id" => get(request, "id", 0),
+            "error" => Dict(
+                "code" => -32602,
+                "message" => "Invalid params: missing 'name' in tools/call request",
+            ),
+        )
+        return HTTP.Response(
+            200,
+            ["Content-Type" => "application/json"],
+            JSON.json(error_response),
+        )
+    end
+    tool_name_str = params["name"]
+    tool_id = get(name_to_id, tool_name_str, nothing)
+
+    if tool_id !== nothing && haskey(tools, tool_id)
+        tool = tools[tool_id]
+        args = get(request["params"], "arguments", Dict())
+
+        # Validate parameters - collect all errors first
+        error_messages = String[]
+
+        # Check for unknown parameters first
+        if haskey(tool.parameters, "properties")
+            allowed_params = keys(tool.parameters["properties"])
+            unknown_params = String[]
+            for param in keys(args)
+                if !(param in allowed_params)
+                    push!(unknown_params, param)
                 end
-                tool_name_str = params["name"]
-                tool_id = get(name_to_id, tool_name_str, nothing)
+            end
 
-                if tool_id !== nothing && haskey(tools, tool_id)
-                    tool = tools[tool_id]
-                    args = get(request["params"], "arguments", Dict())
+            if !isempty(unknown_params)
+                allowed_list = join(sort(collect(allowed_params)), ", ")
+                push!(
+                    error_messages,
+                    "Unknown parameter(s): $(join(unknown_params, ", ")). Valid parameters are: $allowed_list",
+                )
+            end
+        end
 
-                    # Validate parameters - collect all errors first
-                    error_messages = String[]
+        # Check for missing required parameters
+        if haskey(tool.parameters, "required")
+            required_params = tool.parameters["required"]
+            missing_params = String[]
+            for param in required_params
+                if !haskey(args, param)
+                    push!(missing_params, param)
+                end
+            end
 
-                    # Check for unknown parameters first
-                    if haskey(tool.parameters, "properties")
-                        allowed_params = keys(tool.parameters["properties"])
-                        unknown_params = String[]
-                        for param in keys(args)
-                            if !(param in allowed_params)
-                                push!(unknown_params, param)
-                            end
-                        end
+            if !isempty(missing_params)
+                push!(
+                    error_messages,
+                    "Missing required parameter(s): $(join(missing_params, ", "))",
+                )
+            end
+        end
 
-                        if !isempty(unknown_params)
-                            allowed_list = join(sort(collect(allowed_params)), ", ")
-                            push!(
-                                error_messages,
-                                "Unknown parameter(s): $(join(unknown_params, ", ")). Valid parameters are: $allowed_list",
-                            )
-                        end
-                    end
+        # If there are any validation errors, return them all
+        if !isempty(error_messages)
+            error_response = Dict(
+                "jsonrpc" => "2.0",
+                "id" => request["id"],
+                "error" =>
+                    Dict("code" => -32602, "message" => join(error_messages, ". ")),
+            )
+            return HTTP.Response(
+                200,
+                ["Content-Type" => "application/json"],
+                JSON.json(error_response),
+            )
+        end
 
-                    # Check for missing required parameters
-                    if haskey(tool.parameters, "required")
-                        required_params = tool.parameters["required"]
-                        missing_params = String[]
-                        for param in required_params
-                            if !haskey(args, param)
-                                push!(missing_params, param)
-                            end
-                        end
+        # Track timing for tools (except for those that show agent> prompts)
+        excluded_tools =
+            ["ex", "search_methods", "macro_expand", "code_lowered", "code_typed"]
+        show_timing = !(tool.name in excluded_tools)
+        # In gate/TUI mode, never print to stdout — log instead
+        tui_mode = GATE_MODE[]
 
-                        if !isempty(missing_params)
-                            push!(
-                                error_messages,
-                                "Missing required parameter(s): $(join(missing_params, ", "))",
-                            )
-                        end
-                    end
+        # Show tool start indicator (stays on same line)
+        if show_timing && !tui_mode
+            print("🔧 ")
+            printstyled(tool.name, color = :light_blue)
+            flush(stdout)
+        end
 
-                    # If there are any validation errors, return them all
-                    if !isempty(error_messages)
-                        error_response = Dict(
-                            "jsonrpc" => "2.0",
-                            "id" => request["id"],
-                            "error" => Dict(
-                                "code" => -32602,
-                                "message" => join(error_messages, ". "),
-                            ),
-                        )
-                        return HTTP.Response(
-                            200,
-                            ["Content-Type" => "application/json"],
-                            JSON.json(error_response),
-                        )
-                    end
+        # Always push activity events in TUI mode (including ex, etc.)
+        inflight_id = 0
+        args_json_ns = JSON.json(args)
+        sk_ns = string(get(args, "ses", get(args, "session", "")))
+        db_request_id_ns = ""
+        if tui_mode
+            _push_activity!(:tool_start, tool.name, "", "")
+            inflight_id = _push_inflight_start!(tool.name, args_json_ns, sk_ns)
+            db_request_id_ns = _persist_tool_start!(tool.name, args_json_ns, sk_ns)
+        end
 
-                    # Track timing for tools (except for those that show agent> prompts)
-                    excluded_tools = [
-                        "ex",
-                        "search_methods",
-                        "macro_expand",
-                        "code_lowered",
-                        "code_typed",
-                    ]
-                    show_timing = !(tool.name in excluded_tools)
-                    # In gate/TUI mode, never print to stdout — log instead
-                    tui_mode = GATE_MODE[]
+        start_time = time()
+        tool_ok = true
+        time_str = ""
 
-                    # Show tool start indicator (stays on same line)
-                    if show_timing && !tui_mode
-                        print("🔧 ")
-                        printstyled(tool.name, color = :light_blue)
-                        flush(stdout)
-                    end
+        # Caller identity: expose the invoking agent's Mcp-Session-Id
+        # to the tool handler via a task-local, scoped to this dispatch.
+        # Session-tool handlers (gate_client_tools.jl) read :mcp_caller
+        # and forward it over the wire as the request's :caller field.
+        caller = session === nothing ? "" : session.id
+        agent_id = _session_agent_id(caller)   # "" unless a Kaimon-owned agent
 
-                    # Always push activity events in TUI mode (including ex, etc.)
-                    inflight_id = 0
-                    args_json_ns = JSON.json(args)
-                    sk_ns = string(get(args, "ses", get(args, "session", "")))
-                    db_request_id_ns = ""
-                    if tui_mode
-                        _push_activity!(:tool_start, tool.name, "", "")
-                        inflight_id = _push_inflight_start!(tool.name, args_json_ns, sk_ns)
-                        db_request_id_ns = _persist_tool_start!(tool.name, args_json_ns, sk_ns)
-                    end
-
-                    start_time = time()
-                    tool_ok = true
-                    time_str = ""
-
-                    # Caller identity: expose the invoking agent's Mcp-Session-Id
-                    # to the tool handler via a task-local, scoped to this dispatch.
-                    # Session-tool handlers (gate_client_tools.jl) read :mcp_caller
-                    # and forward it over the wire as the request's :caller field.
-                    caller = session === nothing ? "" : session.id
-                    agent_id = _session_agent_id(caller)   # "" unless a Kaimon-owned agent
-
-                    # Non-streaming mode (streaming handled in hybrid_handler)
-                    # Use invokelatest to pick up Revise changes to tool handlers
-                    result_text = try
-                        task_local_storage(:mcp_caller, caller) do
-                            task_local_storage(:mcp_agent_id, agent_id) do
-                                Base.invokelatest(tool.handler, args)
-                            end
-                        end
-                    catch
-                        tool_ok = false
-                        rethrow()
-                    finally
-                        elapsed = time() - start_time
-                        # Format time nicely
-                        time_str = if elapsed < 1.0
-                            @sprintf("%.0fms", elapsed * 1000)
-                        else
-                            @sprintf("%.1fs", elapsed)
-                        end
-                        if tui_mode
-                            # Always push activity events in TUI mode
-                            _push_activity!(
-                                :tool_done,
-                                tool.name,
-                                "",
-                                time_str;
-                                success = tool_ok,
-                            )
-                            _push_inflight_done!(inflight_id)
-                            if show_timing
-                                marker = tool_ok ? "✓" : "✗"
-                                @info "$(tool.name) $marker ($time_str)"
-                            end
-                        elseif show_timing
-                            print("\r\033[K🔧 ")
-                            printstyled(tool.name, color = :light_blue)
-                            if tool_ok
-                                printstyled(" ✓ ", color = :green)
-                            else
-                                printstyled(" ✗ ", color = :red)
-                            end
-                            printstyled("($time_str)\n", color = :light_black)
-                            flush(stdout)
-                        end
-                    end
-
-                    # Push full tool result for TUI Activity inspection + update DB
-                    if tui_mode
-                        rt = _tool_result_log_text(string(result_text))
-                        ok = tool_ok && !startswith(rt, "ERROR:")
-                        tcr = ToolCallResult(now(), tool.name, args_json_ns, rt, time_str, ok, sk_ns)
-                        _push_tool_result!(tcr)
-                        _persist_tool_complete!(db_request_id_ns, tcr)
-                    end
-
-                    content_blocks, is_err = _build_tool_content(string(result_text))
-                    result_obj = Dict{String,Any}("content" => content_blocks)
-                    is_err && (result_obj["isError"] = true)
-                    response = Dict(
-                        "jsonrpc" => "2.0",
-                        "id" => request["id"],
-                        "result" => result_obj,
-                    )
-                    return HTTP.Response(
-                        200,
-                        ["Content-Type" => "application/json"],
-                        JSON.json(response),
-                    )
+        # Non-streaming mode (streaming handled in hybrid_handler)
+        # Use invokelatest to pick up Revise changes to tool handlers
+        result_text = try
+            task_local_storage(:mcp_caller, caller) do
+                task_local_storage(:mcp_agent_id, agent_id) do
+                    Base.invokelatest(tool.handler, args)
+                end
+            end
+        catch
+            tool_ok = false
+            rethrow()
+        finally
+            elapsed = time() - start_time
+            # Format time nicely
+            time_str = if elapsed < 1.0
+                @sprintf("%.0fms", elapsed * 1000)
+            else
+                @sprintf("%.1fs", elapsed)
+            end
+            if tui_mode
+                # Always push activity events in TUI mode
+                _push_activity!(:tool_done, tool.name, "", time_str; success = tool_ok)
+                _push_inflight_done!(inflight_id)
+                if show_timing
+                    marker = tool_ok ? "✓" : "✗"
+                    @info "$(tool.name) $marker ($time_str)"
+                end
+            elseif show_timing
+                print("\r\033[K🔧 ")
+                printstyled(tool.name, color = :light_blue)
+                if tool_ok
+                    printstyled(" ✓ ", color = :green)
                 else
-                    error_response = Dict(
-                        "jsonrpc" => "2.0",
-                        "id" => request["id"],
-                        "error" => Dict(
-                            "code" => -32602,
-                            "message" => "Tool not found: $tool_name_str",
-                        ),
-                    )
-                    return HTTP.Response(
-                        200,
-                        ["Content-Type" => "application/json"],
-                        JSON.json(error_response),
-                    )
+                    printstyled(" ✗ ", color = :red)
                 end
+                printstyled("($time_str)\n", color = :light_black)
+                flush(stdout)
+            end
+        end
+
+        # Push full tool result for TUI Activity inspection + update DB
+        if tui_mode
+            rt = _tool_result_log_text(string(result_text))
+            ok = tool_ok && !startswith(rt, "ERROR:")
+            tcr = ToolCallResult(now(), tool.name, args_json_ns, rt, time_str, ok, sk_ns)
+            _push_tool_result!(tcr)
+            _persist_tool_complete!(db_request_id_ns, tcr)
+        end
+
+        content_blocks, is_err = _build_tool_content(string(result_text))
+        result_obj = Dict{String,Any}("content" => content_blocks)
+        is_err && (result_obj["isError"] = true)
+        response = Dict("jsonrpc" => "2.0", "id" => request["id"], "result" => result_obj)
+        return HTTP.Response(
+            200,
+            ["Content-Type" => "application/json"],
+            JSON.json(response),
+        )
+    else
+        error_response = Dict(
+            "jsonrpc" => "2.0",
+            "id" => request["id"],
+            "error" =>
+                Dict("code" => -32602, "message" => "Tool not found: $tool_name_str"),
+        )
+        return HTTP.Response(
+            200,
+            ["Content-Type" => "application/json"],
+            JSON.json(error_response),
+        )
+    end
 end
