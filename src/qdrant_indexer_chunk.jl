@@ -235,7 +235,9 @@ function extract_definition_metadata(expr::Expr, def_type::String)
             # Extract type parameters
             if name_expr isa Expr && name_expr.head == :curly
                 metadata["type_params"] = [string(p) for p in name_expr.args[2:end]]
-            elseif name_expr isa Expr && name_expr.head == :<: && length(name_expr.args) >= 1
+            elseif name_expr isa Expr &&
+                   name_expr.head == :<: &&
+                   length(name_expr.args) >= 1
                 inner = name_expr.args[1]
                 if inner isa Expr && inner.head == :curly
                     metadata["type_params"] = [string(p) for p in inner.args[2:end]]
@@ -306,7 +308,7 @@ function extract_type_parameters(sig)
 
     if sig isa Expr && sig.head == :where
         # Handle single or multiple type parameters
-        for i in 2:length(sig.args)
+        for i = 2:length(sig.args)
             push!(type_params, string(sig.args[i]))
         end
     end
@@ -392,8 +394,12 @@ end
 # Locate a definition's (start, end) by finding its header line (matching `header`) at
 # or after `start_at`, then resolving the end via `endfind(i, lines)`. Falls back to a
 # whole-file scan when the hint misses, so a stale/odd hint can never lose a definition.
-function _scan_span(lines::Vector{<:AbstractString}, start_at::Int, header::Regex,
-                    endfind::Function)
+function _scan_span(
+    lines::Vector{<:AbstractString},
+    start_at::Int,
+    header::Regex,
+    endfind::Function,
+)
     find_from(from) = begin
         for i = from:length(lines)
             if occursin(header, lines[i])
@@ -435,16 +441,24 @@ function get_expr_lines(expr::Expr, lines::Vector{<:AbstractString}, line_hint::
             end
             return nothing
         end
-        span = _scan_span(lines, start_at, Regex("^\\s*(mutable\\s+)?struct\\s+$name"),
-                          struct_end)
+        span = _scan_span(
+            lines,
+            start_at,
+            Regex("^\\s*(mutable\\s+)?struct\\s+$name"),
+            struct_end,
+        )
         span !== nothing && return span
     elseif expr.head == :(=) && length(expr.args) >= 1
         # Short function definition - single line
         first_arg = expr.args[1]
         if first_arg isa Expr && first_arg.head == :call
             name = string(first_arg.args[1])
-            span = _scan_span(lines, start_at, Regex("^\\s*$name\\s*\\(.*\\)\\s*="),
-                              (i, _) -> i)
+            span = _scan_span(
+                lines,
+                start_at,
+                Regex("^\\s*$name\\s*\\(.*\\)\\s*="),
+                (i, _) -> i,
+            )
             span !== nothing && return span
         end
     elseif expr.head == :const
@@ -452,8 +466,7 @@ function get_expr_lines(expr::Expr, lines::Vector{<:AbstractString}, line_hint::
         # lookup, so they were silently dropped from results entirely).
         name = get_definition_name(expr)
         if name !== nothing
-            span = _scan_span(lines, start_at, Regex("^\\s*const\\s+$name\\b"),
-                              (i, _) -> i)
+            span = _scan_span(lines, start_at, Regex("^\\s*const\\s+$name\\b"), (i, _) -> i)
             span !== nothing && return span
         end
     end
@@ -546,7 +559,7 @@ identical chunk set — and identical deterministic point IDs — independently.
 A within-size chunk returns `[chunk]`; an unsplittable oversized chunk (single line, or
 past the recursion guard) is truncated to `max_length` rather than dropped.
 """
-function split_to_fit(chunk::Dict, max_length::Int, depth::Int=0)
+function split_to_fit(chunk::Dict, max_length::Int, depth::Int = 0)
     text = chunk["text"]
 
     if length(text) <= max_length
@@ -555,27 +568,36 @@ function split_to_fit(chunk::Dict, max_length::Int, depth::Int=0)
 
     lines = split(text, '\n')
     if depth > 10 || length(lines) <= 1
-        depth > 10 ||
-            with_index_logger(() -> @warn "Cannot split chunk further, truncating" file = chunk["file"] start_line = chunk["start_line"] original_length = length(text))
+        depth > 10 || with_index_logger(
+            () ->
+                @warn "Cannot split chunk further, truncating" file = chunk["file"] start_line =
+                    chunk["start_line"] original_length = length(text)
+        )
         return Dict[merge(chunk, Dict("text" => first(text, max_length)))]
     end
 
     mid = div(length(lines), 2)
     first_half_text = join(lines[1:mid], '\n')
-    second_half_text = join(lines[mid+1:end], '\n')
+    second_half_text = join(lines[(mid+1):end], '\n')
     start_line = chunk["start_line"]
     mid_line = start_line + mid
 
-    chunk1 = merge(chunk, Dict(
-        "text" => first_half_text,
-        "end_line" => mid_line,
-        "name" => chunk["name"] * " (part 1)",
-    ))
-    chunk2 = merge(chunk, Dict(
-        "text" => second_half_text,
-        "start_line" => mid_line + 1,
-        "name" => chunk["name"] * " (part 2)",
-    ))
+    chunk1 = merge(
+        chunk,
+        Dict(
+            "text" => first_half_text,
+            "end_line" => mid_line,
+            "name" => chunk["name"] * " (part 1)",
+        ),
+    )
+    chunk2 = merge(
+        chunk,
+        Dict(
+            "text" => second_half_text,
+            "start_line" => mid_line + 1,
+            "name" => chunk["name"] * " (part 2)",
+        ),
+    )
 
     results = Dict[]
     append!(results, split_to_fit(chunk1, max_length, depth + 1))
@@ -589,18 +611,21 @@ end
 Recursively split a chunk if it's too large or fails to embed.
 Returns a vector of successfully embedded sub-chunks with their embeddings.
 """
-function split_chunk_recursive(chunk::Dict, max_length::Int, model::String, depth::Int=0)
+function split_chunk_recursive(chunk::Dict, max_length::Int, model::String, depth::Int = 0)
     text = chunk["text"]
 
     # Limit recursion depth to prevent infinite loops
     if depth > 10
-        with_index_logger(() -> @warn "Maximum recursion depth reached for chunk splitting" file = chunk["file"] start_line = chunk["start_line"])
+        with_index_logger(
+            () -> @warn "Maximum recursion depth reached for chunk splitting" file =
+                chunk["file"] start_line = chunk["start_line"]
+        )
         return Dict[]
     end
 
     # Try to embed the chunk as-is if it's within size limit
     if length(text) <= max_length
-        embedding = get_ollama_embedding(text; model=model)
+        embedding = get_ollama_embedding(text; model = model)
         if !isempty(embedding)
             # Success - return chunk with embedding
             return [merge(chunk, Dict("embedding" => embedding, "text" => text))]
@@ -612,9 +637,13 @@ function split_chunk_recursive(chunk::Dict, max_length::Int, model::String, dept
     lines = split(text, '\n')
     if length(lines) <= 1
         # Can't split further - just truncate
-        with_index_logger(() -> @warn "Cannot split chunk further, truncating" file = chunk["file"] start_line = chunk["start_line"] original_length = length(text))
+        with_index_logger(
+            () ->
+                @warn "Cannot split chunk further, truncating" file = chunk["file"] start_line =
+                    chunk["start_line"] original_length = length(text)
+        )
         truncated = first(text, max_length)
-        embedding = get_ollama_embedding(truncated; model=model)
+        embedding = get_ollama_embedding(truncated; model = model)
         if !isempty(embedding)
             return [merge(chunk, Dict("embedding" => embedding, "text" => truncated))]
         else
@@ -625,7 +654,7 @@ function split_chunk_recursive(chunk::Dict, max_length::Int, model::String, dept
     # Split into two halves
     mid = div(length(lines), 2)
     first_half_text = join(lines[1:mid], '\n')
-    second_half_text = join(lines[mid+1:end], '\n')
+    second_half_text = join(lines[(mid+1):end], '\n')
 
     # Calculate approximate line numbers for each half
     start_line = chunk["start_line"]
@@ -633,17 +662,23 @@ function split_chunk_recursive(chunk::Dict, max_length::Int, model::String, dept
     mid_line = start_line + mid
 
     # Create sub-chunks
-    chunk1 = merge(chunk, Dict(
-        "text" => first_half_text,
-        "end_line" => mid_line,
-        "name" => chunk["name"] * " (part 1)"
-    ))
+    chunk1 = merge(
+        chunk,
+        Dict(
+            "text" => first_half_text,
+            "end_line" => mid_line,
+            "name" => chunk["name"] * " (part 1)",
+        ),
+    )
 
-    chunk2 = merge(chunk, Dict(
-        "text" => second_half_text,
-        "start_line" => mid_line + 1,
-        "name" => chunk["name"] * " (part 2)"
-    ))
+    chunk2 = merge(
+        chunk,
+        Dict(
+            "text" => second_half_text,
+            "start_line" => mid_line + 1,
+            "name" => chunk["name"] * " (part 2)",
+        ),
+    )
 
     # Recursively process each half
     results = Dict[]
@@ -652,4 +687,3 @@ function split_chunk_recursive(chunk::Dict, max_length::Int, model::String, dept
 
     return results
 end
-

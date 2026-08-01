@@ -7,8 +7,8 @@ function _view_stress_modal(m::KaimonModel, area::Rect, buf::Buffer)
 
     @match m.stress_modal begin
         :scenario => _view_scenario_modal(m, mx, area.y, mw, max_h, buf)
-        :session  => _view_session_modal(m, mx, area.y, mw, max_h, buf)
-        :tool     => _view_tool_modal(m, mx, area.y, mw, max_h, buf)
+        :session => _view_session_modal(m, mx, area.y, mw, max_h, buf)
+        :tool => _view_tool_modal(m, mx, area.y, mw, max_h, buf)
         _ => nothing
     end
 end
@@ -32,7 +32,7 @@ function _view_scenario_modal(m::KaimonModel, mx, base_y, mw, max_h, buf::Buffer
 
     for row = inner.y:bottom(inner)
         for col = inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
+            set_char!(buf, col, row, ' ', Style(bg = Tachikoma.theme().bg))
         end
     end
 
@@ -52,7 +52,7 @@ function _view_scenario_modal(m::KaimonModel, mx, base_y, mw, max_h, buf::Buffer
             name = "Custom"
             desc = "manually specify tool, args, and code"
         else
-            sc = STRESS_SCENARIOS[item_idx - 1]
+            sc = STRESS_SCENARIOS[item_idx-1]
             name = sc.name
             desc = sc.description
         end
@@ -65,7 +65,9 @@ function _view_scenario_modal(m::KaimonModel, mx, base_y, mw, max_h, buf::Buffer
         desc_x = inner.x + 2 + name_w + 2
         if !isempty(desc) && desc_x + 6 <= right(inner)
             set_string!(
-                buf, desc_x, y,
+                buf,
+                desc_x,
+                y,
                 first("— " * desc, right(inner) - desc_x + 1),
                 tstyle(:text_dim),
             )
@@ -75,13 +77,21 @@ function _view_scenario_modal(m::KaimonModel, mx, base_y, mw, max_h, buf::Buffer
     # Scroll indicator
     if n_items > visible_items
         ind = " [$scroll/$(n_items - visible_items)] "
-        set_string!(buf, inner.x + inner.width - length(ind) - 1, inner.y - 1, ind, tstyle(:text_dim))
+        set_string!(
+            buf,
+            inner.x + inner.width - length(ind) - 1,
+            inner.y - 1,
+            ind,
+            tstyle(:text_dim),
+        )
     end
 
     # Hint
     hint_y = bottom(inner)
     set_string!(
-        buf, inner.x + 1, hint_y,
+        buf,
+        inner.x + 1,
+        hint_y,
         "[↑↓] navigate  [Enter] select  [Esc] cancel",
         tstyle(:text_dim),
     )
@@ -109,7 +119,7 @@ function _view_session_modal(m::KaimonModel, mx, base_y, mw, max_h, buf::Buffer)
 
     for row = inner.y:bottom(inner)
         for col = inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
+            set_char!(buf, col, row, ' ', Style(bg = Tachikoma.theme().bg))
         end
     end
 
@@ -141,7 +151,9 @@ function _view_session_modal(m::KaimonModel, mx, base_y, mw, max_h, buf::Buffer)
 
     hint_y = bottom(inner)
     set_string!(
-        buf, inner.x + 1, hint_y,
+        buf,
+        inner.x + 1,
+        hint_y,
         "[↑↓] navigate  [Enter] select  [Esc] cancel",
         tstyle(:text_dim),
     )
@@ -162,7 +174,7 @@ function _view_tool_modal(m::KaimonModel, mx, base_y, mw, max_h, buf::Buffer)
 
     for row = inner.y:bottom(inner)
         for col = inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
+            set_char!(buf, col, row, ' ', Style(bg = Tachikoma.theme().bg))
         end
     end
 
@@ -178,14 +190,22 @@ function _view_tool_modal(m::KaimonModel, mx, base_y, mw, max_h, buf::Buffer)
         is_name_active && (name_inp.tick = m.tick)
         row_style = is_name_active ? tstyle(:accent, bold = true) : tstyle(:text_dim)
         # Draw field label row header
-        set_string!(buf, x, y - 1, is_name_active ? "▸ Tool name" : "  Tool name", row_style)
+        set_string!(
+            buf,
+            x,
+            y - 1,
+            is_name_active ? "▸ Tool name" : "  Tool name",
+            row_style,
+        )
         render(name_inp, Rect(x + 2, y, max(1, iw - 2), 1), buf)
     end
 
     # ── Name hint ──
     y += 1
     set_string!(
-        buf, x + 2, y,
+        buf,
+        x + 2,
+        y,
         first("empty = eval path (runs Julia code)", max(0, iw - 3)),
         tstyle(:text_dim),
     )
@@ -196,14 +216,22 @@ function _view_tool_modal(m::KaimonModel, mx, base_y, mw, max_h, buf::Buffer)
     if args_inp !== nothing
         is_args_active && (args_inp.tick = m.tick)
         row_style = is_args_active ? tstyle(:accent, bold = true) : tstyle(:text_dim)
-        set_string!(buf, x, y - 1, is_args_active ? "▸ Arguments" : "  Arguments", row_style)
+        set_string!(
+            buf,
+            x,
+            y - 1,
+            is_args_active ? "▸ Arguments" : "  Arguments",
+            row_style,
+        )
         render(args_inp, Rect(x + 2, y, max(1, iw - 2), 1), buf)
     end
 
     # ── Args hint ──
     y += 1
     set_string!(
-        buf, x + 2, y,
+        buf,
+        x + 2,
+        y,
         first("JSON object, e.g. {\"duration_secs\": 10}", max(0, iw - 3)),
         tstyle(:text_dim),
     )
@@ -211,7 +239,9 @@ function _view_tool_modal(m::KaimonModel, mx, base_y, mw, max_h, buf::Buffer)
     # ── Bottom hint ──
     hint_y = bottom(inner)
     set_string!(
-        buf, x + 1, hint_y,
+        buf,
+        x + 1,
+        hint_y,
         "[Tab/↑↓] switch field  [Enter] next/confirm  [Esc] close",
         tstyle(:text_dim),
     )
@@ -257,7 +287,7 @@ function _view_stress_code_editor(m::KaimonModel, area::Rect, buf::Buffer)
     # Clear interior
     for row = inner.y:bottom(inner)
         for col = inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
+            set_char!(buf, col, row, ' ', Style(bg = Tachikoma.theme().bg))
         end
     end
 
@@ -457,7 +487,7 @@ function _view_agent_horde(
     else
         for row = inner.y:bottom(inner)
             for col = inner.x:right(inner)
-                set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
+                set_char!(buf, col, row, ' ', Style(bg = Tachikoma.theme().bg))
             end
         end
     end
@@ -603,7 +633,7 @@ function _view_agent_horde(
             if agent.status in (:running, :sending)
                 if animations_enabled()
                     scan_pos = mod(m.tick ÷ 2 + i * 3, bar_w * 2)
-                    for bx = 0:bar_w-1
+                    for bx = 0:(bar_w-1)
                         dist =
                             abs(bx - (scan_pos < bar_w ? scan_pos : bar_w * 2 - scan_pos))
                         brightness = max(0.0, 1.0 - dist / 3.0)

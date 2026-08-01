@@ -12,23 +12,23 @@ using KaimonGate: GateTool, progress
 
 demo_progress_tool = GateTool(
     "demo_long_compute",
-    function(n::Int=5)
+    function (n::Int = 5)
         results = Float64[]
-        for i in 1:n
+        for i = 1:n
             progress("Computing batch $i/$n...")
             push!(results, sum(rand(10_000)))
             sleep(2.0)
         end
         progress("All $n batches complete!")
-        return (batches=n, total=sum(results), mean=sum(results)/n)
-    end
+        return (batches = n, total = sum(results), mean = sum(results)/n)
+    end,
 )
 
 # ── Structured domain progress (CUDA-like compilation) ───────────────────────
 
 demo_compile_tool = GateTool(
     "demo_compile_kernels",
-    function(kernel_names::Vector{String}=["matmul", "softmax", "attention"])
+    function (kernel_names::Vector{String} = ["matmul", "softmax", "attention"])
         compiled = String[]
         for (i, name) in enumerate(kernel_names)
             progress("[$i/$(length(kernel_names))] Compiling '$name'...")
@@ -39,8 +39,8 @@ demo_compile_tool = GateTool(
             push!(compiled, name)
             progress("  $name: complete!")
         end
-        return (compiled=compiled, count=length(compiled))
-    end
+        return (compiled = compiled, count = length(compiled))
+    end,
 )
 
 # Register tools with the running gate

@@ -330,10 +330,7 @@ function _build_overview_model()
         tool_results = results,
         activity_feed = activity,
         selected_connection = 1,
-        client_statuses = [
-            "Claude Code" => true,
-            "VS Code / Copilot" => false,
-        ],
+        client_statuses = ["Claude Code" => true, "VS Code / Copilot" => false],
     )
 end
 
@@ -439,10 +436,7 @@ function _build_config_model()
         server_running = true,
         server_started = true,
         server_port = 2828,
-        client_statuses = [
-            "Claude Code" => false,
-            "VS Code / Copilot" => false,
-        ],
+        client_statuses = ["Claude Code" => false, "VS Code / Copilot" => false],
         focused_pane = Dict(1 => 2, 2 => 1, 3 => 1, 4 => 1, 5 => 1, 6 => 2, 7 => 2),
     )
 end
@@ -483,10 +477,7 @@ function _build_startup_global_model()
         server_running = true,
         server_started = true,
         server_port = 2828,
-        client_statuses = [
-            "Claude Code" => false,
-            "VS Code / Copilot" => false,
-        ],
+        client_statuses = ["Claude Code" => false, "VS Code / Copilot" => false],
         focused_pane = Dict(1 => 2, 2 => 1, 3 => 1, 4 => 1, 5 => 1, 6 => 2, 7 => 2),
     )
 end
@@ -513,10 +504,7 @@ function _build_startup_project_model()
         server_running = true,
         server_started = true,
         server_port = 2828,
-        client_statuses = [
-            "Claude Code" => false,
-            "VS Code / Copilot" => false,
-        ],
+        client_statuses = ["Claude Code" => false, "VS Code / Copilot" => false],
         focused_pane = Dict(1 => 2, 2 => 1, 3 => 1, 4 => 1, 5 => 1, 6 => 2, 7 => 2),
     )
 end
@@ -642,12 +630,12 @@ end
 
 function _build_search_config_model()
     models = [
-        (name = "nomic-embed-text",              dims = 768,  ctx = 512,  installed = true),
-        (name = "qwen3-embedding:0.6b",          dims = 1024, ctx = 8192, installed = true),
-        (name = "qwen3-embedding:4b",            dims = 2560, ctx = 8192, installed = false),
-        (name = "qwen3-embedding:8b",            dims = 4096, ctx = 8192, installed = false),
-        (name = "qwen3-embedding",               dims = 4096, ctx = 8192, installed = false),
-        (name = "snowflake-arctic-embed:latest", dims = 1024, ctx = 512,  installed = false),
+        (name = "nomic-embed-text", dims = 768, ctx = 512, installed = true),
+        (name = "qwen3-embedding:0.6b", dims = 1024, ctx = 8192, installed = true),
+        (name = "qwen3-embedding:4b", dims = 2560, ctx = 8192, installed = false),
+        (name = "qwen3-embedding:8b", dims = 4096, ctx = 8192, installed = false),
+        (name = "qwen3-embedding", dims = 4096, ctx = 8192, installed = false),
+        (name = "snowflake-arctic-embed:latest", dims = 1024, ctx = 512, installed = false),
     ]
     _model(
         _render_mode = true,
@@ -683,36 +671,87 @@ const EVENTS_SEARCH_CONFIG = EventScript(
 
 function _build_activity_model()
     results = [
-        _result("ex",             "{\"e\":\"1+1\"}",                "2";          ago_s=5,   dur="8ms",   skey="abcd1234"),
-        _result("run_tests",      "{\"pattern\":\"gate\"}",         "✓ 23 passed"; ago_s=18,  dur="3.1s",  skey="abcd1234"),
-        _result("goto_definition","{\"file_path\":\"gate.jl\",\"line\":88}", "gate.jl:88"; ago_s=30, dur="14ms", skey="abcd1234"),
-        _result("ex",             "{\"e\":\"sin(π/4)\"}",           "0.7071";     ago_s=42,  dur="11ms",  skey="abcd1234"),
-        _result("document_symbols","{\"file_path\":\"src/gate.jl\"}","[serve, GateTool, ...]"; ago_s=60, dur="22ms", skey="abcd1234"),
-        _result("ex",             "{\"e\":\"error(\\\"oops\\\")\"}","ERROR: oops"; ago_s=75, dur="5ms", skey="abcd1234", success=false),
-        _result("format_code",    "{\"path\":\"src/\"}",            "Formatted 12 files"; ago_s=90, dur="1.4s", skey="abcd1234"),
+        _result("ex", "{\"e\":\"1+1\"}", "2"; ago_s = 5, dur = "8ms", skey = "abcd1234"),
+        _result(
+            "run_tests",
+            "{\"pattern\":\"gate\"}",
+            "✓ 23 passed";
+            ago_s = 18,
+            dur = "3.1s",
+            skey = "abcd1234",
+        ),
+        _result(
+            "goto_definition",
+            "{\"file_path\":\"gate.jl\",\"line\":88}",
+            "gate.jl:88";
+            ago_s = 30,
+            dur = "14ms",
+            skey = "abcd1234",
+        ),
+        _result(
+            "ex",
+            "{\"e\":\"sin(π/4)\"}",
+            "0.7071";
+            ago_s = 42,
+            dur = "11ms",
+            skey = "abcd1234",
+        ),
+        _result(
+            "document_symbols",
+            "{\"file_path\":\"src/gate.jl\"}",
+            "[serve, GateTool, ...]";
+            ago_s = 60,
+            dur = "22ms",
+            skey = "abcd1234",
+        ),
+        _result(
+            "ex",
+            "{\"e\":\"error(\\\"oops\\\")\"}",
+            "ERROR: oops";
+            ago_s = 75,
+            dur = "5ms",
+            skey = "abcd1234",
+            success = false,
+        ),
+        _result(
+            "format_code",
+            "{\"path\":\"src/\"}",
+            "Formatted 12 files";
+            ago_s = 90,
+            dur = "1.4s",
+            skey = "abcd1234",
+        ),
     ]
 
     activity = [
-        _activity(:tool_start, "ex",              "Kaimon"; ago_s=5),
-        _activity(:tool_done,  "ex",              "Kaimon"; ago_s=5,  data="8ms"),
-        _activity(:tool_start, "run_tests",       "Kaimon"; ago_s=18),
-        _activity(:tool_done,  "run_tests",       "Kaimon"; ago_s=18, data="3.1s"),
-        _activity(:tool_start, "goto_definition", "Kaimon"; ago_s=30),
-        _activity(:tool_done,  "goto_definition", "Kaimon"; ago_s=30, data="14ms"),
-        _activity(:tool_start, "ex",              "Kaimon"; ago_s=42),
-        _activity(:tool_done,  "ex",              "Kaimon"; ago_s=42, data="11ms"),
-        _activity(:tool_start, "ex",              "Kaimon"; ago_s=75),
-        _activity(:tool_done,  "ex",              "Kaimon"; ago_s=75, data="5ms", success=false),
+        _activity(:tool_start, "ex", "Kaimon"; ago_s = 5),
+        _activity(:tool_done, "ex", "Kaimon"; ago_s = 5, data = "8ms"),
+        _activity(:tool_start, "run_tests", "Kaimon"; ago_s = 18),
+        _activity(:tool_done, "run_tests", "Kaimon"; ago_s = 18, data = "3.1s"),
+        _activity(:tool_start, "goto_definition", "Kaimon"; ago_s = 30),
+        _activity(:tool_done, "goto_definition", "Kaimon"; ago_s = 30, data = "14ms"),
+        _activity(:tool_start, "ex", "Kaimon"; ago_s = 42),
+        _activity(:tool_done, "ex", "Kaimon"; ago_s = 42, data = "11ms"),
+        _activity(:tool_start, "ex", "Kaimon"; ago_s = 75),
+        _activity(:tool_done, "ex", "Kaimon"; ago_s = 75, data = "5ms", success = false),
     ]
 
     tool_history = zeros(120)
-    for i in 90:110; tool_history[i] = rand() * 2; end
-    for i in 111:120; tool_history[i] = rand() * 5 + 1; end
+    for i = 90:110
+        tool_history[i] = rand() * 2
+    end
+    for i = 111:120
+        tool_history[i] = rand() * 5 + 1
+    end
 
     mgr = ConnectionManager()
-    conn = _mock_conn(; session_id="abcd1234efgh5678", display_name="Kaimon",
-                       project_path="/home/user/dev/Kaimon.jl", pid=41000,
-                       tool_call_count=169)
+    conn = _mock_conn(;
+        session_id = "abcd1234efgh5678",
+        display_name = "Kaimon",
+        project_path = "/home/user/dev/Kaimon.jl",
+        pid = 41000,
+        tool_call_count = 169,
+    )
     push!(mgr.connections, conn)
 
     _model(
@@ -751,42 +790,44 @@ const EVENTS_ACTIVITY = EventScript(
 # ═══════════════════════════════════════════════════════════════════════
 
 function _build_tests_model()
-    run1 = TestRun(; id=1, project_path="/home/user/dev/Kaimon.jl")
-    run1.status      = RUN_PASSED
+    run1 = TestRun(; id = 1, project_path = "/home/user/dev/Kaimon.jl")
+    run1.status = RUN_PASSED
     run1.finished_at = now() - Second(30)
-    run1.started_at  = run1.finished_at - Second(4)
-    run1.total_pass  = 47
+    run1.started_at = run1.finished_at - Second(4)
+    run1.total_pass = 47
     run1.total_tests = 47
     run1.results = [
-        TestResult("KaimonTests",    TEST_PASS, 47, 0, 0, 47, 0),
-        TestResult("Gate tests",     TEST_PASS, 18, 0, 0, 18, 1),
-        TestResult("MCP tests",      TEST_PASS, 12, 0, 0, 12, 1),
-        TestResult("Search tests",   TEST_PASS,  9, 0, 0,  9, 1),
-        TestResult("Config tests",   TEST_PASS,  8, 0, 0,  8, 1),
+        TestResult("KaimonTests", TEST_PASS, 47, 0, 0, 47, 0),
+        TestResult("Gate tests", TEST_PASS, 18, 0, 0, 18, 1),
+        TestResult("MCP tests", TEST_PASS, 12, 0, 0, 12, 1),
+        TestResult("Search tests", TEST_PASS, 9, 0, 0, 9, 1),
+        TestResult("Config tests", TEST_PASS, 8, 0, 0, 8, 1),
     ]
 
-    run2 = TestRun(; id=2, project_path="/home/user/dev/Kaimon.jl", pattern="gate")
-    run2.status      = RUN_FAILED
+    run2 = TestRun(; id = 2, project_path = "/home/user/dev/Kaimon.jl", pattern = "gate")
+    run2.status = RUN_FAILED
     run2.finished_at = now() - Second(5)
-    run2.started_at  = run2.finished_at - Second(2)
-    run2.total_pass  = 16
-    run2.total_fail  = 2
+    run2.started_at = run2.finished_at - Second(2)
+    run2.total_pass = 16
+    run2.total_fail = 2
     run2.total_tests = 18
     run2.results = [
         TestResult("Gate tests", TEST_FAIL, 16, 2, 0, 18, 0),
-        TestResult("serve()",    TEST_FAIL, 12, 1, 0, 13, 1),
-        TestResult("reconnect",  TEST_FAIL,  4, 1, 0,  5, 1),
+        TestResult("serve()", TEST_FAIL, 12, 1, 0, 13, 1),
+        TestResult("reconnect", TEST_FAIL, 4, 1, 0, 5, 1),
     ]
     run2.failures = [
         TestFailure(
-            "test/gate_tests.jl", 88,
+            "test/gate_tests.jl",
+            88,
             "conn.status == :connected",
             "Evaluated: :timeout == :connected",
             "serve()",
             "  [1] test_gate_serve at test/gate_tests.jl:88",
         ),
         TestFailure(
-            "test/gate_tests.jl", 142,
+            "test/gate_tests.jl",
+            142,
             "length(mgr.connections) == 1",
             "Evaluated: 0 == 1",
             "reconnect",
@@ -839,25 +880,25 @@ const EVENTS_TESTS = EventScript(
 function _build_collection_manager_model()
     entries = [
         (
-            label       = "Kaimon",
+            label = "Kaimon",
             project_path = "/home/user/dev/Kaimon.jl",
-            collection  = "kaimon",
-            session_id  = "abcd1234",
-            status      = :connected,
+            collection = "kaimon",
+            session_id = "abcd1234",
+            status = :connected,
         ),
         (
-            label       = "Tachikoma",
+            label = "Tachikoma",
             project_path = "/home/user/dev/Tachikoma.jl",
-            collection  = "tachikoma",
-            session_id  = "efgh5678",
-            status      = :connected,
+            collection = "tachikoma",
+            session_id = "efgh5678",
+            status = :connected,
         ),
         (
-            label       = "EvaCopy (external)",
+            label = "EvaCopy (external)",
             project_path = "/home/user/dev/EvaCopy",
-            collection  = "evacopy",
-            session_id  = "",
-            status      = :external,
+            collection = "evacopy",
+            session_id = "",
+            status = :external,
         ),
     ]
 
@@ -906,20 +947,28 @@ function _build_debug_model()
     push!(mgr.connections, conn)
 
     locals = [
-        (name = "A",        type = "Matrix{Float64}",  value = "4×4 Matrix{Float64}:\n 5.2  0.1  0.3  0.7\n 0.1  4.8  0.2  0.5\n 0.3  0.2  6.1  0.4\n 0.7  0.5  0.4  5.9"),
-        (name = "b",        type = "Vector{Float64}",  value = "[0.234, -1.107, 0.891, -0.562]"),
-        (name = "cond_A",   type = "Float64",          value = "1.7832"),
-        (name = "det_A",    type = "Float64",          value = "812.447"),
-        (name = "n",        type = "Int64",            value = "4"),
-        (name = "residual", type = "Float64",          value = "2.22e-16"),
-        (name = "x",        type = "Vector{Float64}",  value = "[0.0413, -0.2451, 0.1502, -0.1118]"),
+        (
+            name = "A",
+            type = "Matrix{Float64}",
+            value = "4×4 Matrix{Float64}:\n 5.2  0.1  0.3  0.7\n 0.1  4.8  0.2  0.5\n 0.3  0.2  6.1  0.4\n 0.7  0.5  0.4  5.9",
+        ),
+        (name = "b", type = "Vector{Float64}", value = "[0.234, -1.107, 0.891, -0.562]"),
+        (name = "cond_A", type = "Float64", value = "1.7832"),
+        (name = "det_A", type = "Float64", value = "812.447"),
+        (name = "n", type = "Int64", value = "4"),
+        (name = "residual", type = "Float64", value = "2.22e-16"),
+        (
+            name = "x",
+            type = "Vector{Float64}",
+            value = "[0.0413, -0.2451, 0.1502, -0.1118]",
+        ),
     ]
 
     history = [
-        (source = :agent, code = "typeof(A)",          result = "Matrix{Float64}"),
-        (source = :agent, code = "cond_A < 10",        result = "true"),
-        (source = :user,  code = "norm(A * x - b)",    result = "2.220446049250313e-16"),
-        (source = :user,  code = "eigvals(A)",         result = "[4.123, 4.891, 5.734, 7.252]"),
+        (source = :agent, code = "typeof(A)", result = "Matrix{Float64}"),
+        (source = :agent, code = "cond_A < 10", result = "true"),
+        (source = :user, code = "norm(A * x - b)", result = "2.220446049250313e-16"),
+        (source = :user, code = "eigvals(A)", result = "[4.123, 4.891, 5.734, 7.252]"),
     ]
 
     _model(
@@ -978,8 +1027,14 @@ function _mock_managed_ext(;
     error_log::Vector{String} = String[],
 )
     manifest = ExtensionManifest(
-        namespace, module_name, "create_tools", description,
-        "on_shutdown", String[], tui_file, String[],
+        namespace,
+        module_name,
+        "create_tools",
+        description,
+        "on_shutdown",
+        String[],
+        tui_file,
+        String[],
     )
     entry = ExtensionEntry(project_path, true, true)
     config = ExtensionConfig(entry, manifest)
@@ -1016,21 +1071,31 @@ function _build_extensions_model()
         project_path = "/home/user/dev/DeployTools.jl",
         description = "Deployment pipeline tools for staging and production.",
         status = :crashed,
-        error_log = ["Process exited with code 1", "ERROR: LoadError: ArgumentError: Package NotAPackage not found"],
+        error_log = [
+            "Process exited with code 1",
+            "ERROR: LoadError: ArgumentError: Package NotAPackage not found",
+        ],
     )
 
     # Mock connections: hello extension needs a conn with matching namespace
     hello_tools = [
-        Dict("name" => "greet", "arguments" => [
-            Dict("name" => "name", "type" => "String", "required" => true),
-            Dict("name" => "enthusiastic", "type" => "Bool", "required" => false),
-        ]),
-        Dict("name" => "roll_dice", "arguments" => [
-            Dict("name" => "sides", "type" => "Int", "required" => false),
-        ]),
-        Dict("name" => "word_count", "arguments" => [
-            Dict("name" => "text", "type" => "String", "required" => true),
-        ]),
+        Dict(
+            "name" => "greet",
+            "arguments" => [
+                Dict("name" => "name", "type" => "String", "required" => true),
+                Dict("name" => "enthusiastic", "type" => "Bool", "required" => false),
+            ],
+        ),
+        Dict(
+            "name" => "roll_dice",
+            "arguments" =>
+                [Dict("name" => "sides", "type" => "Int", "required" => false)],
+        ),
+        Dict(
+            "name" => "word_count",
+            "arguments" =>
+                [Dict("name" => "text", "type" => "String", "required" => true)],
+        ),
     ]
 
     conn_hello = _mock_conn(;
@@ -1154,20 +1219,60 @@ const EVENTS_CURVE = EventScript(
 )
 
 const DEMOS = [
-    DemoSpec("kaimon_wizard",              _build_wizard_model,             EVENTS_WIZARD,              130, 34, 230, 15),
-    DemoSpec("kaimon_curve",               _build_curve_model,              EVENTS_CURVE,               130, 34, 200, 15),
-    DemoSpec("kaimon_overview",            _build_overview_model,           EVENTS_OVERVIEW,            130, 34, 180, 15),
-    DemoSpec("kaimon_sessions",            _build_sessions_model,           EVENTS_SESSIONS,            130, 34, 135, 15),
-    DemoSpec("kaimon_activity",            _build_activity_model,           EVENTS_ACTIVITY,            130, 34, 150, 15),
-    DemoSpec("kaimon_tests",               _build_tests_model,              EVENTS_TESTS,               130, 34, 140, 15),
-    DemoSpec("kaimon_config",              _build_config_model,             EVENTS_CONFIG,              130, 34, 150, 15),
-    DemoSpec("kaimon_startup_global",      _build_startup_global_model,     EVENTS_STARTUP_GLOBAL,      130, 34,  80, 15),
-    DemoSpec("kaimon_startup_project",     _build_startup_project_model,    EVENTS_STARTUP_PROJECT,     130, 34, 115, 15),
-    DemoSpec("kaimon_search",              _build_search_model,             EVENTS_SEARCH,              130, 34, 160, 15),
-    DemoSpec("kaimon_search_config",       _build_search_config_model,      EVENTS_SEARCH_CONFIG,       130, 34,  75, 15),
-    DemoSpec("kaimon_collection_manager",  _build_collection_manager_model, EVENTS_COLLECTION_MANAGER,  130, 34,  90, 15),
-    DemoSpec("kaimon_debug",               _build_debug_model,              EVENTS_DEBUG,               130, 34, 180, 15),
-    DemoSpec("kaimon_extensions",          _build_extensions_model,         EVENTS_EXTENSIONS,          130, 34, 150, 15),
+    DemoSpec("kaimon_wizard", _build_wizard_model, EVENTS_WIZARD, 130, 34, 230, 15),
+    DemoSpec("kaimon_curve", _build_curve_model, EVENTS_CURVE, 130, 34, 200, 15),
+    DemoSpec("kaimon_overview", _build_overview_model, EVENTS_OVERVIEW, 130, 34, 180, 15),
+    DemoSpec("kaimon_sessions", _build_sessions_model, EVENTS_SESSIONS, 130, 34, 135, 15),
+    DemoSpec("kaimon_activity", _build_activity_model, EVENTS_ACTIVITY, 130, 34, 150, 15),
+    DemoSpec("kaimon_tests", _build_tests_model, EVENTS_TESTS, 130, 34, 140, 15),
+    DemoSpec("kaimon_config", _build_config_model, EVENTS_CONFIG, 130, 34, 150, 15),
+    DemoSpec(
+        "kaimon_startup_global",
+        _build_startup_global_model,
+        EVENTS_STARTUP_GLOBAL,
+        130,
+        34,
+        80,
+        15,
+    ),
+    DemoSpec(
+        "kaimon_startup_project",
+        _build_startup_project_model,
+        EVENTS_STARTUP_PROJECT,
+        130,
+        34,
+        115,
+        15,
+    ),
+    DemoSpec("kaimon_search", _build_search_model, EVENTS_SEARCH, 130, 34, 160, 15),
+    DemoSpec(
+        "kaimon_search_config",
+        _build_search_config_model,
+        EVENTS_SEARCH_CONFIG,
+        130,
+        34,
+        75,
+        15,
+    ),
+    DemoSpec(
+        "kaimon_collection_manager",
+        _build_collection_manager_model,
+        EVENTS_COLLECTION_MANAGER,
+        130,
+        34,
+        90,
+        15,
+    ),
+    DemoSpec("kaimon_debug", _build_debug_model, EVENTS_DEBUG, 130, 34, 180, 15),
+    DemoSpec(
+        "kaimon_extensions",
+        _build_extensions_model,
+        EVENTS_EXTENSIONS,
+        130,
+        34,
+        150,
+        15,
+    ),
 ]
 
 function render_demo(spec::DemoSpec, cache::Dict{String,String}; force::Bool = false)

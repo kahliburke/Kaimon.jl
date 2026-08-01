@@ -87,9 +87,9 @@ end
 
 @testset "Union{T,Nothing}" begin
     c = KaimonGate._coerce_value
-    @test c(nothing, Union{Int, Nothing}) === nothing
-    @test c("42", Union{Int, Nothing}) === 42
-    @test c("hello", Union{String, Nothing}) == "hello"
+    @test c(nothing, Union{Int,Nothing}) === nothing
+    @test c("42", Union{Int,Nothing}) === 42
+    @test c("hello", Union{String,Nothing}) == "hello"
 end
 
 # ── Passthrough (already correct type) ───────────────────────────────────────

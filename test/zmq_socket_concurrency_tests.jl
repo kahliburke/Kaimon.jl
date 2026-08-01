@@ -43,7 +43,11 @@ using Kaimon
 
     out = IOBuffer()
     # -t 6 forces real concurrency in the child regardless of how the suite runs.
-    cmd = pipeline(`$(Base.julia_cmd()) --project=$proj -t 6 $path`; stdout = out, stderr = out)
+    cmd = pipeline(
+        `$(Base.julia_cmd()) --project=$proj -t 6 $path`;
+        stdout = out,
+        stderr = out,
+    )
     proc = run(cmd; wait = false)
     wait(proc)
     output = String(take!(out))

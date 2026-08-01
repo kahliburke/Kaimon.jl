@@ -83,7 +83,8 @@ function serve(;
 
     if mode === nothing
         env_mode = get(ENV, "KAIMON_GATE_MODE", "")
-        has_env_port = haskey(ENV, "KAIMON_GATE_PORT") || haskey(ENV, "KAIMON_GATE_STREAM_PORT")
+        has_env_port =
+            haskey(ENV, "KAIMON_GATE_PORT") || haskey(ENV, "KAIMON_GATE_STREAM_PORT")
         toml_mode = get(toml, "mode", "")
         has_toml_port = haskey(toml, "port") || haskey(toml, "stream_port")
         mode = if !isempty(env_mode)
@@ -98,18 +99,16 @@ function serve(;
     end
     if host === nothing
         env_host = get(ENV, "KAIMON_GATE_HOST", "")
-        host = !isempty(env_host) ? env_host :
-            get(toml, "host", "127.0.0.1")
+        host = !isempty(env_host) ? env_host : get(toml, "host", "127.0.0.1")
     end
     if port === nothing
         env_port = get(ENV, "KAIMON_GATE_PORT", "")
-        port = !isempty(env_port) ? parse(Int, env_port) :
-            Int(get(toml, "port", 0))
+        port = !isempty(env_port) ? parse(Int, env_port) : Int(get(toml, "port", 0))
     end
     if stream_port === nothing
         env_sp = get(ENV, "KAIMON_GATE_STREAM_PORT", "")
-        stream_port = !isempty(env_sp) ? parse(Int, env_sp) :
-            Int(get(toml, "stream_port", 0))
+        stream_port =
+            !isempty(env_sp) ? parse(Int, env_sp) : Int(get(toml, "stream_port", 0))
     end
     if force === nothing
         force = Bool(get(toml, "force", false))
@@ -123,11 +122,13 @@ function serve(;
     end
     if allow_any === nothing
         env_aa = get(ENV, "KAIMON_GATE_CURVE_ALLOW_ANY", "")
-        allow_any = !isempty(env_aa) ? _truthy(env_aa) : Bool(get(toml, "curve_allow_any", false))
+        allow_any =
+            !isempty(env_aa) ? _truthy(env_aa) : Bool(get(toml, "curve_allow_any", false))
     end
     if allowed_clients === nothing
         env_allow = get(ENV, "KAIMON_GATE_CURVE_ALLOW", "")
-        allowed_clients = isempty(env_allow) ? String[] :
+        allowed_clients =
+            isempty(env_allow) ? String[] :
             String[String(strip(x)) for x in split(env_allow, ",") if !isempty(strip(x))]
     end
 
@@ -293,7 +294,12 @@ function _serve(;
     # libzmq background I/O threads (default 1) — set before any socket is created.
     # More can raise throughput when one I/O thread saturates (KAIMON_ZMQ_IO_THREADS).
     let n = tryparse(Int, get(ENV, "KAIMON_ZMQ_IO_THREADS", ""))
-        n === nothing || n < 1 || (try; ctx.io_threads = n; catch; end)
+        n === nothing || n < 1 || (
+            try
+                ctx.io_threads = n
+            catch
+            end
+        )
     end
     socket = _zmq_socket(ctx, ROUTER)
     _GATE_CONTEXT[] = ctx
@@ -357,7 +363,7 @@ function _serve(;
         m = match(r":(\d+)$", endpoint)
         _TCP_PORT[] = m !== nothing ? parse(Int, m.captures[1]) : port
     else
-        sock_path = joinpath(sock_dir(),"$(sid).sock")
+        sock_path = joinpath(sock_dir(), "$(sid).sock")
         endpoint = "ipc://$(sock_path)"
         bind(socket, endpoint)
     end
@@ -438,48 +444,49 @@ function _serve(;
         end
     end
     local this_task
-    this_task = _GATE_TASK[] = Threads.@spawn :interactive begin
-        try
-            message_loop(socket)
-        catch e
-            @debug "Gate task exited" exception = e
-        finally
-            if _SHUTTING_DOWN[]
-                # Remote shutdown: run optional cleanup hook, then exit
-                _SHUTTING_DOWN[] = false
-                hook = _ON_SHUTDOWN[]
-                if hook !== nothing
-                    try
-                        ch = Channel{Nothing}(1)
-                        @async begin
-                            try
-                                Base.invokelatest(hook)
-                            catch e
-                                @debug "on_shutdown hook error" exception = e
-                            finally
-                                put!(ch, nothing)
+    this_task =
+        _GATE_TASK[] = Threads.@spawn :interactive begin
+            try
+                message_loop(socket)
+            catch e
+                @debug "Gate task exited" exception = e
+            finally
+                if _SHUTTING_DOWN[]
+                    # Remote shutdown: run optional cleanup hook, then exit
+                    _SHUTTING_DOWN[] = false
+                    hook = _ON_SHUTDOWN[]
+                    if hook !== nothing
+                        try
+                            ch = Channel{Nothing}(1)
+                            @async begin
+                                try
+                                    Base.invokelatest(hook)
+                                catch e
+                                    @debug "on_shutdown hook error" exception = e
+                                finally
+                                    put!(ch, nothing)
+                                end
                             end
+                            # Wait up to 5s for the hook to complete
+                            timer = Timer(5.0)
+                            @async begin
+                                wait(timer)
+                                isready(ch) || put!(ch, nothing)
+                            end
+                            take!(ch)
+                            close(timer)
+                        catch
                         end
-                        # Wait up to 5s for the hook to complete
-                        timer = Timer(5.0)
-                        @async begin
-                            wait(timer)
-                            isready(ch) || put!(ch, nothing)
-                        end
-                        take!(ch)
-                        close(timer)
-                    catch
                     end
+                    _cleanup()
+                    exit(0)
                 end
-                _cleanup()
-                exit(0)
+                # Otherwise don't call _cleanup() here — stop() owns cleanup
+                # via atexit. With Threads.@spawn :interactive, this finally
+                # block can race with stop() during Julia shutdown, causing
+                # double-cleanup of ZMQ resources and intermittent segfaults.
             end
-            # Otherwise don't call _cleanup() here — stop() owns cleanup
-            # via atexit. With Threads.@spawn :interactive, this finally
-            # block can race with stop() during Julia shutdown, causing
-            # double-cleanup of ZMQ resources and intermittent segfaults.
         end
-    end
 
     _start_revise_watcher()
 
@@ -548,8 +555,10 @@ function _serve(;
         if _CURVE_ENABLED[]
             printstyled("  🔒 CURVE: "; color = :light_black)
             printstyled("on"; color = :green)
-            printstyled(_CURVE_ALLOW_ANY[] ? " (pin-only)" : " (allow-list)";
-                        color = :light_black)
+            printstyled(
+                _CURVE_ALLOW_ANY[] ? " (pin-only)" : " (allow-list)";
+                color = :light_black,
+            )
             printstyled("\n  Server key: "; color = :light_black)
             printstyled("$(_CURVE_SERVER_PUBLIC[])\n"; color = :cyan)
         end
@@ -607,7 +616,7 @@ same session key.
 function restart()
     _RUNNING[] || error("Gate is not running")
     _ALLOW_RESTART[] || error("Restart is disabled for this session (allow_restart=false)")
-    sid  = _SESSION_ID[]
+    sid = _SESSION_ID[]
     name = basename(dirname(something(Base.active_project(), "julia")))
     proj = dirname(something(Base.active_project(), "."))
 
@@ -630,7 +639,8 @@ function restart()
     try
         _cleanup()
     catch e
-        @warn "Restart cleanup failed; proceeding to exec anyway" exception = (e, catch_backtrace())
+        @warn "Restart cleanup failed; proceeding to exec anyway" exception =
+            (e, catch_backtrace())
     end
     _exec_restart(name, sid, proj)
 end
@@ -661,8 +671,14 @@ function _cleanup()
         # bare _RUNNING=false won't wake it — nudge with the wake sentinel so its
         # `take!` returns and it observes the flag (else we'd wait a full sub-poll
         # interval for the liveness tick).
-        try; put!(_STREAM_OUTBOX, _STREAM_WAKE); catch; end
-        try; wait(stask); catch; end
+        try
+            put!(_STREAM_OUTBOX, _STREAM_WAKE)
+        catch
+        end
+        try
+            wait(stask)
+        catch
+        end
     end
     _STREAM_TASK[] = nothing
 
@@ -676,25 +692,39 @@ function _cleanup()
         for sock in (_GATE_SOCKET, _STREAM_SOCKET, _SERVICE_SOCKET, _ZAP_SOCKET)
             s = sock[]
             if s !== nothing
-                try; close(s); catch; end
+                try
+                    close(s)
+                catch
+                end
             end
         end
         ctx = _GATE_CONTEXT[]
         if ctx !== nothing
-            try; close(ctx); catch; end
+            try
+                close(ctx)
+            catch
+            end
         end
     end
     # Drain any undelivered worker replies and reset the worker counter so a
     # restart (same process, fresh serve()) starts with an empty channel.
     while isready(_GATE_OUTBOX)
-        try; take!(_GATE_OUTBOX); catch; break; end
+        try
+            take!(_GATE_OUTBOX)
+        catch
+            break
+        end
     end
     Threads.atomic_xchg!(_GATE_INFLIGHT, 0)
 
     # Drain leftover stream publishes and clear presence state (the broadcaster
     # has already stopped above) so a same-process restart starts clean.
     while isready(_STREAM_OUTBOX)
-        try; take!(_STREAM_OUTBOX); catch; break; end
+        try
+            take!(_STREAM_OUTBOX)
+        catch
+            break
+        end
     end
     lock(_STREAM_SUBS_LOCK) do
         empty!(_STREAM_SUBS)
@@ -755,7 +785,9 @@ function status()
         println("  PUB:       $(_STREAM_ENDPOINT[])")
         println("  Mirror:    $(_MIRROR_REPL[])")
         println("  Tools:     $(length(_SESSION_TOOLS[]))")
-        println("  Pings:     $(_PING_COUNT[])$(  _LAST_PING_TIME[] > 0 ? " (last $(round(Int, time() - _LAST_PING_TIME[]))s ago)" : "")")
+        println(
+            "  Pings:     $(_PING_COUNT[])$(  _LAST_PING_TIME[] > 0 ? " (last $(round(Int, time() - _LAST_PING_TIME[]))s ago)" : "")",
+        )
         println("  Messages:  $(_MSG_COUNT[])")
         if _MODE[] == :tcp
             auth = isempty(_AUTH_TOKEN[]) ? "none (lax)" : "token"
@@ -852,7 +884,10 @@ outside a tool dispatch). Mirrors the `:gate_request_id` idiom used by
 A tool can use this to key per-agent state (e.g. KaimonSlate's cooperative-edit
 lock) to the implicit caller session rather than a model-threaded token.
 """
-current_caller() = let v = get(task_local_storage(), :gate_caller, ""); isempty(v) ? nothing : v end
+current_caller() =
+    let v = get(task_local_storage(), :gate_caller, "")
+        isempty(v) ? nothing : v
+    end
 
 """
     current_agent_id() -> Union{String,Nothing}
@@ -866,5 +901,7 @@ A tool can use this to distinguish a built-in agent's calls from an external cli
 (e.g. KaimonSlate suppressing its own relay envelopes for built-in agent calls, which
 Kaimon already streams).
 """
-current_agent_id() = let v = get(task_local_storage(), :gate_agent_id, ""); isempty(v) ? nothing : v end
-
+current_agent_id() =
+    let v = get(task_local_storage(), :gate_agent_id, "")
+        isempty(v) ? nothing : v
+    end

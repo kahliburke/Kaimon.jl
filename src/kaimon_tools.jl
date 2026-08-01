@@ -75,14 +75,24 @@ If enabled_tools is `nothing`, returns all tools (backward compatibility).
 # Keeps the everyday surface punchy.
 const DEFAULT_OFF_TOOLS = Set{Symbol}([
     # Qdrant vector-DB admin (the search/index tools stay on the surface).
-    :qdrant_collection_info, :qdrant_collection_exists, :qdrant_browse_collection,
-    :qdrant_create_collection, :qdrant_delete_collection,
-    :qdrant_upsert_points, :qdrant_delete_points, :qdrant_ensure_fts_coverage,
+    :qdrant_collection_info,
+    :qdrant_collection_exists,
+    :qdrant_browse_collection,
+    :qdrant_create_collection,
+    :qdrant_delete_collection,
+    :qdrant_upsert_points,
+    :qdrant_delete_points,
+    :qdrant_ensure_fts_coverage,
     # Extension building blocks (precomputed-vector search + embedding) — callable
     # by trusted extensions via the service endpoint, never on the agent surface.
-    :qdrant_search, :ollama_embed,
+    :qdrant_search,
+    :ollama_embed,
     # Rare/advanced Julia introspection.
-    :code_lowered, :code_typed, :macro_expand, :profile_code, :lint_package,
+    :code_lowered,
+    :code_typed,
+    :macro_expand,
+    :profile_code,
+    :lint_package,
     # Niche agent backpressure telemetry.
     :agent_governor_status,
 ])
@@ -360,7 +370,11 @@ function start!(;
 
     # Green checkmark, dark blue text, the user's personality emoji, muted cyan port
     gate_info = gate ? ", gate" : ""
-    pers = try; load_personality(); catch; "🐉"; end
+    pers = try
+        load_personality()
+    catch
+        "🐉"
+    end
     print(
         "\r\033[K\033[1;32m✓\033[0m \033[38;5;24mKaimon server started\033[0m \033[33m$pers\033[0m \033[90m(port $actual_port$gate_info)\033[0m\n",
     )
@@ -455,4 +469,3 @@ function _stop_gate_services!()
     end
     nothing
 end
-

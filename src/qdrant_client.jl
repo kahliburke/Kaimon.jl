@@ -146,9 +146,18 @@ Retrieve points from a collection with pagination.
 - `limit::Int`: Number of points to retrieve (default: 10)
 - `offset`: Offset for pagination (optional)
 """
-function scroll_points(collection::String; limit::Int = 10, offset = nothing, with_vector::Bool = false)
+function scroll_points(
+    collection::String;
+    limit::Int = 10,
+    offset = nothing,
+    with_vector::Bool = false,
+)
     try
-        body = Dict{String,Any}("limit" => limit, "with_payload" => true, "with_vector" => with_vector)
+        body = Dict{String,Any}(
+            "limit" => limit,
+            "with_payload" => true,
+            "with_vector" => with_vector,
+        )
 
         if offset !== nothing
             # Qdrant accepts both integer and UUID string offsets
@@ -190,16 +199,20 @@ end
 HTTP keepalive connection Qdrant already closed (→ `unexpected EOF` / ECONNRESET) or a
 brief gateway hiccup. Surfaces under sustained upsert load."""
 _is_transient_http(e) =
-    e isa HTTP.ParseError || e isa Base.IOError || e isa Base.SystemError ||
-    e isa EOFError || e isa HTTP.ConnectError || e isa HTTP.TimeoutError ||
+    e isa HTTP.ParseError ||
+    e isa Base.IOError ||
+    e isa Base.SystemError ||
+    e isa EOFError ||
+    e isa HTTP.ConnectError ||
+    e isa HTTP.TimeoutError ||
     (e isa HTTP.StatusError && e.status in (502, 503, 504))
 
 """Run `f()` with a few retries on transient connection errors (exponential backoff).
 Used for idempotent requests (Qdrant upserts carry explicit point IDs, so a retried,
 partially-applied batch just overwrites the same points)."""
-function _with_http_retry(f; tries::Int=4)
+function _with_http_retry(f; tries::Int = 4)
     local last_err
-    for attempt in 1:tries
+    for attempt = 1:tries
         try
             return f()
         catch e
@@ -431,7 +444,8 @@ Check if Qdrant is reachable. Returns true if /healthz returns 200.
 """
 function ping()
     try
-        response = HTTP.get("$(QDRANT_URL[])/healthz"; connect_timeout = 2, request_timeout = 3)
+        response =
+            HTTP.get("$(QDRANT_URL[])/healthz"; connect_timeout = 2, request_timeout = 3)
         return response.status == 200
     catch
         return false

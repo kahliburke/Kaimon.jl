@@ -36,7 +36,7 @@ mutable struct MockGate
 end
 
 """Start a mock gate on fixed REQ port, ephemeral PUB port."""
-function start_mock_gate(req_port::Int; pub_port::Int=0)
+function start_mock_gate(req_port::Int; pub_port::Int = 0)
     ctx = Context()
     router = Socket(ctx, ROUTER)
     router.rcvtimeo = 1000
@@ -52,8 +52,16 @@ function start_mock_gate(req_port::Int; pub_port::Int=0)
     m = match(r":(\d+)$", pub_endpoint)
     actual_pub_port = parse(Int, m.captures[1])
 
-    gate = MockGate(ctx, router, pub, req_port, actual_pub_port, true, nothing,
-                    string(Base.UUID(rand(UInt128))))
+    gate = MockGate(
+        ctx,
+        router,
+        pub,
+        req_port,
+        actual_pub_port,
+        true,
+        nothing,
+        string(Base.UUID(rand(UInt128))),
+    )
 
     gate.task = Threads.@spawn _run_mock_gate(gate)
     return gate
@@ -133,12 +141,15 @@ end
 """Publish an eval_complete message on the mock gate's PUB socket."""
 function _mock_publish(gate::MockGate, request_id::String, result_str::String)
     io = IOBuffer()
-    Serialization.serialize(io, (
-        channel = "eval_complete",
-        request_id = request_id,
-        data = result_str,
-        mime = "text/plain",
-    ))
+    Serialization.serialize(
+        io,
+        (
+            channel = "eval_complete",
+            request_id = request_id,
+            data = result_str,
+            mime = "text/plain",
+        ),
+    )
     try
         send(gate.pub, take!(io))
     catch
@@ -149,11 +160,23 @@ function stop_mock_gate!(gate::MockGate)
     gate.running = false
     # Wait for task to finish (it polls with 1s recv timeout)
     if gate.task !== nothing
-        try; wait(gate.task); catch; end
+        try
+            wait(gate.task)
+        catch
+        end
     end
-    try; close(gate.router); catch; end
-    try; close(gate.pub); catch; end
-    try; close(gate.ctx); catch; end
+    try
+        close(gate.router)
+    catch
+    end
+    try
+        close(gate.pub)
+    catch
+    end
+    try
+        close(gate.ctx)
+    catch
+    end
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -197,7 +220,8 @@ const TEST_REQ_PORT = 39_876
                         if conn.req_channel !== nothing
                             Kaimon._close_request_channel!(conn.req_channel)
                         end
-                        conn.req_channel = Kaimon.RequestChannel(conn.zmq_context, conn.endpoint)
+                        conn.req_channel =
+                            Kaimon.RequestChannel(conn.zmq_context, conn.endpoint)
                     end
                     conn.status = :connected
                     pong = Kaimon.ping(conn)
@@ -275,8 +299,14 @@ const TEST_REQ_PORT = 39_876
         @test conn.sub_socket !== nothing
 
         # Clean up
-        try; close(stale_sub); catch; end
-        try; close(stale_ctx); catch; end
+        try
+            close(stale_sub)
+        catch
+        end
+        try
+            close(stale_ctx)
+        catch
+        end
     end
 
     @testset "eval hangs when SUB points to dead PUB port" begin
@@ -292,9 +322,11 @@ const TEST_REQ_PORT = 39_876
 
             # Verify eval works with gate1
             rid1 = "eval-test-$(rand(UInt16))"
-            resp1 = Kaimon._req_send_recv(conn,
+            resp1 = Kaimon._req_send_recv(
+                conn,
                 (type = :eval_async, code = "1+1", request_id = rid1);
-                caller_timeout = 5.0)
+                caller_timeout = 5.0,
+            )
             @test resp1.ok
             @test get(resp1.response, :type, nothing) == :accepted
 
@@ -315,7 +347,8 @@ const TEST_REQ_PORT = 39_876
                     if conn.req_channel !== nothing
                         Kaimon._close_request_channel!(conn.req_channel)
                     end
-                    conn.req_channel = Kaimon.RequestChannel(conn.zmq_context, conn.endpoint)
+                    conn.req_channel =
+                        Kaimon.RequestChannel(conn.zmq_context, conn.endpoint)
                 end
                 conn.status = :connected
 
@@ -336,9 +369,11 @@ const TEST_REQ_PORT = 39_876
                     conn._eval_inboxes[rid2] = inbox
                 end
 
-                resp2 = Kaimon._req_send_recv(conn,
+                resp2 = Kaimon._req_send_recv(
+                    conn,
                     (type = :eval_async, code = "2+2", request_id = rid2);
-                    caller_timeout = 5.0)
+                    caller_timeout = 5.0,
+                )
                 @test resp2.ok
                 @test get(resp2.response, :type, nothing) == :accepted
 
@@ -359,9 +394,11 @@ const TEST_REQ_PORT = 39_876
                         end
                         sleep(0.05)
                     end
-                    got || Kaimon._req_send_recv(conn,
+                    got || Kaimon._req_send_recv(
+                        conn,
                         (type = :eval_async, code = "2+2", request_id = rid2);
-                        caller_timeout = 2.0)
+                        caller_timeout = 2.0,
+                    )
                 end
                 @test got  # eval result arrives via the reconnected SUB socket
 
@@ -413,9 +450,15 @@ end
         @test Kaimon._endpoint_host("ipc:///tmp/x.sock") == ""
 
         local_tcp = Kaimon.REPLConnection(
-            session_id = "tcp-127.0.0.1-9100", endpoint = "tcp://127.0.0.1:9100", spawned_by = "user")
+            session_id = "tcp-127.0.0.1-9100",
+            endpoint = "tcp://127.0.0.1:9100",
+            spawned_by = "user",
+        )
         remote_tcp = Kaimon.REPLConnection(
-            session_id = "tcp-10.0.0.5-9100", endpoint = "tcp://10.0.0.5:9100", spawned_by = "user")
+            session_id = "tcp-10.0.0.5-9100",
+            endpoint = "tcp://10.0.0.5:9100",
+            spawned_by = "user",
+        )
         @test Kaimon._is_local_tcp(local_tcp)
         @test !Kaimon._is_local_tcp(remote_tcp)
     end
@@ -425,13 +468,25 @@ end
         # conn carries a stale (dead predecessor's) PID; a fresh pong reports the
         # live worker's getpid() — conn.pid must adopt it.
         conn = Kaimon.REPLConnection(
-            session_id = "tcp-127.0.0.1-9100", endpoint = "tcp://127.0.0.1:9100",
-            spawned_by = "user", pid = 11111)
+            session_id = "tcp-127.0.0.1-9100",
+            endpoint = "tcp://127.0.0.1:9100",
+            spawned_by = "user",
+            pid = 11111,
+        )
         conn.status = :connected
         pong = (
-            type = :pong, pid = getpid(), uptime = 1.0, julia_version = string(VERSION),
-            kaimon_version = "test", project_path = @__DIR__, tools = [], namespace = "",
-            stream_endpoint = "", allow_restart = false, allow_mirror = false, mirror_repl = false,
+            type = :pong,
+            pid = getpid(),
+            uptime = 1.0,
+            julia_version = string(VERSION),
+            kaimon_version = "test",
+            project_path = @__DIR__,
+            tools = [],
+            namespace = "",
+            stream_endpoint = "",
+            allow_restart = false,
+            allow_mirror = false,
+            mirror_repl = false,
         )
         Kaimon._process_health_result!(mgr, conn, pong, Kaimon.REPLConnection[])
         @test conn.pid == getpid()   # adopted the live PID, not the stale 11111
@@ -444,8 +499,11 @@ end
 
         # Localhost TCP with a known-dead PID → reaped (pushed to to_remove).
         c_local = Kaimon.REPLConnection(
-            session_id = "tcp-127.0.0.1-9201", endpoint = "tcp://127.0.0.1:9201",
-            spawned_by = "user", pid = dpid)
+            session_id = "tcp-127.0.0.1-9201",
+            endpoint = "tcp://127.0.0.1:9201",
+            spawned_by = "user",
+            pid = dpid,
+        )
         c_local.status = :connected
         to_remove = Kaimon.REPLConnection[]
         Kaimon._process_health_result!(mgr, c_local, nothing, to_remove)
@@ -454,8 +512,11 @@ end
         # Remote TCP with the same dead PID → NOT reaped (its PID is on another
         # machine); stays :stalled.
         c_remote = Kaimon.REPLConnection(
-            session_id = "tcp-10.0.0.5-9202", endpoint = "tcp://10.0.0.5:9202",
-            spawned_by = "user", pid = dpid)
+            session_id = "tcp-10.0.0.5-9202",
+            endpoint = "tcp://10.0.0.5:9202",
+            spawned_by = "user",
+            pid = dpid,
+        )
         c_remote.status = :connected
         to_remove2 = Kaimon.REPLConnection[]
         Kaimon._process_health_result!(mgr, c_remote, nothing, to_remove2)
@@ -465,8 +526,11 @@ end
         # Localhost TCP with unknown PID (0, never ponged) → NOT reaped; can't
         # verify liveness, so it must not be torn down.
         c_unknown = Kaimon.REPLConnection(
-            session_id = "tcp-127.0.0.1-9203", endpoint = "tcp://127.0.0.1:9203",
-            spawned_by = "user", pid = 0)
+            session_id = "tcp-127.0.0.1-9203",
+            endpoint = "tcp://127.0.0.1:9203",
+            spawned_by = "user",
+            pid = 0,
+        )
         c_unknown.status = :connected
         to_remove3 = Kaimon.REPLConnection[]
         Kaimon._process_health_result!(mgr, c_unknown, nothing, to_remove3)
@@ -479,8 +543,12 @@ end
         # so manage_repl can force-evict it.
         mgr = Kaimon.ConnectionManager(sock_dir = mktempdir())
         conn = Kaimon.REPLConnection(
-            session_id = "tcp-127.0.0.1-9300", endpoint = "tcp://127.0.0.1:9300",
-            name = "stalledsess", spawned_by = "user", pid = 22222)
+            session_id = "tcp-127.0.0.1-9300",
+            endpoint = "tcp://127.0.0.1:9300",
+            name = "stalledsess",
+            spawned_by = "user",
+            pid = 22222,
+        )
         conn.status = :stalled
         lock(mgr.lock) do
             push!(mgr.connections, conn)
@@ -510,9 +578,14 @@ end
         proj = "/tmp/KaimonSlate.jl"
         mgr = Kaimon.ConnectionManager(sock_dir = mktempdir())
         ext = Kaimon.REPLConnection(
-            session_id = "tcp-127.0.0.1-9400", endpoint = "tcp://127.0.0.1:9400",
-            name = "slate", namespace = "slate", project_path = proj,
-            spawned_by = "extension", pid = 40000)
+            session_id = "tcp-127.0.0.1-9400",
+            endpoint = "tcp://127.0.0.1:9400",
+            name = "slate",
+            namespace = "slate",
+            project_path = proj,
+            spawned_by = "extension",
+            pid = 40000,
+        )
         ext.status = :connected
         lock(mgr.lock) do
             push!(mgr.connections, ext)
@@ -547,8 +620,13 @@ end
 
                 # A real REPL for the same project IS a valid bind target.
                 repl = Kaimon.REPLConnection(
-                    session_id = "tcp-127.0.0.1-9401", endpoint = "tcp://127.0.0.1:9401",
-                    name = "slate-repl", project_path = proj, spawned_by = "user", pid = 40001)
+                    session_id = "tcp-127.0.0.1-9401",
+                    endpoint = "tcp://127.0.0.1:9401",
+                    name = "slate-repl",
+                    project_path = proj,
+                    spawned_by = "user",
+                    pid = 40001,
+                )
                 repl.status = :connected
                 lock(mgr.lock) do
                     push!(mgr.connections, repl)
@@ -603,10 +681,17 @@ end
                     # Boot the extension's gate the way its subprocess does: a default
                     # (IPC-requested) serve, namespaced "slate", with a tool. On the
                     # simulated-Windows host this is coerced to a local TCP bind.
-                    KG._serve(name = "KaimonSlate", session_id = sid, force = true,
-                              mode = :ipc, host = "127.0.0.1", port = 0,
-                              namespace = "slate", spawned_by = "extension",
-                              tools = [KG.GateTool("noop", a -> "ok")])
+                    KG._serve(
+                        name = "KaimonSlate",
+                        session_id = sid,
+                        force = true,
+                        mode = :ipc,
+                        host = "127.0.0.1",
+                        port = 0,
+                        namespace = "slate",
+                        spawned_by = "extension",
+                        tools = [KG.GateTool("noop", a -> "ok")],
+                    )
                     sleep(0.3)
 
                     @test KG._MODE[] == :tcp                    # coerced IPC → TCP
@@ -653,9 +738,11 @@ end
                     lock(conn._eval_inboxes_lock) do
                         conn._eval_inboxes[rid] = inbox
                     end
-                    resp = Kaimon._req_send_recv(conn,
+                    resp = Kaimon._req_send_recv(
+                        conn,
                         (type = :eval_async, code = "6*7", request_id = rid);
-                        caller_timeout = 5.0)
+                        caller_timeout = 5.0,
+                    )
                     @test resp.ok
 
                     got = false
@@ -669,9 +756,11 @@ end
                             end
                             sleep(0.05)
                         end
-                        got || Kaimon._req_send_recv(conn,
+                        got || Kaimon._req_send_recv(
+                            conn,
                             (type = :eval_async, code = "6*7", request_id = rid);
-                            caller_timeout = 2.0)
+                            caller_timeout = 2.0,
+                        )
                     end
                     @test got   # discovered gate answered an eval
 
@@ -705,10 +794,16 @@ end
     dir = mktempdir()
     function write_tcp_meta(port, name)
         meta = Dict{String,Any}(
-            "session_id" => "tcp-127.0.0.1-$port", "name" => name, "pid" => getpid(),
-            "mode" => "tcp", "endpoint" => "tcp://127.0.0.1:$port",
-            "stream_endpoint" => "tcp://127.0.0.1:$(port + 1)", "spawned_by" => "user",
-            "project_path" => @__DIR__, "julia_version" => string(VERSION))
+            "session_id" => "tcp-127.0.0.1-$port",
+            "name" => name,
+            "pid" => getpid(),
+            "mode" => "tcp",
+            "endpoint" => "tcp://127.0.0.1:$port",
+            "stream_endpoint" => "tcp://127.0.0.1:$(port + 1)",
+            "spawned_by" => "user",
+            "project_path" => @__DIR__,
+            "julia_version" => string(VERSION),
+        )
         open(joinpath(dir, "tcp-127.0.0.1-$port.json"), "w") do io
             Kaimon.JSON.print(io, meta)
         end
@@ -718,9 +813,16 @@ end
 
     mgr = Kaimon.ConnectionManager(sock_dir = dir)
     lock(mgr.lock) do
-        push!(mgr.connections, Kaimon.REPLConnection(
-            session_id = "tcp-127.0.0.1-9100", endpoint = "tcp://127.0.0.1:9100",
-            name = "worker-tracked", spawned_by = "user", pid = Int(getpid())))
+        push!(
+            mgr.connections,
+            Kaimon.REPLConnection(
+                session_id = "tcp-127.0.0.1-9100",
+                endpoint = "tcp://127.0.0.1:9100",
+                name = "worker-tracked",
+                spawned_by = "user",
+                pid = Int(getpid()),
+            ),
+        )
     end
 
     ids = [c.session_id for c in Kaimon.discover_sessions(mgr)]

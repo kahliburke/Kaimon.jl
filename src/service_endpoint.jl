@@ -29,8 +29,8 @@ const _OUTBOX = Channel{Tuple{Vector{UInt8},Vector{UInt8}}}(Inf)
 # concurrent tasks so the scheduler doesn't thrash. This is a backstop above the
 # governor's agent-turn cap; it also bounds non-agent calls. Env-overridable.
 const _INFLIGHT = Threads.Atomic{Int}(0)
-const _MAX_WORKERS = Ref{Int}(
-    something(tryparse(Int, get(ENV, "KAIMON_SERVICE_MAX_WORKERS", "")), 16))
+const _MAX_WORKERS =
+    Ref{Int}(something(tryparse(Int, get(ENV, "KAIMON_SERVICE_MAX_WORKERS", "")), 16))
 
 # Adaptive owner-loop recv timeout (ms) — same rationale as KaimonGate's gate
 # message loop: the owner blocks in recv, so a worker reply queued in _OUTBOX
@@ -39,10 +39,10 @@ const _MAX_WORKERS = Ref{Int}(
 # its reply. Poll fast (BUSY) while a reply may be pending, wait long (IDLE) when
 # there's nothing outstanding. Intake is unaffected (recv returns on a new
 # request); only reply latency is bounded, now to ~BUSY ms. Env-overridable.
-const _RCVTIMEO_BUSY = Ref{Int}(
-    something(tryparse(Int, get(ENV, "KAIMON_SERVICE_RCVTIMEO_BUSY", "")), 5))
-const _RCVTIMEO_IDLE = Ref{Int}(
-    something(tryparse(Int, get(ENV, "KAIMON_SERVICE_RCVTIMEO_IDLE", "")), 200))
+const _RCVTIMEO_BUSY =
+    Ref{Int}(something(tryparse(Int, get(ENV, "KAIMON_SERVICE_RCVTIMEO_BUSY", "")), 5))
+const _RCVTIMEO_IDLE =
+    Ref{Int}(something(tryparse(Int, get(ENV, "KAIMON_SERVICE_RCVTIMEO_IDLE", "")), 200))
 
 # ── Multipart framing (ZMQ.jl 1.5 has no multipart helper) ────────────────────
 # A REQ→ROUTER message arrives as [identity, empty-delimiter, payload]; the reply
@@ -146,8 +146,12 @@ function start_service_endpoint!()
             if !Sys.iswindows() && _INFLIGHT[] == 0 && !isready(_OUTBOX)
                 spath = replace(_SERVICE_ENDPOINT[], "ipc://" => "")
                 if !isempty(spath) && !ispath(spath)
-                    @warn "Service-endpoint socket vanished — rebinding (self-heal)" sock_path = spath
-                    try; close(sock); catch; end
+                    @warn "Service-endpoint socket vanished — rebinding (self-heal)" sock_path =
+                        spath
+                    try
+                        close(sock)
+                    catch
+                    end
                     try
                         sock = _zmq_socket(ctx, ROUTER)
                         sock.sndtimeo = 5000
@@ -155,7 +159,8 @@ function start_service_endpoint!()
                         bind(sock, _SERVICE_ENDPOINT[])
                         _SERVICE_SOCKET[] = sock
                         cur_rcvtimeo = -1   # force rcvtimeo re-apply at step 2b
-                        @info "Service endpoint rebound (self-heal)" endpoint = _SERVICE_ENDPOINT[]
+                        @info "Service endpoint rebound (self-heal)" endpoint =
+                            _SERVICE_ENDPOINT[]
                     catch e
                         @error "Service-endpoint self-heal rebind failed" exception = e
                         sleep(1)            # back off before retrying
@@ -183,8 +188,8 @@ function start_service_endpoint!()
             # 2b. adaptive recv timeout: poll fast while a reply may be in flight (a
             #     worker running, or one already queued) so it flushes within a few
             #     ms; wait long when idle. Owner-only socket access → setsockopt safe.
-            want_rcvtimeo = (_INFLIGHT[] > 0 || isready(_OUTBOX)) ?
-                            _RCVTIMEO_BUSY[] : _RCVTIMEO_IDLE[]
+            want_rcvtimeo =
+                (_INFLIGHT[] > 0 || isready(_OUTBOX)) ? _RCVTIMEO_BUSY[] : _RCVTIMEO_IDLE[]
             if want_rcvtimeo != cur_rcvtimeo
                 sock.rcvtimeo = want_rcvtimeo
                 cur_rcvtimeo = want_rcvtimeo
@@ -205,7 +210,10 @@ function start_service_endpoint!()
                 _safe_deserialize(payload; label = "service_request")
             catch
                 io = IOBuffer()
-                Serialization.serialize(io, (status = :error, message = "malformed service request"))
+                Serialization.serialize(
+                    io,
+                    (status = :error, message = "malformed service request"),
+                )
                 put!(_OUTBOX, (identity, take!(io)))
                 continue
             end
@@ -237,7 +245,8 @@ function stop_service_endpoint!()
     catch
         "?"
     end
-    @info "Service endpoint stopping" endpoint = _SERVICE_ENDPOINT[] running = _SERVICE_RUNNING[] caller
+    @info "Service endpoint stopping" endpoint = _SERVICE_ENDPOINT[] running =
+        _SERVICE_RUNNING[] caller
 
     _SERVICE_RUNNING[] = false
 
@@ -252,7 +261,11 @@ function stop_service_endpoint!()
 
     # Drain any undelivered worker replies so a restart starts clean.
     while isready(_OUTBOX)
-        try; take!(_OUTBOX); catch; break; end
+        try
+            take!(_OUTBOX)
+        catch
+            break
+        end
     end
     Threads.atomic_xchg!(_INFLIGHT, 0)
 
@@ -303,11 +316,13 @@ function _dispatch_list_tools()
         return (status = :error, message = "MCP server not running")
     end
 
-    tools = [(
-        name = Symbol(tool.name),
-        description = tool.description,
-        parameters = tool.parameters,
-    ) for (_, tool) in server.tools]
+    tools = [
+        (
+            name = Symbol(tool.name),
+            description = tool.description,
+            parameters = tool.parameters,
+        ) for (_, tool) in server.tools
+    ]
 
     return (status = :ok, value = tools)
 end

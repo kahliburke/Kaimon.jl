@@ -741,7 +741,9 @@ end
     end
 
     @testset "Duration string round-trip" begin
-        @check max_examples = 300 function duration_parse_roundtrip(ms_raw = Data.Integers(0, 100_000))
+        @check max_examples = 300 function duration_parse_roundtrip(
+            ms_raw = Data.Integers(0, 100_000),
+        )
             # Format like the real code does, then check _persist_tool_call! would parse it
             ms = Float64(ms_raw)
             dur_str = if ms < 1000.0
@@ -752,9 +754,9 @@ end
 
             # Parse back (same logic as _persist_tool_call!)
             parsed = if endswith(dur_str, "ms")
-                parse(Float64, dur_str[1:end-2])
+                parse(Float64, dur_str[1:(end-2)])
             elseif endswith(dur_str, "s")
-                parse(Float64, dur_str[1:end-1]) * 1000.0
+                parse(Float64, dur_str[1:(end-1)]) * 1000.0
             else
                 0.0
             end

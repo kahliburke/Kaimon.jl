@@ -478,7 +478,12 @@ connections in `~/.cache/kaimon/sock/`.
 - `port::Int=2828`: Port for the MCP HTTP server
 - `theme::Symbol=:kokaku`: Tachikoma theme name
 """
-function tui(; port::Int = 2828, theme_name::Union{Symbol,Nothing} = nothing, revise_polling::Bool = false, revise_mod::Any = nothing)
+function tui(;
+    port::Int = 2828,
+    theme_name::Union{Symbol,Nothing} = nothing,
+    revise_polling::Bool = false,
+    revise_mod::Any = nothing,
+)
     _set_windows_utf8!()
     if Threads.nthreads() < 2
         @warn """Kaimon TUI running with only 1 thread — UI may be unresponsive.
@@ -494,7 +499,11 @@ function tui(; port::Int = 2828, theme_name::Union{Symbol,Nothing} = nothing, re
     if theme_name !== nothing
         set_theme!(theme_name)
     end
-    model = KaimonModel(server_port = port, _revise_polling = revise_polling, _revise_mod = revise_mod)
+    model = KaimonModel(
+        server_port = port,
+        _revise_polling = revise_polling,
+        _revise_mod = revise_mod,
+    )
     model.search_embedding_model = _load_embedding_model()
 
     # Bring managed Qdrant back up on launch if it's enabled+installed (background,
@@ -506,7 +515,10 @@ function tui(; port::Int = 2828, theme_name::Union{Symbol,Nothing} = nothing, re
     # self-served gate whose capture mux may be installed. Opt out of the #67 TUI
     # stream-guard here: wrapping the top-level app in it would suspend the mux for
     # the TUI's whole lifetime and disable eval capture. Gate sessions keep the guard.
-    try; KaimonGate.disable_wedge_guard!(); catch; end
+    try
+        KaimonGate.disable_wedge_guard!()
+    catch
+    end
 
     while true
         # invokelatest so that after Revise updates, the new method bodies

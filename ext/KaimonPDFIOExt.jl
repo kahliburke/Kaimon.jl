@@ -13,7 +13,7 @@ function Kaimon._extract_pdf_text(path::String)::Union{String,Nothing}
     end
     try
         io = IOBuffer()
-        for i in 1:PDFIO.pdDocGetPageCount(doc)
+        for i = 1:PDFIO.pdDocGetPageCount(doc)
             try
                 page = PDFIO.pdDocGetPage(doc, i)
                 Logging.with_logger(Logging.NullLogger()) do

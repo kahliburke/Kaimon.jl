@@ -16,15 +16,36 @@ using Kaimon
         rows = [
             # name is `helper`, but the body contains the exact identifier a
             # semantic search keys off meaning, not tokens, would likely miss.
-            Dict("point_id" => "p1", "collection" => "proj", "file" => "/a/gate.jl",
-                 "name" => "helper", "type" => "function", "start_line" => 10, "end_line" => 20,
-                 "text" => "function helper(x)\n    y = _eval_with_capture(x)\n    return y\nend"),
-            Dict("point_id" => "p2", "collection" => "proj", "file" => "/a/util.jl",
-                 "name" => "foo", "type" => "function", "start_line" => 1, "end_line" => 3,
-                 "text" => "foo() = 42  # unrelated helper"),
-            Dict("point_id" => "p3", "collection" => "other", "file" => "/b/x.jl",
-                 "name" => "bar", "type" => "window", "start_line" => 1, "end_line" => 5,
-                 "text" => "some other text mentioning embedding vectors"),
+            Dict(
+                "point_id" => "p1",
+                "collection" => "proj",
+                "file" => "/a/gate.jl",
+                "name" => "helper",
+                "type" => "function",
+                "start_line" => 10,
+                "end_line" => 20,
+                "text" => "function helper(x)\n    y = _eval_with_capture(x)\n    return y\nend",
+            ),
+            Dict(
+                "point_id" => "p2",
+                "collection" => "proj",
+                "file" => "/a/util.jl",
+                "name" => "foo",
+                "type" => "function",
+                "start_line" => 1,
+                "end_line" => 3,
+                "text" => "foo() = 42  # unrelated helper",
+            ),
+            Dict(
+                "point_id" => "p3",
+                "collection" => "other",
+                "file" => "/b/x.jl",
+                "name" => "bar",
+                "type" => "window",
+                "start_line" => 1,
+                "end_line" => 5,
+                "text" => "some other text mentioning embedding vectors",
+            ),
         ]
         @test F.add_chunks!(rows) == 3
 
@@ -34,7 +55,8 @@ using Kaimon
         # write real-collection chunks through that shared connection — landing in
         # THIS test's temp DB. So assert on the collections this test owns, never
         # the process-global `coverage().total`.
-        ccount(c) = sum(p.n for p in F.coverage().collections if p.collection == c; init = 0)
+        ccount(c) =
+            sum(p.n for p in F.coverage().collections if p.collection == c; init = 0)
 
         @testset "exact identifier found by content" begin
             r = F.search("_eval_with_capture"; collection = "proj")
@@ -46,7 +68,8 @@ using Kaimon
 
         @testset "trigram substring match" begin
             r = F.search("eval_with"; collection = "proj")
-            @test any(h -> h.point_id == "p1", r.word) || any(h -> h.point_id == "p1", r.tri)
+            @test any(h -> h.point_id == "p1", r.word) ||
+                  any(h -> h.point_id == "p1", r.tri)
         end
 
         @testset "collection scoping" begin
@@ -105,20 +128,48 @@ end
     F.init!(joinpath(mktempdir(), "code_fts.db"))
     try
         rows = [
-            Dict("point_id" => "k1", "collection" => "proj", "file" => keep,
-                 "name" => "f", "type" => "function", "start_line" => 1, "end_line" => 1,
-                 "text" => "f() = 1"),
+            Dict(
+                "point_id" => "k1",
+                "collection" => "proj",
+                "file" => keep,
+                "name" => "f",
+                "type" => "function",
+                "start_line" => 1,
+                "end_line" => 1,
+                "text" => "f() = 1",
+            ),
             # two chunks for the same removed file — distinct_files must dedupe
-            Dict("point_id" => "g1", "collection" => "proj", "file" => gone,
-                 "name" => "g", "type" => "function", "start_line" => 1, "end_line" => 1,
-                 "text" => "g() = 2"),
-            Dict("point_id" => "g2", "collection" => "proj", "file" => gone,
-                 "name" => "g_win", "type" => "window", "start_line" => 1, "end_line" => 1,
-                 "text" => "g() = 2  # window"),
+            Dict(
+                "point_id" => "g1",
+                "collection" => "proj",
+                "file" => gone,
+                "name" => "g",
+                "type" => "function",
+                "start_line" => 1,
+                "end_line" => 1,
+                "text" => "g() = 2",
+            ),
+            Dict(
+                "point_id" => "g2",
+                "collection" => "proj",
+                "file" => gone,
+                "name" => "g_win",
+                "type" => "window",
+                "start_line" => 1,
+                "end_line" => 1,
+                "text" => "g() = 2  # window",
+            ),
             # a different collection must not bleed in
-            Dict("point_id" => "o1", "collection" => "other", "file" => gone,
-                 "name" => "g", "type" => "function", "start_line" => 1, "end_line" => 1,
-                 "text" => "g() = 2"),
+            Dict(
+                "point_id" => "o1",
+                "collection" => "other",
+                "file" => gone,
+                "name" => "g",
+                "type" => "function",
+                "start_line" => 1,
+                "end_line" => 1,
+                "text" => "g() = 2",
+            ),
         ]
         F.add_chunks!(rows)
 
@@ -172,14 +223,21 @@ end
         F.init!(joinpath(tmp, "code_fts.db"))
         try
             F.add_chunks!([
-                Dict("point_id" => "q1", "collection" => "proj", "file" => "/a/cells.jl",
-                     "name" => "agent_add_cell!", "type" => "function",
-                     "start_line" => 1, "end_line" => 4,
-                     "text" => "agent_add_cell!(s, c) = guard_commit(s) && push!(s.cells, c)"),
+                Dict(
+                    "point_id" => "q1",
+                    "collection" => "proj",
+                    "file" => "/a/cells.jl",
+                    "name" => "agent_add_cell!",
+                    "type" => "function",
+                    "start_line" => 1,
+                    "end_line" => 4,
+                    "text" => "agent_add_cell!(s, c) = guard_commit(s) && push!(s.cells, c)",
+                ),
             ])
             r = F.search("agent_add_cell! guard_commit token renew"; collection = "proj")
             @test r.fellback == false                         # normalized, not fallback
-            @test any(h -> h.point_id == "q1", r.word) || any(h -> h.point_id == "q1", r.tri)
+            @test any(h -> h.point_id == "q1", r.word) ||
+                  any(h -> h.point_id == "q1", r.tri)
         finally
             F.close!()
         end
@@ -191,8 +249,8 @@ end
 
     @testset "OR fan-out cap" begin
         cap = F._MAX_OR_TERMS
-        small = join(["t$i" for i in 1:(cap - 1)], " ")
-        big   = join(["t$i" for i in 1:(cap + 5)], " ")
+        small = join(["t$i" for i = 1:(cap-1)], " ")
+        big = join(["t$i" for i = 1:(cap+5)], " ")
         @test F._fts_or_dropped(small) == 0                  # within cap → nothing dropped
         @test F._fts_or_dropped(big) == 5                    # over cap → report the overflow
         @test F._fts_or_dropped("a AND b AND c") == 0        # explicit operator → never capped
@@ -216,12 +274,26 @@ end
         F.init!(joinpath(mktempdir(), "code_fts.db"))
         try
             F.add_chunks!([
-                Dict("point_id" => "a1", "collection" => "alpha_proj", "file" => "/a.jl",
-                     "name" => "f", "type" => "function", "start_line" => 1, "end_line" => 1,
-                     "text" => "render the widget"),
-                Dict("point_id" => "b1", "collection" => "beta", "file" => "/b.jl",
-                     "name" => "g", "type" => "function", "start_line" => 1, "end_line" => 1,
-                     "text" => "render the other widget"),
+                Dict(
+                    "point_id" => "a1",
+                    "collection" => "alpha_proj",
+                    "file" => "/a.jl",
+                    "name" => "f",
+                    "type" => "function",
+                    "start_line" => 1,
+                    "end_line" => 1,
+                    "text" => "render the widget",
+                ),
+                Dict(
+                    "point_id" => "b1",
+                    "collection" => "beta",
+                    "file" => "/b.jl",
+                    "name" => "g",
+                    "type" => "function",
+                    "start_line" => 1,
+                    "end_line" => 1,
+                    "text" => "render the other widget",
+                ),
             ])
             # `render` is in both collections; a scoped search must return only its own.
             ra = F.search("render"; collection = "alpha_proj")  # note the underscore (stripped in coltok)
@@ -229,7 +301,8 @@ end
             @test !any(h -> h.point_id == "b1", ra.word)
             # unscoped (cross-project) sees both
             rall = F.search("render")
-            @test any(h -> h.point_id == "a1", rall.word) && any(h -> h.point_id == "b1", rall.word)
+            @test any(h -> h.point_id == "a1", rall.word) &&
+                  any(h -> h.point_id == "b1", rall.word)
         finally
             F.close!()
         end
@@ -237,8 +310,19 @@ end
 end
 
 @testset "Hybrid RRF fusion" begin
-    mk(pid, src) = Kaimon.HybridHit(pid, "f.jl", "n", "function", 1, 2, "t",
-                                    Dict(), src == :lexical ? "snip" : "", Set([src]), 0.0)
+    mk(pid, src) = Kaimon.HybridHit(
+        pid,
+        "f.jl",
+        "n",
+        "function",
+        1,
+        2,
+        "t",
+        Dict(),
+        src == :lexical ? "snip" : "",
+        Set([src]),
+        0.0,
+    )
 
     @testset "doc in both lists ranks first, sources union" begin
         sem = [mk("a", :semantic), mk("b", :semantic), mk("c", :semantic)]
@@ -255,26 +339,71 @@ end
 
     @testset "exact-symbol + content boosts" begin
         # name appears verbatim in the query → name boost
-        h = Kaimon.HybridHit("x", "f", "_eval_with_capture", "function", 1, 2, "fn body",
-                             Dict(), "", Set([:lexical]), 0.01)
+        h = Kaimon.HybridHit(
+            "x",
+            "f",
+            "_eval_with_capture",
+            "function",
+            1,
+            2,
+            "fn body",
+            Dict(),
+            "",
+            Set([:lexical]),
+            0.01,
+        )
         Kaimon._apply_boosts!([h], "where is _eval_with_capture defined")
         @test h.rrf > 0.01
 
         # content boost: text contains every query token even though the name
         # doesn't match (the ast_transforms-in-a-window case)
-        hc = Kaimon.HybridHit("c", "f", "kaimon_eval.jl:1-9", "window", 1, 9,
-                              "apply REPL ast_transforms here", Dict(), "", Set([:lexical]), 0.01)
+        hc = Kaimon.HybridHit(
+            "c",
+            "f",
+            "kaimon_eval.jl:1-9",
+            "window",
+            1,
+            9,
+            "apply REPL ast_transforms here",
+            Dict(),
+            "",
+            Set([:lexical]),
+            0.01,
+        )
         Kaimon._apply_boosts!([hc], "ast transforms")
         @test hc.rrf == 0.01 + Kaimon._CONTENT_BOOST
 
         # a semantic look-alike lacking the tokens is NOT boosted
-        hs = Kaimon.HybridHit("s", "f", "_rand_transition_duration", "function", 1, 2,
-                              "rand(6:18)", Dict(), "", Set([:semantic]), 0.01)
+        hs = Kaimon.HybridHit(
+            "s",
+            "f",
+            "_rand_transition_duration",
+            "function",
+            1,
+            2,
+            "rand(6:18)",
+            Dict(),
+            "",
+            Set([:semantic]),
+            0.01,
+        )
         Kaimon._apply_boosts!([hs], "ast transforms")
         @test hs.rrf == 0.01
 
         # short / common names alone are not boosted
-        h2 = Kaimon.HybridHit("y", "f", "f", "function", 1, 2, "t", Dict(), "", Set([:lexical]), 0.01)
+        h2 = Kaimon.HybridHit(
+            "y",
+            "f",
+            "f",
+            "function",
+            1,
+            2,
+            "t",
+            Dict(),
+            "",
+            Set([:lexical]),
+            0.01,
+        )
         Kaimon._apply_boosts!([h2], "xx")
         @test h2.rrf == 0.01
     end

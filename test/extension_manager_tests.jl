@@ -17,12 +17,20 @@ Base.show(io::IO, ::_ExplodingShow) = error("show blew up")
 
 @testset "extension orphan cmdline matching" begin
     # Boot script as `_build_extension_script` emits it (the identifying bits).
-    boot(ns) = "using Kaimon\nKaimon.KaimonGate.serve(tools=tools, namespace=$(repr(ns)), " *
-               "force=true, allow_mirror=false, allow_restart=false, spawned_by=\"extension\")"
+    boot(ns) =
+        "using Kaimon\nKaimon.KaimonGate.serve(tools=tools, namespace=$(repr(ns)), " *
+        "force=true, allow_mirror=false, allow_restart=false, spawned_by=\"extension\")"
     # The Windows command line as CreateProcess stores it (quotes escaped as \").
     winext(ns; project = "C:\\Users\\kb\\dev\\KaimonSlate.jl") =
-        Base.escape_microsoft_c_args("C:\\julia\\bin\\julia.exe", "-t", "auto",
-            "--startup-file=no", "--project=$project", "-e", boot(ns))
+        Base.escape_microsoft_c_args(
+            "C:\\julia\\bin\\julia.exe",
+            "-t",
+            "auto",
+            "--startup-file=no",
+            "--project=$project",
+            "-e",
+            boot(ns),
+        )
 
     slate = winext("slate")
     @test Kaimon._extension_cmdline_matches(slate, "slate")      # our slate extension → reap
@@ -36,8 +44,12 @@ Base.show(io::IO, ::_ExplodingShow) = error("show blew up")
 
     # A normal spawned SESSION gate (spawned_by defaults to "user", no "extension" marker)
     # for the very same project must NOT be reaped as an extension orphan.
-    sess = Base.escape_microsoft_c_args("julia.exe", "--project=C:\\Users\\kb\\dev\\KaimonSlate.jl",
-        "-e", "using Kaimon; Kaimon.KaimonGate.serve(namespace=\"kaimonslate\")")
+    sess = Base.escape_microsoft_c_args(
+        "julia.exe",
+        "--project=C:\\Users\\kb\\dev\\KaimonSlate.jl",
+        "-e",
+        "using Kaimon; Kaimon.KaimonGate.serve(namespace=\"kaimonslate\")",
+    )
     @test !Kaimon._extension_cmdline_matches(sess, "kaimonslate")
 
     @test !Kaimon._extension_cmdline_matches("", "slate")        # empty command line
@@ -116,15 +128,18 @@ end
         # A minimal on-disk extension; auto_start=false so rescan never spawns a proc.
         make_ext = function (ns)
             dir = mktempdir()
-            write(joinpath(dir, "kaimon.toml"),
+            write(
+                joinpath(dir, "kaimon.toml"),
                 "[extension]\nnamespace = \"$ns\"\nmodule = \"Mod_$ns\"\n" *
-                "tools_function = \"get_tools\"\n")
+                "tools_function = \"get_tools\"\n",
+            )
             dir
         end
         a = make_ext("rescan_a")
         b = make_ext("rescan_b")
-        reg(paths...) = Kaimon.save_extensions_config(
-            [Kaimon.ExtensionEntry(p, true, false) for p in paths])
+        reg(paths...) = Kaimon.save_extensions_config([
+            Kaimon.ExtensionEntry(p, true, false) for p in paths
+        ])
         live() = [e.config.manifest.namespace for e in Kaimon.get_managed_extensions()]
 
         # Snapshot/clear the shared registry (empty in this subprocess, but be safe).
@@ -173,8 +188,10 @@ end
 @testset "extensions.json watch reconciles only after seeding, on change" begin
     withenv("XDG_CONFIG_HOME" => mktempdir()) do
         dir = mktempdir()
-        write(joinpath(dir, "kaimon.toml"),
-            "[extension]\nnamespace = \"watch_x\"\nmodule = \"M\"\ntools_function = \"t\"\n")
+        write(
+            joinpath(dir, "kaimon.toml"),
+            "[extension]\nnamespace = \"watch_x\"\nmodule = \"M\"\ntools_function = \"t\"\n",
+        )
         live() = [e.config.manifest.namespace for e in Kaimon.get_managed_extensions()]
 
         saved = lock(Kaimon.MANAGED_EXTENSIONS_LOCK) do

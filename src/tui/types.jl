@@ -89,16 +89,16 @@ end
 end
 
 # ── Tab indices ───────────────────────────────────────────────────────────────
-const TAB_SERVER     = 1
-const TAB_SESSIONS   = 2
-const TAB_ACTIVITY   = 3
-const TAB_SEARCH     = 4
-const TAB_TESTS      = 5
-const TAB_CONFIG     = 6
-const TAB_DEBUG      = 7
+const TAB_SERVER = 1
+const TAB_SESSIONS = 2
+const TAB_ACTIVITY = 3
+const TAB_SEARCH = 4
+const TAB_TESTS = 5
+const TAB_CONFIG = 6
+const TAB_DEBUG = 7
 const TAB_EXTENSIONS = 8
-const TAB_AGENTS     = 9
-const TAB_ADVANCED   = 10
+const TAB_AGENTS = 9
+const TAB_ADVANCED = 10
 
 # ── Model ─────────────────────────────────────────────────────────────────────
 
@@ -123,7 +123,7 @@ const TAB_ADVANCED   = 10
             [Span("9", tstyle(:warning)), Span(" Agents", tstyle(:text))],
             [Span("0", tstyle(:warning)), Span(" Advanced", tstyle(:text))],
         ];
-        tab_style = TabBarStyle(decoration = BoxTabs(box=BOX_ROUNDED)),
+        tab_style = TabBarStyle(decoration = BoxTabs(box = BOX_ROUNDED)),
     )
     _tab_theme_accent::Any = nothing  # tracks theme accent for tab color regeneration
 
@@ -182,7 +182,8 @@ const TAB_ADVANCED   = 10
     config_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(50), Fill()])
     config_left_layout::ResizableLayout = ResizableLayout(Vertical, [Fixed(7), Fill()])
     config_right_layout::ResizableLayout = ResizableLayout(Vertical, [Percent(45), Fill()])
-    config_bottom_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(55), Fill()])
+    config_bottom_layout::ResizableLayout =
+        ResizableLayout(Horizontal, [Percent(55), Fill()])
     _config_actions_area::Rect = Rect()  # cached for mouse click detection
 
     # Activity feed — unified timeline of tool calls + streaming output
@@ -291,9 +292,15 @@ const TAB_ADVANCED   = 10
     # Tab 5: 1=form, 2=output | Tab 6: 1=runs list, 2=results
     # Tab 7: 1=form, 2=horde, 3=output | Tab 8: 1=list, 2=detail
     focused_pane::Dict{Int,Int} = Dict(
-        TAB_SERVER => 2, TAB_SESSIONS => 1, TAB_ACTIVITY => 1,
-        TAB_SEARCH => 1, TAB_TESTS => 1, TAB_CONFIG => 1,
-        TAB_DEBUG => 2, TAB_EXTENSIONS => 1, TAB_ADVANCED => 1,
+        TAB_SERVER => 2,
+        TAB_SESSIONS => 1,
+        TAB_ACTIVITY => 1,
+        TAB_SEARCH => 1,
+        TAB_TESTS => 1,
+        TAB_CONFIG => 1,
+        TAB_DEBUG => 2,
+        TAB_EXTENSIONS => 1,
+        TAB_ADVANCED => 1,
     )
 
     # ── Tests tab (tab 6) ──
@@ -312,7 +319,7 @@ const TAB_ADVANCED   = 10
     _test_tree_selected::Int = 1           # selected row in flat view
     _test_tree_synced::Int = 0             # raw_output length when tree was last built
     test_session_picker_open::Bool = false
-    test_session_picker_items::Vector{@NamedTuple{label::String, project_path::String}} =
+    test_session_picker_items::Vector{@NamedTuple{label::String,project_path::String}} =
         @NamedTuple{label::String, project_path::String}[]
     test_session_picker_selected::Int = 1
     test_status_msg::String = ""           # shown in the empty-runs pane on error
@@ -346,8 +353,7 @@ const TAB_ADVANCED   = 10
     advanced_layout::ResizableLayout = ResizableLayout(Vertical, [Fixed(16), Fill()])
 
     # ── Search tab (tab 7) ──
-    search_layout::ResizableLayout =
-        ResizableLayout(Vertical, [Fixed(6), Fixed(3), Fill()])
+    search_layout::ResizableLayout = ResizableLayout(Vertical, [Fixed(6), Fixed(3), Fill()])
     search_qdrant_up::Bool = false
     search_ollama_up::Bool = false
     search_model_available::Bool = false
@@ -374,7 +380,7 @@ const TAB_ADVANCED   = 10
     search_config_open::Bool = false
     search_config_selected::Int = 1                    # cursor in model list
     search_config_models::Vector{
-        @NamedTuple{name::String, dims::Int, ctx::Int, installed::Bool}
+        @NamedTuple{name::String,dims::Int,ctx::Int,installed::Bool}
     } = @NamedTuple{name::String, dims::Int, ctx::Int, installed::Bool}[]
     search_config_custom_input::Any = nothing            # TextInput for custom model name
     search_config_custom_editing::Bool = false          # true when editing custom model field
@@ -437,9 +443,9 @@ const TAB_ADVANCED   = 10
     debug_session_key::String = ""        # which gate session is paused
     debug_file::String = ""
     debug_line::Int = 0
-    debug_locals::Vector{@NamedTuple{name::String, type::String, value::String}} =
+    debug_locals::Vector{@NamedTuple{name::String,type::String,value::String}} =
         @NamedTuple{name::String, type::String, value::String}[]
-    debug_history::Vector{@NamedTuple{source::Symbol, code::String, result::String}} =
+    debug_history::Vector{@NamedTuple{source::Symbol,code::String,result::String}} =
         @NamedTuple{source::Symbol, code::String, result::String}[]  # :agent or :user
     debug_locals_pane::Union{ScrollPane,Nothing} = nothing
     debug_console_pane::Union{ScrollPane,Nothing} = nothing
@@ -510,9 +516,16 @@ end
 # Number of focusable panes per tab
 # Tab order: 1=Server 2=Sessions 3=Activity 4=Search 5=Tests 6=Config 7=Debug 8=Extensions 9=Advanced
 const _PANE_COUNTS = Dict(
-    TAB_SERVER => 2, TAB_SESSIONS => 3, TAB_ACTIVITY => 2,
-    TAB_SEARCH => 3, TAB_TESTS => 2, TAB_CONFIG => 5,
-    TAB_DEBUG => 2, TAB_EXTENSIONS => 2, TAB_AGENTS => 2, TAB_ADVANCED => 3,
+    TAB_SERVER => 2,
+    TAB_SESSIONS => 3,
+    TAB_ACTIVITY => 2,
+    TAB_SEARCH => 3,
+    TAB_TESTS => 2,
+    TAB_CONFIG => 5,
+    TAB_DEBUG => 2,
+    TAB_EXTENSIONS => 2,
+    TAB_AGENTS => 2,
+    TAB_ADVANCED => 3,
 )
 
 """Return the border style for a pane — highlighted if focused."""

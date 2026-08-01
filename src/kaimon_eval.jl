@@ -54,8 +54,11 @@ function _is_revise_revise_call(func)
     (func.args[end] isa QuoteNode && func.args[end].value == :revise) || return false
     base = func.args[1]
     base === :Revise && return true
-    return base isa Expr && base.head == :. && length(base.args) >= 2 &&
-           base.args[end] isa QuoteNode && base.args[end].value == :Revise
+    return base isa Expr &&
+           base.head == :. &&
+           length(base.args) >= 2 &&
+           base.args[end] isa QuoteNode &&
+           base.args[end].value == :Revise
 end
 
 """

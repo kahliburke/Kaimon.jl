@@ -183,20 +183,41 @@ end
 # ── Tool-call analytics (written on every tool completion, read by the TUI) ───
 
 """Record the start of a tool call (status 'running'). No-op if the DB is closed."""
-record_tool_start!(session_key, request_id, tool_name, request_time, input_size, arguments) =
-    _exec!("""INSERT INTO tool_executions
-                  (session_key, request_id, tool_name, request_time,
-                   duration_ms, input_size, output_size, arguments, status, result_summary)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (session_key, request_id, tool_name, request_time, 0.0, input_size, 0, arguments, "running", ""))
+record_tool_start!(
+    session_key,
+    request_id,
+    tool_name,
+    request_time,
+    input_size,
+    arguments,
+) = _exec!(
+    """INSERT INTO tool_executions
+           (session_key, request_id, tool_name, request_time,
+            duration_ms, input_size, output_size, arguments, status, result_summary)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+    (
+        session_key,
+        request_id,
+        tool_name,
+        request_time,
+        0.0,
+        input_size,
+        0,
+        arguments,
+        "running",
+        "",
+    ),
+)
 
 """Update a tool call with its final result. No-op if DB closed / id empty."""
 record_tool_complete!(request_id, duration_ms, output_size, status, summary) =
     isempty(request_id) ? nothing :
-    _exec!("""UPDATE tool_executions
-                 SET duration_ms = ?, output_size = ?, status = ?, result_summary = ?
-               WHERE request_id = ?""",
-        (duration_ms, output_size, status, summary, request_id))
+    _exec!(
+        """UPDATE tool_executions
+              SET duration_ms = ?, output_size = ?, status = ?, result_summary = ?
+            WHERE request_id = ?""",
+        (duration_ms, output_size, status, summary, request_id),
+    )
 
 """Summary statistics (counts/durations) per tool."""
 get_tool_summary() = _query(
@@ -206,7 +227,8 @@ get_tool_summary() = _query(
               AVG(duration_ms) as avg_duration_ms, MIN(duration_ms) as min_duration_ms,
               MAX(duration_ms) as max_duration_ms,
               AVG(input_size) as avg_input_size, AVG(output_size) as avg_output_size
-       FROM tool_executions GROUP BY tool_name ORDER BY total_executions DESC""")
+       FROM tool_executions GROUP BY tool_name ORDER BY total_executions DESC""",
+)
 
 """Tool executions from the last `days` days (most recent first, capped at 1000)."""
 function get_tool_executions(; days::Int = 7)
@@ -215,16 +237,17 @@ function get_tool_executions(; days::Int = 7)
         """SELECT id, session_key, request_id, tool_name, request_time,
                   duration_ms, input_size, output_size, status, result_summary
            FROM tool_executions WHERE request_time >= ?
-           ORDER BY request_time DESC LIMIT 1000""", (cutoff,))
+           ORDER BY request_time DESC LIMIT 1000""",
+        (cutoff,),
+    )
 end
 
 """Most frequent error-producing tools."""
-get_error_hotspots() = _query(
-    """SELECT tool_name, COUNT(*) as error_count,
-              COUNT(DISTINCT session_key) as affected_sessions,
-              MAX(request_time) as last_occurrence
-       FROM tool_executions WHERE status = 'error'
-       GROUP BY tool_name ORDER BY error_count DESC LIMIT 50""")
+get_error_hotspots() = _query("""SELECT tool_name, COUNT(*) as error_count,
+                                        COUNT(DISTINCT session_key) as affected_sessions,
+                                        MAX(request_time) as last_occurrence
+                                 FROM tool_executions WHERE status = 'error'
+                                 GROUP BY tool_name ORDER BY error_count DESC LIMIT 50""")
 
 """Delete tool execution records older than `days_to_keep` days."""
 function cleanup_old_data!(days_to_keep::Int = 30)
@@ -235,24 +258,38 @@ end
 # ── Indexed-files ledger (Qdrant vector-index sync) ───────────────────────────
 
 """Record that a file has been indexed into Qdrant."""
-record_indexed_file(file_path::String, collection::String, file_mtime::Float64, chunk_count::Int) =
-    _exec!("""INSERT OR REPLACE INTO indexed_files (file_path, collection, mtime, indexed_at, chunk_count)
-              VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)""",
-        [file_path, collection, file_mtime, chunk_count])
+record_indexed_file(
+    file_path::String,
+    collection::String,
+    file_mtime::Float64,
+    chunk_count::Int,
+) = _exec!(
+    """INSERT OR REPLACE INTO indexed_files (file_path, collection, mtime, indexed_at, chunk_count)
+       VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)""",
+    [file_path, collection, file_mtime, chunk_count],
+)
 
 """Indexing info for a file, or `nothing` if not indexed."""
 function get_indexed_file(file_path::String)
     df = _query_df(
         "SELECT file_path, collection, mtime, indexed_at, chunk_count FROM indexed_files WHERE file_path = ?",
-        [file_path])
+        [file_path],
+    )
     nrow(df) == 0 && return nothing
-    return (file_path = df[1, :file_path], collection = df[1, :collection], mtime = df[1, :mtime],
-            indexed_at = df[1, :indexed_at], chunk_count = df[1, :chunk_count])
+    return (
+        file_path = df[1, :file_path],
+        collection = df[1, :collection],
+        mtime = df[1, :mtime],
+        indexed_at = df[1, :indexed_at],
+        chunk_count = df[1, :chunk_count],
+    )
 end
 
 """All indexed files for a collection (DataFrame)."""
 get_indexed_files(collection::String) = _query_df(
-    "SELECT file_path, mtime, indexed_at, chunk_count FROM indexed_files WHERE collection = ?", [collection])
+    "SELECT file_path, mtime, indexed_at, chunk_count FROM indexed_files WHERE collection = ?",
+    [collection],
+)
 
 """Remove a file from the indexed-files ledger."""
 remove_indexed_file(file_path::String) =
@@ -283,7 +320,10 @@ end
 
 """Indexed files for a collection that no longer exist on disk."""
 function get_deleted_files(collection::String)
-    return [row.file_path for row in eachrow(get_indexed_files(collection)) if !isfile(row.file_path)]
+    return [
+        row.file_path for
+        row in eachrow(get_indexed_files(collection)) if !isfile(row.file_path)
+    ]
 end
 
 # ── Test runs ─────────────────────────────────────────────────────────────────
@@ -310,17 +350,45 @@ failure's testset name). Keeps the SQL in this module — callers build plain da
 """
 function record_test_run!(run, results, failures)
     _withdb() do db
-        DBInterface.execute(db, _INSERT_TEST_RUN,
-            (run.project_path, run.started_at, run.finished_at, run.status, run.pattern,
-             run.total_pass, run.total_fail, run.total_error, run.total_tests, run.duration_ms, run.summary))
-        run_id = (DBInterface.execute(db, "SELECT last_insert_rowid()") |> DataFrame)[1, 1]
+        DBInterface.execute(
+            db,
+            _INSERT_TEST_RUN,
+            (
+                run.project_path,
+                run.started_at,
+                run.finished_at,
+                run.status,
+                run.pattern,
+                run.total_pass,
+                run.total_fail,
+                run.total_error,
+                run.total_tests,
+                run.duration_ms,
+                run.summary,
+            ),
+        )
+        run_id = (DBInterface.execute(db, "SELECT last_insert_rowid()")|>DataFrame)[1, 1]
         for r in results
-            DBInterface.execute(db, _INSERT_TEST_RESULT,
-                (run_id, r.name, r.depth, r.pass_count, r.fail_count, r.error_count, r.total_count))
+            DBInterface.execute(
+                db,
+                _INSERT_TEST_RESULT,
+                (
+                    run_id,
+                    r.name,
+                    r.depth,
+                    r.pass_count,
+                    r.fail_count,
+                    r.error_count,
+                    r.total_count,
+                ),
+            )
         end
         for f in failures
-            DBInterface.execute(db, _INSERT_TEST_FAILURE,
-                (run_id, f.file, f.line, f.expression, f.evaluated, f.testset, f.backtrace))
+            DBInterface.execute(
+                db,
+                _INSERT_TEST_FAILURE,
+                (run_id, f.file, f.line, f.expression, f.evaluated, f.testset, f.backtrace),
+            )
         end
     end
     return nothing
@@ -331,45 +399,67 @@ function get_test_runs(; project_path::String = "", limit::Int = 50)
     cols = """id, project_path, started_at, finished_at, status, pattern,
               total_pass, total_fail, total_error, total_tests, duration_ms, summary"""
     return isempty(project_path) ?
-        _query("SELECT $cols FROM test_runs ORDER BY started_at DESC LIMIT ?", (limit,)) :
-        _query("SELECT $cols FROM test_runs WHERE project_path = ? ORDER BY started_at DESC LIMIT ?",
-            (project_path, limit))
+           _query(
+        "SELECT $cols FROM test_runs ORDER BY started_at DESC LIMIT ?",
+        (limit,),
+    ) :
+           _query(
+        "SELECT $cols FROM test_runs WHERE project_path = ? ORDER BY started_at DESC LIMIT ?",
+        (project_path, limit),
+    )
 end
 
 """Per-testset results for a test run."""
 get_test_results(run_id::Int) = _query(
     """SELECT id, run_id, testset_name, depth, pass_count, fail_count, error_count, total_count
-       FROM test_results WHERE run_id = ? ORDER BY id""", (run_id,))
+       FROM test_results WHERE run_id = ? ORDER BY id""",
+    (run_id,),
+)
 
 """Failure details for a test run."""
 get_test_failures(run_id::Int) = _query(
     """SELECT id, run_id, file, line, expression, evaluated, testset_name, backtrace
-       FROM test_failures WHERE run_id = ? ORDER BY id""", (run_id,))
+       FROM test_failures WHERE run_id = ? ORDER BY id""",
+    (run_id,),
+)
 
 # ── Background jobs (best-effort: failures are swallowed, never crash a caller) ─
 
 """Persist a promoted background job."""
-function persist_job!(eval_id::String, session_key::String, code::String,
-                      started_at::Float64, promoted_at::Float64)
+function persist_job!(
+    eval_id::String,
+    session_key::String,
+    code::String,
+    started_at::Float64,
+    promoted_at::Float64,
+)
     try
-        _exec!("""INSERT OR REPLACE INTO background_jobs
-                      (eval_id, session_key, code, started_at, promoted_at, status)
-                  VALUES (?, ?, ?, ?, ?, 'running')""",
-            [eval_id, session_key, first(code, 2000), started_at, promoted_at])
+        _exec!(
+            """INSERT OR REPLACE INTO background_jobs
+                   (eval_id, session_key, code, started_at, promoted_at, status)
+               VALUES (?, ?, ?, ?, ?, 'running')""",
+            [eval_id, session_key, first(code, 2000), started_at, promoted_at],
+        )
     catch e
         @debug "Failed to persist background job" eval_id exception = e
     end
 end
 
 """Update a background job's status/result (only the provided fields)."""
-function update_job!(eval_id::String; status::String = "", result::String = "",
-                     result_preview::String = "", finished_at::Float64 = 0.0,
-                     cancelled::Bool = false)
+function update_job!(
+    eval_id::String;
+    status::String = "",
+    result::String = "",
+    result_preview::String = "",
+    finished_at::Float64 = 0.0,
+    cancelled::Bool = false,
+)
     sets = String[]
     vals = Any[]
     isempty(status) || (push!(sets, "status = ?"); push!(vals, status))
     isempty(result) || (push!(sets, "result = ?"); push!(vals, result))
-    isempty(result_preview) || (push!(sets, "result_preview = ?"); push!(vals, first(result_preview, 500)))
+    isempty(result_preview) ||
+        (push!(sets, "result_preview = ?"); push!(vals, first(result_preview, 500)))
     finished_at > 0.0 && (push!(sets, "finished_at = ?"); push!(vals, finished_at))
     cancelled && push!(sets, "cancelled = 1")
     isempty(sets) && return
@@ -386,7 +476,8 @@ function get_job(eval_id::String)
     try
         df = _query_df(
             "SELECT * FROM background_jobs WHERE eval_id LIKE ? ORDER BY promoted_at DESC LIMIT 1",
-            [eval_id * "%"])
+            [eval_id * "%"],
+        )
         nrow(df) == 0 ? nothing : Dict(String(c) => df[1, c] for c in names(df))
     catch
         nothing
@@ -396,9 +487,16 @@ end
 """Background jobs, optionally filtered by status."""
 function list_jobs(; status::String = "", limit::Int = 20)
     try
-        sql, params = isempty(status) ?
-            ("SELECT * FROM background_jobs ORDER BY promoted_at DESC LIMIT ?", Any[limit]) :
-            ("SELECT * FROM background_jobs WHERE status = ? ORDER BY promoted_at DESC LIMIT ?", Any[status, limit])
+        sql, params =
+            isempty(status) ?
+            (
+                "SELECT * FROM background_jobs ORDER BY promoted_at DESC LIMIT ?",
+                Any[limit],
+            ) :
+            (
+                "SELECT * FROM background_jobs WHERE status = ? ORDER BY promoted_at DESC LIMIT ?",
+                Any[status, limit],
+            )
         df = _query_df(sql, params)
         [Dict(String(c) => row[c] for c in names(df)) for row in eachrow(df)]
     catch
@@ -417,7 +515,8 @@ function get_job_stats()
                    SUM(CASE WHEN cancelled = 1 THEN 1 ELSE 0 END) as cancelled,
                    AVG(CASE WHEN finished_at > 0 THEN finished_at - started_at END) as avg_duration,
                    MAX(CASE WHEN finished_at > 0 THEN finished_at - started_at END) as max_duration
-               FROM background_jobs""")
+               FROM background_jobs""",
+        )
         nrow(df) == 0 ? Dict() : Dict(String(c) => df[1, c] for c in names(df))
     catch
         Dict()

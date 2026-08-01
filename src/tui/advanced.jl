@@ -8,7 +8,9 @@ applying the active scenario preset if one is selected.
 """
 function _stress_effective_tool(m::KaimonModel)
     sessions = m.conn_mgr !== nothing ? connected_sessions(m.conn_mgr) : []
-    selected_conn = isempty(sessions) ? nothing : sessions[clamp(m.stress_session_idx, 1, length(sessions))]
+    selected_conn =
+        isempty(sessions) ? nothing :
+        sessions[clamp(m.stress_session_idx, 1, length(sessions))]
     ns = selected_conn !== nothing ? selected_conn.namespace : ""
 
     function _maybe_qualify(tool::String)
@@ -99,7 +101,14 @@ function _launch_stress_test!(m::KaimonModel)
         end
 
         # Write results file
-        _write_stress_results!(m, tool_name == "ex" ? code : tool_name, sess_key, n_agents, stagger_val, timeout_val)
+        _write_stress_results!(
+            m,
+            tool_name == "ex" ? code : tool_name,
+            sess_key,
+            n_agents,
+            stagger_val,
+            timeout_val,
+        )
 
         # Check actual results — did any agents fail?
         all_output = lock(m.stress_output_lock) do
@@ -177,7 +186,7 @@ function _drain_stress_output!(m::KaimonModel)
         total = length(m.stress_output)
         synced = length(pane.content)
         if total > synced
-            return m.stress_output[synced+1:total]
+            return m.stress_output[(synced+1):total]
         end
         return String[]
     end
@@ -317,8 +326,8 @@ end
 function _handle_stress_modal_key!(m::KaimonModel, evt::KeyEvent)
     @match m.stress_modal begin
         :scenario => _handle_scenario_modal_key!(m, evt)
-        :session  => _handle_session_modal_key!(m, evt)
-        :tool     => _handle_tool_modal_key!(m, evt)
+        :session => _handle_session_modal_key!(m, evt)
+        :tool => _handle_tool_modal_key!(m, evt)
         _ => nothing
     end
 end
@@ -326,8 +335,8 @@ end
 function _handle_scenario_modal_key!(m::KaimonModel, evt::KeyEvent)
     n = length(STRESS_SCENARIOS) + 1  # +1 for "Custom"
     @match evt.key begin
-        :up    => (m.stress_modal_sel = max(1, m.stress_modal_sel - 1))
-        :down  => (m.stress_modal_sel = min(n, m.stress_modal_sel + 1))
+        :up => (m.stress_modal_sel = max(1, m.stress_modal_sel - 1))
+        :down => (m.stress_modal_sel = min(n, m.stress_modal_sel + 1))
         :enter => begin
             idx = m.stress_modal_sel - 1  # 0 = Custom
             m.stress_scenario_idx = idx
@@ -352,8 +361,8 @@ function _handle_session_modal_key!(m::KaimonModel, evt::KeyEvent)
         return
     end
     @match evt.key begin
-        :up    => (m.stress_modal_sel = max(1, m.stress_modal_sel - 1))
-        :down  => (m.stress_modal_sel = min(n, m.stress_modal_sel + 1))
+        :up => (m.stress_modal_sel = max(1, m.stress_modal_sel - 1))
+        :down => (m.stress_modal_sel = min(n, m.stress_modal_sel + 1))
         :enter => begin
             m.stress_session_idx = m.stress_modal_sel
             m.stress_modal = :none
@@ -388,7 +397,7 @@ function _handle_tool_modal_key!(m::KaimonModel, evt::KeyEvent)
                 m.stress_modal = :none
             end
         end
-        :tab || :down  => (m.stress_modal_tool_field = 2)
+        :tab || :down => (m.stress_modal_tool_field = 2)
         :backtab || :up => (m.stress_modal_tool_field = 1)
         _ => begin
             if active !== nothing
@@ -497,10 +506,19 @@ function _view_revise_status(m::KaimonModel, area::Rect, buf::Buffer)
     stale_style = m._code_stale ? tstyle(:warning, bold = true) : tstyle(:success)
 
     lines = [
-        [Span("Status:  ", tstyle(:text_dim)), Span("active", tstyle(:success, bold = true))],
+        [
+            Span("Status:  ", tstyle(:text_dim)),
+            Span("active", tstyle(:success, bold = true)),
+        ],
         [Span("Files:   ", tstyle(:text_dim)), Span("$nfiles", tstyle(:text))],
-        [Span("Pending: ", tstyle(:text_dim)), Span("$npending", npending > 0 ? tstyle(:warning) : tstyle(:text))],
-        [Span("Errors:  ", tstyle(:text_dim)), Span("$nerrors", nerrors > 0 ? tstyle(:error, bold = true) : tstyle(:text))],
+        [
+            Span("Pending: ", tstyle(:text_dim)),
+            Span("$npending", npending > 0 ? tstyle(:warning) : tstyle(:text)),
+        ],
+        [
+            Span("Errors:  ", tstyle(:text_dim)),
+            Span("$nerrors", nerrors > 0 ? tstyle(:error, bold = true) : tstyle(:text)),
+        ],
         [Span("Stale:   ", tstyle(:text_dim)), Span(stale_str, stale_style)],
     ]
     for (i, spans) in enumerate(lines)
@@ -557,7 +575,7 @@ function _view_stress_form(m::KaimonModel, area::Rect, buf::Buffer)
     # Clear interior
     for row = inner.y:bottom(inner)
         for col = inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
+            set_char!(buf, col, row, ' ', Style(bg = Tachikoma.theme().bg))
         end
     end
 
@@ -616,7 +634,10 @@ function _view_stress_form(m::KaimonModel, area::Rect, buf::Buffer)
     is_tool_active = !is_running && form_focused && fi == 2
     # Build a compact display: tool name + args if set
     tool_base = isempty(m.stress_tool) ? "(ex — eval path)" : m.stress_tool
-    has_args = !isempty(m.stress_tool) && m.stress_tool_args != "{}" && !isempty(m.stress_tool_args)
+    has_args =
+        !isempty(m.stress_tool) &&
+        m.stress_tool_args != "{}" &&
+        !isempty(m.stress_tool_args)
     tool_display = if m.stress_scenario_idx > 0
         sc = STRESS_SCENARIOS[m.stress_scenario_idx]
         isempty(sc.tool) ? "(ex — eval path)" : sc.tool

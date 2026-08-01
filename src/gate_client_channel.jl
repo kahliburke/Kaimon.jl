@@ -28,7 +28,11 @@ end
 # - `KAIMON_TRACE_DESERIALIZE=1` pre-logs every payload's (label,len,head) BEFORE
 #   deserializing, so after a crash the last line names the offending payload.
 const _DESER_MAX_BYTES = Ref{Int}(
-    something(tryparse(Int, get(ENV, "KAIMON_MAX_DESERIALIZE_BYTES", "")), 64 * 1024 * 1024))
+    something(
+        tryparse(Int, get(ENV, "KAIMON_MAX_DESERIALIZE_BYTES", "")),
+        64 * 1024 * 1024,
+    ),
+)
 _deser_trace() = get(ENV, "KAIMON_TRACE_DESERIALIZE", "") in ("1", "true", "yes", "on")
 
 _hexhead(bytes::AbstractVector{UInt8}, n::Int = 32) =
@@ -37,8 +41,12 @@ _hexhead(bytes::AbstractVector{UInt8}, n::Int = 32) =
 function _safe_deserialize(raw::AbstractVector{UInt8}; label::AbstractString = "")
     n = length(raw)
     if n > _DESER_MAX_BYTES[]
-        @warn "Refusing oversized deserialize payload (likely a corrupt/torn frame)" label len=n cap=_DESER_MAX_BYTES[] head=_hexhead(raw)
-        error("deserialize payload too large: $n bytes (cap $(_DESER_MAX_BYTES[])) [$label]")
+        @warn "Refusing oversized deserialize payload (likely a corrupt/torn frame)" label len=n cap=_DESER_MAX_BYTES[] head=_hexhead(
+            raw,
+        )
+        error(
+            "deserialize payload too large: $n bytes (cap $(_DESER_MAX_BYTES[])) [$label]",
+        )
     end
     _deser_trace() && @info "deserialize" label len=n head=_hexhead(raw)
     try
@@ -46,12 +54,15 @@ function _safe_deserialize(raw::AbstractVector{UInt8}; label::AbstractString = "
     catch e
         # Lean log (no backtrace) — the payload head + error type is the evidence,
         # and some callers fall back to treating `data` as a plain string normally.
-        @warn "deserialize failed — captured payload for forensics" label len=n head=_hexhead(raw) err=sprint(showerror, e)
+        @warn "deserialize failed — captured payload for forensics" label len=n head=_hexhead(
+            raw,
+        ) err=sprint(showerror, e)
         rethrow(e)
     end
 end
 # Accept anything Vector{UInt8}-convertible (callers pass String data / SubArrays).
-_safe_deserialize(raw; label::AbstractString = "") = _safe_deserialize(Vector{UInt8}(raw); label = label)
+_safe_deserialize(raw; label::AbstractString = "") =
+    _safe_deserialize(Vector{UInt8}(raw); label = label)
 
 # Thread-safe socket *construction*. ZMQ.jl appends every new Socket to its
 # Context's `sockets::Vector{WeakRef}` with an UNLOCKED `push!` (ZMQ.jl
@@ -119,11 +130,22 @@ end
 # socket. Lock order is always {socket lock} → _ZMQ_SOCKET_LOCK (construction only
 # takes the latter), so no deadlock.
 function _zmq_close!(sock::ZMQ.Socket)
-    ctx = try getfield(sock, :context) catch; nothing end
+    ctx = try
+        getfield(sock, :context)
+    catch
+        nothing
+    end
     lock(_ZMQ_SOCKET_LOCK) do
-        try; close(sock); catch; end
+        try
+            close(sock)
+        catch
+        end
         ctx === nothing && return
-        sk = try getfield(ctx, :sockets) catch; return end
+        sk = try
+            getfield(ctx, :sockets)
+        catch
+            return
+        end
         sk isa AbstractVector || return
         filter!(w -> (w isa WeakRef ? (w.value !== nothing && w.value !== sock) : true), sk)
     end
@@ -167,14 +189,14 @@ end
 # wire — though the gate treats the id as opaque bytes and only echoes it back).
 function _corr_bytes(id::UInt64)
     b = Vector{UInt8}(undef, 8)
-    @inbounds for i in 1:8
+    @inbounds for i = 1:8
         b[i] = (id >> (8 * (i - 1))) % UInt8
     end
     return b
 end
 function _corr_from_bytes(b::AbstractVector{UInt8})
     id = UInt64(0)
-    @inbounds for i in 1:8
+    @inbounds for i = 1:8
         id |= UInt64(b[i]) << (8 * (i - 1))
     end
     return id
@@ -218,7 +240,12 @@ function _await_inbox(inbox::Channel, deadline::Float64)
     isready(inbox) && return take!(inbox)            # fast path: already buffered
     remaining = deadline - time()
     remaining > 0 || return nothing
-    timer = Timer(_ -> (try; put!(inbox, _INBOX_TIMEOUT); catch; end), remaining)
+    timer = Timer(_ -> (
+        try
+            put!(inbox, _INBOX_TIMEOUT)
+        catch
+        end
+    ), remaining)
     try
         v = take!(inbox)
         return v === _INBOX_TIMEOUT ? nothing : v
@@ -253,14 +280,22 @@ end
 
 # Read EVENTS under the socket lock (getsockopt must not race the sender's send()).
 _rc_pollin(rc, sock) = lock(rc.sock_lock) do
-    try (sock.events & ZMQ.POLLIN) != 0 catch; false end
+    try
+        (sock.events & ZMQ.POLLIN) != 0
+    catch
+        false
+    end
 end
 
 # Sole reader of the DEALER. Owns the socket's close so no other task closes it
 # out from under an in-flight recv (the classic ZMQ use-after-free).
 function _rc_reader(rc::RequestChannel)
     sock = rc.dealer
-    fd = try Cint(sock.fd) catch; Cint(-1) end  # stable for the socket's lifetime
+    fd = try
+        Cint(sock.fd)
+    catch
+        Cint(-1)
+    end  # stable for the socket's lifetime
     # ONE persistent FDWatcher for the socket's whole life. `poll_fd` constructed
     # AND closed a fresh _FDWatcher on every wake — at N connected gates × 5Hz that
     # was continuous watcher create/close churn + the scheduler load it generated
@@ -271,7 +306,11 @@ function _rc_reader(rc::RequestChannel)
     # safe (#51).
     fdw = nothing
     if fd >= 0
-        fdw = try FileWatching.FDWatcher(RawFD(fd), true, false) catch; nothing end
+        fdw = try
+            FileWatching.FDWatcher(RawFD(fd), true, false)
+        catch
+            nothing
+        end
         rc.reader_fdw = fdw
     end
     try
@@ -322,7 +361,12 @@ function _rc_reader(rc::RequestChannel)
         end
     finally
         rc.reader_fdw = nothing
-        fdw === nothing || (try; close(fdw); catch; end)
+        fdw === nothing || (
+            try
+                close(fdw)
+            catch
+            end
+        )
         # The owning task closes the socket — never disconnect!/another task. Take
         # sock_lock so a send() in flight on the sender thread can't race the close;
         # _zmq_close! also drops the socket's weakref from ctx.sockets.
@@ -370,7 +414,12 @@ function _close_request_channel!(rc::RequestChannel)
     # watcher makes its `wait` return, so the reader observes alive=false and tears
     # down immediately instead of waiting out a poll timeout.
     let fdw = rc.reader_fdw
-        fdw === nothing || (try; close(fdw); catch; end)
+        fdw === nothing || (
+            try
+                close(fdw)
+            catch
+            end
+        )
     end
     try
         close(rc.send_q)   # unblocks the sender's `for … in send_q`
@@ -396,4 +445,3 @@ function _close_request_channel!(rc::RequestChannel)
     end
     return nothing
 end
-

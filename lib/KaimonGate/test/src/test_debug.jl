@@ -15,7 +15,11 @@ using KaimonGate
     @test KG._DEBUG_PAUSED[] === nothing        # clean start
 
     # Run the hook on its own task; it pauses on take!(resume_ch).
-    t = Threads.@spawn KG._breakpoint_hook(Dict{Symbol,Any}(:x => 1); file = "t.jl", line = 1)
+    t = Threads.@spawn KG._breakpoint_hook(
+        Dict{Symbol,Any}(:x => 1);
+        file = "t.jl",
+        line = 1,
+    )
 
     # Wait until it has registered the pause (bounded so a regression fails fast).
     deadline = time() + 5

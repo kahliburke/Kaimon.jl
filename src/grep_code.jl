@@ -14,17 +14,20 @@
 #      lines only where semantics says it's relevant  it — else stay tight to save tokens)
 
 # ── small arg coercions (JSON args arrive as Any) ──────────────────────────────
-_grep_str(args, k) = let v = get(args, k, nothing)
-    (v isa AbstractString && !isempty(v)) ? String(v) : nothing
-end
-_grep_bool(args, k) = let v = get(args, k, false)
-    v isa Bool ? v : (v == "true" || v === true)
-end
+_grep_str(args, k) =
+    let v = get(args, k, nothing)
+        (v isa AbstractString && !isempty(v)) ? String(v) : nothing
+    end
+_grep_bool(args, k) =
+    let v = get(args, k, false)
+        v isa Bool ? v : (v == "true" || v === true)
+    end
 function _grep_globs(args)
     v = get(args, "glob", nothing)
     v === nothing && return String[]
     v isa AbstractString && return isempty(v) ? String[] : [String(v)]
-    v isa AbstractVector && return String[String(x) for x in v if x isa AbstractString && !isempty(x)]
+    v isa AbstractVector &&
+        return String[String(x) for x in v if x isa AbstractString && !isempty(x)]
     return String[]
 end
 
@@ -50,7 +53,12 @@ end
 # glob silently fails. Canonicalizing root + base up front keeps them aligned with what
 # rg emits (and with each other, so relative-path display stays correct). Falls back to
 # the raw path if it can't be resolved.
-_grep_canon(p::AbstractString) = try; realpath(p); catch; String(p); end
+_grep_canon(p::AbstractString) =
+    try
+        realpath(p)
+    catch
+        String(p)
+    end
 
 # Nearest enclosing git repo root of `p` (the dir holding `.git`), canonicalized, or
 # `nothing` if none is found before the filesystem root. Used to anchor globs when the
@@ -78,7 +86,11 @@ const _GREP_NO_PROJECT_MSG =
 # project — the caller then errors rather than silently scoping to the server's cwd
 # (the wrong-repo bug). Caller-less (REPL/self) calls still fall back to cwd as before.
 function _grep_base_root()
-    p = try; _last_session_project_path(); catch; ""; end
+    p = try
+        _last_session_project_path()
+    catch
+        ""
+    end
     (!isempty(p) && isdir(p)) && return _grep_canon(p)
     isempty(_current_mcp_caller()) || return ""   # agent with no project → signal error
     return _grep_canon(pwd())
@@ -101,9 +113,17 @@ end
 # project for a session doesn't make it grep-readable — that needs its own opt-in.
 function _grep_allowed_roots()
     raw = String[]
-    p = try; _last_session_project_path(); catch; ""; end
+    p = try
+        _last_session_project_path()
+    catch
+        ""
+    end
     isempty(p) || push!(raw, p)
-    caller = try; _current_mcp_caller(); catch; ""; end
+    caller = try
+        _current_mcp_caller()
+    catch
+        ""
+    end
     if !isempty(caller)
         wr = try
             lock(_SESSION_WORKSPACE_ROOT_LOCK) do
@@ -114,11 +134,19 @@ function _grep_allowed_roots()
         end
         isempty(wr) || push!(raw, wr)
         for f in (_persisted_workspace_root, _persisted_session_project)
-            v = try; f(caller); catch; nothing; end
+            v = try
+                f(caller)
+            catch
+                nothing
+            end
             v === nothing || push!(raw, v)
         end
     end
-    append!(raw, try; grep_allowed_paths(); catch; String[]; end)   # persisted whitelist
+    append!(raw, try
+        grep_allowed_paths()
+    catch
+        String[]
+    end)   # persisted whitelist
     out = String[]
     for r in raw
         isempty(r) && continue
@@ -136,8 +164,10 @@ end
 
 _grep_out_of_scope_msg(abs::AbstractString, roots::Vector{String}) =
     "Error: `$abs` is outside this session's allowed scope. grep_code is confined to " *
-    (isempty(roots) ? "the bound project (none is bound to this session)" :
-     "the project and workspace (" * join(roots, ", ") * ")") *
+    (
+        isempty(roots) ? "the bound project (none is bound to this session)" :
+        "the project and workspace (" * join(roots, ", ") * ")"
+    ) *
     ". Reading elsewhere requires the user's approval, which was not given (no prompt " *
     "shown, or declined). If you need this path, ask the user to approve it — don't try " *
     "to grant it yourself."
@@ -181,14 +211,31 @@ end
 # "always" persists the directory to the grep whitelist. Returns an error string to
 # abort, or `nothing` to proceed.
 function _grep_enforce_scope(root::AbstractString; consent = _elicit_grep_path_consent)
-    caller = try; _current_mcp_caller(); catch; ""; end
+    caller = try
+        _current_mcp_caller()
+    catch
+        ""
+    end
     isempty(caller) && return nothing
-    (try; projects_allow_any(); catch; false; end) && return nothing
+    (
+        try
+            projects_allow_any()
+        catch
+            false
+        end
+    ) && return nothing
     roots = _grep_allowed_roots()
     _grep_path_within(root, roots) && return nothing
-    decision = try; consent(root); catch; :unsupported; end
+    decision = try
+        consent(root)
+    catch
+        :unsupported
+    end
     if decision === :always
-        try; allow_grep_path!(isdir(root) ? root : dirname(root)); catch; end
+        try
+            allow_grep_path!(isdir(root) ? root : dirname(root))
+        catch
+        end
         return nothing
     elseif decision === :once
         return nothing
@@ -216,7 +263,8 @@ function _grep_resolve_root(args)
     # A relative path needs a project to anchor to; without one we can't resolve it.
     (!isabspath(target) && isempty(base)) && return (nothing, "", _GREP_NO_PROJECT_MSG)
     abs = _grep_canon(isabspath(target) ? target : abspath(joinpath(base, target)))
-    ispath(abs) || return (nothing, base, "Error: path not found: $(target) (resolved to $abs)")
+    ispath(abs) ||
+        return (nothing, base, "Error: path not found: $(target) (resolved to $abs)")
     return (abs, base, nothing)
 end
 
@@ -248,9 +296,15 @@ function _grep_parse_rg(out::AbstractString, retain::Int)
     idx = Dict{String,Int}()
     counts = Int[]
     hitsv = Vector{NamedTuple}[]
-    total = 0; scanned = 0; have_summary = false
+    total = 0
+    scanned = 0
+    have_summary = false
     for ln in eachsplit(out, '\n'; keepempty = false)
-        obj = try; JSON.parse(ln); catch; continue; end
+        obj = try
+            JSON.parse(ln)
+        catch
+            continue
+        end
         typ = get(obj, "type", "")
         d = get(obj, "data", Dict())
         if typ == "match"
@@ -258,14 +312,23 @@ function _grep_parse_rg(out::AbstractString, retain::Int)
             (path isa AbstractString && !isempty(path)) || continue   # skip non-UTF8 paths
             gi = get(idx, path, 0)
             if gi == 0
-                push!(order, path); push!(counts, 0); push!(hitsv, NamedTuple[])
-                gi = length(order); idx[path] = gi
+                push!(order, path)
+                push!(counts, 0)
+                push!(hitsv, NamedTuple[])
+                gi = length(order)
+                idx[path] = gi
             end
             if gi <= _GREP_RETAIN_FILES && length(hitsv[gi]) < retain
                 text = get(get(d, "lines", Dict()), "text", "")
                 text isa AbstractString || continue
-                push!(hitsv[gi], (file = String(path), line = Int(get(d, "line_number", 0)),
-                                  text = rstrip(String(text), ['\n', '\r'])))
+                push!(
+                    hitsv[gi],
+                    (
+                        file = String(path),
+                        line = Int(get(d, "line_number", 0)),
+                        text = rstrip(String(text), ['\n', '\r']),
+                    ),
+                )
             end
         elseif typ == "end"
             path = get(get(d, "path", Dict()), "text", "")
@@ -273,17 +336,22 @@ function _grep_parse_rg(out::AbstractString, retain::Int)
             c = Int(get(get(d, "stats", Dict()), "matches", 0))
             gi = get(idx, path, 0)
             if gi == 0
-                push!(order, path); push!(counts, c); push!(hitsv, NamedTuple[]); idx[path] = length(order)
+                push!(order, path)
+                push!(counts, c)
+                push!(hitsv, NamedTuple[])
+                idx[path] = length(order)
             else
                 counts[gi] = c
             end
         elseif typ == "summary"
             s = get(d, "stats", Dict())
-            total = Int(get(s, "matches", 0)); scanned = Int(get(s, "searches", 0))
+            total = Int(get(s, "matches", 0))
+            scanned = Int(get(s, "searches", 0))
             have_summary = true
         end
     end
-    files = [(path = order[i], count = counts[i], hits = hitsv[i]) for i in eachindex(order)]
+    files =
+        [(path = order[i], count = counts[i], hits = hitsv[i]) for i in eachindex(order)]
     have_summary || (total = sum(counts; init = 0))
     return files, total, scanned
 end
@@ -299,19 +367,21 @@ function _grep_waterfill(counts::Vector{Int}, budget::Int)
     alloc = zeros(Int, n)
     remaining = max(0, budget)
     while remaining > 0
-        active = [i for i in 1:n if alloc[i] < counts[i]]
+        active = [i for i = 1:n if alloc[i] < counts[i]]
         isempty(active) && break
         share = remaining ÷ length(active)
         if share == 0                        # remainder < #active → one each, in order
             for i in active
                 remaining == 0 && break
-                alloc[i] += 1; remaining -= 1
+                alloc[i] += 1
+                remaining -= 1
             end
             break
         end
         for i in active
             give = min(share, counts[i] - alloc[i])
-            alloc[i] += give; remaining -= give
+            alloc[i] += give
+            remaining -= give
         end
     end
     return alloc
@@ -322,8 +392,25 @@ end
 # Extensions we attempt enclosing-symbol enrichment for. The chunker parses CODE, not
 # logs/data — so non-code files (logs, generated output, csv/json/txt) still match via
 # ripgrep, they just show file:line + the matched line, which is all you want there.
-const _GREP_CODE_EXTS = Set([".jl", ".ts", ".tsx", ".jsx", ".js", ".py", ".rs", ".go",
-    ".c", ".h", ".cpp", ".hpp", ".cc", ".java", ".rb", ".ex", ".exs"])
+const _GREP_CODE_EXTS = Set([
+    ".jl",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".js",
+    ".py",
+    ".rs",
+    ".go",
+    ".c",
+    ".h",
+    ".cpp",
+    ".hpp",
+    ".cc",
+    ".java",
+    ".rb",
+    ".ex",
+    ".exs",
+])
 _grep_is_code_file(file::AbstractString) = lowercase(splitext(file)[2]) in _GREP_CODE_EXTS
 
 # (lines, defs) for a file, cached for the duration of one grep call. `defs` are the
@@ -331,16 +418,29 @@ _grep_is_code_file(file::AbstractString) = lowercase(splitext(file)[2]) in _GREP
 # isn't worth parsing as code), else empty.
 function _grep_file_ctx(file::AbstractString, cache::Dict)
     return get!(cache, file) do
-        content = try; read(file, String); catch; return (String[], Tuple{Int,Int,String,String}[]); end
+        content = try
+            read(file, String)
+        catch
+            return (String[], Tuple{Int,Int,String,String}[])
+        end
         lines = collect(eachsplit(content, '\n'))
         defs = Tuple{Int,Int,String,String}[]
         if _grep_is_code_file(file)
             try
                 for d in extract_definitions(content, String(file))
                     get(d, "type", "") == "window" && continue
-                    sl = get(d, "start_line", nothing); el = get(d, "end_line", nothing)
+                    sl = get(d, "start_line", nothing)
+                    el = get(d, "end_line", nothing)
                     (sl isa Integer && el isa Integer) || continue
-                    push!(defs, (Int(sl), Int(el), String(get(d, "name", "")), String(get(d, "type", ""))))
+                    push!(
+                        defs,
+                        (
+                            Int(sl),
+                            Int(el),
+                            String(get(d, "name", "")),
+                            String(get(d, "type", "")),
+                        ),
+                    )
                 end
             catch
             end
@@ -378,8 +478,12 @@ end
 # Semantically-ranked windows for `query`, scoped to a collection: (file, start, end,
 # score), best first. Empty when no query, services down, or the collection is unknown
 # — callers then fall back to ripgrep's file-traversal order with tight context.
-function _grep_semantic_windows(query::Union{Nothing,AbstractString}, collection::Union{Nothing,AbstractString})
-    (query === nothing || isempty(query) || collection === nothing) && return Tuple{String,Int,Int,Float64}[]
+function _grep_semantic_windows(
+    query::Union{Nothing,AbstractString},
+    collection::Union{Nothing,AbstractString},
+)
+    (query === nothing || isempty(query) || collection === nothing) &&
+        return Tuple{String,Int,Int,Float64}[]
     QdrantClient.ping() || return Tuple{String,Int,Int,Float64}[]
     col, err = _resolve_collection(String(collection), QdrantClient.list_collections())
     err === nothing || return Tuple{String,Int,Int,Float64}[]
@@ -392,13 +496,21 @@ function _grep_semantic_windows(query::Union{Nothing,AbstractString}, collection
         p = get(r, "payload", Dict())
         f = string(get(p, "file", ""))
         isempty(f) && continue
-        push!(out, (f, Int(get(p, "start_line", 0)), Int(get(p, "end_line", 0)),
-                    Float64(get(r, "score", 0.0))))
+        push!(
+            out,
+            (
+                f,
+                Int(get(p, "start_line", 0)),
+                Int(get(p, "end_line", 0)),
+                Float64(get(r, "score", 0.0)),
+            ),
+        )
     end
     return out
 end
 
-_grep_in_window(file, line, windows) = any(w -> w[1] == file && w[2] <= line <= w[3], windows)
+_grep_in_window(file, line, windows) =
+    any(w -> w[1] == file && w[2] <= line <= w[3], windows)
 
 # ── rendering ──────────────────────────────────────────────────────────────────
 
@@ -415,7 +527,8 @@ end
 # inline match markers) — see `_grep_parse_rg` for why highlighting is deliberately absent.
 # A human-facing TUI is free to re-highlight at RENDER time (it has the search pattern), so
 # decoration lives at the display surface, not on the MCP wire.
-_grep_trunc(s::AbstractString; width::Int = 200) = (t = strip(s); length(t) > width ? first(t, width) * "…" : t)
+_grep_trunc(s::AbstractString; width::Int = 200) =
+    (t = strip(s); length(t) > width ? first(t, width) * "…" : t)
 
 # One hit: a tight single line, or — when `ctx > 0` (a semantic window overlaps it, or
 # the caller forced context) — the match plus `ctx` lines either side for a peek at
@@ -428,12 +541,14 @@ function _grep_render_hit(h, lines::Vector, defs, ctx::Int)
     # hit sits deeper in the body, away from the name.
     span = _grep_enclosing_span(h.line, defs)
     on_def_line = span !== nothing && span[1] == h.line
-    label = (enc === nothing || on_def_line) ? "" :
+    label =
+        (enc === nothing || on_def_line) ? "" :
         (enc[2] == "function" || enc[2] == "tool" ? "  $(enc[1])" : "  $(enc[2]) $(enc[1])")
     ctx <= 0 && return "  L$(h.line)$label  $(_grep_trunc(h.text))\n"
-    lo = max(1, h.line - ctx); hi = min(length(lines), h.line + ctx)
+    lo = max(1, h.line - ctx)
+    hi = min(length(lines), h.line + ctx)
     out = "  L$(h.line)$label\n"
-    for n in lo:hi
+    for n = lo:hi
         if n == h.line
             out *= "    ▸ L$n  $(_grep_trunc(h.text))\n"
         else
@@ -462,7 +577,8 @@ function _grep_group_by_enclosing(hits::Vector, defs::Vector{Tuple{Int,Int,Strin
             push!(groups, Any[h])                                  # ungrouped line
         else
             gi = get(index, span, 0)
-            gi == 0 ? (push!(groups, Any[h]); index[span] = length(groups)) : push!(groups[gi], h)
+            gi == 0 ? (push!(groups, Any[h]); index[span] = length(groups)) :
+            push!(groups[gi], h)
         end
     end
     return [(g[1], @view g[2:end]) for g in groups]
@@ -473,8 +589,18 @@ end
 # match spends its budget on breadth, not depth — every matching file stays visible (with
 # a per-file "showing X of N" when clipped), and files past the display cap collapse into a
 # one-line stub rather than vanishing silently.
-function _grep_format(pattern, scope_label, files, total, header_extra, base, query,
-                      sem_windows, ctx_arg::Int, limit::Int)
+function _grep_format(
+    pattern,
+    scope_label,
+    files,
+    total,
+    header_extra,
+    base,
+    query,
+    sem_windows,
+    ctx_arg::Int,
+    limit::Int,
+)
     F = length(files)
     # File order: ranked by best semantic score when a `query` is given, else encounter order.
     ranked = !isempty(sem_windows)
@@ -491,23 +617,24 @@ function _grep_format(pattern, scope_label, files, total, header_extra, base, qu
     # rest are summarized so a broad match can't silently swallow whole files.
     ncap = min(F, _GREP_MAX_FILES)
     cap_idx = order[1:ncap]
-    beyond = order[ncap+1:end]
+    beyond = order[(ncap+1):end]
     alloc = _grep_waterfill([files[i].count for i in cap_idx], limit)
-    rendered = [(cap_idx[k], alloc[k]) for k in 1:ncap if alloc[k] > 0]
-    starved = [cap_idx[k] for k in 1:ncap if alloc[k] == 0]   # in-cap but budget ran out
+    rendered = [(cap_idx[k], alloc[k]) for k = 1:ncap if alloc[k] > 0]
+    starved = [cap_idx[k] for k = 1:ncap if alloc[k] == 0]   # in-cap but budget ran out
     hidden = vcat(starved, beyond)
     shown_total = sum(a for (_, a) in rendered; init = 0)
 
     # Context expansion stays confined to the top-N ranked rendered files.
     expandable = Set{String}()
     if ranked
-        for k in 1:min(length(rendered), _GREP_RANK_EXPAND_TOPN)
+        for k = 1:min(length(rendered), _GREP_RANK_EXPAND_TOPN)
             push!(expandable, files[rendered[k][1]].path)
         end
     end
 
-    out = "🔎 /$pattern/ in $scope_label$header_extra — $total match$(total == 1 ? "" : "es") in " *
-          "$F file$(F == 1 ? "" : "s")"
+    out =
+        "🔎 /$pattern/ in $scope_label$header_extra — $total match$(total == 1 ? "" : "es") in " *
+        "$F file$(F == 1 ? "" : "s")"
     ranked && (out *= " · ranked by relevance to \"$query\"")
     shown_total < total && (out *= ", showing $shown_total")
     out *= ":\n"
@@ -523,16 +650,23 @@ function _grep_format(pattern, scope_label, files, total, header_extra, base, qu
         out *= "\n$(_grep_relfile(f, base))$clip\n"
         # Respect an explicit context= request by rendering every hit (empty defs → no
         # collapsing); otherwise collapse repeats that share an enclosing function.
-        groups = _grep_group_by_enclosing(take, ctx_arg > 0 ? Tuple{Int,Int,String,String}[] : defs)
+        groups = _grep_group_by_enclosing(
+            take,
+            ctx_arg > 0 ? Tuple{Int,Int,String,String}[] : defs,
+        )
         for (rep, rest) in groups
             if sizeof(out) >= _GREP_OUT_BUDGET
                 byte_hit = true
                 break
             end
-            ctx = max(ctx_arg, (f in expandable && _grep_in_window(f, rep.line, sem_windows)) ? 2 : 0)
+            ctx = max(
+                ctx_arg,
+                (f in expandable && _grep_in_window(f, rep.line, sem_windows)) ? 2 : 0,
+            )
             out *= _grep_render_hit(rep, lines, defs, ctx)
-            isempty(rest) ||
-                (out *= "      (+$(length(rest)) more: $(join(("L$(h.line)" for h in rest), ", ")))\n")
+            isempty(rest) || (
+                out *= "      (+$(length(rest)) more: $(join(("L$(h.line)" for h in rest), ", ")))\n"
+            )
         end
         byte_hit && break
     end
@@ -540,11 +674,13 @@ function _grep_format(pattern, scope_label, files, total, header_extra, base, qu
     if !isempty(hidden)
         hm = sum(files[i].count for i in hidden; init = 0)
         nh = length(hidden)
-        out *= "\n…and $nh more file$(nh == 1 ? "" : "s") ($hm match$(hm == 1 ? "" : "es") not shown) — " *
-               "narrow the pattern or scope (glob=/path=), or raise limit=.\n"
+        out *=
+            "\n…and $nh more file$(nh == 1 ? "" : "s") ($hm match$(hm == 1 ? "" : "es") not shown) — " *
+            "narrow the pattern or scope (glob=/path=), or raise limit=.\n"
     elseif byte_hit
-        out *= "\n… output truncated at ~$(_GREP_OUT_BUDGET ÷ 1024) KB — narrow with glob=/path= " *
-               "or a tighter pattern.\n"
+        out *=
+            "\n… output truncated at ~$(_GREP_OUT_BUDGET ÷ 1024) KB — narrow with glob=/path= " *
+            "or a tighter pattern.\n"
     end
     return out
 end
@@ -556,7 +692,10 @@ end
 function _grep_scope_file_count(rg, scan_flags, root, rg_cwd)
     argv = String[rg...; "--files"; scan_flags...; "--"; root]
     try
-        out = read(pipeline(ignorestatus(Cmd(Cmd(argv); dir = rg_cwd)), stderr = devnull), String)
+        out = read(
+            pipeline(ignorestatus(Cmd(Cmd(argv); dir = rg_cwd)), stderr = devnull),
+            String,
+        )
         isempty(out) && return 0
         return count(==('\n'), out) + (endswith(out, '\n') ? 0 : 1)
     catch
@@ -577,7 +716,8 @@ function _grep_code(args)
     isempty(pattern) && return "Error: pattern is required"
 
     rg = _rg_argv()
-    rg === nothing && return "Error: ripgrep (rg) is not available. Install it, or add ripgrep_jll."
+    rg === nothing &&
+        return "Error: ripgrep (rg) is not available. Install it, or add ripgrep_jll."
 
     root, base, err = _grep_resolve_root(args)
     root === nothing && return err
@@ -600,11 +740,13 @@ function _grep_code(args)
     # dotfiles) — makes grep_code the one pattern-search tool instead of falling back to
     # shell grep for non-tracked text. Default off keeps code search free of build noise.
     if _grep_bool(args, "no_ignore")
-        push!(scan_flags, "--no-ignore"); push!(scan_flags, "--hidden")
+        push!(scan_flags, "--no-ignore")
+        push!(scan_flags, "--hidden")
     end
     globs = _grep_globs(args)
     for g in globs
-        push!(scan_flags, "-g"); push!(scan_flags, g)
+        push!(scan_flags, "-g")
+        push!(scan_flags, g)
     end
 
     # Echo the normalized search inputs (glob + active flags) in the header, so a caller
@@ -623,7 +765,8 @@ function _grep_code(args)
     # rg builds report it as matched-files, so it reads 0 exactly on the empty case we need
     # it for; we count scope files with `rg --files` instead.)
     # `--` terminates flags so a pattern starting with `-` is taken literally.
-    argv = String[rg...; "--json"; "--stats"; pat_flags...; scan_flags...; "--"; pattern; root]
+    argv =
+        String[rg...; "--json"; "--stats"; pat_flags...; scan_flags...; "--"; pattern; root]
     # Glob anchoring. ripgrep matches slash-containing globs (`src/**/*.jl`) against each
     # file's path RELATIVE TO rg's PROCESS CWD, not the positional search argument. We want
     # a `glob` to be written the SAME WAY as `path=`/`file=` — both project-root-relative —
@@ -656,15 +799,17 @@ function _grep_code(args)
         # (searched N files, found nothing) is distinguishable from a scoping mistake
         # (path=/glob= matched no files → nothing was searched).
         nscope = _grep_scope_file_count(rg, scan_flags, root, rg_cwd)
-        note = nscope == 0 ? " (0 files in scope — check path=/glob=)" :
-               " ($nscope file$(nscope == 1 ? "" : "s") in scope)"
+        note =
+            nscope == 0 ? " (0 files in scope — check path=/glob=)" :
+            " ($nscope file$(nscope == 1 ? "" : "s") in scope)"
         # Discovery nudge. A TRUE negative — files WERE searched, the exact text just isn't
         # there — is the highest-signal moment to switch tools: grep only finds the literal
         # text you type, so a concept hunt that came up empty usually means the symbol was
         # guessed wrong. search_code finds by MEANING and catches the synonym / indirection /
         # renamed symbol grep structurally can't. Gate on nscope>0: a 0-scope result is a
         # scoping mistake (the note above already handles it), not a missing symbol.
-        nudge = nscope > 0 ?
+        nudge =
+            nscope > 0 ?
             "\n↳ Searched but nothing matched that exact text. If you were after a CONCEPT " *
             "(not a known literal), the name was likely just guessed wrong — describe it to " *
             "search_code(query=\"…\") instead: it finds by meaning and catches the synonyms / " *
@@ -673,8 +818,18 @@ function _grep_code(args)
     end
 
     sem_windows = _grep_semantic_windows(query, _grep_collection(args, base))
-    return _grep_format(pattern, scope_label, files_parsed, total, header_extra, base, query,
-                        sem_windows, ctx_arg, limit)
+    return _grep_format(
+        pattern,
+        scope_label,
+        files_parsed,
+        total,
+        header_extra,
+        base,
+        query,
+        sem_windows,
+        ctx_arg,
+        limit,
+    )
 end
 
 # ── Anti-shell-grep nudge: the brain behind the agent PreToolUse hooks ─────────
@@ -715,26 +870,39 @@ function _shell_commands(cmd::AbstractString)
     q = '\0'
     piped = false
     endtok!() = (isempty(buf) || (push!(toks, String(buf)); empty!(buf)))
-    endcmd!() = (endtok!(); isempty(toks) || (push!(cmds, (piped, copy(toks))); empty!(toks)))
+    endcmd!() =
+        (endtok!(); isempty(toks) || (push!(cmds, (piped, copy(toks))); empty!(toks)))
     i = 1
     while i <= n
         ch = chars[i]
         if q != '\0'
-            ch == q ? (q = '\0') : push!(buf, ch); i += 1
+            ch == q ? (q = '\0') : push!(buf, ch)
+            i += 1
         elseif ch == '\'' || ch == '"' || ch == '`'
-            q = ch; i += 1
+            q = ch
+            i += 1
         elseif ch == '&' && i < n && chars[i+1] == '&'
-            endcmd!(); piped = false; i += 2
+            endcmd!()
+            piped = false
+            i += 2
         elseif ch == '|' && i < n && chars[i+1] == '|'
-            endcmd!(); piped = false; i += 2
+            endcmd!()
+            piped = false
+            i += 2
         elseif ch == '|'
-            endcmd!(); piped = true; i += 1
+            endcmd!()
+            piped = true
+            i += 1
         elseif ch == ';' || ch == '&' || ch == '\n'
-            endcmd!(); piped = false; i += 1
+            endcmd!()
+            piped = false
+            i += 1
         elseif isspace(ch)
-            endtok!(); i += 1
+            endtok!()
+            i += 1
         else
-            push!(buf, ch); i += 1
+            push!(buf, ch)
+            i += 1
         end
     end
     endcmd!()
@@ -758,10 +926,12 @@ function _is_code_search(cmd::AbstractString)
             return true
         end
         if prog == "find"
-            for j = (i + 1):(length(toks) - 1)
+            for j = (i+1):(length(toks)-1)
                 if toks[j] in ("-name", "-iname", "-path", "-ipath")
-                    m = match(r"\.([A-Za-z0-9]+)$", toks[j + 1])
-                    m !== nothing && lowercase(m.captures[1]) in _HOOK_CODE_EXTS && return true
+                    m = match(r"\.([A-Za-z0-9]+)$", toks[j+1])
+                    m !== nothing &&
+                        lowercase(m.captures[1]) in _HOOK_CODE_EXTS &&
+                        return true
                 end
             end
         end
@@ -770,7 +940,11 @@ function _is_code_search(cmd::AbstractString)
 end
 
 # Pull a query-string parameter out of a request target (`/hook/nudge?agent=claude`).
-function _hook_query_param(target::AbstractString, key::AbstractString, default::AbstractString)
+function _hook_query_param(
+    target::AbstractString,
+    key::AbstractString,
+    default::AbstractString,
+)
     q = findfirst('?', target)
     q === nothing && return default
     for kv in split(SubString(target, q + 1), '&')
@@ -796,12 +970,14 @@ end
 # shape is implemented; other agents' decision shapes differ and are added as each is wired
 # — default to the Claude shape for now.
 function _hook_decision_json(agent::AbstractString)
-    return JSON.json(Dict(
-        "hookSpecificOutput" => Dict(
-            "hookEventName" => "PreToolUse",
-            "additionalContext" => _HOOK_NUDGE_MSG,
+    return JSON.json(
+        Dict(
+            "hookSpecificOutput" => Dict(
+                "hookEventName" => "PreToolUse",
+                "additionalContext" => _HOOK_NUDGE_MSG,
+            ),
         ),
-    ))
+    )
 end
 
 """

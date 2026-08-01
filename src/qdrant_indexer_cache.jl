@@ -136,4 +136,3 @@ Deprecated — kept only for migration; always returns true now that index state
 is stored centrally in ~/.cache/kaimon/projects.json for all projects.
 """
 _is_external_project(project_path::String) = !isdir(joinpath(project_path, ".kaimon"))
-

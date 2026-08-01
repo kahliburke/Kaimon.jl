@@ -64,7 +64,8 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
             end
             _lr = m.sessions_left_layout.rects
             _rr = m.sessions_layout.rects
-            _in_pane(rects, i, e) = length(rects) >= i && Base.contains(rects[i], e.x, e.y)
+            _in_pane(rects, i, e) =
+                length(rects) >= i && Base.contains(rects[i], e.x, e.y)
             if m.sessions_table !== nothing &&
                (m.sessions_table.col_drag > 0 || _in_pane(_lr, 1, evt))
                 prev = m.sessions_table.selected
@@ -92,11 +93,14 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
                 handle_resize!(m.activity_layout, evt)
             end
             _ar = m.activity_layout.rects
-            if m.activity_table !== nothing &&
-               (m.activity_table.col_drag > 0 || (length(_ar) >= 1 && Base.contains(_ar[1], evt.x, evt.y)))
+            if m.activity_table !== nothing && (
+                m.activity_table.col_drag > 0 ||
+                (length(_ar) >= 1 && Base.contains(_ar[1], evt.x, evt.y))
+            )
                 _handle_activity_mouse!(m, evt)
             elseif m.detail_paragraph !== nothing &&
-                   length(_ar) >= 2 && Base.contains(_ar[2], evt.x, evt.y)
+                   length(_ar) >= 2 &&
+                   Base.contains(_ar[2], evt.x, evt.y)
                 handle_mouse!(m.detail_paragraph, evt)
             end
         end
@@ -115,8 +119,10 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
                 handle_resize!(m.tests_layout, evt)
             end
             _tr = m.tests_layout.rects
-            if m.tests_table !== nothing &&
-               (m.tests_table.col_drag > 0 || (length(_tr) >= 1 && Base.contains(_tr[1], evt.x, evt.y)))
+            if m.tests_table !== nothing && (
+                m.tests_table.col_drag > 0 ||
+                (length(_tr) >= 1 && Base.contains(_tr[1], evt.x, evt.y))
+            )
                 prev = m.tests_table.selected
                 handle_mouse!(m.tests_table, evt)
                 if m.tests_table.selected != prev
@@ -146,13 +152,20 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
                 a = m._config_actions_area
                 if Base.contains(a, evt.x, evt.y)
                     row = evt.y - a.y
-                    if row == 0; begin_global_gate!(m)
-                    elseif row == 1; begin_client_config!(m)
-                    elseif row == 2; toggle_gate_mirror_repl!(m)
-                    elseif row == 4; cycle_editor!(m)
-                    elseif row == 6; _cycle_qdrant_prefix!(m)
-                    elseif row == 8; _install_vscode_remote_control!(m)
-                    elseif row == 9; begin_promote_after!(m)
+                    if row == 0
+                        begin_global_gate!(m)
+                    elseif row == 1
+                        begin_client_config!(m)
+                    elseif row == 2
+                        toggle_gate_mirror_repl!(m)
+                    elseif row == 4
+                        cycle_editor!(m)
+                    elseif row == 6
+                        _cycle_qdrant_prefix!(m)
+                    elseif row == 8
+                        _install_vscode_remote_control!(m)
+                    elseif row == 9
+                        begin_promote_after!(m)
                     end
                 end
             end
@@ -170,7 +183,8 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
                 # Route mouse to side detail ScrollPane
                 _er = m.extensions_layout.rects
                 if m.ext_detail_side_pane !== nothing &&
-                   length(_er) >= 2 && Base.contains(_er[2], evt.x, evt.y)
+                   length(_er) >= 2 &&
+                   Base.contains(_er[2], evt.x, evt.y)
                     handle_mouse!(m.ext_detail_side_pane, evt)
                 end
             end
@@ -189,16 +203,19 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
         $TAB_AGENTS => begin
             if m.agentmon_popup !== nothing
                 # Event popup captures the wheel for scrolling; Esc (key) closes it.
-                m.agentmon_popup_pane === nothing || handle_mouse!(m.agentmon_popup_pane, evt)
+                m.agentmon_popup_pane === nothing ||
+                    handle_mouse!(m.agentmon_popup_pane, evt)
             elseif m.agentmon_history_open
                 # Full-screen transcript overlay: wheel scrolls the MarkdownPane.
-                m.agentmon_history_pane === nothing || handle_mouse!(m.agentmon_history_pane, evt)
+                m.agentmon_history_pane === nothing ||
+                    handle_mouse!(m.agentmon_history_pane, evt)
             else
                 handle_resize!(m.agentmon_layout, evt)
                 _agr = m.agentmon_layout.rects
                 _in_ag(i, e) = length(_agr) >= i && Base.contains(_agr[i], e.x, e.y)
                 if _in_ag(1, evt)            # agent list pane → focus + click/wheel select
-                    evt.button == mouse_left && evt.action == mouse_press &&
+                    evt.button == mouse_left &&
+                        evt.action == mouse_press &&
                         (m.focused_pane[TAB_AGENTS] = 1)
                     if m.agentmon_list !== nothing
                         prev = m.agentmon_list.selected
@@ -218,7 +235,10 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
                             _open_event_popup!(m)
                         end
                     elseif evt.button == mouse_scroll_up
-                        m.agentmon_event_sel = max(1, (m.agentmon_event_sel == 0 ? 1 : m.agentmon_event_sel - 1))
+                        m.agentmon_event_sel = max(
+                            1,
+                            (m.agentmon_event_sel == 0 ? 1 : m.agentmon_event_sel - 1),
+                        )
                     elseif evt.button == mouse_scroll_down
                         m.agentmon_event_sel += 1    # view clamps to event count
                     end
@@ -324,7 +344,10 @@ function Tachikoma.update!(m::KaimonModel, evt::TaskEvent)
             _push_log!(:info, "Qdrant_jll installed and loaded into the running process")
         else
             _set_search_status!("Qdrant installed but failed to load (see log)")
-            _push_log!(:warn, "Qdrant_jll installed but load_qdrant_jll! failed:\n$(r.output)")
+            _push_log!(
+                :warn,
+                "Qdrant_jll installed but load_qdrant_jll! failed:\n$(r.output)",
+            )
         end
         m.search_health_last_check = 0.0
         _refresh_search_health_async!(m)
@@ -332,7 +355,10 @@ function Tachikoma.update!(m::KaimonModel, evt::TaskEvent)
         r = evt.value::NamedTuple
         if r.removed
             _set_search_status!("Managed Qdrant removed")
-            _push_log!(:info, "Managed Qdrant removed (service env deleted); on-disk index kept")
+            _push_log!(
+                :info,
+                "Managed Qdrant removed (service env deleted); on-disk index kept",
+            )
         else
             _set_search_status!("Managed Qdrant removal failed (see log)")
         end
@@ -491,8 +517,10 @@ function Tachikoma.update!(m::KaimonModel, evt::TaskEvent)
         elseif r.status == :changed
             oldfp = _key_fingerprint(something(r.old_pin, ""))
             newfp = _key_fingerprint(r.key)
-            _push_log!(:warn,
-                "CURVE server key CHANGED for $hostport (pinned $oldfp → host has $newfp)")
+            _push_log!(
+                :warn,
+                "CURVE server key CHANGED for $hostport (pinned $oldfp → host has $newfp)",
+            )
             if m.curve_modal != :none
                 m.curve_confirm_action = :repin
                 m.curve_confirm_arg = hostport
@@ -510,7 +538,9 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
     m.shutting_down && return
 
     # Session terminal captures all input except Escape
-    if m.session_terminal_open && m.session_terminal !== nothing && m.tab_bar.active == TAB_SESSIONS
+    if m.session_terminal_open &&
+       m.session_terminal !== nothing &&
+       m.tab_bar.active == TAB_SESSIONS
         if evt.key == :escape
             _close_session_terminal!(m)
             return
@@ -692,10 +722,13 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
     @match (evt.key, evt.char) begin
         # Quit (skip when debug console is active — let it type)
         (:char, 'q') => begin
-            if m.tab_bar.active == TAB_DEBUG && m.debug_state == :paused && get(m.focused_pane, TAB_DEBUG, 1) == 2
+            if m.tab_bar.active == TAB_DEBUG &&
+               m.debug_state == :paused &&
+               get(m.focused_pane, TAB_DEBUG, 1) == 2
                 # Fall through to per-tab dispatch
             else
-                m.quit_confirm = true; return
+                m.quit_confirm = true
+                return
             end
         end
 
@@ -741,14 +774,14 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
 
         # Navigation keys → delegate to per-tab/pane handler
         (:up, _) ||
-            (:down, _) ||
-            (:pageup, _) ||
-            (:pagedown, _) ||
-            (:left, _) ||
-            (:right, _) ||
-            (:enter, _) ||
-            (:home, _) ||
-            (:end_key, _) => begin
+        (:down, _) ||
+        (:pageup, _) ||
+        (:pagedown, _) ||
+        (:left, _) ||
+        (:right, _) ||
+        (:enter, _) ||
+        (:home, _) ||
+        (:end_key, _) => begin
             _handle_nav!(m, evt)
             return
         end
@@ -813,7 +846,10 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
 
     @match tab begin
         $TAB_SERVER => @match evt.char begin
-            'w' => (m.log_word_wrap = !m.log_word_wrap; _rebuild_log_pane!(m, m._log_pane_width))
+            'w' => (
+                m.log_word_wrap = !m.log_word_wrap;
+                _rebuild_log_pane!(m, m._log_pane_width)
+            )
             'F' => (
                 m.log_pane !== nothing && (m.log_pane.following = !m.log_pane.following)
             )
@@ -842,9 +878,13 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
                             spawn_task!(m._task_queue, :backtrace_result) do
                                 try
                                     bt = trigger_backtrace(conn)
-                                    (success=true, name=name, trace=bt)
+                                    (success = true, name = name, trace = bt)
                                 catch e
-                                    (success=false, name=name, error_msg=sprint(showerror, e))
+                                    (
+                                        success = false,
+                                        name = name,
+                                        error_msg = sprint(showerror, e),
+                                    )
                                 end
                             end
                         end
@@ -1088,9 +1128,7 @@ function _visible_session_count(m::KaimonModel)
     conns = lock(m.conn_mgr.lock) do
         copy(m.conn_mgr.connections)
     end
-    ext_namespaces = Set(
-        ext.config.manifest.namespace for ext in get_managed_extensions()
-    )
+    ext_namespaces = Set(ext.config.manifest.namespace for ext in get_managed_extensions())
     return count(c -> !is_extension(c) && !(c.namespace in ext_namespaces), conns)
 end
 
@@ -1112,9 +1150,10 @@ function _handle_activity_mouse!(m::KaimonModel, evt::MouseEvent)
     dt === nothing && return
 
     # Scroll wheel: move selection (not viewport) so detail pane updates
-    is_scroll = evt.button in (mouse_scroll_up, mouse_scroll_down) && evt.action == mouse_press
+    is_scroll =
+        evt.button in (mouse_scroll_up, mouse_scroll_down) && evt.action == mouse_press
     if is_scroll
-        n = sum(length(c.values) for c in dt.columns; init=0) ÷ max(1, length(dt.columns))
+        n = sum(length(c.values) for c in dt.columns; init = 0) ÷ max(1, length(dt.columns))
         n == 0 && return
         m.activity_follow = false
         step = evt.button == mouse_scroll_up ? -3 : 3
@@ -1187,4 +1226,3 @@ function _switch_tab!(m::KaimonModel, tab::Int)
         _refresh_client_status_async!(m)
     end
 end
-

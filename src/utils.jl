@@ -53,7 +53,10 @@ function terminate_process(pid::Integer; force::Bool = false)
             cmd = force ? `taskkill /F /PID $pid` : `taskkill /PID $pid`
             run(pipeline(cmd; stdout = devnull, stderr = devnull); wait = false)
         else
-            run(pipeline(`kill $(force ? "-9" : "-15") $pid`; stderr = devnull); wait = false)
+            run(
+                pipeline(`kill $(force ? "-9" : "-15") $pid`; stderr = devnull);
+                wait = false,
+            )
         end
     catch
     end
@@ -73,10 +76,12 @@ ships `.cmd`/`.ps1` shims (Claude Code, gemini, …) is invisible to `Sys.which`
 unit-testable off-Windows. A `name` that already contains a path separator returns `nothing`
 (it isn't a bare name to resolve).
 """
-function _which_pathext(name::AbstractString;
-                        path = get(ENV, "PATH", ""),
-                        pathext = get(ENV, "PATHEXT", ".COM;.EXE;.BAT;.CMD"),
-                        exists = isfile)
+function _which_pathext(
+    name::AbstractString;
+    path = get(ENV, "PATH", ""),
+    pathext = get(ENV, "PATHEXT", ".COM;.EXE;.BAT;.CMD"),
+    exists = isfile,
+)
     (occursin('/', name) || occursin('\\', name)) && return nothing
     exts = [lowercase(e) for e in split(pathext, ';'; keepempty = false)]
     for dir in split(path, ';'; keepempty = false)
@@ -104,9 +109,12 @@ unit-testable off-Windows.
 Known edge: `cmd.exe` re-parses the command line, so an argv VALUE containing cmd
 metacharacters (`% ! & | < >`) can mis-quote — rare for CLI flag values.
 """
-function launch_argv(argv::AbstractVector{<:AbstractString};
-                     iswin::Bool = Sys.iswindows(), which = Sys.which,
-                     which_ext = _which_pathext)
+function launch_argv(
+    argv::AbstractVector{<:AbstractString};
+    iswin::Bool = Sys.iswindows(),
+    which = Sys.which,
+    which_ext = _which_pathext,
+)
     a = String[String(x) for x in argv]
     (iswin && !isempty(a)) || return a
     exe = a[1]
@@ -125,8 +133,15 @@ function launch_argv(argv::AbstractVector{<:AbstractString};
         # for the common cases (paths/flags with spaces).
         return String["cmd.exe", "/d", "/c", resolved, rest...]
     elseif ext == ".ps1"
-        return String["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                      resolved, rest...]
+        return String[
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            resolved,
+            rest...,
+        ]
     end
     return String[resolved, rest...]
 end

@@ -9,7 +9,17 @@
 # new ID (old one cleared by the reindex delete-by-file).
 const _KAIMON_PID_NAMESPACE = UUID("d7a3e0b2-1c4f-5a86-9b3d-2e7f6c1a8b40")
 function _chunk_point_id(collection::AbstractString, chunk::Dict)
-    key = string(collection, '|', chunk["file"], '|', chunk["start_line"], '|', chunk["end_line"], '|', chunk["text"])
+    key = string(
+        collection,
+        '|',
+        chunk["file"],
+        '|',
+        chunk["start_line"],
+        '|',
+        chunk["end_line"],
+        '|',
+        chunk["text"],
+    )
     # SHA1→hex first: Julia's uuid5 runs unescape_string on its name, which throws on
     # backslash sequences like `\d`/`\w` that are normal in regex-heavy code. Hashing to
     # a plain hex string makes the name escape-safe while staying deterministic.
@@ -18,16 +28,29 @@ end
 
 """Read a file's indexable text (PDF or plain), or `nothing` to skip. File-log only."""
 function _read_indexable_content(file_path::String)
-    isfile(file_path) || (with_index_logger(() -> @warn "File not found" file = file_path); return nothing)
+    isfile(file_path) ||
+        (with_index_logger(() -> @warn "File not found" file = file_path); return nothing)
     content = if endswith(lowercase(file_path), ".pdf")
-        text = applicable(_extract_pdf_text, file_path) ? _extract_pdf_text(file_path) : nothing
-        text === nothing && (with_index_logger(() -> @info "Skipping PDF (PDFIO not loaded)" file = basename(file_path)); return nothing)
+        text =
+            applicable(_extract_pdf_text, file_path) ? _extract_pdf_text(file_path) :
+            nothing
+        text === nothing && (
+            with_index_logger(
+                () -> @info "Skipping PDF (PDFIO not loaded)" file =
+                    basename(file_path)
+            );
+            return nothing
+        )
         text
     else
         try
             read(file_path, String)
         catch e
-            with_index_logger(() -> @warn "Failed to read file" file = basename(file_path) exception = e)
+            with_index_logger(
+                () ->
+                    @warn "Failed to read file" file = basename(file_path) exception =
+                        e
+            )
             return nothing
         end
     end
@@ -51,7 +74,11 @@ function _prepare_file_chunks(file_path::String, collection::String, max_length:
     chunks = try
         chunk_code(content, file_path)
     catch e
-        with_index_logger(() -> @debug "Could not parse file for chunking (may be mid-edit); skipping" file = basename(file_path) reason = sprint(showerror, e))
+        with_index_logger(
+            () ->
+                @debug "Could not parse file for chunking (may be mid-edit); skipping" file =
+                    basename(file_path) reason = sprint(showerror, e)
+        )
         return Tuple{Dict,String}[]
     end
     isempty(chunks) && return Tuple{Dict,String}[]
@@ -67,25 +94,35 @@ end
 
 """Write the lexical (FTS5) rows for a file's prepared chunks. No Ollama. Idempotent
 (delete-then-insert). Non-fatal on error. Returns the row count."""
-function _write_fts!(file_path::String, collection::String, prepared::Vector{Tuple{Dict,String}})
+function _write_fts!(
+    file_path::String,
+    collection::String,
+    prepared::Vector{Tuple{Dict,String}},
+)
     fts_rows = Dict[]
     for (chunk, point_id) in prepared
-        push!(fts_rows, Dict(
-            "point_id" => point_id,
-            "collection" => collection,
-            "file" => chunk["file"],
-            "name" => chunk["name"],
-            "type" => chunk["type"],
-            "start_line" => chunk["start_line"],
-            "end_line" => chunk["end_line"],
-            "text" => chunk["text"],  # full text (not the 2000-char vector-payload truncation)
-        ))
+        push!(
+            fts_rows,
+            Dict(
+                "point_id" => point_id,
+                "collection" => collection,
+                "file" => chunk["file"],
+                "name" => chunk["name"],
+                "type" => chunk["type"],
+                "start_line" => chunk["start_line"],
+                "end_line" => chunk["end_line"],
+                "text" => chunk["text"],  # full text (not the 2000-char vector-payload truncation)
+            ),
+        )
     end
     try
         FtsIndex.delete_file!(collection, file_path)
         FtsIndex.add_chunks!(fts_rows)
     catch e
-        with_index_logger(() -> @warn "Lexical (FTS) index write failed (non-fatal)" file = basename(file_path) exception = e)
+        with_index_logger(
+            () -> @warn "Lexical (FTS) index write failed (non-fatal)" file =
+                basename(file_path) exception = e
+        )
     end
     return length(fts_rows)
 end
@@ -109,11 +146,15 @@ function _embed_upsert!(
         # Chunks are already size-fit by split_to_fit; embed directly. A rare embed
         # failure retries on the truncated text under the SAME id (keeps FTS↔Qdrant 1:1);
         # if that also fails the chunk stays lexical-only.
-        embedding = get_ollama_embedding(text; model=embedding_model)
+        embedding = get_ollama_embedding(text; model = embedding_model)
         if isempty(embedding)
-            embedding = get_ollama_embedding(first(text, max_length); model=embedding_model)
+            embedding =
+                get_ollama_embedding(first(text, max_length); model = embedding_model)
             if isempty(embedding)
-                with_index_logger(() -> @warn "Failed to embed chunk; lexical-only" file = basename(file_path) start_line = chunk["start_line"])
+                with_index_logger(
+                    () -> @warn "Failed to embed chunk; lexical-only" file =
+                        basename(file_path) start_line = chunk["start_line"]
+                )
                 continue
             end
         end
@@ -130,7 +171,14 @@ function _embed_upsert!(
             "indexed_at" => round(Int, time()),
             "kaimon_schema" => 1,  # schema version for future migrations
         )
-        for key in ["signature", "parameters", "type_params", "parent_type", "is_mutable", "is_exported"]
+        for key in [
+            "signature",
+            "parameters",
+            "type_params",
+            "parent_type",
+            "is_mutable",
+            "is_exported",
+        ]
             if haskey(chunk, key) && !isempty(chunk[key])
                 payload[key] = chunk[key]
             end
@@ -167,21 +215,32 @@ function _index_files_two_pass(
     collection::String;
     project_path::String,
     embedding_model::String,
-    reindex::Bool=false,
-    verbose::Bool=true,
-    silent::Bool=false,
-    progress_cb::Union{Nothing,Function}=nothing,
+    reindex::Bool = false,
+    verbose::Bool = true,
+    silent::Bool = false,
+    progress_cb::Union{Nothing,Function} = nothing,
 )
     isempty(files) && return 0
     max_length = get_embedding_config(embedding_model).context_chars
     gc = global_collection_name()
-    gc_exists = reindex ? (try; QdrantClient.collection_exists(gc); catch; false; end) : false
+    gc_exists = reindex ? (
+        try
+            QdrantClient.collection_exists(gc)
+        catch
+            false
+        end
+    ) : false
     n = length(files)
     # Report per-file progress to a watcher (e.g. a background job). `phase` is 1 (lexical)
     # or 2 (embeddings); called once per file even when it yields no chunks so the count
     # advances monotonically. Best-effort — a throwing callback must never abort indexing.
-    report(phase, i, chunks) = progress_cb === nothing ? nothing :
-        (try; progress_cb(phase, i, n, chunks); catch; end)
+    report(phase, i, chunks) =
+        progress_cb === nothing ? nothing : (
+            try
+                progress_cb(phase, i, n, chunks)
+            catch
+            end
+        )
 
     # Pass 1 — lexical (Ollama-free): keyword/identifier search lights up here.
     !silent && verbose && println("Pass 1/2 (lexical): $n files…")
@@ -191,12 +250,23 @@ function _index_files_two_pass(
             if reindex
                 # Changed content gets new deterministic IDs; clear the old chunks so
                 # stale vectors don't linger.
-                try; QdrantClient.delete_by_file(collection, f); catch; end
-                gc_exists && (try; QdrantClient.delete_by_file(gc, f); catch; end)
+                try
+                    QdrantClient.delete_by_file(collection, f)
+                catch
+                end
+                gc_exists && (
+                    try
+                        QdrantClient.delete_by_file(gc, f)
+                    catch
+                    end
+                )
             end
             isempty(prepared) || _write_fts!(f, collection, prepared)
         catch e
-            with_index_logger(() -> @warn "Lexical pass failed for file" file = basename(f) reason = sprint(showerror, e))
+            with_index_logger(
+                () -> @warn "Lexical pass failed for file" file = basename(f) reason =
+                    sprint(showerror, e)
+            )
         end
         report(1, i, 0)
     end
@@ -208,8 +278,16 @@ function _index_files_two_pass(
         try
             prepared = _prepare_file_chunks(f, collection, max_length)
             if !isempty(prepared)
-                !silent && verbose && println("  📄 $(basename(f)): $(length(prepared)) chunks")
-                _embed_upsert!(f, collection, prepared; embedding_model=embedding_model, project_path=project_path)
+                !silent &&
+                    verbose &&
+                    println("  📄 $(basename(f)): $(length(prepared)) chunks")
+                _embed_upsert!(
+                    f,
+                    collection,
+                    prepared;
+                    embedding_model = embedding_model,
+                    project_path = project_path,
+                )
                 record_indexed_file(project_path, f, mtime(f), length(prepared))
                 delete!(INDEX_FAILED_FILES[], f)
                 total += length(prepared)
@@ -217,7 +295,9 @@ function _index_files_two_pass(
         catch e
             INDEX_FAILED_FILES[][f] = get(INDEX_FAILED_FILES[], f, 0) + 1
             !silent && verbose && println("  ❌ Error indexing $(basename(f)): $e")
-            with_index_logger(() -> @error "Error indexing file" file = f reason = sprint(showerror, e))
+            with_index_logger(
+                () -> @error "Error indexing file" file = f reason = sprint(showerror, e)
+            )
         end
         report(2, i, total)
     end
@@ -234,31 +314,45 @@ Set silent=true to suppress all output (logs to file only).
 function index_file(
     file_path::String,
     collection::String;
-    project_path::String=pwd(),
-    verbose::Bool=true,
-    silent::Bool=false,
-    embedding_model::String=resolve_search_model(collection),
+    project_path::String = pwd(),
+    verbose::Bool = true,
+    silent::Bool = false,
+    embedding_model::String = resolve_search_model(collection),
 )
     try
         max_length = get_embedding_config(embedding_model).context_chars
         prepared = _prepare_file_chunks(file_path, collection, max_length)
         isempty(prepared) && return 0
 
-        !silent && verbose && println("  📄 $(basename(file_path)): $(length(prepared)) chunks")
+        !silent &&
+            verbose &&
+            println("  📄 $(basename(file_path)): $(length(prepared)) chunks")
 
         _write_fts!(file_path, collection, prepared)
-        _embed_upsert!(file_path, collection, prepared; embedding_model=embedding_model, project_path=project_path)
+        _embed_upsert!(
+            file_path,
+            collection,
+            prepared;
+            embedding_model = embedding_model,
+            project_path = project_path,
+        )
 
         record_indexed_file(project_path, file_path, mtime(file_path), length(prepared))
         delete!(INDEX_FAILED_FILES[], file_path)
-        with_index_logger(() -> @info "Successfully indexed file" file = basename(file_path) chunks = length(prepared))
+        with_index_logger(
+            () -> @info "Successfully indexed file" file = basename(file_path) chunks =
+                length(prepared)
+        )
         return length(prepared)
     catch e
         INDEX_FAILED_FILES[][file_path] = get(INDEX_FAILED_FILES[], file_path, 0) + 1
         fail_count = INDEX_FAILED_FILES[][file_path]
         msg = "Error indexing $(basename(file_path))"
         !silent && verbose && println("  ❌ $msg: $e")
-        with_index_logger(() -> @error msg file = file_path fail_count = fail_count reason = sprint(showerror, e))
+        with_index_logger(
+            () -> @error msg file = file_path fail_count = fail_count reason =
+                sprint(showerror, e)
+        )
         return 0
     end
 end
@@ -273,10 +367,10 @@ Set silent=true to suppress all output (logs to file only).
 function reindex_file(
     file_path::String,
     collection::String;
-    project_path::String=pwd(),
-    verbose::Bool=true,
-    silent::Bool=false,
-    embedding_model::String=resolve_search_model(collection),
+    project_path::String = pwd(),
+    verbose::Bool = true,
+    silent::Bool = false,
+    embedding_model::String = resolve_search_model(collection),
 )
     collection = normalize_collection_name(collection)
     !silent && verbose && println("  Re-indexing: $(basename(file_path))")
@@ -285,10 +379,20 @@ function reindex_file(
     # Delete old chunks for this file from both project and global collections
     QdrantClient.delete_by_file(collection, file_path)
     gc = global_collection_name()
-    try; QdrantClient.collection_exists(gc) && QdrantClient.delete_by_file(gc, file_path); catch; end
+    try
+        QdrantClient.collection_exists(gc) && QdrantClient.delete_by_file(gc, file_path)
+    catch
+    end
 
     # Index fresh (dual-writes to both collections)
-    return index_file(file_path, collection; project_path=project_path, verbose=verbose, silent=silent, embedding_model=embedding_model)
+    return index_file(
+        file_path,
+        collection;
+        project_path = project_path,
+        verbose = verbose,
+        silent = silent,
+        embedding_model = embedding_model,
+    )
 end
 
 """
@@ -298,12 +402,17 @@ Scroll a Qdrant collection and collect the distinct `file` payload values. Heavi
 than the FTS list (a full scroll), so only used for `deep` reconciliation — to catch
 points whose FTS co-write failed (FTS writes are best-effort) and were then deleted.
 """
-function _qdrant_distinct_files(collection::String; batch::Int=256)
+function _qdrant_distinct_files(collection::String; batch::Int = 256)
     files = Set{String}()
     QdrantClient.collection_exists(collection) || return files
     offset = nothing
     while true
-        res = QdrantClient.scroll_points(collection; limit=batch, offset=offset, with_vector=false)
+        res = QdrantClient.scroll_points(
+            collection;
+            limit = batch,
+            offset = offset,
+            with_vector = false,
+        )
         haskey(res, "error") && break
         pts = get(res, "points", [])
         isempty(pts) && break
@@ -326,19 +435,26 @@ the FTS `distinct_files` list (cheap, and a faithful proxy since `index_file`
 dual-writes Qdrant + FTS); with `deep=true` it is unioned with the Qdrant scroll.
 Pure (no side effects) so the detection logic is unit-testable without Qdrant.
 """
-function _orphan_files(collection::String; deep::Bool=false)
+function _orphan_files(collection::String; deep::Bool = false)
     collection = normalize_collection_name(collection)
     candidates = Set{String}()
     try
         union!(candidates, FtsIndex.distinct_files(collection))
     catch e
-        with_index_logger(() -> @warn "FTS distinct_files failed during orphan scan" collection = collection exception = e)
+        with_index_logger(
+            () -> @warn "FTS distinct_files failed during orphan scan" collection =
+                collection exception = e
+        )
     end
     if deep
         try
             union!(candidates, _qdrant_distinct_files(collection))
         catch e
-            with_index_logger(() -> @warn "Qdrant distinct-file scan failed during orphan scan" collection = collection exception = e)
+            with_index_logger(
+                () ->
+                    @warn "Qdrant distinct-file scan failed during orphan scan" collection =
+                        collection exception = e
+            )
         end
     end
     return String[f for f in candidates if !isfile(f)]
@@ -358,13 +474,13 @@ and vice versa.
 """
 function prune_orphans!(
     collection::String;
-    project_path::Union{String,Nothing}=nothing,
-    deep::Bool=false,
-    verbose::Bool=true,
-    silent::Bool=false,
+    project_path::Union{String,Nothing} = nothing,
+    deep::Bool = false,
+    verbose::Bool = true,
+    silent::Bool = false,
 )
     col = normalize_collection_name(collection)
-    orphans = _orphan_files(col; deep=deep)
+    orphans = _orphan_files(col; deep = deep)
 
     # Count of still-live indexed files (for wholesale-missing detection).
     live = 0
@@ -373,19 +489,38 @@ function prune_orphans!(
     catch
     end
 
-    isempty(orphans) && return (pruned=0, live=live, files=String[])
+    isempty(orphans) && return (pruned = 0, live = live, files = String[])
 
     gc = global_collection_name()
-    gc_exists = try; QdrantClient.collection_exists(gc); catch; false; end
+    gc_exists = try
+        QdrantClient.collection_exists(gc)
+    catch
+        false
+    end
     for file_path in orphans
         !silent && verbose && println("  Removing orphan: $(basename(file_path))")
-        with_index_logger(() -> @info "Removing orphaned index entry" collection = col file = basename(file_path))
-        try; QdrantClient.delete_by_file(col, file_path); catch; end
-        gc_exists && try; QdrantClient.delete_by_file(gc, file_path); catch; end
-        try; FtsIndex.delete_file!(col, file_path); catch; end
-        project_path !== nothing && try; remove_indexed_file(project_path, file_path); catch; end
+        with_index_logger(
+            () -> @info "Removing orphaned index entry" collection = col file =
+                basename(file_path)
+        )
+        try
+            QdrantClient.delete_by_file(col, file_path)
+        catch
+        end
+        gc_exists && try
+            QdrantClient.delete_by_file(gc, file_path)
+        catch
+        end
+        try
+            FtsIndex.delete_file!(col, file_path)
+        catch
+        end
+        project_path !== nothing && try
+            remove_indexed_file(project_path, file_path)
+        catch
+        end
     end
-    return (pruned=length(orphans), live=live, files=orphans)
+    return (pruned = length(orphans), live = live, files = orphans)
 end
 
 """
@@ -399,36 +534,62 @@ never touch — e.g. a project whose source tree was deleted wholesale. With
 (at startup an empty collection is indistinguishable from a temporarily-unavailable
 mount/worktree). Returns `(pruned=N, dropped=[...], collections=K)`.
 """
-function gc_index_orphans!(; deep::Bool=false, drop_empty::Bool=false, verbose::Bool=true, silent::Bool=false)
+function gc_index_orphans!(;
+    deep::Bool = false,
+    drop_empty::Bool = false,
+    verbose::Bool = true,
+    silent::Bool = false,
+)
     gc = global_collection_name()
     cols = Set{String}()
-    try; union!(cols, QdrantClient.list_collections()); catch; end
-    try; union!(cols, (c.collection for c in FtsIndex.coverage().collections)); catch; end
+    try
+        union!(cols, QdrantClient.list_collections())
+    catch
+    end
+    try
+        union!(cols, (c.collection for c in FtsIndex.coverage().collections))
+    catch
+    end
     delete!(cols, gc)
 
     total_pruned = 0
     dropped = String[]
     for col in cols
         res = try
-            prune_orphans!(col; deep=deep, verbose=verbose, silent=silent)
+            prune_orphans!(col; deep = deep, verbose = verbose, silent = silent)
         catch e
-            with_index_logger(() -> @warn "Orphan prune failed" collection = col exception = e)
+            with_index_logger(
+                () -> @warn "Orphan prune failed" collection = col exception = e
+            )
             continue
         end
         total_pruned += res.pruned
         if res.live == 0 && (res.pruned > 0 || drop_empty)
             if drop_empty
                 !silent && verbose && println("  Dropping empty collection: $col")
-                with_index_logger(() -> @info "Dropping empty collection (no files on disk)" collection = col)
-                try; QdrantClient.delete_collection(col); catch; end
-                try; FtsIndex.clear_collection!(col); catch; end
+                with_index_logger(
+                    () -> @info "Dropping empty collection (no files on disk)" collection =
+                        col
+                )
+                try
+                    QdrantClient.delete_collection(col)
+                catch
+                end
+                try
+                    FtsIndex.clear_collection!(col)
+                catch
+                end
                 push!(dropped, col)
             else
-                with_index_logger(() -> @warn "Collection has no files on disk — possible deleted project or unavailable mount; run gc_index_orphans!(drop_empty=true) to drop" collection = col)
+                with_index_logger(
+                    () ->
+                        @warn "Collection has no files on disk — possible deleted project or unavailable mount; run gc_index_orphans!(drop_empty=true) to drop" collection =
+                            col
+                )
             end
         end
     end
-    return (pruned=total_pruned, dropped=dropped, collections=length(cols))
+    return (pruned = total_pruned, dropped = dropped, collections = length(cols))
 end
 
 """
@@ -441,13 +602,13 @@ Set silent=true to suppress all output (logs to file only).
 function index_directory(
     dir_path::String,
     collection::String;
-    project_path::String=pwd(),
-    extensions::Vector{String}=DEFAULT_INDEX_EXTENSIONS,
-    exclude_dirs::Vector{String}=String[],
-    verbose::Bool=true,
-    silent::Bool=false,
-    embedding_model::String=resolve_search_model(collection),
-    progress_cb::Union{Nothing,Function}=nothing,
+    project_path::String = pwd(),
+    extensions::Vector{String} = DEFAULT_INDEX_EXTENSIONS,
+    exclude_dirs::Vector{String} = String[],
+    verbose::Bool = true,
+    silent::Bool = false,
+    embedding_model::String = resolve_search_model(collection),
+    progress_cb::Union{Nothing,Function} = nothing,
 )
     total_chunks = 0
     isdir(dir_path) || return total_chunks
@@ -457,10 +618,14 @@ function index_directory(
 
     # Find all matching files
     files = String[]
-    onerr = e -> begin
-        with_index_logger(() -> @warn "Skipping unreadable directory during indexing" dir = dir_path collection = collection exception = e)
-    end
-    for (root, dirs, filenames) in walkdir(dir_path; onerror=onerr)
+    onerr =
+        e -> begin
+            with_index_logger(
+                () -> @warn "Skipping unreadable directory during indexing" dir =
+                    dir_path collection = collection exception = e
+            )
+        end
+    for (root, dirs, filenames) in walkdir(dir_path; onerror = onerr)
         # Skip hidden directories, well-known noise, and user-excluded dirs
         filter!(d -> !startswith(d, ".") && d ∉ exclude_set, dirs)
 
@@ -473,12 +638,19 @@ function index_directory(
     end
 
     !silent && verbose && println("Found $(length(files)) files to index")
-    with_index_logger(() -> @info "Indexing directory" dir = dir_path file_count = length(files))
+    with_index_logger(
+        () -> @info "Indexing directory" dir = dir_path file_count = length(files)
+    )
 
     total_chunks = _index_files_two_pass(
-        files, collection;
-        project_path=project_path, embedding_model=embedding_model,
-        reindex=false, verbose=verbose, silent=silent, progress_cb=progress_cb,
+        files,
+        collection;
+        project_path = project_path,
+        embedding_model = embedding_model,
+        reindex = false,
+        verbose = verbose,
+        silent = silent,
+        progress_cb = progress_cb,
     )
 
     with_index_logger(() -> @info "Directory indexing complete" total_chunks = total_chunks)
@@ -507,18 +679,20 @@ Directories and extensions are resolved from the search config
 arrays. Use the Search Config panel in the TUI to update these settings.
 """
 function index_project(
-    project_path::String=pwd();
-    collection::Union{String,Nothing}=nothing,
-    recreate::Bool=false,
-    silent::Bool=false,
-    extra_dirs::Vector{String}=String[],
-    extensions::Union{Vector{String},Nothing}=nothing,
-    source::String="manual",
-    embedding_model::String=_load_embedding_model(),
-    progress_cb::Union{Nothing,Function}=nothing,
+    project_path::String = pwd();
+    collection::Union{String,Nothing} = nothing,
+    recreate::Bool = false,
+    silent::Bool = false,
+    extra_dirs::Vector{String} = String[],
+    extensions::Union{Vector{String},Nothing} = nothing,
+    source::String = "manual",
+    embedding_model::String = _load_embedding_model(),
+    progress_cb::Union{Nothing,Function} = nothing,
 )
     # Use project name as collection if not specified; always normalize
-    col_name = collection === nothing ? get_project_collection_name(project_path) : normalize_collection_name(collection)
+    col_name =
+        collection === nothing ? get_project_collection_name(project_path) :
+        normalize_collection_name(collection)
 
     # Config resolution priority: explicit args → registry → defaults
     registry_config = get_project_config(project_path)
@@ -586,7 +760,9 @@ function index_project(
     if !recreate && col_exists
         eff_model = resolve_search_model(col_name)
         if eff_model != embedding_model
-            !silent && @warn "Indexing into an existing collection with its own model (vectors from different models don't mix)" collection = col_name effective = eff_model requested = embedding_model
+            !silent &&
+                @warn "Indexing into an existing collection with its own model (vectors from different models don't mix)" collection =
+                    col_name effective = eff_model requested = embedding_model
         end
         embedding_model = eff_model
     end
@@ -596,33 +772,63 @@ function index_project(
     vector_size = embedding_config.dims
 
     if recreate
-        !silent && println("Recreating collection '$col_name' (model: $embedding_model, dims: $vector_size)...")
-        with_index_logger(() -> @info "Recreating collection" collection = col_name model = embedding_model vector_size = vector_size)
+        !silent && println(
+            "Recreating collection '$col_name' (model: $embedding_model, dims: $vector_size)...",
+        )
+        with_index_logger(
+            () ->
+                @info "Recreating collection" collection = col_name model = embedding_model vector_size =
+                    vector_size
+        )
         QdrantClient.delete_collection(col_name)
-        QdrantClient.create_collection(col_name; vector_size=vector_size)
+        QdrantClient.create_collection(col_name; vector_size = vector_size)
         # Also purge this project's entries from the global collection
         gc = global_collection_name()
         try
             if QdrantClient.collection_exists(gc)
-                QdrantClient.delete_by_filter(gc, Dict(
-                    "must" => [Dict("key" => "collection", "match" => Dict("value" => col_name))]
-                ))
+                QdrantClient.delete_by_filter(
+                    gc,
+                    Dict(
+                        "must" => [
+                            Dict(
+                                "key" => "collection",
+                                "match" => Dict("value" => col_name),
+                            ),
+                        ],
+                    ),
+                )
             end
-        catch; end
+        catch
+        end
         # Purge the lexical index for this collection in lockstep.
-        try; FtsIndex.clear_collection!(col_name); catch; end
+        try
+            FtsIndex.clear_collection!(col_name)
+        catch
+        end
     elseif !col_exists
-        !silent && println("Creating collection '$col_name' (model: $embedding_model, dims: $vector_size)...")
-        with_index_logger(() -> @info "Creating collection" collection = col_name model = embedding_model vector_size = vector_size)
-        QdrantClient.create_collection(col_name; vector_size=vector_size)
+        !silent && println(
+            "Creating collection '$col_name' (model: $embedding_model, dims: $vector_size)...",
+        )
+        with_index_logger(
+            () ->
+                @info "Creating collection" collection = col_name model = embedding_model vector_size =
+                    vector_size
+        )
+        QdrantClient.create_collection(col_name; vector_size = vector_size)
     end
 
     # Stamp the model so searches query with the right one and future incremental
     # indexing stays consistent.
     set_collection_model!(col_name, embedding_model)
 
-    !silent && println("Indexing $(length(dirs_to_index)) director$(length(dirs_to_index) == 1 ? "y" : "ies") into collection '$col_name'...")
-    with_index_logger(() -> @info "Indexing project" collection = col_name dirs = dirs_to_index extensions = actual_extensions)
+    !silent && println(
+        "Indexing $(length(dirs_to_index)) director$(length(dirs_to_index) == 1 ? "y" : "ies") into collection '$col_name'...",
+    )
+    with_index_logger(
+        () ->
+            @info "Indexing project" collection = col_name dirs = dirs_to_index extensions =
+                actual_extensions
+    )
 
     # Register project before indexing so that record_indexed_file can persist
     # per-file state to the registry during the loop (external projects store
@@ -643,11 +849,19 @@ function index_project(
     total_chunks = 0
     for dir in dirs_to_index
         base = total_chunks
-        dir_cb = progress_cb === nothing ? nothing :
+        dir_cb =
+            progress_cb === nothing ? nothing :
             (phase, done, tot, chunks) -> progress_cb(phase, done, tot, base + chunks)
-        chunks = index_directory(dir, col_name; project_path=project_path, silent=silent,
-            extensions=actual_extensions, exclude_dirs=config_exclude_dirs,
-            embedding_model=embedding_model, progress_cb=dir_cb)
+        chunks = index_directory(
+            dir,
+            col_name;
+            project_path = project_path,
+            silent = silent,
+            extensions = actual_extensions,
+            exclude_dirs = config_exclude_dirs,
+            embedding_model = embedding_model,
+            progress_cb = dir_cb,
+        )
         total_chunks += chunks
     end
 
@@ -727,10 +941,10 @@ function _run_coalesced(key::String, f)
 end
 
 function sync_index(
-    project_path::String=pwd();
-    collection::Union{String,Nothing}=nothing,
-    verbose::Bool=true,
-    silent::Bool=false,
+    project_path::String = pwd();
+    collection::Union{String,Nothing} = nothing,
+    verbose::Bool = true,
+    silent::Bool = false,
 )
     # Coalesce overlapping syncs of the same project (see _run_coalesced). A coalesced
     # trigger returns a zero-result of the usual shape so callers reading
@@ -738,22 +952,32 @@ function sync_index(
     # block would bind it as the FIRST arg, ahead of the key.)
     result = _run_coalesced(
         abspath(project_path),
-        () -> _sync_index_impl(project_path; collection=collection, verbose=verbose, silent=silent),
+        () -> _sync_index_impl(
+            project_path;
+            collection = collection,
+            verbose = verbose,
+            silent = silent,
+        ),
     )
     if result === nothing
-        with_index_logger(() -> @debug "sync_index already running for project; coalesced" project = abspath(project_path))
-        return (reindexed=0, deleted=0, chunks=0)
+        with_index_logger(
+            () -> @debug "sync_index already running for project; coalesced" project =
+                abspath(project_path)
+        )
+        return (reindexed = 0, deleted = 0, chunks = 0)
     end
     return result
 end
 
 function _sync_index_impl(
-    project_path::String=pwd();
-    collection::Union{String,Nothing}=nothing,
-    verbose::Bool=true,
-    silent::Bool=false,
+    project_path::String = pwd();
+    collection::Union{String,Nothing} = nothing,
+    verbose::Bool = true,
+    silent::Bool = false,
 )
-    col_name = collection === nothing ? get_project_collection_name(project_path) : normalize_collection_name(collection)
+    col_name =
+        collection === nothing ? get_project_collection_name(project_path) :
+        normalize_collection_name(collection)
 
     # Load indexing configuration from previous index_project call
     state = load_index_state(project_path)
@@ -788,17 +1012,36 @@ function _sync_index_impl(
     end
     if isempty(dirs_to_sync)
         !silent && verbose && println("⚠️  No indexable directories found for '$col_name'")
-        with_index_logger(() -> @warn "No indexable directories found" collection = col_name project = project_path)
-        return (reindexed=0, deleted=0, chunks=0)
+        with_index_logger(
+            () -> @warn "No indexable directories found" collection = col_name project =
+                project_path
+        )
+        return (reindexed = 0, deleted = 0, chunks = 0)
     end
 
-    !silent && verbose && println("🔄 Syncing index for collection '$col_name' ($(length(dirs_to_sync)) director$(length(dirs_to_sync) == 1 ? "y" : "ies"))...")
-    with_index_logger(() -> @info "Starting index sync" collection = col_name dirs = dirs_to_sync extensions = extensions)
+    !silent &&
+        verbose &&
+        println(
+            "🔄 Syncing index for collection '$col_name' ($(length(dirs_to_sync)) director$(length(dirs_to_sync) == 1 ? "y" : "ies"))...",
+        )
+    with_index_logger(
+        () ->
+            @info "Starting index sync" collection = col_name dirs = dirs_to_sync extensions =
+                extensions
+    )
 
     # Get files that need re-indexing from all directories
     stale_files = String[]
     for dir in dirs_to_sync
-        append!(stale_files, get_stale_files(project_path, dir; extensions=extensions, exclude_dirs=exclude_dirs))
+        append!(
+            stale_files,
+            get_stale_files(
+                project_path,
+                dir;
+                extensions = extensions,
+                exclude_dirs = exclude_dirs,
+            ),
+        )
     end
 
     # Deleted files: the union of cache-tracked-but-missing (fast path) and any
@@ -814,13 +1057,26 @@ function _sync_index_impl(
 
     # Handle deleted files (remove from both project and global collections + FTS)
     gc = global_collection_name()
-    gc_exists = try; QdrantClient.collection_exists(gc); catch; false; end
+    gc_exists = try
+        QdrantClient.collection_exists(gc)
+    catch
+        false
+    end
     for file_path in deleted_files
         !silent && verbose && println("  Removing deleted: $(basename(file_path))")
         with_index_logger(() -> @info "Removing deleted file" file = basename(file_path))
-        try; QdrantClient.delete_by_file(col_name, file_path); catch; end
-        gc_exists && try; QdrantClient.delete_by_file(gc, file_path); catch; end
-        try; FtsIndex.delete_file!(col_name, file_path); catch; end
+        try
+            QdrantClient.delete_by_file(col_name, file_path)
+        catch
+        end
+        gc_exists && try
+            QdrantClient.delete_by_file(gc, file_path)
+        catch
+        end
+        try
+            FtsIndex.delete_file!(col_name, file_path)
+        catch
+        end
         remove_indexed_file(project_path, file_path)
         deleted += 1
     end
@@ -829,9 +1085,13 @@ function _sync_index_impl(
     # stale set (keyword search updates immediately, even on a huge backlog), Pass 2
     # backfills embeddings. reindex=true clears each file's old vectors first.
     total_chunks += _index_files_two_pass(
-        stale_files, col_name;
-        project_path=project_path, embedding_model=resolve_search_model(col_name),
-        reindex=true, verbose=verbose, silent=silent,
+        stale_files,
+        col_name;
+        project_path = project_path,
+        embedding_model = resolve_search_model(col_name),
+        reindex = true,
+        verbose = verbose,
+        silent = silent,
     )
     reindexed = length(stale_files)
 
@@ -850,8 +1110,11 @@ function _sync_index_impl(
         state["last_indexed"] = round(Int, time())
         save_index_state(project_path, state)
     end
-    with_index_logger(() -> @info "Index sync complete" reindexed = reindexed deleted = deleted chunks = total_chunks)
-    return (reindexed=reindexed, deleted=deleted, chunks=total_chunks)
+    with_index_logger(
+        () -> @info "Index sync complete" reindexed = reindexed deleted = deleted chunks =
+            total_chunks
+    )
+    return (reindexed = reindexed, deleted = deleted, chunks = total_chunks)
 end
 
 """
@@ -864,7 +1127,7 @@ search without a re-index. Clears the collection's FTS rows first (idempotent).
 Returns the number of chunks written. Skips the global cross-project collection
 (lexical search spans per-project collections directly).
 """
-function backfill_fts!(collection::String; batch::Int=256)
+function backfill_fts!(collection::String; batch::Int = 256)
     collection = normalize_collection_name(collection)
     collection == global_collection_name() && return 0
     QdrantClient.collection_exists(collection) || return 0
@@ -873,7 +1136,12 @@ function backfill_fts!(collection::String; batch::Int=256)
     total = 0
     offset = nothing
     while true
-        res = QdrantClient.scroll_points(collection; limit=batch, offset=offset, with_vector=false)
+        res = QdrantClient.scroll_points(
+            collection;
+            limit = batch,
+            offset = offset,
+            with_vector = false,
+        )
         haskey(res, "error") && break
         pts = get(res, "points", [])
         isempty(pts) && break
@@ -883,26 +1151,31 @@ function backfill_fts!(collection::String; batch::Int=256)
             payload = get(pt, "payload", Dict())
             txt = get(payload, "text", "")
             (txt === nothing || isempty(txt)) && continue
-            push!(rows, Dict(
-                "point_id" => get(pt, "id", nothing),
-                "collection" => collection,
-                "file" => get(payload, "file", ""),
-                "name" => get(payload, "name", ""),
-                "type" => get(payload, "type", ""),
-                "start_line" => get(payload, "start_line", 0),
-                "end_line" => get(payload, "end_line", 0),
-                "text" => txt,
-                # Mirror opt-in metadata (e.g. {"module":"X"}) from the Qdrant payload so
-                # the lexical side's metadata filters work, not just the direct-ingest path.
-                "metadata" => get(payload, "metadata", nothing),
-            ))
+            push!(
+                rows,
+                Dict(
+                    "point_id" => get(pt, "id", nothing),
+                    "collection" => collection,
+                    "file" => get(payload, "file", ""),
+                    "name" => get(payload, "name", ""),
+                    "type" => get(payload, "type", ""),
+                    "start_line" => get(payload, "start_line", 0),
+                    "end_line" => get(payload, "end_line", 0),
+                    "text" => txt,
+                    # Mirror opt-in metadata (e.g. {"module":"X"}) from the Qdrant payload so
+                    # the lexical side's metadata filters work, not just the direct-ingest path.
+                    "metadata" => get(payload, "metadata", nothing),
+                ),
+            )
         end
         total += FtsIndex.add_chunks!(rows)
 
         offset = get(res, "next_page_offset", nothing)
         offset === nothing && break
     end
-    with_index_logger(() -> @info "FTS backfill complete" collection = collection chunks = total)
+    with_index_logger(
+        () -> @info "FTS backfill complete" collection = collection chunks = total
+    )
     return total
 end
 
@@ -928,7 +1201,11 @@ function backfill_fts_all!()
     counts = Pair{String,Int}[]
     for col in QdrantClient.list_collections()
         col == gc && continue
-        n = try; backfill_fts!(col); catch; 0; end
+        n = try
+            backfill_fts!(col)
+        catch
+            0
+        end
         push!(counts, col => n)
     end
     return counts
@@ -948,7 +1225,11 @@ ever lost it self-heals on the next boot. Runs in the background at startup.
 function ensure_fts_coverage!()
     QdrantClient.ping() || return Pair{String,Int}[]
     gc = global_collection_name()
-    cov = try; FtsIndex.coverage(); catch; (collections = NamedTuple[], total = 0); end
+    cov = try
+        FtsIndex.coverage()
+    catch
+        (collections = NamedTuple[], total = 0)
+    end
     fts_counts = Dict(c.collection => c.n for c in cov.collections)
 
     built = Pair{String,Int}[]
@@ -963,12 +1244,17 @@ function ensure_fts_coverage!()
         pruned += try
             prune_orphans!(col; verbose = false, silent = true).pruned
         catch e
-            with_index_logger(() -> @warn "Startup orphan prune failed" collection = col exception = e)
+            with_index_logger(
+                () ->
+                    @warn "Startup orphan prune failed" collection = col exception = e
+            )
             0
         end
         qn = try
             round(Int, get(QdrantClient.get_collection_info(col), "points_count", 0))
-        catch; 0; end
+        catch
+            0
+        end
         qn == 0 && continue
         # The mapping is 1:1 — every non-empty chunk is exactly one Qdrant point
         # and one FTS row — so a correct index has fcount == qcount. Any shortfall
@@ -980,13 +1266,19 @@ function ensure_fts_coverage!()
             n = try
                 backfill_fts!(col)
             catch e
-                with_index_logger(() -> @warn "FTS coverage backfill failed" collection = col exception = e)
+                with_index_logger(
+                    () ->
+                        @warn "FTS coverage backfill failed" collection = col exception =
+                            e
+                )
                 continue
             end
             n > 0 && push!(built, col => n)
         end
     end
-    (isempty(built) && pruned == 0) || with_index_logger(() -> @info "FTS coverage sync complete" built = built orphans_pruned = pruned)
+    (isempty(built) && pruned == 0) || with_index_logger(
+        () -> @info "FTS coverage sync complete" built = built orphans_pruned = pruned
+    )
     return built
 end
 
@@ -1008,4 +1300,3 @@ function _spawn_fts_coverage_sync!(; delay::Real = 8)
         end
     end
 end
-

@@ -43,16 +43,19 @@ function _view_search_config(m::KaimonModel, area::Rect, buf::Buffer)
 
     # Layout: header(1) + model list(Fill) + blank(1) + col_info + blank(1) + results(1) + blank(1) + hints(2)
     regions = split_layout(
-        Layout(Vertical, [
-            Fixed(1),                    # "Embedding Model" header
-            Fill(1),                     # model list (scrollable)
-            Fixed(1),                    # blank
-            Fixed(col_info_h),           # collection info
-            Fixed(1),                    # blank
-            Fixed(1),                    # results per search
-            Fixed(1),                    # blank
-            Fixed(2),                    # key hints
-        ]),
+        Layout(
+            Vertical,
+            [
+                Fixed(1),                    # "Embedding Model" header
+                Fill(1),                     # model list (scrollable)
+                Fixed(1),                    # blank
+                Fixed(col_info_h),           # collection info
+                Fixed(1),                    # blank
+                Fixed(1),                    # results per search
+                Fixed(1),                    # blank
+                Fixed(2),                    # key hints
+            ],
+        ),
         inner,
     )
 
@@ -68,8 +71,12 @@ function _view_search_config(m::KaimonModel, area::Rect, buf::Buffer)
         row_y > bottom(model_area) && break
 
         is_selected = i == m.search_config_selected
-        is_active = entry.name == m.search_embedding_model ||
-            (entry.name == "Custom..." && !haskey(EMBEDDING_CONFIGS, m.search_embedding_model) && !isempty(m.search_embedding_model))
+        is_active =
+            entry.name == m.search_embedding_model || (
+                entry.name == "Custom..." &&
+                !haskey(EMBEDDING_CONFIGS, m.search_embedding_model) &&
+                !isempty(m.search_embedding_model)
+            )
 
         marker = is_selected ? "▸ " : "  "
         name_style = is_selected ? tstyle(:accent, bold = true) : tstyle(:text)
@@ -81,12 +88,23 @@ function _view_search_config(m::KaimonModel, area::Rect, buf::Buffer)
             if m.search_config_custom_editing && is_selected
                 m.search_config_custom_input.tick = m.tick
                 m.search_config_custom_input.focused = true
-                render(m.search_config_custom_input, Rect(cx, row_y, inner.width - cx + inner.x, 1), buf)
+                render(
+                    m.search_config_custom_input,
+                    Rect(cx, row_y, inner.width - cx + inner.x, 1),
+                    buf,
+                )
             else
                 label = is_active ? "Custom: $(m.search_embedding_model)" : "Custom..."
                 set_string!(buf, cx, row_y, label, name_style; max_x = right(inner))
                 if is_active
-                    set_string!(buf, cx + length(label) + 1, row_y, "  active", tstyle(:accent, bold = true); max_x = right(inner))
+                    set_string!(
+                        buf,
+                        cx + length(label) + 1,
+                        row_y,
+                        "  active",
+                        tstyle(:accent, bold = true);
+                        max_x = right(inner),
+                    )
                 end
             end
         else
@@ -98,10 +116,24 @@ function _view_search_config(m::KaimonModel, area::Rect, buf::Buffer)
             cx += length(dim_str)
             installed_indicator = entry.installed ? " ●" : " ○"
             installed_style = entry.installed ? tstyle(:success) : tstyle(:text_dim)
-            set_string!(buf, cx, row_y, installed_indicator, installed_style; max_x = right(inner))
+            set_string!(
+                buf,
+                cx,
+                row_y,
+                installed_indicator,
+                installed_style;
+                max_x = right(inner),
+            )
             cx += length(installed_indicator)
             if is_active
-                set_string!(buf, cx, row_y, "  active", tstyle(:accent, bold = true); max_x = right(inner))
+                set_string!(
+                    buf,
+                    cx,
+                    row_y,
+                    "  active",
+                    tstyle(:accent, bold = true);
+                    max_x = right(inner),
+                )
             end
         end
     end
@@ -127,37 +159,80 @@ function _view_search_config(m::KaimonModel, area::Rect, buf::Buffer)
         distance = get(vectors_cfg, "distance", "?")
         status = get(col_info, "status", "?")
 
-        _write_spans!(buf, x, col_y + 1, [
-            ("  Vectors: ", tstyle(:text)), ("$vectors_count", tstyle(:accent)),
-            ("   Indexed: ", tstyle(:text)), ("$indexed_count", tstyle(:accent)),
-        ])
-        _write_spans!(buf, x, col_y + 2, [
-            ("  Dimensions: ", tstyle(:text)), ("$dims", tstyle(:accent)),
-            ("   Distance: ", tstyle(:text)), ("$distance", tstyle(:accent)),
-        ])
+        _write_spans!(
+            buf,
+            x,
+            col_y + 1,
+            [
+                ("  Vectors: ", tstyle(:text)),
+                ("$vectors_count", tstyle(:accent)),
+                ("   Indexed: ", tstyle(:text)),
+                ("$indexed_count", tstyle(:accent)),
+            ],
+        )
+        _write_spans!(
+            buf,
+            x,
+            col_y + 2,
+            [
+                ("  Dimensions: ", tstyle(:text)),
+                ("$dims", tstyle(:accent)),
+                ("   Distance: ", tstyle(:text)),
+                ("$distance", tstyle(:accent)),
+            ],
+        )
         status_style = status == "green" ? tstyle(:success) : tstyle(:warning)
-        _write_spans!(buf, x, col_y + 3, [("  Status: ", tstyle(:text)), ("$status", status_style)])
+        _write_spans!(
+            buf,
+            x,
+            col_y + 3,
+            [("  Status: ", tstyle(:text)), ("$status", status_style)],
+        )
     else
         col_label = isempty(m.search_collections) ? "none" : "loading..."
-        _write_spans!(buf, x, col_y, [("Collection: ", tstyle(:text)), (col_label, tstyle(:text_dim))])
+        _write_spans!(
+            buf,
+            x,
+            col_y,
+            [("Collection: ", tstyle(:text)), (col_label, tstyle(:text_dim))],
+        )
     end
 
     # ── Section 6: Results count ──
-    _write_spans!(buf, x, regions[6].y, [
-        ("Results per search: ", tstyle(:text)),
-        ("$(m.search_result_count)", tstyle(:accent)),
-    ])
+    _write_spans!(
+        buf,
+        x,
+        regions[6].y,
+        [
+            ("Results per search: ", tstyle(:text)),
+            ("$(m.search_result_count)", tstyle(:accent)),
+        ],
+    )
 
     # ── Section 8: Key hints ──
     hint_y = regions[8].y
-    _write_spans!(buf, x, hint_y, [
-        ("↑↓", tstyle(:accent)), (" navigate  ", tstyle(:text_dim)),
-        ("Enter", tstyle(:accent)), (" select", tstyle(:text_dim)),
-    ])
-    _write_spans!(buf, x, hint_y + 1, [
-        ("+/-", tstyle(:accent)), (" results  ", tstyle(:text_dim)),
-        ("Esc", tstyle(:accent)), (" close", tstyle(:text_dim)),
-    ])
+    _write_spans!(
+        buf,
+        x,
+        hint_y,
+        [
+            ("↑↓", tstyle(:accent)),
+            (" navigate  ", tstyle(:text_dim)),
+            ("Enter", tstyle(:accent)),
+            (" select", tstyle(:text_dim)),
+        ],
+    )
+    _write_spans!(
+        buf,
+        x,
+        hint_y + 1,
+        [
+            ("+/-", tstyle(:accent)),
+            (" results  ", tstyle(:text_dim)),
+            ("Esc", tstyle(:accent)),
+            (" close", tstyle(:text_dim)),
+        ],
+    )
 end
 
 """Render the collection detail overlay panel."""
@@ -225,14 +300,17 @@ function _view_collection_detail(m::KaimonModel, area::Rect, buf::Buffer)
     end
 
     regions = split_layout(
-        Layout(Vertical, [
-            Fixed(1),        # project path
-            Fixed(qdrant_h), # qdrant info
-            Fixed(1),        # blank
-            Fixed(idx_h),    # index state
-            Fixed(1),        # blank
-            Fixed(1),        # close hint
-        ]),
+        Layout(
+            Vertical,
+            [
+                Fixed(1),        # project path
+                Fixed(qdrant_h), # qdrant info
+                Fixed(1),        # blank
+                Fixed(idx_h),    # index state
+                Fixed(1),        # blank
+                Fixed(1),        # close hint
+            ],
+        ),
         inner,
     )
 
@@ -244,7 +322,12 @@ function _view_collection_detail(m::KaimonModel, area::Rect, buf::Buffer)
     if length(proj) > max_w - 9
         proj = "…" * last(proj, max_w - 10)
     end
-    _write_spans!(buf, x, regions[1].y, [("Project: ", tstyle(:text)), (proj, tstyle(:accent))])
+    _write_spans!(
+        buf,
+        x,
+        regions[1].y,
+        [("Project: ", tstyle(:text)), (proj, tstyle(:accent))],
+    )
 
     # ── Qdrant info ──
     qy = regions[2].y
@@ -258,18 +341,42 @@ function _view_collection_detail(m::KaimonModel, area::Rect, buf::Buffer)
         distance = get(vectors_cfg, "distance", "?")
         status = get(info, "status", "?")
 
-        _write_spans!(buf, x, qy, [
-            ("Vectors: ", tstyle(:text)), ("$vectors_count", tstyle(:accent)),
-            ("  Indexed: ", tstyle(:text)), ("$indexed_count", tstyle(:accent)),
-        ])
-        _write_spans!(buf, x, qy + 1, [
-            ("Dimensions: ", tstyle(:text)), ("$dims", tstyle(:accent)),
-            ("  Distance: ", tstyle(:text)), ("$distance", tstyle(:accent)),
-        ])
+        _write_spans!(
+            buf,
+            x,
+            qy,
+            [
+                ("Vectors: ", tstyle(:text)),
+                ("$vectors_count", tstyle(:accent)),
+                ("  Indexed: ", tstyle(:text)),
+                ("$indexed_count", tstyle(:accent)),
+            ],
+        )
+        _write_spans!(
+            buf,
+            x,
+            qy + 1,
+            [
+                ("Dimensions: ", tstyle(:text)),
+                ("$dims", tstyle(:accent)),
+                ("  Distance: ", tstyle(:text)),
+                ("$distance", tstyle(:accent)),
+            ],
+        )
         status_style = status == "green" ? tstyle(:success) : tstyle(:warning)
-        _write_spans!(buf, x, qy + 2, [("Status: ", tstyle(:text)), ("$status", status_style)])
+        _write_spans!(
+            buf,
+            x,
+            qy + 2,
+            [("Status: ", tstyle(:text)), ("$status", status_style)],
+        )
     else
-        _write_spans!(buf, x, qy, [("Qdrant info: ", tstyle(:text)), ("loading...", tstyle(:text_dim))])
+        _write_spans!(
+            buf,
+            x,
+            qy,
+            [("Qdrant info: ", tstyle(:text)), ("loading...", tstyle(:text_dim))],
+        )
     end
 
     # ── Index state ──
@@ -289,17 +396,24 @@ function _view_collection_detail(m::KaimonModel, area::Rect, buf::Buffer)
             end
         end
         if !isempty(idx_exts) && iy <= bottom(regions[4])
-            _write_spans!(buf, x, iy, [
-                ("Extensions: ", tstyle(:text)),
-                (join(idx_exts, " "), tstyle(:accent)),
-            ])
+            _write_spans!(
+                buf,
+                x,
+                iy,
+                [("Extensions: ", tstyle(:text)), (join(idx_exts, " "), tstyle(:accent))],
+            )
             iy += 1
         end
         if iy <= bottom(regions[4])
-            _write_spans!(buf, x, iy, [
-                ("Files tracked: ", tstyle(:text)),
-                ("$(length(idx_files))", tstyle(:accent)),
-            ])
+            _write_spans!(
+                buf,
+                x,
+                iy,
+                [
+                    ("Files tracked: ", tstyle(:text)),
+                    ("$(length(idx_files))", tstyle(:accent)),
+                ],
+            )
         end
     elseif isempty(m.search_detail_project_path)
         set_string!(buf, x, iy, "No index state (project unknown)", tstyle(:text_dim))

@@ -12,7 +12,7 @@ struct _DispatchTag
 end
 
 """A simple greeter for dispatch tests."""
-function _greet(name::String, count::Int; loud::Bool=false, prefix::String="Hi")
+function _greet(name::String, count::Int; loud::Bool = false, prefix::String = "Hi")
     msg = "$prefix $name (×$count)"
     loud ? uppercase(msg) : msg
 end
@@ -28,8 +28,8 @@ Mirrors a real worker tool like `__slate_eval_batch(cells; run_id, npool)`: `cel
 is untyped (`::Any`) so a Dict satisfies it. This must NOT trigger the Dict fast
 path — doing so would bind the whole args Dict to `batch` and drop the kwargs.
 """
-function _batch_handler(batch; run_id::String="", npool::Int=0)
-    return (batch=batch, run_id=run_id, npool=npool)
+function _batch_handler(batch; run_id::String = "", npool::Int = 0)
+    return (batch = batch, run_id = run_id, npool = npool)
 end
 
 """Handler with enum and struct args."""
@@ -37,7 +37,7 @@ function _task_handler(
     title::String,
     priority::_DispatchPriority,
     tags::Vector{_DispatchTag};
-    status::_DispatchStatus=todo,
+    status::_DispatchStatus = todo,
 )
     tag_names = join([t.name for t in tags], ",")
     "title=$title priority=$(priority) tags=[$tag_names] status=$status"
@@ -76,11 +76,7 @@ end
     # Enum positional
     result2 = dispatch(
         _task_handler,
-        Dict{String,Any}(
-            "title" => "Fix bug",
-            "priority" => "high",
-            "tags" => [],
-        ),
+        Dict{String,Any}("title" => "Fix bug", "priority" => "high", "tags" => []),
     )
     @test occursin("title=Fix bug", result2)
     @test occursin("priority=high", result2)
@@ -105,10 +101,7 @@ end
     @test result == "HELLO BOB (×2)"
 
     # kwargs defaults used when omitted
-    result2 = dispatch(
-        _greet,
-        Dict{String,Any}("name" => "Carol", "count" => "1"),
-    )
+    result2 = dispatch(_greet, Dict{String,Any}("name" => "Carol", "count" => "1"))
     @test result2 == "Hi Carol (×1)"   # loud=false, prefix="Hi" defaults
 end
 
@@ -194,28 +187,46 @@ end
     @test !occursin("MethodError", m) && !occursin("Stacktrace", m)   # concise, no raw dump
 
     # Missing required with no unknowns → still a clear message.
-    err2 = try; dispatch(_greet, Dict{String,Any}("count" => "3")); nothing; catch e; e end
+    err2 = try
+        dispatch(_greet, Dict{String,Any}("count" => "3"))
+        nothing
+    catch e
+        e
+    end
     @test err2 isa KaimonGate.ToolArgumentError && occursin("name", err2.msg)
 
     # Extra/unknown param but every required one present → call SUCCEEDS (extra ignored).
-    @test dispatch(_greet, Dict{String,Any}("name" => "Al", "count" => "1", "bogus" => "z")) ==
-          "Hi Al (×1)"
+    @test dispatch(
+        _greet,
+        Dict{String,Any}("name" => "Al", "count" => "1", "bogus" => "z"),
+    ) == "Hi Al (×1)"
 
     # A genuine error INSIDE the handler must surface as-is, never masked as a usage error.
     _boom(x::Int) = error("kaboom-$x")
-    err3 = try; dispatch(_boom, Dict{String,Any}("x" => "5")); nothing; catch e; e end
+    err3 = try
+        dispatch(_boom, Dict{String,Any}("x" => "5"))
+        nothing
+    catch e
+        e
+    end
     @test err3 isa ErrorException && occursin("kaboom", err3.msg)
     @test !(err3 isa KaimonGate.ToolArgumentError)
 
     # Uncoercible value → names the parameter + expected type, not a bare parse error.
     err4 = try
-        dispatch(_greet, Dict{String,Any}("name" => "A", "count" => "NaN-ish"); tool_name = "greet")
+        dispatch(
+            _greet,
+            Dict{String,Any}("name" => "A", "count" => "NaN-ish");
+            tool_name = "greet",
+        )
         nothing
     catch e
         e
     end
     @test err4 isa KaimonGate.ToolArgumentError
-    @test occursin("count", err4.msg) && occursin("Int", err4.msg) && occursin("NaN-ish", err4.msg)
+    @test occursin("count", err4.msg) &&
+          occursin("Int", err4.msg) &&
+          occursin("NaN-ish", err4.msg)
     @test !occursin("invalid base", err4.msg)   # the raw ArgumentError text is gone
 end
 
@@ -238,7 +249,8 @@ end
         api
     end
     api = _make_optional_positional()
-    @test dispatch(api, Dict{String,Any}("topic" => "echart"); tool_name = "api") == "entry:echart"
+    @test dispatch(api, Dict{String,Any}("topic" => "echart"); tool_name = "api") ==
+          "entry:echart"
     @test dispatch(api, Dict{String,Any}(); tool_name = "api") == "INDEX"
     # The schema and the call must agree on the parameter list — advertising `topic` while
     # dropping it is what made the failure invisible from the outside.
@@ -251,9 +263,13 @@ end
         f
     end
     f = _make_mixed()
-    @test dispatch(f, Dict{String,Any}("a" => "A"); tool_name = "f") == "a=A b=Bdef c=Cdef k=Kdef"
-    @test dispatch(f, Dict{String,Any}("a" => "A", "b" => "B", "k" => "K"); tool_name = "f") ==
-          "a=A b=B c=Cdef k=K"
+    @test dispatch(f, Dict{String,Any}("a" => "A"); tool_name = "f") ==
+          "a=A b=Bdef c=Cdef k=Kdef"
+    @test dispatch(
+        f,
+        Dict{String,Any}("a" => "A", "b" => "B", "k" => "K");
+        tool_name = "f",
+    ) == "a=A b=B c=Cdef k=K"
 
     # A GAP must be refused, not splatted: `a` and `c` with `b` omitted would land C's value in
     # `b` (positionals fill from the front and cannot skip), silently producing a wrong answer.

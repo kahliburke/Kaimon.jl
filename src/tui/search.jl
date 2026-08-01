@@ -55,12 +55,20 @@ function _view_search_status(m::KaimonModel, area::Rect, buf::Buffer)
     qdrant_up = m.search_qdrant_up
     ollama_ok = m.search_ollama_up && m.search_model_available
     if qdrant_up && ollama_ok
-        _write_spans!(buf, x, y, [
-            ("● ", tstyle(:success)), ("Qdrant", txt),
-            (sep, dim),
-            ("● ", tstyle(:success)), ("Ollama", txt),
-            (" ", dim), (m.search_embedding_model, tstyle(:accent)),
-        ])
+        _write_spans!(
+            buf,
+            x,
+            y,
+            [
+                ("● ", tstyle(:success)),
+                ("Qdrant", txt),
+                (sep, dim),
+                ("● ", tstyle(:success)),
+                ("Ollama", txt),
+                (" ", dim),
+                (m.search_embedding_model, tstyle(:accent)),
+            ],
+        )
         y += 1
     else
         if qdrant_up
@@ -68,47 +76,87 @@ function _view_search_status(m::KaimonModel, area::Rect, buf::Buffer)
         elseif m.search_managed_qdrant_enabled
             # Managed state comes from the health check (model fields), so the
             # render loop stays free of syscalls and demos are deterministic.
-            hint = m.search_managed_qdrant_installed ? " start managed Qdrant" :
-                                                       " enable managed Qdrant"
-            _write_spans!(buf, x, y, [
-                ("○ ", tstyle(:error)), ("Qdrant  ", txt),
-                ("[l]", tstyle(:warning)), (hint, dim),
-            ])
+            hint =
+                m.search_managed_qdrant_installed ? " start managed Qdrant" :
+                " enable managed Qdrant"
+            _write_spans!(
+                buf,
+                x,
+                y,
+                [
+                    ("○ ", tstyle(:error)),
+                    ("Qdrant  ", txt),
+                    ("[l]", tstyle(:warning)),
+                    (hint, dim),
+                ],
+            )
         else
-            _write_spans!(buf, x, y, [
-                ("○ ", tstyle(:error)), ("Qdrant  ", txt),
-                ("docker run -d -p 6333:6333 qdrant/qdrant", dim),
-            ])
+            _write_spans!(
+                buf,
+                x,
+                y,
+                [
+                    ("○ ", tstyle(:error)),
+                    ("Qdrant  ", txt),
+                    ("docker run -d -p 6333:6333 qdrant/qdrant", dim),
+                ],
+            )
         end
         y += 1
         if ollama_ok
-            _write_spans!(buf, x, y, [
-                ("● ", tstyle(:success)), ("Ollama  ", txt),
-                (m.search_embedding_model, tstyle(:accent)),
-            ])
+            _write_spans!(
+                buf,
+                x,
+                y,
+                [
+                    ("● ", tstyle(:success)),
+                    ("Ollama  ", txt),
+                    (m.search_embedding_model, tstyle(:accent)),
+                ],
+            )
         elseif m.search_ollama_up
-            _write_spans!(buf, x, y, [
-                ("◐ ", tstyle(:warning)), ("Ollama  ", txt),
-                ("model missing  ", txt),
-                ("[p]", tstyle(:warning)),
-                (" pull $(m.search_embedding_model)", dim),
-            ])
+            _write_spans!(
+                buf,
+                x,
+                y,
+                [
+                    ("◐ ", tstyle(:warning)),
+                    ("Ollama  ", txt),
+                    ("model missing  ", txt),
+                    ("[p]", tstyle(:warning)),
+                    (" pull $(m.search_embedding_model)", dim),
+                ],
+            )
         else
-            _write_spans!(buf, x, y, [
-                ("○ ", tstyle(:error)), ("Ollama  ", txt),
-                ("https://ollama.com/download", dim),
-            ])
+            _write_spans!(
+                buf,
+                x,
+                y,
+                [
+                    ("○ ", tstyle(:error)),
+                    ("Ollama  ", txt),
+                    ("https://ollama.com/download", dim),
+                ],
+            )
         end
         y += 1
     end
 
     # ── Managed-Qdrant control (only when Kaimon is running the child) ──
     if m.search_managed_qdrant_running
-        _write_spans!(buf, x, y, [
-            ("◆ ", tstyle(:accent)), ("Qdrant managed by Kaimon  ", dim),
-            ("[l]", tstyle(:warning)), (" stop  ", dim),
-            ("[x]", tstyle(:warning)), (" remove", dim),
-        ])
+        _write_spans!(
+            buf,
+            x,
+            y,
+            [
+                ("◆ ", tstyle(:accent)),
+                ("Qdrant managed by Kaimon  ", dim),
+                ("[l]", tstyle(:warning)),
+                (" stop  ", dim),
+                ("[x]", tstyle(:warning)),
+                (" remove", dim),
+            ],
+        )
         y += 1
     end
 
@@ -119,22 +167,32 @@ function _view_search_status(m::KaimonModel, area::Rect, buf::Buffer)
         n_cols = length(m.search_collections)
         has_left = sel > 1
         has_right = sel < n_cols
-        _write_spans!(buf, x, y, [
-            (has_left ? "◀ " : "  ", has_left ? tstyle(:accent) : dim),
-            (col_name, tstyle(:accent, bold=true)),
-            (has_right ? " ▶" : "  ", has_right ? tstyle(:accent) : dim),
-            (" $(sel)/$(n_cols)", tstyle(:border)),
-            (sep, dim),
-            ("Filter: ", txt),
-            (_search_filter_label(m), tstyle(:accent)),
-        ])
+        _write_spans!(
+            buf,
+            x,
+            y,
+            [
+                (has_left ? "◀ " : "  ", has_left ? tstyle(:accent) : dim),
+                (col_name, tstyle(:accent, bold = true)),
+                (has_right ? " ▶" : "  ", has_right ? tstyle(:accent) : dim),
+                (" $(sel)/$(n_cols)", tstyle(:border)),
+                (sep, dim),
+                ("Filter: ", txt),
+                (_search_filter_label(m), tstyle(:accent)),
+            ],
+        )
     else
         if qdrant_up
-            _write_spans!(buf, x, y, [
-                ("no collections — ", tstyle(:border)),
-                ("[i]", tstyle(:warning)),
-                (" index current project", dim),
-            ])
+            _write_spans!(
+                buf,
+                x,
+                y,
+                [
+                    ("no collections — ", tstyle(:border)),
+                    ("[i]", tstyle(:warning)),
+                    (" index current project", dim),
+                ],
+            )
         else
             _write_spans!(buf, x, y, [("no collections", tstyle(:border))])
         end
@@ -143,19 +201,26 @@ function _view_search_status(m::KaimonModel, area::Rect, buf::Buffer)
 
     # ── Optional: warnings / status ──
     if m.search_dimension_mismatch
-        _write_spans!(buf, x, y, [
-            ("⚠ ", tstyle(:warning)),
-            ("Model mismatch — ", tstyle(:warning)),
-            ("[o]", tstyle(:accent)),
-            (" to reindex", dim),
-        ])
+        _write_spans!(
+            buf,
+            x,
+            y,
+            [
+                ("⚠ ", tstyle(:warning)),
+                ("Model mismatch — ", tstyle(:warning)),
+                ("[o]", tstyle(:accent)),
+                (" to reindex", dim),
+            ],
+        )
         y += 1
     end
     _status = _get_search_status()
     if !isempty(_status)
-        _style = contains(_status, "Cannot") || contains(_status, "failed") ||
-                 contains(_status, "Failed") || contains(_status, "No ") ?
-                 tstyle(:warning) : tstyle(:accent)
+        _style =
+            contains(_status, "Cannot") ||
+            contains(_status, "failed") ||
+            contains(_status, "Failed") ||
+            contains(_status, "No ") ? tstyle(:warning) : tstyle(:accent)
         _write_spans!(buf, x, y, [("▸ ", _style), (_status, _style)])
         y += 1
     end
@@ -163,17 +228,28 @@ function _view_search_status(m::KaimonModel, area::Rect, buf::Buffer)
     # ── Hint bar (bottom of inner area) ──
     hint_y = inner.y + inner.height - 1
     if hint_y > y - 1
-        _write_spans!(buf, x, hint_y, [
-            ("[/]", tstyle(:accent)), (" search  ", dim),
-            ("[c]", tstyle(:accent)), (" collection  ", dim),
-            ("[m]", tstyle(:accent)), (" manage  ", dim),
-            ("[o]", tstyle(:accent)), (" options  ", dim),
-            ("[r]", tstyle(:accent)), (" refresh", dim),
-        ])
+        _write_spans!(
+            buf,
+            x,
+            hint_y,
+            [
+                ("[/]", tstyle(:accent)),
+                (" search  ", dim),
+                ("[c]", tstyle(:accent)),
+                (" collection  ", dim),
+                ("[m]", tstyle(:accent)),
+                (" manage  ", dim),
+                ("[o]", tstyle(:accent)),
+                (" options  ", dim),
+                ("[r]", tstyle(:accent)),
+                (" refresh", dim),
+            ],
+        )
     end
 end
 
-_search_filter_label(m) = m.search_chunk_type == "all" ? "all" :
+_search_filter_label(m) =
+    m.search_chunk_type == "all" ? "all" :
     m.search_chunk_type == "definitions" ? "definitions" : "windows"
 
 """Pane 2: Query input."""
@@ -331,7 +407,7 @@ function _sync_search_results_pane!(m::KaimonModel)
         else
             "win", :border
         end
-        loc_style = file_link_style(abs_file; line=start_line)
+        loc_style = file_link_style(abs_file; line = start_line)
         push!(
             lines,
             [
@@ -358,7 +434,19 @@ function _sync_search_results_pane!(m::KaimonModel)
                         if s.bg isa Tachikoma.NoColor
                             push!(line_spans, sp)
                         else
-                            push!(line_spans, Span(sp.content, Style(fg=s.fg, bold=s.bold, dim=s.dim, italic=s.italic, underline=s.underline)))
+                            push!(
+                                line_spans,
+                                Span(
+                                    sp.content,
+                                    Style(
+                                        fg = s.fg,
+                                        bold = s.bold,
+                                        dim = s.dim,
+                                        italic = s.italic,
+                                        underline = s.underline,
+                                    ),
+                                ),
+                            )
                         end
                     end
                     push!(lines, line_spans)
@@ -423,26 +511,22 @@ function _view_collection_picker(m::KaimonModel, area::Rect, buf::Buffer)
     pos = center(area, modal_w, modal_h)
 
     # Clear background behind popup (explicit bg to override existing cells)
-    bg = Style(fg=tstyle(:text).fg, bg=Tachikoma.theme().bg)
-    for ry in pos.y:pos.y+pos.height-1
-        for rx in pos.x:pos.x+pos.width-1
+    bg = Style(fg = tstyle(:text).fg, bg = Tachikoma.theme().bg)
+    for ry = pos.y:(pos.y+pos.height-1)
+        for rx = pos.x:(pos.x+pos.width-1)
             set_char!(buf, rx, ry, ' ', bg)
         end
     end
 
-    title = m.search_collection_delete_confirm ?
-        "Delete '$(cols[sel])'? [y]es [n]o" :
+    title =
+        m.search_collection_delete_confirm ? "Delete '$(cols[sel])'? [y]es [n]o" :
         "Select Collection"
-    title_style = m.search_collection_delete_confirm ?
-        tstyle(:error, bold=true) : tstyle(:accent, bold=true)
-    border_style = m.search_collection_delete_confirm ?
-        tstyle(:error) : tstyle(:accent)
+    title_style =
+        m.search_collection_delete_confirm ? tstyle(:error, bold = true) :
+        tstyle(:accent, bold = true)
+    border_style = m.search_collection_delete_confirm ? tstyle(:error) : tstyle(:accent)
 
-    blk = Block(
-        title = title,
-        border_style = border_style,
-        title_style = title_style,
-    )
+    blk = Block(title = title, border_style = border_style, title_style = title_style)
     inner = render(blk, pos, buf)
     inner.height < 1 && return
 
@@ -452,38 +536,53 @@ function _view_collection_picker(m::KaimonModel, area::Rect, buf::Buffer)
 
     # Scroll offset to keep selection visible
     offset = max(0, sel - list_h)
-    for vi in 1:list_h
+    for vi = 1:list_h
         idx = offset + vi
         idx > n && break
         ry = inner.y + vi - 1
         is_sel = idx == sel
         style = if is_sel && m.search_collection_delete_confirm
-            tstyle(:error, bold=true)
+            tstyle(:error, bold = true)
         elseif is_sel
-            tstyle(:accent, bold=true)
+            tstyle(:accent, bold = true)
         else
             tstyle(:text)
         end
         marker = is_sel ? (m.search_collection_delete_confirm ? '✗' : '▸') : ' '
         set_char!(buf, inner.x, ry, marker, style)
-        set_string!(buf, inner.x + 2, ry, cols[idx], style; max_x=right(inner))
+        set_string!(buf, inner.x + 2, ry, cols[idx], style; max_x = right(inner))
     end
 
     # Hint bar at bottom of inner area
     hint_y = inner.y + inner.height - 1
     dim = tstyle(:text_dim)
     if m.search_collection_delete_confirm
-        _write_spans!(buf, inner.x, hint_y, [
-            ("Press ", dim), ("y", tstyle(:error, bold=true)),
-            (" to delete, ", dim), ("n", tstyle(:accent, bold=true)),
-            (" to cancel", dim),
-        ])
+        _write_spans!(
+            buf,
+            inner.x,
+            hint_y,
+            [
+                ("Press ", dim),
+                ("y", tstyle(:error, bold = true)),
+                (" to delete, ", dim),
+                ("n", tstyle(:accent, bold = true)),
+                (" to cancel", dim),
+            ],
+        )
     else
-        _write_spans!(buf, inner.x, hint_y, [
-            ("[d]", tstyle(:error)), (" delete  ", dim),
-            ("[Enter]", tstyle(:accent)), (" select  ", dim),
-            ("[Esc]", tstyle(:accent)), (" close", dim),
-        ])
+        _write_spans!(
+            buf,
+            inner.x,
+            hint_y,
+            [
+                ("[d]", tstyle(:error)),
+                (" delete  ", dim),
+                ("[Enter]", tstyle(:accent)),
+                (" select  ", dim),
+                ("[Esc]", tstyle(:accent)),
+                (" close", dim),
+            ],
+        )
     end
 end
 
@@ -531,4 +630,3 @@ function _get_search_status()
     time() - t > 10.0 && return ""  # auto-clear after 10 seconds
     msg
 end
-

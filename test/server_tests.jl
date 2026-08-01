@@ -240,10 +240,8 @@ end
                 "jsonrpc" => "2.0",
                 "id" => 11,
                 "method" => "tools/call",
-                "params" => Dict(
-                    "name" => "reverse_text",
-                    "arguments" => Dict{String,Any}(),
-                ),
+                "params" =>
+                    Dict("name" => "reverse_text", "arguments" => Dict{String,Any}()),
             ),
         )
         r2 = HTTP.post(
@@ -259,8 +257,7 @@ end
         @test occursin("Missing required parameter", j2.error.message)
 
         # (3) The connection must still be usable after the errors (no crash).
-        followup =
-            JSON.json(Dict("jsonrpc" => "2.0", "id" => 12, "method" => "tools/list"))
+        followup = JSON.json(Dict("jsonrpc" => "2.0", "id" => 12, "method" => "tools/list"))
         r3 = HTTP.post(
             "http://localhost:$test_port/",
             ["Content-Type" => "application/json"],
@@ -275,4 +272,3 @@ end
         sleep(0.1)
     end
 end
-

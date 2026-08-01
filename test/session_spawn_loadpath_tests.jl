@@ -85,8 +85,10 @@ const _GATE_ENV = pkgdir(Kaimon.KaimonGate)
             withenv("KAIMON_GATE_PERSONALITY" => nothing, "XDG_CONFIG_HOME" => dir) do
                 @test KG._default_personality_provider() == "👻"   # l33t → 👻 from config
             end
-            withenv("KAIMON_GATE_PERSONALITY" => nothing,
-                    "XDG_CONFIG_HOME" => joinpath(dir, "empty")) do
+            withenv(
+                "KAIMON_GATE_PERSONALITY" => nothing,
+                "XDG_CONFIG_HOME" => joinpath(dir, "empty"),
+            ) do
                 @test KG._default_personality_provider() == "⚡"   # no config → fallback
             end
         end

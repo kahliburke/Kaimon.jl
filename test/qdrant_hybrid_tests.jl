@@ -10,7 +10,8 @@ using Kaimon
 
         # Hard NL: the OR-cap fired (capped > 0) ⇒ a sentence of keywords ⇒ lexical
         # becomes a whisper so it can't inject keyword-coincidence chunks.
-        @test w("on bind change re-run downstream cells reactive dependency graph", 3) == 0.05
+        @test w("on bind change re-run downstream cells reactive dependency graph", 3) ==
+              0.05
 
         # Explicit lexical intent ⇒ trust lexical fully.
         @test w("\"reciprocal rank fusion\"", 0) == 1.0      # quoted phrase
@@ -52,8 +53,10 @@ using Kaimon
         @test !red(mk("a.jl", 0, 0), mk("a.jl", 0, 0))
 
         # Identical-span dupes collapse to one; sources union; rrf order preserved.
-        out = dedup([mk("a.jl", 10, 20; rrf = 1.0, src = :semantic),
-                     mk("a.jl", 10, 20; rrf = 0.5, src = :lexical)])
+        out = dedup([
+            mk("a.jl", 10, 20; rrf = 1.0, src = :semantic),
+            mk("a.jl", 10, 20; rrf = 0.5, src = :lexical),
+        ])
         @test length(out) == 1
         @test out[1].sources == Set([:semantic, :lexical])
         @test out[1].rrf == 1.0
@@ -61,9 +64,11 @@ using Kaimon
         # A window enclosing two distinct methods: the window folds in, BOTH methods
         # survive — and this holds even when the window outranks the defs (the
         # definitions-first representative choice prevents the window from swallowing them).
-        out2 = dedup([mk("a.jl", 1, 33; rrf = 1.0, typ = "window"),
-                      mk("a.jl", 10, 26; rrf = 0.9),
-                      mk("a.jl", 29, 32; rrf = 0.8)])
+        out2 = dedup([
+            mk("a.jl", 1, 33; rrf = 1.0, typ = "window"),
+            mk("a.jl", 10, 26; rrf = 0.9),
+            mk("a.jl", 29, 32; rrf = 0.8),
+        ])
         spans = Set((h.start_line, h.end_line) for h in out2)
         @test spans == Set([(10, 26), (29, 32)])
     end

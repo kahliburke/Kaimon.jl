@@ -314,7 +314,10 @@ function create_tools(model)
         label::String = "default",
         priority::Priority = low,
     )
-        push!(model.event_log, "Metrics: count=$count ratio=$ratio label=$label priority=$priority")
+        push!(
+            model.event_log,
+            "Metrics: count=$count ratio=$ratio label=$label priority=$priority",
+        )
         return "recorded count=$count ratio=$ratio label=$label priority=$priority"
     end
 

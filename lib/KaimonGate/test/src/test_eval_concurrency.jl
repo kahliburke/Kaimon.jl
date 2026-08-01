@@ -13,8 +13,7 @@ using Base.Threads
 # Both are exercised without a running gate (mirror off; stream socket absent).
 # ─────────────────────────────────────────────────────────────────────────────
 
-_cap(code::AbstractString) =
-    KaimonGate._eval_with_capture(Base.parse_input_line(code))
+_cap(code::AbstractString) = KaimonGate._eval_with_capture(Base.parse_input_line(code))
 
 @testset "concurrent capture isolation" begin
     orig_mirror = KaimonGate._MIRROR_REPL[]
@@ -22,12 +21,12 @@ _cap(code::AbstractString) =
     try
         N = 200
         results = Vector{Any}(undef, N)
-        @sync for i in 1:N
+        @sync for i = 1:N
             Threads.@spawn begin
                 kind = i % 3   # 0=multi-line, 1=no-newline, 2=single-line
-                code = kind == 0 ? "for _ in 1:8; println(\"MK[$i]\"); end; $i" :
-                       kind == 1 ? "print(\"MK[$i]\"); $i" :
-                                   "println(\"MK[$i]\"); $i"
+                code =
+                    kind == 0 ? "for _ in 1:8; println(\"MK[$i]\"); end; $i" :
+                    kind == 1 ? "print(\"MK[$i]\"); $i" : "println(\"MK[$i]\"); $i"
                 iso = false
                 valok = false
                 try
@@ -57,7 +56,7 @@ end
         live = Threads.Atomic{Int}(0)
         peak = Ref(0)
         lk = ReentrantLock()
-        @sync for _ in 1:60
+        @sync for _ = 1:60
             Threads.@spawn begin
                 Base.acquire(sem)
                 n = Threads.atomic_add!(live, 1) + 1

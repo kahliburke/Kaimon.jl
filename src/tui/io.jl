@@ -36,8 +36,14 @@ function _open_log_file!()
         # Rotate if too large
         if isfile(_TUI_LOG_PATH) && filesize(_TUI_LOG_PATH) > _LOG_MAX_BYTES
             rotated = _TUI_LOG_PATH * ".1"
-            try; rm(rotated; force=true); catch; end
-            try; mv(_TUI_LOG_PATH, rotated); catch; end
+            try
+                rm(rotated; force = true)
+            catch
+            end
+            try
+                mv(_TUI_LOG_PATH, rotated)
+            catch
+            end
         end
         _TUI_LOG_FILE[] = open(_TUI_LOG_PATH, "a")
     catch
@@ -357,11 +363,21 @@ end
 Record a tool call as 'running' in the SQLite database at execution start.
 Returns the request_id (UUID string) for later update, or "" on failure.
 """
-function _persist_tool_start!(tool_name::String, args_json::String, session_key::String)::String
+function _persist_tool_start!(
+    tool_name::String,
+    args_json::String,
+    session_key::String,
+)::String
     rid = string(UUIDs.uuid4())
     try
-        Database.record_tool_start!(session_key, rid, tool_name,
-            Dates.format(now(), dateformat"yyyy-mm-dd HH:MM:SS"), sizeof(args_json), args_json)
+        Database.record_tool_start!(
+            session_key,
+            rid,
+            tool_name,
+            Dates.format(now(), dateformat"yyyy-mm-dd HH:MM:SS"),
+            sizeof(args_json),
+            args_json,
+        )
     catch e
         @debug "Failed to persist tool start" exception = (e, catch_backtrace())
         return ""
@@ -376,15 +392,20 @@ function _persist_tool_complete!(db_request_id::String, r::ToolCallResult)
     isempty(db_request_id) && return
     try
         dur_ms = if endswith(r.duration_str, "ms")
-            parse(Float64, r.duration_str[1:end-2])
+            parse(Float64, r.duration_str[1:(end-2)])
         elseif endswith(r.duration_str, "s")
-            parse(Float64, r.duration_str[1:end-1]) * 1000.0
+            parse(Float64, r.duration_str[1:(end-1)]) * 1000.0
         else
             0.0
         end
         summary = length(r.result_text) > 500 ? r.result_text[1:500] : r.result_text
-        Database.record_tool_complete!(db_request_id, dur_ms, sizeof(r.result_text),
-            r.success ? "success" : "error", summary)
+        Database.record_tool_complete!(
+            db_request_id,
+            dur_ms,
+            sizeof(r.result_text),
+            r.success ? "success" : "error",
+            summary,
+        )
     catch e
         @debug "Failed to persist tool completion" exception = (e, catch_backtrace())
     end
@@ -446,7 +467,7 @@ function _push_inflight_progress!(id::Int, message::String)
 end
 
 # Map eval_id → inflight_id for background jobs
-const _JOB_INFLIGHT_MAP = Dict{String, Int}()
+const _JOB_INFLIGHT_MAP = Dict{String,Int}()
 const _JOB_INFLIGHT_MAP_LOCK = ReentrantLock()
 
 """Register a background job's eval_id with its inflight_id."""

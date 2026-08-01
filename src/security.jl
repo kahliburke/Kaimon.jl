@@ -162,8 +162,13 @@ function update_global_config!(; kwargs...)
         fields[k] = v
     end
     new_config = KaimonConfig(
-        fields[:mode], fields[:api_keys], fields[:allowed_ips],
-        fields[:port], fields[:created_at], fields[:editor], fields[:qdrant_prefix],
+        fields[:mode],
+        fields[:api_keys],
+        fields[:allowed_ips],
+        fields[:port],
+        fields[:created_at],
+        fields[:editor],
+        fields[:qdrant_prefix],
     )
     save_global_config(new_config)
 end
@@ -259,12 +264,22 @@ function set_tui_fps!(fps::Integer)
     fps = clamp(Int(fps), _TUI_FPS_MIN, _TUI_FPS_MAX)
     p = get_global_config_path()
     mkpath(dirname(p))
-    data = isfile(p) ?
-           (try JSON.parse(read(p, String); dicttype = Dict{String,Any}) catch; Dict{String,Any}() end) :
-           Dict{String,Any}()
+    data =
+        isfile(p) ? (
+            try
+                JSON.parse(read(p, String); dicttype = Dict{String,Any})
+            catch
+                Dict{String,Any}()
+            end
+        ) : Dict{String,Any}()
     data["fps"] = fps
     write(p, JSON.json(data, 2))
-    Sys.iswindows() || (try chmod(p, 0o600) catch end)
+    Sys.iswindows() || (
+        try
+            chmod(p, 0o600)
+        catch
+        end
+    )
     return fps
 end
 
@@ -533,7 +548,7 @@ function show_security_status(config::SecurityConfig)
     println()
     println("API Keys: ", length(config.api_keys))
     for (i, key) in enumerate(config.api_keys)
-        masked_key = key[1:min(15, length(key))] * "..." * key[max(1, end - 3):end]
+        masked_key = key[1:min(15, length(key))] * "..." * key[max(1, end-3):end]
         println("  $i. $masked_key")
     end
     println()

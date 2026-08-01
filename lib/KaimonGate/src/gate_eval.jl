@@ -22,7 +22,7 @@ function gate_eval(code::String; _mod::Module = Main, display_code::String = cod
     Base.acquire(_eval_semaphore())
     Threads.atomic_sub!(_EVAL_QUEUED, 1)
     Threads.atomic_add!(_EVAL_INFLIGHT, 1)
-    peers  = max(0, _EVAL_INFLIGHT[] - 1)   # other evals running alongside this one
+    peers = max(0, _EVAL_INFLIGHT[] - 1)   # other evals running alongside this one
     queued = _EVAL_QUEUED[]                  # evals still waiting for a slot
     # Only the PRIMARY eval mirrors to the terminal (header + live output);
     # concurrent evals run headless (captured + streamed to Activity + returned).
@@ -57,7 +57,10 @@ function gate_eval(code::String; _mod::Module = Main, display_code::String = cod
         # REPL backend is occupied by the user's interactive session.
         on_interactive = Threads.threadpool(Threads.threadid()) === :interactive
         result = if has_repl && on_interactive
-            r = REPL.call_on_backend(() -> _eval_with_capture(expr; mirror = mirror_owned), backend)
+            r = REPL.call_on_backend(
+                () -> _eval_with_capture(expr; mirror = mirror_owned),
+                backend,
+            )
             # call_on_backend returns (value, iserr) Pair or NamedTuple
             r isa Pair ? r.first : (r isa Tuple && length(r) == 2 ? r[1] : r)
         else
@@ -66,7 +69,8 @@ function gate_eval(code::String; _mod::Module = Main, display_code::String = cod
         mirror_owned && _maybe_echo_result(result)
         # Tag the result with how many other evals ran concurrently / were queued,
         # so the server can surface a note when concurrency was actually in play.
-        return result isa NamedTuple ? merge(result, (concurrent = peers, queued = queued)) : result
+        return result isa NamedTuple ?
+               merge(result, (concurrent = peers, queued = queued)) : result
     catch e
         return (
             stdout = "",
@@ -255,4 +259,3 @@ Call this after the TUI app exits (typically in a `finally` block).
 function restore_tty!()
     _unpark_remote_shell!()
 end
-

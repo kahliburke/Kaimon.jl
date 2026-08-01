@@ -18,7 +18,8 @@ using Kaimon
 const K = Kaimon
 const KG = Kaimon.KaimonGate
 
-const SCALE = (length(ARGS) >= 1 && tryparse(Int, ARGS[1]) !== nothing) ? parse(Int, ARGS[1]) : 1
+const SCALE =
+    (length(ARGS) >= 1 && tryparse(Int, ARGS[1]) !== nothing) ? parse(Int, ARGS[1]) : 1
 const EXTENDED = ("extended" in ARGS) || get(ENV, "KAIMON_STRESS_EXTENDED", "") == "1"
 # SATURATE: barrier-free MESSAGE-FABRIC saturation. The target is the ZMQ fabric
 # itself — request round-trips (DEALER↔ROUTER) and stream frames (XPUB→SUB→
@@ -29,21 +30,27 @@ const EXTENDED = ("extended" in ARGS) || get(ENV, "KAIMON_STRESS_EXTENDED", "") 
 # client's per-connection multiplex. CPU spin is deliberately OFF (it would only
 # throttle the serial evaluator and lower message rate).
 const SATURATE = ("saturate" in ARGS) || get(ENV, "KAIMON_STRESS_SATURATE", "") == "1"
-const ROUNDS = something(tryparse(Int, get(ENV, "KAIMON_STRESS_ROUNDS", "")),
-                         (EXTENDED ? 40 : 50) * SCALE)
+const ROUNDS = something(
+    tryparse(Int, get(ENV, "KAIMON_STRESS_ROUNDS", "")),
+    (EXTENDED ? 40 : 50) * SCALE,
+)
 const CONC = EXTENDED ? 100 : 100
 # Stream frames per eval. Cranked high in SATURATE so each eval floods the PUB/SUB
 # drain path — this is the dominant fabric load (TOTAL × LINES stream frames).
-const LINES = something(tryparse(Int, get(ENV, "KAIMON_STRESS_LINES", "")),
-                        SATURATE ? 200 : (EXTENDED ? 30 : 50))
+const LINES = something(
+    tryparse(Int, get(ENV, "KAIMON_STRESS_LINES", "")),
+    SATURATE ? 200 : (EXTENDED ? 30 : 50),
+)
 const TOTAL = ROUNDS * CONC
 
 # In-flight bound on the client side: how many eval_remote calls may be live at
 # once. Sized well above the gate worker cap so the gate pool never starves
 # waiting for the client to enqueue. (The old code fetched a full round before
 # starting the next → concurrency hit zero on every tail, idling cores.)
-const INFLIGHT_CAP = something(tryparse(Int, get(ENV, "KAIMON_STRESS_INFLIGHT", "")),
-                               SATURATE ? 8 * Threads.nthreads() : CONC)
+const INFLIGHT_CAP = something(
+    tryparse(Int, get(ENV, "KAIMON_STRESS_INFLIGHT", "")),
+    SATURATE ? 8 * Threads.nthreads() : CONC,
+)
 # Optional per-eval CPU spin in the gate worker. Default 0 — the fabric, not the
 # compute, is the target. Kept as a knob for the separate "does the gate process
 # saturate" question, but irrelevant to fabric throughput.
@@ -51,8 +58,10 @@ const CPU_ITERS = something(tryparse(Int, get(ENV, "KAIMON_STRESS_CPU_ITERS", ""
 # Concurrent pure-ping flood: background tasks that hammer K.ping round-trips
 # (DEALER→ROUTER→reply) for the duration of the eval flood. Zero eval / GATE_LOCK
 # involvement, so it isolates request-fabric throughput. Counted into fabric msgs.
-const PINGERS = something(tryparse(Int, get(ENV, "KAIMON_STRESS_PINGERS", "")),
-                          SATURATE ? 4 * Threads.nthreads() : 0)
+const PINGERS = something(
+    tryparse(Int, get(ENV, "KAIMON_STRESS_PINGERS", "")),
+    SATURATE ? 4 * Threads.nthreads() : 0,
+)
 
 # MULTI-GATE: a single gate serializes its evals through GATE_LOCK (it guards the
 # process-global stdout/stderr redirect in _eval_with_capture), so one gate is a
@@ -63,15 +72,16 @@ const PINGERS = something(tryparse(Int, get(ENV, "KAIMON_STRESS_PINGERS", "")),
 # single client ConnectionManager discovers all of them and the flood fans across
 # them → up to N evals run truly concurrently. SATURATE defaults this to the core
 # count; otherwise 0 (in-process gate only).
-const NGATES = something(tryparse(Int, get(ENV, "KAIMON_STRESS_GATES", "")),
-                         SATURATE ? 4 : 0)
+const NGATES =
+    something(tryparse(Int, get(ENV, "KAIMON_STRESS_GATES", "")), SATURATE ? 4 : 0)
 # Threads per spawned gate. With serial evals, 1 default thread per gate is plenty
 # (each gate's evals serialize through its own GATE_LOCK anyway); keeps the box from
 # oversubscribing when several gates run at once.
 const GATE_THREADS = get(ENV, "KAIMON_STRESS_GATE_THREADS", "1,1")
 # Hard self-destruct backstop (seconds): every spawned gate exits after this even
 # if it's somehow orphaned, so a SIGKILL'd parent can never leave strays.
-const GATE_MAX_LIFE = something(tryparse(Int, get(ENV, "KAIMON_STRESS_GATE_MAX_LIFE", "")), 600)
+const GATE_MAX_LIFE =
+    something(tryparse(Int, get(ENV, "KAIMON_STRESS_GATE_MAX_LIFE", "")), 600)
 
 """Spawn `n` real subprocess gates sharing `cache_dir` (XDG_CACHE_HOME) so they
 register in the same sock_dir as the in-process gate. Returns the process handles.
@@ -109,9 +119,11 @@ function spawn_subprocess_gates(n::Int, cache_dir::String)
     env["KAIMON_GATE_MIRROR_REPL"] = "0"   # no terminal mirror noise from stress gates
     env["JULIA_PROJECT"] = ""              # --project is the sole authority
     procs = Base.Process[]
-    for _ in 1:n
-        cmd = Cmd(`$julia --project=$gatedir -t $GATE_THREADS --startup-file=no -e $boot`;
-                  env = env)
+    for _ = 1:n
+        cmd = Cmd(
+            `$julia --project=$gatedir -t $GATE_THREADS --startup-file=no -e $boot`;
+            env = env,
+        )
         push!(procs, run(pipeline(cmd; stdout = devnull, stderr = devnull); wait = false))
     end
     return procs
@@ -135,17 +147,21 @@ end
 # allocation its own page and would OOM at the default 256×4KB/iter. SZ>2032 keeps
 # the churn on the SYSTEM-malloc (big-object) heap, which is where the corruption
 # manifests. The GC.gc() cadence (the actual trigger) is preserved regardless.
-const PUSHER_N  = something(tryparse(Int, get(ENV, "KAIMON_STRESS_PUSHER_N", "")), 256)
+const PUSHER_N = something(tryparse(Int, get(ENV, "KAIMON_STRESS_PUSHER_N", "")), 256)
 const PUSHER_SZ = something(tryparse(Int, get(ENV, "KAIMON_STRESS_PUSHER_SZ", "")), 4096)
-const PUSHER_FULL_EVERY = something(tryparse(Int, get(ENV, "KAIMON_STRESS_PUSHER_FULL_EVERY", "")), 25)
+const PUSHER_FULL_EVERY =
+    something(tryparse(Int, get(ENV, "KAIMON_STRESS_PUSHER_FULL_EVERY", "")), 25)
 # Number of concurrent gc_pusher tasks — more = more GC pressure overlapping the
 # messaging path (the trigger for the gc_sweep_pool corruption).
-const PUSHER_THREADS = something(tryparse(Int, get(ENV, "KAIMON_STRESS_PUSHER_THREADS", "")), EXTENDED ? 1 : 0)
+const PUSHER_THREADS =
+    something(tryparse(Int, get(ENV, "KAIMON_STRESS_PUSHER_THREADS", "")), EXTENDED ? 1 : 0)
 function gc_pusher(stop::Ref{Bool})
     n = 0
     while !stop[]
-        junk = [rand(UInt8, PUSHER_SZ) for _ in 1:PUSHER_N]   # short-lived big-object churn
-        @inbounds for x in junk; x[1] = 0x00; end
+        junk = [rand(UInt8, PUSHER_SZ) for _ = 1:PUSHER_N]   # short-lived big-object churn
+        @inbounds for x in junk
+            x[1] = 0x00
+        end
         n += 1
         GC.gc(n % PUSHER_FULL_EVERY == 0)   # mostly incremental, periodic full sweep
         sleep(0.01)
@@ -173,8 +189,10 @@ mktempdir(Sys.iswindows() ? tempdir() : "/tmp") do dir
     # Raise the gate worker cap so each gate runs many evals in parallel across its
     # default pool (default 16). Note this is the IN-PROCESS gate's Ref; subprocess
     # gates read KAIMON_GATE_MAX_WORKERS from their inherited env at load.
-    KG._GATE_MAX_WORKERS[] = something(tryparse(Int, get(ENV, "KAIMON_GATE_MAX_WORKERS", "")),
-                                       max(KG._GATE_MAX_WORKERS[], 4 * Threads.nthreads()))
+    KG._GATE_MAX_WORKERS[] = something(
+        tryparse(Int, get(ENV, "KAIMON_GATE_MAX_WORKERS", "")),
+        max(KG._GATE_MAX_WORKERS[], 4 * Threads.nthreads()),
+    )
 
     # Spawn N real subprocess gates (own processes, own GATE_LOCKs) into the shared
     # sock_dir so the single client discovers them all. The flood then fans across
@@ -184,33 +202,41 @@ mktempdir(Sys.iswindows() ? tempdir() : "/tmp") do dir
     NGATES > 0 && println("connected gates: $(length(conns)) / $(1 + NGATES) expected")
     conn = conns[1]   # in-process gate, used by the EXTENDED churn phase
 
-    println("mode=", SATURATE ? "SATURATE (message-fabric, barrier-free)" :
-                     (EXTENDED ? "EXTENDED (GC + socket churn)" : "normal"),
-            "  total=$TOTAL gates=$(length(conns)) inflight_cap=$INFLIGHT_CAP",
-            " gate_workers=$(KG._GATE_MAX_WORKERS[]) nthreads=$(Threads.nthreads())",
-            " lines=$LINES pingers=$PINGERS cpu_iters=$CPU_ITERS")
+    println(
+        "mode=",
+        SATURATE ? "SATURATE (message-fabric, barrier-free)" :
+        (EXTENDED ? "EXTENDED (GC + socket churn)" : "normal"),
+        "  total=$TOTAL gates=$(length(conns)) inflight_cap=$INFLIGHT_CAP",
+        " gate_workers=$(KG._GATE_MAX_WORKERS[]) nthreads=$(Threads.nthreads())",
+        " lines=$LINES pingers=$PINGERS cpu_iters=$CPU_ITERS",
+    )
 
     stop = Ref(false)
-    pushers = [Threads.@spawn(gc_pusher(stop)) for _ in 1:PUSHER_THREADS]
+    pushers = [Threads.@spawn(gc_pusher(stop)) for _ = 1:PUSHER_THREADS]
 
     # Pure-ping request flood: background tasks hammering DEALER↔ROUTER round-trips
     # across all gates for the duration of the eval flood. Isolates request-fabric
     # throughput (no eval / GATE_LOCK). Tally is atomic; tasks stop on `ping_stop`.
     ping_stop = Ref(false)
     ping_count = Threads.Atomic{Int}(0)
-    pinger_tasks = [Threads.@spawn begin
-        c = conns[mod1(p, length(conns))]
-        while !ping_stop[]
-            K.ping(c) === nothing || Threads.atomic_add!(ping_count, 1)
-        end
-    end for p in 1:PINGERS]
+    pinger_tasks = [
+        Threads.@spawn begin
+            c = conns[mod1(p, length(conns))]
+            while !ping_stop[]
+                K.ping(c) === nothing || Threads.atomic_add!(ping_count, 1)
+            end
+        end for p = 1:PINGERS
+    ]
 
     total = 0
     # In extended mode each eval ALSO allocates in the gate (pressures ITS GC)
     # before streaming stdout — so both processes' GC churn while sockets are hot.
-    galloc = EXTENDED ? "let s=0.0; for k in 1:40; a=rand(2048); s+=sum(a); end; s end; " : ""
+    galloc =
+        EXTENDED ? "let s=0.0; for k in 1:40; a=rand(2048); s+=sum(a); end; s end; " : ""
     # Optional CPU spin (default off — fabric is the target, not compute).
-    cpu = CPU_ITERS > 0 ? "let s=0.0; for k in 1:$(CPU_ITERS); s+=sin(k*1.0)*cos(k*1.0); end; s end; " : ""
+    cpu =
+        CPU_ITERS > 0 ?
+        "let s=0.0; for k in 1:$(CPU_ITERS); s+=sin(k*1.0)*cos(k*1.0); end; s end; " : ""
 
     # Barrier-free flood: spawn ALL evals up front, each gated by a Semaphore that
     # bounds in-flight calls to INFLIGHT_CAP. No per-round fetch barrier, so the
@@ -226,27 +252,36 @@ mktempdir(Sys.iswindows() ? tempdir() : "/tmp") do dir
     # hung). Exits once the flood is done.
     progress_stop = Ref(false)
     progress = Threads.@spawn begin
-        last = 0; last_t = time()
+        last = 0
+        last_t = time()
         while !progress_stop[]
             sleep(2)
             n = done[]
             now = time()
             rate = (n - last) / max(now - last_t, 1e-6)
-            println("  progress: $n/$TOTAL evals  (", round(rate; digits=0), " evals/s, ",
-                    ping_count[], " pings)")
+            println(
+                "  progress: $n/$TOTAL evals  (",
+                round(rate; digits = 0),
+                " evals/s, ",
+                ping_count[],
+                " pings)",
+            )
             flush(stdout)
-            last = n; last_t = now
+            last = n
+            last_t = now
         end
     end
     tasks = Vector{Task}(undef, TOTAL)
-    for v in 1:TOTAL
+    for v = 1:TOTAL
         tasks[v] = Threads.@spawn begin
             Base.acquire(sem)
             try
                 c = conns[mod1(v, length(conns))]
-                res = K.eval_remote(c,
+                res = K.eval_remote(
+                    c,
                     "$(galloc)$(cpu)for j in 1:$(LINES); println(\"line \", j); end; $(v) * 7";
-                    timeout_ms = 120000)
+                    timeout_ms = 120000,
+                )
                 if !verify(res, v)
                     Threads.atomic_add!(fails, 1)
                     @warn "wrong/failed result" v expected=v*7 got=res.value_repr exception=res.exception
@@ -260,9 +295,17 @@ mktempdir(Sys.iswindows() ? tempdir() : "/tmp") do dir
     foreach(wait, tasks)
     flood_dt = time() - t_start
     progress_stop[] = true
-    try; wait(progress); catch; end
+    try
+        wait(progress)
+    catch
+    end
     ping_stop[] = true
-    foreach(t -> (try; wait(t); catch; end), pinger_tasks)
+    foreach(t -> (
+        try
+            wait(t)
+        catch
+        end
+    ), pinger_tasks)
     total += TOTAL
     failures = fails[]
 
@@ -272,7 +315,10 @@ mktempdir(Sys.iswindows() ? tempdir() : "/tmp") do dir
     # leaves the gate alive and a later wait(p) blocks forever (the "idle for
     # minutes" hang). SIGKILL can't be trapped → guaranteed reap.
     for p in gate_procs
-        try; kill(p, 9); catch; end
+        try
+            kill(p, 9)
+        catch
+        end
     end
 
     # Fabric accounting: every eval = 1 request + 1 reply + LINES stream frames;
@@ -289,9 +335,10 @@ mktempdir(Sys.iswindows() ? tempdir() : "/tmp") do dir
     sock_after = 0
     if EXTENDED
         sock_before = length(getfield(conn.zmq_context, :sockets))
-        for c in 1:(25 * SCALE)
+        for c = 1:(25*SCALE)
             K.disconnect!(conn)
-            tt = time(); newc = nothing
+            tt = time()
+            newc = nothing
             while time() - tt < 15
                 cs = K.connected_sessions(mgr)
                 isempty(cs) || (newc = cs[1]; break)
@@ -301,11 +348,16 @@ mktempdir(Sys.iswindows() ? tempdir() : "/tmp") do dir
             conn = newc
             churn_cycles += 1
             # exercise the freshly-rebuilt DEALER + SUB sockets
-            for i in 1:30
+            for i = 1:30
                 v = 5_000_000 + c * 1000 + i
-                res = K.eval_remote(conn, "for j in 1:8; println(j); end; $(v) * 7"; timeout_ms = 30000)
+                res = K.eval_remote(
+                    conn,
+                    "for j in 1:8; println(j); end; $(v) * 7";
+                    timeout_ms = 30000,
+                )
                 total += 1
-                verify(res, v) || (failures += 1; @warn "churn eval wrong" v got=res.value_repr)
+                verify(res, v) ||
+                    (failures += 1; @warn "churn eval wrong" v got=res.value_repr)
             end
             GC.gc()
         end
@@ -313,28 +365,62 @@ mktempdir(Sys.iswindows() ? tempdir() : "/tmp") do dir
     end
 
     stop[] = true
-    foreach(p -> (try; wait(p); catch; end), pushers)
+    foreach(p -> (
+        try
+            wait(p)
+        catch
+        end
+    ), pushers)
 
-    println("FLOOD: $TOTAL evals across $(length(conns)) gate(s), $failures failures, ",
-            round(TOTAL / flood_dt; digits=1), " evals/s over ",
-            round(flood_dt; digits=1), "s  (total incl. churn: $total)")
-    println("FABRIC: ", fabric_msgs, " msgs (",
-            eval_msgs, " eval[req+reply+stream] + ", ping_msgs, " ping[req+reply]) = ",
-            round(fabric_msgs / flood_dt / 1000; digits=1), "k msgs/s; ",
-            ping_count[], " pings @ ", round(ping_count[] / flood_dt; digits=0), "/s")
+    println(
+        "FLOOD: $TOTAL evals across $(length(conns)) gate(s), $failures failures, ",
+        round(TOTAL / flood_dt; digits = 1),
+        " evals/s over ",
+        round(flood_dt; digits = 1),
+        "s  (total incl. churn: $total)",
+    )
+    println(
+        "FABRIC: ",
+        fabric_msgs,
+        " msgs (",
+        eval_msgs,
+        " eval[req+reply+stream] + ",
+        ping_msgs,
+        " ping[req+reply]) = ",
+        round(fabric_msgs / flood_dt / 1000; digits = 1),
+        "k msgs/s; ",
+        ping_count[],
+        " pings @ ",
+        round(ping_count[] / flood_dt; digits = 0),
+        "/s",
+    )
     if EXTENDED
-        println("CHURN: $churn_cycles reconnect cycles; ctx.sockets $sock_before -> $sock_after")
+        println(
+            "CHURN: $churn_cycles reconnect cycles; ctx.sockets $sock_before -> $sock_after",
+        )
         @assert sock_after <= sock_before + 4 "ctx.sockets grew across reconnects: $sock_before -> $sock_after"
     end
     @assert failures == 0 "had $failures failed/incorrect results — drain lost messages or corrupted"
 
-    try; K.stop!(mgr); catch; end
-    try; KG.stop(); catch; end
+    try
+        K.stop!(mgr)
+    catch
+    end
+    try
+        KG.stop()
+    catch
+    end
     # Backstop: gates were already SIGKILL'd after the flood; re-kill (idempotent)
     # and reap so no zombies linger. SIGKILL means wait(p) returns promptly.
     for p in gate_procs
-        try; kill(p, 9); catch; end
-        try; wait(p); catch; end
+        try
+            kill(p, 9)
+        catch
+        end
+        try
+            wait(p)
+        catch
+        end
     end
     println("HEADLESS_DRAIN_STRESS_OK")
 end

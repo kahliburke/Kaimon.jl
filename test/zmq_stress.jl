@@ -34,11 +34,11 @@ module ZMQStress
 import Kaimon
 
 # Internal helpers — not exported from Kaimon but needed for direct stress testing
-const _drain  = Kaimon.drain_stream_messages!
-const _async  = Kaimon.eval_remote_async
-const _sync   = Kaimon.eval_remote
+const _drain = Kaimon.drain_stream_messages!
+const _async = Kaimon.eval_remote_async
+const _sync = Kaimon.eval_remote
 const _taSync = Kaimon._call_session_tool_async  # requires session tools
-const _tSync  = Kaimon._call_session_tool        # requires session tools
+const _tSync = Kaimon._call_session_tool        # requires session tools
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Result type
@@ -52,7 +52,7 @@ struct ScenarioResult
     notes::String
 end
 
-_pass(id, name, t0, notes="") =
+_pass(id, name, t0, notes = "") =
     ScenarioResult(id, name, true, (time_ns() - t0) / 1e6, notes)
 _fail(id, name, t0, reason) =
     ScenarioResult(id, name, false, (time_ns() - t0) / 1e6, reason)
@@ -82,8 +82,10 @@ function _acquire(session)
             isempty(conns) ? nothing : conns[1]
         else
             idx = findfirst(
-                c -> startswith(c.session_id, session) ||
-                     c.name == session || c.display_name == session,
+                c ->
+                    startswith(c.session_id, session) ||
+                    c.name == session ||
+                    c.display_name == session,
                 conns,
             )
             idx !== nothing ? conns[idx] : nothing
@@ -104,14 +106,17 @@ function _acquire(session)
     while time() < deadline
         conns = Kaimon.connected_sessions(mgr)
         if !isempty(conns)
-            conn = (session === nothing) ? conns[1] :
-                   let idx = findfirst(
-                           c -> startswith(c.session_id, session) ||
-                                c.name == session || c.display_name == session,
-                           conns,
-                       )
-                       idx !== nothing ? conns[idx] : nothing
-                   end
+            conn =
+                (session === nothing) ? conns[1] :
+                let idx = findfirst(
+                        c ->
+                            startswith(c.session_id, session) ||
+                            c.name == session ||
+                            c.display_name == session,
+                        conns,
+                    )
+                    idx !== nothing ? conns[idx] : nothing
+                end
             conn !== nothing && break
         end
         sleep(0.3)
@@ -157,7 +162,7 @@ function _has_tool(conn, tool_name)
     any(t -> get(t, "name", "") == tool_name, conn.session_tools)
 end
 
-function _eval_ok(result, expected=nothing)
+function _eval_ok(result, expected = nothing)
     hasproperty(result, :exception) && result.exception !== nothing && return false
     expected === nothing && return true
     return contains(string(result.value_repr), expected)
@@ -199,7 +204,7 @@ through; eval_complete is delivered in a few seconds.
 
 Pass criterion: completes in under 12 seconds (well inside TIMEOUT_MS).
 """
-function _s2(conn; n=5_000)
+function _s2(conn; n = 5_000)
     t0 = time_ns()
     name = "Burst stdout ($(n) lines) → eval_complete"
     code = """
@@ -212,8 +217,12 @@ function _s2(conn; n=5_000)
     !_eval_ok(r, "burst_done") &&
         return _fail(2, name, t0, "exc=$(r.exception) val=$(r.value_repr)")
     ms = (time_ns() - t0) / 1e6
-    ms > 12_000 &&
-        return _fail(2, name, t0, "completed but suspiciously slow: $(round(ms, digits=0))ms")
+    ms > 12_000 && return _fail(
+        2,
+        name,
+        t0,
+        "completed but suspiciously slow: $(round(ms, digits=0))ms",
+    )
     _pass(2, name, t0, "$(n) stdout lines + eval_complete in $(round(ms, digits=0))ms")
 end
 
@@ -237,7 +246,7 @@ after the gate finishes eval1.  We verify eval2 completes quickly
 once both finish (not timing the gate's sequential eval execution,
 which is serialised by GATE_LOCK — just the routing correctness).
 """
-function _s3(conn; n=3_000)
+function _s3(conn; n = 3_000)
     t0 = time_ns()
     name = "Cross-inbox broadcast ($(n)-line flood + concurrent quick eval)"
 
@@ -275,7 +284,7 @@ eval_complete is still delivered correctly — the cap must not skip it.
 
 Also verifies eval_complete isn't mistakenly filtered as a "capped" message.
 """
-function _s4(conn; n=1_500)
+function _s4(conn; n = 1_500)
     t0 = time_ns()
     name = "Drain cap ($(n) lines across multiple drain frames)"
     code = """
@@ -297,11 +306,11 @@ Scenario 5: REQ socket reliability under rapid fire.
 waits for a response on the REQ socket.  Verifies the socket doesn't
 enter a broken state from accumulated use.
 """
-function _s5(conn; n=50)
+function _s5(conn; n = 50)
     t0 = time_ns()
     name = "Rapid fire sync evals ($(n)×)"
     failures = 0
-    for i in 1:n
+    for i = 1:n
         r = _sync(conn, "$(i) * 2")
         _eval_ok(r, string(i * 2)) || (failures += 1)
     end
@@ -320,12 +329,17 @@ exactly its own tool_complete message.  Verifies no cross-contamination.
 
 Skipped automatically if the session doesn't have the slow_task tool.
 """
-function _s6(conn; n=5, task_secs=3)
+function _s6(conn; n = 5, task_secs = 3)
     name = "Concurrent tool_call_async isolation ($(n)× slow_task($(task_secs)s))"
     t0 = time_ns()
 
-    _has_tool(conn, "slow_task") ||
-        return ScenarioResult(6, name, true, 0.0, "SKIPPED (no slow_task tool — requires GateToolTest)")
+    _has_tool(conn, "slow_task") || return ScenarioResult(
+        6,
+        name,
+        true,
+        0.0,
+        "SKIPPED (no slow_task tool — requires GateToolTest)",
+    )
 
     tasks = [
         Threads.@spawn _taSync(
@@ -333,7 +347,7 @@ function _s6(conn; n=5, task_secs=3)
             "slow_task",
             Dict{String,Any}("duration_secs" => task_secs);
             timeout_ms = TIMEOUT_MS,
-        ) for _ in 1:n
+        ) for _ = 1:n
     ]
     results = [fetch(t) for t in tasks]
 
@@ -343,10 +357,19 @@ function _s6(conn; n=5, task_secs=3)
         return _fail(6, name, t0, "$(length(bad))/$(n) wrong: $(first(bad, 80))")
 
     elapsed_s = (time_ns() - t0) / 1e9
-    elapsed_s > task_secs * 2.5 + 2 &&
-        return _fail(6, name, t0, "ran sequentially? $(round(elapsed_s; digits=1))s for $(n) tasks")
+    elapsed_s > task_secs * 2.5 + 2 && return _fail(
+        6,
+        name,
+        t0,
+        "ran sequentially? $(round(elapsed_s; digits=1))s for $(n) tasks",
+    )
 
-    _pass(6, name, t0, "$(n) concurrent inboxes, all correct in $(round(elapsed_s; digits=1))s")
+    _pass(
+        6,
+        name,
+        t0,
+        "$(n) concurrent inboxes, all correct in $(round(elapsed_s; digits=1))s",
+    )
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -382,15 +405,17 @@ function run(; session = nothing, scenarios = 1:6, verbose = false)
         _acquire(session)
     catch e
         println("\nERROR: ", sprint(showerror, e))
-        println("\nStart a gate first:  julia --project -e 'using KaimonGate; KaimonGate.serve(force=true)'")
+        println(
+            "\nStart a gate first:  julia --project -e 'using KaimonGate; KaimonGate.serve(force=true)'",
+        )
         return nothing
     end
 
-    println(
-        "\n  gate:     $(Kaimon.short_key(conn)) ($(conn.display_name))",
-    )
+    println("\n  gate:     $(Kaimon.short_key(conn)) ($(conn.display_name))")
     println("  tools:    $(length(conn.session_tools)) session tool(s) available")
-    println("  drain:    $(owned_drain ? "standalone (own drain loop)" : "TUI (using render drain)")")
+    println(
+        "  drain:    $(owned_drain ? "standalone (own drain loop)" : "TUI (using render drain)")",
+    )
     println("  scenarios: $(collect(scenarios))")
     println()
 
@@ -418,8 +443,7 @@ function run(; session = nothing, scenarios = 1:6, verbose = false)
 
             if r.notes == "" || !startswith(r.notes, "SKIPPED")
                 status = r.passed ? "\033[32m✓\033[0m" : "\033[31m✗ FAILED\033[0m"
-                time_str =
-                    r.elapsed_ms > 0 ? " ($(round(r.elapsed_ms; digits=0))ms)" : ""
+                time_str = r.elapsed_ms > 0 ? " ($(round(r.elapsed_ms; digits=0))ms)" : ""
                 println("$(status)$(time_str)")
                 !r.passed && println("     $(r.notes)")
                 verbose && r.passed && !isempty(r.notes) && println("     $(r.notes)")
@@ -440,9 +464,13 @@ function run(; session = nothing, scenarios = 1:6, verbose = false)
     println()
     println("─"^60)
     if n_pass == n_total
-        println("  \033[32m✓ ALL PASSED\033[0m ($n_pass/$n_total$(n_skip > 0 ? ", $(n_skip) skipped" : ""))")
+        println(
+            "  \033[32m✓ ALL PASSED\033[0m ($n_pass/$n_total$(n_skip > 0 ? ", $(n_skip) skipped" : ""))",
+        )
     else
-        println("  \033[31m$(n_pass)/$(n_total) passed\033[0m$(n_skip > 0 ? ", $(n_skip) skipped" : "")")
+        println(
+            "  \033[31m$(n_pass)/$(n_total) passed\033[0m$(n_skip > 0 ? ", $(n_skip) skipped" : "")",
+        )
         for r in real
             r.passed || println("    ✗ Scenario $(r.id): $(r.notes)")
         end

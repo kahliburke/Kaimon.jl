@@ -213,30 +213,44 @@ end
 
     @testset "positional Int + Enum (move_task)" begin
         tool_map["add_task"]("Coerce test", "desc", high, Tag[])
-        result = dispatch(tool_map["move_task"],
-            Dict{String,Any}("task_id" => "1", "new_status" => "in_progress"))
+        result = dispatch(
+            tool_map["move_task"],
+            Dict{String,Any}("task_id" => "1", "new_status" => "in_progress"),
+        )
         @test occursin("Moved task #1", result)
         @test model.tasks[1].status == in_progress
     end
 
     @testset "positional Int × 4 (get_screen)" begin
-        result = dispatch(tool_map["get_screen"],
-            Dict{String,Any}("x" => "1", "y" => "1", "width" => "80", "height" => "24"))
+        result = dispatch(
+            tool_map["get_screen"],
+            Dict{String,Any}("x" => "1", "y" => "1", "width" => "80", "height" => "24"),
+        )
         @test occursin("Screen capture", result)
     end
 
     @testset "all scalar types positional + kwargs (coerce_test)" begin
         # All values sent as strings — covers Int, Float64, String, Enum, Bool, Symbol
         # in both positional and kwarg positions (kwargs were broken before the fix)
-        result = dispatch(tool_map["coerce_test"],
+        result = dispatch(
+            tool_map["coerce_test"],
             Dict{String,Any}(
                 # positional
-                "id" => "7", "score" => "3.14", "name" => "widget",
-                "status" => "in_progress", "active" => "true", "sym" => "alpha",
+                "id" => "7",
+                "score" => "3.14",
+                "name" => "widget",
+                "status" => "in_progress",
+                "active" => "true",
+                "sym" => "alpha",
                 # kwargs
-                "multiplier" => "3", "threshold" => "0.9", "tag" => "urgent",
-                "priority" => "high", "enabled" => "true", "key" => "beta",
-            ))
+                "multiplier" => "3",
+                "threshold" => "0.9",
+                "tag" => "urgent",
+                "priority" => "high",
+                "enabled" => "true",
+                "key" => "beta",
+            ),
+        )
         @test occursin("id=7", result)           # positional Int
         @test occursin("score=3.14", result)     # positional Float64
         @test occursin("name=widget", result)    # positional String
@@ -252,11 +266,17 @@ end
     end
 
     @testset "kwargs defaults used when omitted" begin
-        result = dispatch(tool_map["coerce_test"],
+        result = dispatch(
+            tool_map["coerce_test"],
             Dict{String,Any}(
-                "id" => "1", "score" => "1.0", "name" => "x",
-                "status" => "todo", "active" => "false", "sym" => "x",
-            ))
+                "id" => "1",
+                "score" => "1.0",
+                "name" => "x",
+                "status" => "todo",
+                "active" => "false",
+                "sym" => "x",
+            ),
+        )
         @test occursin("multiplier=1", result)
         @test occursin("threshold=0.5", result)
         @test occursin("priority=low", result)

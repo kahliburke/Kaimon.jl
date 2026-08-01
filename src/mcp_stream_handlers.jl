@@ -13,150 +13,86 @@
 # ============================================================================
 
 function _stream_security_gate(http, req, body, security_config)
-        # Origin validation — MCP 2025-11-25 Streamable HTTP spec requirement.
-        # If an Origin header is present it must be a trusted local origin.
-        # Absent Origin is allowed (non-browser clients don't send it).
-        let origin = HTTP.header(req, "Origin", "")
-            if !isempty(origin)
-                if !is_trusted_origin(origin)
-                    @warn "Auth denied: untrusted Origin (403)" origin target = req.target
-                    HTTP.setstatus(http, 403)
-                    HTTP.setheader(http, "Content-Type" => "application/json")
-                    HTTP.startwrite(http)
-                    write(http, JSON.json(Dict("error" => "Forbidden: untrusted Origin")))
-                    return true
-                end
+    # Origin validation — MCP 2025-11-25 Streamable HTTP spec requirement.
+    # If an Origin header is present it must be a trusted local origin.
+    # Absent Origin is allowed (non-browser clients don't send it).
+    let origin = HTTP.header(req, "Origin", "")
+        if !isempty(origin)
+            if !is_trusted_origin(origin)
+                @warn "Auth denied: untrusted Origin (403)" origin target = req.target
+                HTTP.setstatus(http, 403)
+                HTTP.setheader(http, "Content-Type" => "application/json")
+                HTTP.startwrite(http)
+                write(http, JSON.json(Dict("error" => "Forbidden: untrusted Origin")))
+                return true
             end
         end
+    end
 
-        # Security check - apply to ALL endpoints including vscode-response
-        nonce_validated = false  # Track if nonce auth succeeded
+    # Security check - apply to ALL endpoints including vscode-response
+    nonce_validated = false  # Track if nonce auth succeeded
 
-        if security_config !== nothing
-            # Special handling for vscode-response endpoint with nonce auth
-            if req.target == "/vscode-response" && req.method == "POST"
-                # Extract the nonce (Bearer token) from Authorization header
-                nonce = extract_api_key(req)
+    if security_config !== nothing
+        # Special handling for vscode-response endpoint with nonce auth
+        if req.target == "/vscode-response" && req.method == "POST"
+            # Extract the nonce (Bearer token) from Authorization header
+            nonce = extract_api_key(req)
 
-                # Parse request body to get request_id
-                request_id = nothing
-                try
-                    response_data = JSON.parse(body; dicttype = Dict{String,Any})
-                    request_id = get(response_data, "request_id", nothing)
-                catch e
-                    # Will fail validation below if can't parse
-                end
+            # Parse request body to get request_id
+            request_id = nothing
+            try
+                response_data = JSON.parse(body; dicttype = Dict{String,Any})
+                request_id = get(response_data, "request_id", nothing)
+            catch e
+                # Will fail validation below if can't parse
+            end
 
-                # Validate and consume nonce
-                if nonce !== nothing && request_id !== nothing
-                    if Kaimon.validate_and_consume_nonce(string(request_id), String(nonce))
-                        # Nonce is valid and consumed - skip all other security checks
-                        nonce_validated = true
-                    else
-                        # Nonce validation failed
-                        HTTP.setstatus(http, 401)
-                        HTTP.setheader(http, "Content-Type" => "application/json")
-                        HTTP.startwrite(http)
-                        write(
-                            http,
-                            JSON.json(
-                                Dict("error" => "Unauthorized: Invalid or expired nonce"),
-                            ),
-                        )
-                        return true
-                    end
-                elseif security_config.mode != :lax
-                    # No valid nonce, fall back to API key validation for vscode-response
-                    if nonce === nothing
-                        HTTP.setstatus(http, 401)
-                        HTTP.setheader(http, "Content-Type" => "application/json")
-                        HTTP.startwrite(http)
-                        write(
-                            http,
-                            JSON.json(
-                                Dict(
-                                    "error" => "Unauthorized: Missing nonce or API key in Authorization header",
-                                ),
-                            ),
-                        )
-                        return true
-                    end
-
-                    if !validate_api_key(String(nonce), security_config)
-                        HTTP.setstatus(http, 401)
-                        HTTP.setheader(http, "Content-Type" => "application/json")
-                        HTTP.startwrite(http)
-                        write(
-                            http,
-                            JSON.json(Dict("error" => "Unauthorized: Invalid API key")),
-                        )
-                        return true
-                    end
-
-                    # If using API key (not nonce), still need to validate IP
-                    client_ip = get_client_ip(req)
-                    if !validate_ip(client_ip, security_config)
-                        HTTP.setstatus(http, 403)
-                        HTTP.setheader(http, "Content-Type" => "application/json")
-                        HTTP.startwrite(http)
-                        write(
-                            http,
-                            JSON.json(
-                                Dict(
-                                    "error" => "Forbidden: IP address $client_ip not allowed",
-                                ),
-                            ),
-                        )
-                        return true
-                    end
-                end
-            elseif !nonce_validated
-                # For non-vscode-response endpoints, use standard API key validation
-                api_key = extract_api_key(req)
-                if api_key === nothing && security_config.mode != :lax
-                    @warn "Auth denied: missing API key (401)" client_ip =
-                        get_client_ip(req) method = req.method target = req.target
-                    # RFC 6750 challenge: a bare Bearer scheme (we run no OAuth
-                    # server, so no resource_metadata pointer — the credential is
-                    # the API key), and a string-typed `error` a strict OAuth
-                    # client can parse instead of a JSON-RPC error object.
+            # Validate and consume nonce
+            if nonce !== nothing && request_id !== nothing
+                if Kaimon.validate_and_consume_nonce(string(request_id), String(nonce))
+                    # Nonce is valid and consumed - skip all other security checks
+                    nonce_validated = true
+                else
+                    # Nonce validation failed
                     HTTP.setstatus(http, 401)
                     HTTP.setheader(http, "Content-Type" => "application/json")
-                    HTTP.setheader(http, "WWW-Authenticate" => "Bearer realm=\"kaimon\"")
+                    HTTP.startwrite(http)
+                    write(
+                        http,
+                        JSON.json(
+                            Dict("error" => "Unauthorized: Invalid or expired nonce"),
+                        ),
+                    )
+                    return true
+                end
+            elseif security_config.mode != :lax
+                # No valid nonce, fall back to API key validation for vscode-response
+                if nonce === nothing
+                    HTTP.setstatus(http, 401)
+                    HTTP.setheader(http, "Content-Type" => "application/json")
                     HTTP.startwrite(http)
                     write(
                         http,
                         JSON.json(
                             Dict(
-                                "error" => "invalid_token",
-                                "error_description" => "Missing API key in Authorization header",
+                                "error" => "Unauthorized: Missing nonce or API key in Authorization header",
                             ),
                         ),
                     )
                     return true
                 end
 
-                # Only a configured API key is accepted — no minted/self-provisioned
-                # tokens (that would bypass strict/relaxed mode).
-                if !validate_api_key(String(something(api_key, "")), security_config)
-                    @warn "Auth denied: invalid API key (401)" client_ip =
-                        get_client_ip(req) method = req.method target = req.target
+                if !validate_api_key(String(nonce), security_config)
                     HTTP.setstatus(http, 401)
                     HTTP.setheader(http, "Content-Type" => "application/json")
-                    HTTP.setheader(http, "WWW-Authenticate" => "Bearer realm=\"kaimon\"")
                     HTTP.startwrite(http)
-                    write(http, JSON.json(Dict(
-                        "error" => "invalid_token",
-                        "error_description" => "Invalid API key",
-                    )))
+                    write(http, JSON.json(Dict("error" => "Unauthorized: Invalid API key")))
                     return true
                 end
 
-                # Validate IP address
+                # If using API key (not nonce), still need to validate IP
                 client_ip = get_client_ip(req)
                 if !validate_ip(client_ip, security_config)
-                    @warn "Auth denied: IP not allowed (403)" client_ip method =
-                        req.method target = req.target
                     HTTP.setstatus(http, 403)
                     HTTP.setheader(http, "Content-Type" => "application/json")
                     HTTP.startwrite(http)
@@ -169,32 +105,96 @@ function _stream_security_gate(http, req, body, security_config)
                     return true
                 end
             end
+        elseif !nonce_validated
+            # For non-vscode-response endpoints, use standard API key validation
+            api_key = extract_api_key(req)
+            if api_key === nothing && security_config.mode != :lax
+                @warn "Auth denied: missing API key (401)" client_ip = get_client_ip(req) method =
+                    req.method target = req.target
+                # RFC 6750 challenge: a bare Bearer scheme (we run no OAuth
+                # server, so no resource_metadata pointer — the credential is
+                # the API key), and a string-typed `error` a strict OAuth
+                # client can parse instead of a JSON-RPC error object.
+                HTTP.setstatus(http, 401)
+                HTTP.setheader(http, "Content-Type" => "application/json")
+                HTTP.setheader(http, "WWW-Authenticate" => "Bearer realm=\"kaimon\"")
+                HTTP.startwrite(http)
+                write(
+                    http,
+                    JSON.json(
+                        Dict(
+                            "error" => "invalid_token",
+                            "error_description" => "Missing API key in Authorization header",
+                        ),
+                    ),
+                )
+                return true
+            end
+
+            # Only a configured API key is accepted — no minted/self-provisioned
+            # tokens (that would bypass strict/relaxed mode).
+            if !validate_api_key(String(something(api_key, "")), security_config)
+                @warn "Auth denied: invalid API key (401)" client_ip = get_client_ip(req) method =
+                    req.method target = req.target
+                HTTP.setstatus(http, 401)
+                HTTP.setheader(http, "Content-Type" => "application/json")
+                HTTP.setheader(http, "WWW-Authenticate" => "Bearer realm=\"kaimon\"")
+                HTTP.startwrite(http)
+                write(
+                    http,
+                    JSON.json(
+                        Dict(
+                            "error" => "invalid_token",
+                            "error_description" => "Invalid API key",
+                        ),
+                    ),
+                )
+                return true
+            end
+
+            # Validate IP address
+            client_ip = get_client_ip(req)
+            if !validate_ip(client_ip, security_config)
+                @warn "Auth denied: IP not allowed (403)" client_ip method = req.method target =
+                    req.target
+                HTTP.setstatus(http, 403)
+                HTTP.setheader(http, "Content-Type" => "application/json")
+                HTTP.startwrite(http)
+                write(
+                    http,
+                    JSON.json(
+                        Dict("error" => "Forbidden: IP address $client_ip not allowed"),
+                    ),
+                )
+                return true
+            end
         end
+    end
     return false
 end
 
 function _stream_agents_md(http, req)
-            # Handle AGENTS.md endpoint (can have empty body for GET requests)
-            if req.target == "/.well-known/agents.md" ||
-               req.target == "/agents.md" ||
-               req.target == "/.well-known/AGENTS.md" ||
-               req.target == "/AGENTS.md"
-                agents_path = joinpath(pwd(), "AGENTS.md")
-                if isfile(agents_path)
-                    agents_content = read(agents_path, String)
-                    HTTP.setstatus(http, 200)
-                    HTTP.setheader(http, "Content-Type" => "text/markdown; charset=utf-8")
-                    HTTP.startwrite(http)
-                    isempty(agents_content) || write(http, agents_content)  # avoid empty chunked write
-                    return true
-                else
-                    HTTP.setstatus(http, 404)
-                    HTTP.setheader(http, "Content-Type" => "text/plain")
-                    HTTP.startwrite(http)
-                    write(http, "AGENTS.md not found in project root")
-                    return true
-                end
-            end
+    # Handle AGENTS.md endpoint (can have empty body for GET requests)
+    if req.target == "/.well-known/agents.md" ||
+       req.target == "/agents.md" ||
+       req.target == "/.well-known/AGENTS.md" ||
+       req.target == "/AGENTS.md"
+        agents_path = joinpath(pwd(), "AGENTS.md")
+        if isfile(agents_path)
+            agents_content = read(agents_path, String)
+            HTTP.setstatus(http, 200)
+            HTTP.setheader(http, "Content-Type" => "text/markdown; charset=utf-8")
+            HTTP.startwrite(http)
+            isempty(agents_content) || write(http, agents_content)  # avoid empty chunked write
+            return true
+        else
+            HTTP.setstatus(http, 404)
+            HTTP.setheader(http, "Content-Type" => "text/plain")
+            HTTP.startwrite(http)
+            write(http, "AGENTS.md not found in project root")
+            return true
+        end
+    end
     return false
 end
 
@@ -236,205 +236,224 @@ function _stream_oauth(http, req)
     HTTP.setstatus(http, 404)
     HTTP.setheader(http, "Content-Type" => "application/json")
     HTTP.startwrite(http)
-    write(http, JSON.json(Dict(
-        "error" => "oauth_not_supported",
-        "error_description" => "This server does not provide OAuth; authenticate with a configured API key.",
-    )))
+    write(
+        http,
+        JSON.json(
+            Dict(
+                "error" => "oauth_not_supported",
+                "error_description" => "This server does not provide OAuth; authenticate with a configured API key.",
+            ),
+        ),
+    )
     return true
 end
 
 function _stream_vscode_response(http, req, body)
-            if req.target == "/vscode-response" && req.method == "POST"
-                try
-                    response_data = JSON.parse(body; dicttype = Dict{String,Any})
-                    request_id = get(response_data, "request_id", nothing)
+    if req.target == "/vscode-response" && req.method == "POST"
+        try
+            response_data = JSON.parse(body; dicttype = Dict{String,Any})
+            request_id = get(response_data, "request_id", nothing)
 
-                    if request_id === nothing
-                        HTTP.setstatus(http, 400)
-                        HTTP.setheader(http, "Content-Type" => "application/json")
-                        HTTP.startwrite(http)
-                        write(http, JSON.json(Dict("error" => "Missing request_id")))
-                        return true
-                    end
-
-                    result = get(response_data, "result", nothing)
-                    error = get(response_data, "error", nothing)
-
-                    # Store the response
-                    Kaimon.store_vscode_response(string(request_id), result, error)
-
-                    HTTP.setstatus(http, 200)
-                    HTTP.setheader(http, "Content-Type" => "application/json")
-                    HTTP.startwrite(http)
-                    write(http, JSON.json(Dict("status" => "ok")))
-                    return true
-                catch e
-                    HTTP.setstatus(http, 500)
-                    HTTP.setheader(http, "Content-Type" => "application/json")
-                    HTTP.startwrite(http)
-                    write(
-                        http,
-                        JSON.json(Dict("error" => "Failed to process response: $e")),
-                    )
-                    return true
-                end
+            if request_id === nothing
+                HTTP.setstatus(http, 400)
+                HTTP.setheader(http, "Content-Type" => "application/json")
+                HTTP.startwrite(http)
+                write(http, JSON.json(Dict("error" => "Missing request_id")))
+                return true
             end
+
+            result = get(response_data, "result", nothing)
+            error = get(response_data, "error", nothing)
+
+            # Store the response
+            Kaimon.store_vscode_response(string(request_id), result, error)
+
+            HTTP.setstatus(http, 200)
+            HTTP.setheader(http, "Content-Type" => "application/json")
+            HTTP.startwrite(http)
+            write(http, JSON.json(Dict("status" => "ok")))
+            return true
+        catch e
+            HTTP.setstatus(http, 500)
+            HTTP.setheader(http, "Content-Type" => "application/json")
+            HTTP.startwrite(http)
+            write(http, JSON.json(Dict("error" => "Failed to process response: $e")))
+            return true
+        end
+    end
     return false
 end
 
 function _stream_connect_tcp(http, req, body)
-            if req.target == "/api/connect_tcp" && req.method == "POST"
-                try
-                    data = JSON.parse(body; dicttype = Dict{String,Any})
-                    host = get(data, "host", nothing)
-                    port = get(data, "port", nothing)
-                    name = get(data, "name", "remote")
-                    server_key = string(get(data, "server_key", ""))
+    if req.target == "/api/connect_tcp" && req.method == "POST"
+        try
+            data = JSON.parse(body; dicttype = Dict{String,Any})
+            host = get(data, "host", nothing)
+            port = get(data, "port", nothing)
+            name = get(data, "name", "remote")
+            server_key = string(get(data, "server_key", ""))
 
-                    if host === nothing || port === nothing
-                        HTTP.setstatus(http, 400)
-                        HTTP.setheader(http, "Content-Type" => "application/json")
-                        HTTP.startwrite(http)
-                        write(http, JSON.json(Dict("error" => "host and port are required")))
-                        return true
-                    end
+            if host === nothing || port === nothing
+                HTTP.setstatus(http, 400)
+                HTTP.setheader(http, "Content-Type" => "application/json")
+                HTTP.startwrite(http)
+                write(http, JSON.json(Dict("error" => "host and port are required")))
+                return true
+            end
 
-                    port_int = Int(port)
-                    if port_int < 1 || port_int > 65535
-                        HTTP.setstatus(http, 400)
-                        HTTP.setheader(http, "Content-Type" => "application/json")
-                        HTTP.startwrite(http)
-                        write(http, JSON.json(Dict("error" => "port must be between 1 and 65535")))
-                        return true
-                    end
+            port_int = Int(port)
+            if port_int < 1 || port_int > 65535
+                HTTP.setstatus(http, 400)
+                HTTP.setheader(http, "Content-Type" => "application/json")
+                HTTP.startwrite(http)
+                write(http, JSON.json(Dict("error" => "port must be between 1 and 65535")))
+                return true
+            end
 
-                    conn = Kaimon.connect_tcp_to_active_manager(string(host), port_int; name=string(name), server_key=server_key)
+            conn = Kaimon.connect_tcp_to_active_manager(
+                string(host),
+                port_int;
+                name = string(name),
+                server_key = server_key,
+            )
 
-                    HTTP.setstatus(http, 200)
-                    HTTP.setheader(http, "Content-Type" => "application/json")
-                    HTTP.startwrite(http)
-                    write(http, JSON.json(Dict(
+            HTTP.setstatus(http, 200)
+            HTTP.setheader(http, "Content-Type" => "application/json")
+            HTTP.startwrite(http)
+            write(
+                http,
+                JSON.json(
+                    Dict(
                         "status" => "connected",
                         "session_id" => conn !== nothing ? conn.session_id : nothing,
-                    )))
-                    return true
-                catch e
-                    HTTP.setstatus(http, 500)
-                    HTTP.setheader(http, "Content-Type" => "application/json")
-                    HTTP.startwrite(http)
-                    write(http, JSON.json(Dict("error" => sprint(showerror, e))))
-                    return true
-                end
-            end
+                    ),
+                ),
+            )
+            return true
+        catch e
+            HTTP.setstatus(http, 500)
+            HTTP.setheader(http, "Content-Type" => "application/json")
+            HTTP.startwrite(http)
+            write(http, JSON.json(Dict("error" => sprint(showerror, e))))
+            return true
+        end
+    end
     return false
 end
 
 function _stream_get_sse(http, req)
-            if req.method == "GET" && (
-                req.target == "/mcp" ||
-                req.target == "/" ||
-                startswith(req.target, "/mcp?")
-            )
-                HTTP.setstatus(http, 200)
-                HTTP.setheader(http, "Content-Type" => "text/event-stream")
-                HTTP.setheader(http, "Cache-Control" => "no-cache")
-                HTTP.setheader(http, "Connection" => "keep-alive")
-                # This GET stream is the client's standalone receive channel. Bind it
-                # to the session so we can target it for server→client requests
-                # (roots/list), and proactively capture the agent's workspace roots to
-                # auto-bind it to its gate session.
-                sid = try; something(extract_mcp_session_id(req), ""); catch; ""; end
-                HTTP.startwrite(http)
-                outbox = isempty(sid) ? nothing : _register_session_stream!(sid)
-                if !isempty(sid)
-                    @async try; _capture_roots!(sid); catch; end
-                end
-                try
-                    while isopen(http)
-                        # Targeted server→client messages (e.g. roots/list) first.
-                        if outbox !== nothing
-                            while isready(outbox)
-                                write(http, "data: $(JSON.json(take!(outbox)))\n\n")
-                            end
-                        end
-                        # Notifications newer than this session's cursor. The cursor
-                        # (shared with POST flushes) advances past what we deliver, so
-                        # a re-queued notification — e.g. tools/list_changed on every
-                        # extension restart — comes through as a fresh, higher seq
-                        # instead of being suppressed for the stream's whole life.
-                        for notif in _flush_notifications_for_session!(sid)
-                            write(http, "data: $(JSON.json(notif))\n\n")
-                        end
-                        flush(http)
-                        sleep(1)
-                    end
-                catch
-                finally
-                    outbox === nothing || _unregister_session_stream!(sid, outbox)
-                end
-                return true
+    if req.method == "GET" &&
+       (req.target == "/mcp" || req.target == "/" || startswith(req.target, "/mcp?"))
+        HTTP.setstatus(http, 200)
+        HTTP.setheader(http, "Content-Type" => "text/event-stream")
+        HTTP.setheader(http, "Cache-Control" => "no-cache")
+        HTTP.setheader(http, "Connection" => "keep-alive")
+        # This GET stream is the client's standalone receive channel. Bind it
+        # to the session so we can target it for server→client requests
+        # (roots/list), and proactively capture the agent's workspace roots to
+        # auto-bind it to its gate session.
+        sid = try
+            something(extract_mcp_session_id(req), "")
+        catch
+            ""
+        end
+        HTTP.startwrite(http)
+        outbox = isempty(sid) ? nothing : _register_session_stream!(sid)
+        if !isempty(sid)
+            @async try
+                _capture_roots!(sid)
+            catch
             end
+        end
+        try
+            while isopen(http)
+                # Targeted server→client messages (e.g. roots/list) first.
+                if outbox !== nothing
+                    while isready(outbox)
+                        write(http, "data: $(JSON.json(take!(outbox)))\n\n")
+                    end
+                end
+                # Notifications newer than this session's cursor. The cursor
+                # (shared with POST flushes) advances past what we deliver, so
+                # a re-queued notification — e.g. tools/list_changed on every
+                # extension restart — comes through as a fresh, higher seq
+                # instead of being suppressed for the stream's whole life.
+                for notif in _flush_notifications_for_session!(sid)
+                    write(http, "data: $(JSON.json(notif))\n\n")
+                end
+                flush(http)
+                sleep(1)
+            end
+        catch
+        finally
+            outbox === nothing || _unregister_session_stream!(sid, outbox)
+        end
+        return true
+    end
     return false
 end
 
 function _stream_delete(http, req)
-            if req.method == "DELETE"
-                HTTP.setstatus(http, 405)
-                HTTP.setheader(http, "Content-Type" => "application/json")
-                HTTP.setheader(http, "Allow" => "GET, POST")
-                HTTP.startwrite(http)
-                error_response = Dict(
-                    "jsonrpc" => "2.0",
-                    "id" => nothing,
-                    "error" => Dict(
-                        "code" => -32600,
-                        "message" => "Method Not Allowed - session termination via DELETE not supported",
-                    ),
-                )
-                write(http, JSON.json(error_response))
-                return true
-            end
+    if req.method == "DELETE"
+        HTTP.setstatus(http, 405)
+        HTTP.setheader(http, "Content-Type" => "application/json")
+        HTTP.setheader(http, "Allow" => "GET, POST")
+        HTTP.startwrite(http)
+        error_response = Dict(
+            "jsonrpc" => "2.0",
+            "id" => nothing,
+            "error" => Dict(
+                "code" => -32600,
+                "message" => "Method Not Allowed - session termination via DELETE not supported",
+            ),
+        )
+        write(http, JSON.json(error_response))
+        return true
+    end
     return false
 end
 
 function _stream_protocol_version(http, req)
-            # MCP-Protocol-Version header validation — 2025-11-25 spec requirement.
-            # If the header is present it must name a supported protocol version.
-            let ver = HTTP.header(req, "MCP-Protocol-Version", "")
-                if !isempty(ver) && ver ∉ ("2025-06-18", "2025-03-26", "2025-11-25", "2025-11-05", "2024-11-05")
-                    HTTP.setstatus(http, 400)
-                    HTTP.setheader(http, "Content-Type" => "application/json")
-                    HTTP.startwrite(http)
-                    write(http, JSON.json(Dict(
+    # MCP-Protocol-Version header validation — 2025-11-25 spec requirement.
+    # If the header is present it must name a supported protocol version.
+    let ver = HTTP.header(req, "MCP-Protocol-Version", "")
+        if !isempty(ver) &&
+           ver ∉ ("2025-06-18", "2025-03-26", "2025-11-25", "2025-11-05", "2024-11-05")
+            HTTP.setstatus(http, 400)
+            HTTP.setheader(http, "Content-Type" => "application/json")
+            HTTP.startwrite(http)
+            write(
+                http,
+                JSON.json(
+                    Dict(
                         "jsonrpc" => "2.0",
                         "id" => nothing,
                         "error" => Dict(
                             "code" => -32600,
                             "message" => "Unsupported MCP-Protocol-Version: $ver",
                         ),
-                    )))
-                    return true
-                end
-            end
+                    ),
+                ),
+            )
+            return true
+        end
+    end
     return false
 end
 
 function _stream_empty_body(http, body)
-            if isempty(body)
-                HTTP.setstatus(http, 400)
-                HTTP.setheader(http, "Content-Type" => "application/json")
-                HTTP.startwrite(http)
-                error_response = Dict(
-                    "jsonrpc" => "2.0",
-                    "id" => 0,
-                    "error" => Dict(
-                        "code" => -32600,
-                        "message" => "Invalid Request - empty body",
-                    ),
-                )
-                write(http, JSON.json(error_response))
-                return true
-            end
+    if isempty(body)
+        HTTP.setstatus(http, 400)
+        HTTP.setheader(http, "Content-Type" => "application/json")
+        HTTP.startwrite(http)
+        error_response = Dict(
+            "jsonrpc" => "2.0",
+            "id" => 0,
+            "error" =>
+                Dict("code" => -32600, "message" => "Invalid Request - empty body"),
+        )
+        write(http, JSON.json(error_response))
+        return true
+    end
     return false
 end
-

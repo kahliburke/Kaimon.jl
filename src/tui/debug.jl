@@ -45,7 +45,8 @@ function _view_debug_locals(m::KaimonModel, area::Rect, buf::Buffer)
             area,
             buf,
         )
-        inner = Rect(area.x + 1, area.y + 1, max(0, area.width - 2), max(0, area.height - 2))
+        inner =
+            Rect(area.x + 1, area.y + 1, max(0, area.width - 2), max(0, area.height - 2))
         inner.width < 4 && return
         msg = "No active debug session."
         set_string!(buf, inner.x + 1, inner.y, msg, tstyle(:text_dim))
@@ -99,8 +100,7 @@ function _view_debug_console(m::KaimonModel, area::Rect, buf::Buffer)
 
     wrap_hint = m.debug_console_wrap ? "wrap:on" : "wrap:off"
     title_str = if m.debug_state == :paused
-        help = m.debug_input_editing ? "[Enter]eval [Esc]nav" :
-            "[c]ontinue [w]rap"
+        help = m.debug_input_editing ? "[Enter]eval [Esc]nav" : "[c]ontinue [w]rap"
         "Console [$wrap_hint] $help"
     else
         "Console [$wrap_hint]"
@@ -160,7 +160,8 @@ function _sync_debug_prompt_line!(m::KaimonModel)
     prompt_line = [Span("infil> ", tstyle(:accent))]
 
     # Check if the last line is already our prompt
-    if !isempty(content) && length(content[end]) == 1 &&
+    if !isempty(content) &&
+       length(content[end]) == 1 &&
        content[end][1].content == "infil> "
         # Already there
         return
@@ -225,7 +226,7 @@ function _sync_debug_locals_pane!(m::KaimonModel)
             ],
         )
         # Continuation lines indented
-        for i in 2:length(val_lines)
+        for i = 2:length(val_lines)
             push!(lines, [Span("  " * String(val_lines[i]), tstyle(:text))])
         end
     end
@@ -243,18 +244,29 @@ function _sync_debug_console_pane!(m::KaimonModel)
 
     # Remove trailing infil> prompt before appending new history lines
     content = pane.content
-    if content isa Vector{Vector{Span}} && !isempty(content) &&
-       length(content[end]) == 1 && content[end][1].content == "infil> "
+    if content isa Vector{Vector{Span}} &&
+       !isempty(content) &&
+       length(content[end]) == 1 &&
+       content[end][1].content == "infil> "
         pop!(content)
     end
 
-    for i in (synced+1):n
+    for i = (synced+1):n
         entry = m.debug_history[i]
         # Agent evals get "agent>" prefix; user evals show as "infil>" (matching the prompt)
         if entry.source == :agent
-            push_line!(pane, [Span("agent> ", tstyle(:warning, bold = true)), Span(entry.code, tstyle(:text))])
+            push_line!(
+                pane,
+                [
+                    Span("agent> ", tstyle(:warning, bold = true)),
+                    Span(entry.code, tstyle(:text)),
+                ],
+            )
         else
-            push_line!(pane, [Span("infil> ", tstyle(:accent)), Span(entry.code, tstyle(:text))])
+            push_line!(
+                pane,
+                [Span("infil> ", tstyle(:accent)), Span(entry.code, tstyle(:text))],
+            )
         end
         # Result line(s)
         result_style =
@@ -309,23 +321,34 @@ function _handle_debug_input_edit!(m::KaimonModel, evt::KeyEvent)
                 cmd = lowercase(strip(code))
                 if cmd in (":c", ":continue")
                     _debug_send_continue!(m, :continue)
-                    m.debug_input = TextInput(text = "", label = "infil> ", tick = m.tick)
+                    m.debug_input =
+                        TextInput(text = "", label = "infil> ", tick = m.tick)
                 elseif cmd in (":w", ":wrap")
                     m.debug_console_wrap = !m.debug_console_wrap
                     if m.debug_console_pane !== nothing
                         m.debug_console_pane.word_wrap = m.debug_console_wrap
                     end
-                    m.debug_input = TextInput(text = "", label = "infil> ", tick = m.tick)
+                    m.debug_input =
+                        TextInput(text = "", label = "infil> ", tick = m.tick)
                 elseif cmd in (":h", ":help", "?")
-                    push!(m.debug_history, (source = :user, code = cmd, result = ":c continue  :w wrap  :h help  ? help\nEsc exit edit  Ctrl-W toggle wrap\nType Julia expressions to eval in breakpoint scope"))
-                    m.debug_input = TextInput(text = "", label = "infil> ", tick = m.tick)
+                    push!(
+                        m.debug_history,
+                        (
+                            source = :user,
+                            code = cmd,
+                            result = ":c continue  :w wrap  :h help  ? help\nEsc exit edit  Ctrl-W toggle wrap\nType Julia expressions to eval in breakpoint scope",
+                        ),
+                    )
+                    m.debug_input =
+                        TextInput(text = "", label = "infil> ", tick = m.tick)
                 else
                     # Save to history
                     push!(m.debug_cmd_history, String(code))
                     m.debug_cmd_history_idx = 0
                     m.debug_user_interacted = true
                     _debug_eval_expression!(m, String(code))
-                    m.debug_input = TextInput(text = "", label = "infil> ", tick = m.tick)
+                    m.debug_input =
+                        TextInput(text = "", label = "infil> ", tick = m.tick)
                 end
             end
         end
@@ -341,7 +364,7 @@ function _handle_debug_input_edit!(m::KaimonModel, evt::KeyEvent)
                 new_idx = min(idx + 1, length(hist))
                 if new_idx != idx
                     m.debug_cmd_history_idx = new_idx
-                    cmd = hist[end - new_idx + 1]
+                    cmd = hist[end-new_idx+1]
                     m.debug_input !== nothing && set_text!(m.debug_input, cmd)
                 end
             end
@@ -351,7 +374,7 @@ function _handle_debug_input_edit!(m::KaimonModel, evt::KeyEvent)
             idx = m.debug_cmd_history_idx
             if idx > 1
                 m.debug_cmd_history_idx = idx - 1
-                cmd = m.debug_cmd_history[end - (idx - 2)]
+                cmd = m.debug_cmd_history[end-(idx-2)]
                 m.debug_input !== nothing && set_text!(m.debug_input, cmd)
             elseif idx == 1
                 m.debug_cmd_history_idx = 0
@@ -402,7 +425,10 @@ function _debug_tab_complete!(m::KaimonModel, inp::TextInput)
             if length(prefix) > length(text)
                 set_text!(inp, prefix)
             else
-                push!(m.debug_history, (source = :user, code = "<tab>", result = join(matches, "  ")))
+                push!(
+                    m.debug_history,
+                    (source = :user, code = "<tab>", result = join(matches, "  ")),
+                )
             end
         end
         return
@@ -412,7 +438,7 @@ function _debug_tab_complete!(m::KaimonModel, inp::TextInput)
     # e.g. "length(res" → partial="res", prefix_text="length("
     ident_start = something(findlast(c -> !Base.is_id_char(c), text), 0) + 1
     partial = text[ident_start:end]
-    prefix_text = text[1:ident_start-1]
+    prefix_text = text[1:(ident_start-1)]
     isempty(partial) && return
 
     # Get completions from the eval module — locals, imports, and macros from
@@ -445,7 +471,7 @@ function _debug_tab_complete!(m::KaimonModel, inp::TextInput)
         resp = _gate_send_recv(conn, (type = :debug_eval, source = :user, code = code))
         s = something(get(resp, :result, nothing), "")
         # Strip surrounding quotes from repr output
-        startswith(s, '"') && endswith(s, '"') ? s[2:end-1] : s
+        startswith(s, '"') && endswith(s, '"') ? s[2:(end-1)] : s
     catch
         ""
     end
@@ -472,7 +498,10 @@ function _debug_tab_complete!(m::KaimonModel, inp::TextInput)
         else
             # Show completions in console
             comp_str = join(completions, "  ")
-            push!(m.debug_history, (source = :user, code = "<tab> $partial", result = comp_str))
+            push!(
+                m.debug_history,
+                (source = :user, code = "<tab> $partial", result = comp_str),
+            )
         end
     end
 end
@@ -496,10 +525,7 @@ function _debug_eval_expression!(m::KaimonModel, code::String)
         "ERROR: $e"
     end
 
-    push!(
-        m.debug_history,
-        (source = :user, code = code, result = result),
-    )
+    push!(m.debug_history, (source = :user, code = code, result = result))
 end
 
 """Send continue to the paused gate session."""
@@ -657,7 +683,11 @@ function _handle_breakpoint_hit!(m::KaimonModel, msg)
     loc = isempty(m.debug_file) ? "" : " at $(m.debug_file):$(m.debug_line)"
     push!(
         m.debug_history,
-        (source = :agent, code = "breakpoint hit$loc", result = "$(length(m.debug_locals)) local variables captured"),
+        (
+            source = :agent,
+            code = "breakpoint hit$loc",
+            result = "$(length(m.debug_locals)) local variables captured",
+        ),
     )
 
     # Auto-switch to Debug tab

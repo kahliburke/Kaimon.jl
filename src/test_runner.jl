@@ -40,7 +40,8 @@ end
 # 2. Runs runtests.jl
 # 3. Prints structured status lines to stdout
 
-const _TEST_RUNNER_TEMPLATE = abspath(joinpath(@__DIR__, "..", "templates", "test-runner.jl.tmpl"))
+const _TEST_RUNNER_TEMPLATE =
+    abspath(joinpath(@__DIR__, "..", "templates", "test-runner.jl.tmpl"))
 
 """Write the test runner script to a temp file. Returns the path.
 Reads from the template file each time so edits are picked up without restart."""
@@ -85,7 +86,10 @@ function spawn_test_run(
     # removes them afterward.
     cov_flag = coverage ? `--code-coverage=user` : ``
     cmd = pipeline(
-        setenv(`$julia_exe --startup-file=no $cov_flag $script_path $project_path $pattern $verbose`, env);
+        setenv(
+            `$julia_exe --startup-file=no $cov_flag $script_path $project_path $pattern $verbose`,
+            env,
+        );
         stderr = stdout,
     )
 
@@ -136,7 +140,9 @@ function spawn_test_run(
                 # run with only nested testsets and no depth-0 aggregate), derive totals from
                 # the SHALLOWEST results — their counts are cumulative over their children, so
                 # summing only those avoids double-counting parent + child.
-                if run.total_pass == 0 && run.total_fail == 0 && run.total_error == 0 &&
+                if run.total_pass == 0 &&
+                   run.total_fail == 0 &&
+                   run.total_error == 0 &&
                    !isempty(run.results)
                     mind = minimum(r.depth for r in run.results)
                     roots = filter(r -> r.depth == mind, run.results)
@@ -221,7 +227,8 @@ Multiple `.cov` files for one source (e.g. TestItemRunner worker processes) are 
 per line by max count. Returns a focused summary (overall % + the least-covered files).
 """
 function _collect_coverage(project_path::String)::String
-    src_root = isdir(joinpath(project_path, "src")) ? joinpath(project_path, "src") : project_path
+    src_root =
+        isdir(joinpath(project_path, "src")) ? joinpath(project_path, "src") : project_path
     cov_files = String[]
     for (root, _, files) in walkdir(src_root)
         for f in files
@@ -245,7 +252,10 @@ function _collect_coverage(project_path::String)::String
             end
         catch
         end
-        try; rm(cf); catch; end
+        try
+            rm(cf)
+        catch
+        end
     end
 
     rows = Tuple{String,Int,Int}[]   # (source, covered, coverable)
@@ -263,11 +273,18 @@ function _collect_coverage(project_path::String)::String
 
     pct(c, t) = t == 0 ? 0.0 : round(100 * c / t; digits = 1)
     io = IOBuffer()
-    println(io, "Coverage: $total_covered/$total_coverable lines ($(pct(total_covered, total_coverable))%)  ",
-        "[counts only instrumented lines; Julia may omit uncalled one-liner methods]")
+    println(
+        io,
+        "Coverage: $total_covered/$total_coverable lines ($(pct(total_covered, total_coverable))%)  ",
+        "[counts only instrumented lines; Julia may omit uncalled one-liner methods]",
+    )
     sort!(rows; by = r -> r[2] / max(1, r[3]))   # least-covered first
     for (src, cov, cab) in first(rows, 15)
-        rel = try; relpath(src, project_path); catch; src; end
+        rel = try
+            relpath(src, project_path)
+        catch
+            src
+        end
         println(io, "  $rel: $cov/$cab ($(pct(cov, cab))%)")
     end
     length(rows) > 15 && println(io, "  … ($(length(rows) - 15) more files)")
@@ -291,7 +308,8 @@ end
 `Database.record_test_run!`; this just maps the `TestRun` into plain row data)."""
 function _persist_test_run!(run::TestRun)
     fmt(t) = Dates.format(t, dateformat"yyyy-mm-dd HH:MM:SS")
-    duration_ms = run.finished_at !== nothing ?
+    duration_ms =
+        run.finished_at !== nothing ?
         Float64(Dates.value(run.finished_at - run.started_at)) : 0.0
     status_str =
         run.status == RUN_PASSED ? "passed" :
@@ -303,17 +321,39 @@ function _persist_test_run!(run::TestRun)
 
     try
         Database.record_test_run!(
-            (project_path = run.project_path,
-             started_at = fmt(run.started_at),
-             finished_at = run.finished_at !== nothing ? fmt(run.finished_at) : nothing,
-             status = status_str, pattern = run.pattern,
-             total_pass = run.total_pass, total_fail = run.total_fail,
-             total_error = run.total_error, total_tests = run.total_tests,
-             duration_ms = duration_ms, summary = summary_short),
-            [(name = r.name, depth = r.depth, pass_count = r.pass_count, fail_count = r.fail_count,
-              error_count = r.error_count, total_count = r.total_count) for r in run.results],
-            [(file = f.file, line = f.line, expression = f.expression, evaluated = f.evaluated,
-              testset = f.testset, backtrace = f.backtrace) for f in run.failures],
+            (
+                project_path = run.project_path,
+                started_at = fmt(run.started_at),
+                finished_at = run.finished_at !== nothing ? fmt(run.finished_at) : nothing,
+                status = status_str,
+                pattern = run.pattern,
+                total_pass = run.total_pass,
+                total_fail = run.total_fail,
+                total_error = run.total_error,
+                total_tests = run.total_tests,
+                duration_ms = duration_ms,
+                summary = summary_short,
+            ),
+            [
+                (
+                    name = r.name,
+                    depth = r.depth,
+                    pass_count = r.pass_count,
+                    fail_count = r.fail_count,
+                    error_count = r.error_count,
+                    total_count = r.total_count,
+                ) for r in run.results
+            ],
+            [
+                (
+                    file = f.file,
+                    line = f.line,
+                    expression = f.expression,
+                    evaluated = f.evaluated,
+                    testset = f.testset,
+                    backtrace = f.backtrace,
+                ) for f in run.failures
+            ],
         )
     catch e
         @debug "Failed to persist test run" exception = (e, catch_backtrace())

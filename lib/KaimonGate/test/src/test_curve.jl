@@ -119,7 +119,11 @@ end
             @test KG._pinned_server("h", 9000) == other
 
             # fetch throws (ssh failure) → :error
-            r6 = KG.verify_server_key_via_ssh("h", 9001; fetch = (_t, _p) -> error("ssh failed"))
+            r6 = KG.verify_server_key_via_ssh(
+                "h",
+                9001;
+                fetch = (_t, _p) -> error("ssh failed"),
+            )
             @test r6.status == :error
             @test KG._pinned_server("h", 9001) === nothing
         end
@@ -157,237 +161,298 @@ if KG._RUNNING[]
     end
 else
 
-# Echo loop tolerant of the rcvtimeo so it survives until the socket closes.
-function _echo_loop(rep)
-    @async while true
+    # Echo loop tolerant of the rcvtimeo so it survives until the socket closes.
+    function _echo_loop(rep)
+        @async while true
+            try
+                msg = ZMQ.recv(rep, Vector{UInt8})
+                ZMQ.send(rep, msg)
+            catch e
+                e isa ZMQ.TimeoutError && continue
+                break   # socket closed
+            end
+        end
+    end
+
+    @testset "CURVE round-trip + server auth" begin
+        spub, ssec = KG.curve_keypair()
+        ctx = ZMQ.Context()
+        rep = ZMQ.Socket(ctx, ZMQ.REP)
+        rep.rcvtimeo = 1000
+        rep.linger = 0
+        KG.make_curve_server!(rep, ssec)
+        ZMQ.bind(rep, "tcp://127.0.0.1:0")
+        endpoint = rstrip(ZMQ._get_last_endpoint(rep), '\0')
+        server = _echo_loop(rep)
+
         try
-            msg = ZMQ.recv(rep, Vector{UInt8})
-            ZMQ.send(rep, msg)
-        catch e
-            e isa ZMQ.TimeoutError && continue
-            break   # socket closed
-        end
-    end
-end
-
-@testset "CURVE round-trip + server auth" begin
-    spub, ssec = KG.curve_keypair()
-    ctx = ZMQ.Context()
-    rep = ZMQ.Socket(ctx, ZMQ.REP); rep.rcvtimeo = 1000; rep.linger = 0
-    KG.make_curve_server!(rep, ssec)
-    ZMQ.bind(rep, "tcp://127.0.0.1:0")
-    endpoint = rstrip(ZMQ._get_last_endpoint(rep), '\0')
-    server = _echo_loop(rep)
-
-    try
-        # good client (correct server pubkey) → encrypted round-trip works
-        cpub, csec = KG.curve_keypair()
-        req = ZMQ.Socket(ctx, ZMQ.REQ); req.rcvtimeo = 3000; req.linger = 0
-        KG.make_curve_client!(req, spub, cpub, csec)
-        ZMQ.connect(req, endpoint)
-        ZMQ.send(req, "hello")
-        @test String(ZMQ.recv(req, Vector{UInt8})) == "hello"
-        ZMQ.close(req)
-
-        # wrong server key → handshake fails, no reply ever arrives
-        wrongpub, _ = KG.curve_keypair()
-        bcpub, bcsec = KG.curve_keypair()
-        bad = ZMQ.Socket(ctx, ZMQ.REQ); bad.rcvtimeo = 1200; bad.linger = 0
-        KG.make_curve_client!(bad, wrongpub, bcpub, bcsec)
-        ZMQ.connect(bad, endpoint)
-        ZMQ.send(bad, "hello")
-        @test_throws ZMQ.TimeoutError ZMQ.recv(bad, Vector{UInt8})
-        ZMQ.close(bad)
-    finally
-        ZMQ.close(rep)
-        ZMQ.close(ctx)
-        sleep(0.05)
-    end
-end
-
-@testset "ZAP allow-list (mutual auth)" begin
-    spub, ssec = KG.curve_keypair()
-    good_pub, good_sec = KG.curve_keypair()
-    other_pub, other_sec = KG.curve_keypair()
-
-    mktempdir() do dir
-        withenv("XDG_CACHE_HOME" => dir) do
-            prev_running = KG._RUNNING[]
-            KG._RUNNING[] = true                       # let the handler loop run
-            KG.authorize_client!(good_pub)             # only this client is allowed
-            ctx = ZMQ.Context()
-            KG._start_zap_handler!(ctx; allow_any = false)
-            rep = ZMQ.Socket(ctx, ZMQ.REP); rep.rcvtimeo = 1000; rep.linger = 0
-            KG.make_curve_server!(rep, ssec)
-            KG._setsockopt_str(rep, KG._ZMQ_ZAP_DOMAIN, KG._ZAP_DOMAIN)  # consult ZAP
-            ZMQ.bind(rep, "tcp://127.0.0.1:0")
-            endpoint = rstrip(ZMQ._get_last_endpoint(rep), '\0')
-            server = _echo_loop(rep)
-
-            try
-                # allowed client → connects
-                req = ZMQ.Socket(ctx, ZMQ.REQ); req.rcvtimeo = 3000; req.linger = 0
-                KG.make_curve_client!(req, spub, good_pub, good_sec)
-                ZMQ.connect(req, endpoint)
-                ZMQ.send(req, "ok")
-                @test String(ZMQ.recv(req, Vector{UInt8})) == "ok"
-                ZMQ.close(req)
-
-                # client off the allow-list → ZAP denies, no reply
-                bad = ZMQ.Socket(ctx, ZMQ.REQ); bad.rcvtimeo = 1200; bad.linger = 0
-                KG.make_curve_client!(bad, spub, other_pub, other_sec)
-                ZMQ.connect(bad, endpoint)
-                ZMQ.send(bad, "nope")
-                @test_throws ZMQ.TimeoutError ZMQ.recv(bad, Vector{UInt8})
-                ZMQ.close(bad)
-            finally
-                ZMQ.close(rep)
-                KG._RUNNING[] = false          # stop the ZAP handler loop
-                sleep(0.4)                     # let it close its socket
-                ZMQ.close(ctx)
-                KG._RUNNING[] = prev_running
-            end
-        end
-    end
-end
-
-@testset "ZAP live re-read (authorize/revoke without restart)" begin
-    spub, ssec = KG.curve_keypair()
-    cpub, csec = KG.curve_keypair()
-
-    mktempdir() do dir
-        withenv("XDG_CACHE_HOME" => dir) do
-            prev_running = KG._RUNNING[]
-            KG._RUNNING[] = true
-            ctx = ZMQ.Context()
-            KG._start_zap_handler!(ctx; allow_any = false)   # empty allow-list at start
-            rep = ZMQ.Socket(ctx, ZMQ.REP); rep.rcvtimeo = 1000; rep.linger = 0
-            KG.make_curve_server!(rep, ssec)
-            KG._setsockopt_str(rep, KG._ZMQ_ZAP_DOMAIN, KG._ZAP_DOMAIN)
-            ZMQ.bind(rep, "tcp://127.0.0.1:0")
-            endpoint = rstrip(ZMQ._get_last_endpoint(rep), '\0')
-            server = _echo_loop(rep)
-
-            try
-                # not yet authorized → denied
-                r1 = ZMQ.Socket(ctx, ZMQ.REQ); r1.rcvtimeo = 1200; r1.linger = 0
-                KG.make_curve_client!(r1, spub, cpub, csec)
-                ZMQ.connect(r1, endpoint); ZMQ.send(r1, "x")
-                @test_throws ZMQ.TimeoutError ZMQ.recv(r1, Vector{UInt8})
-                ZMQ.close(r1)
-
-                # authorize WITHOUT restarting the handler → next handshake allowed
-                @test KG.authorize_client!(cpub) == :added
-                r2 = ZMQ.Socket(ctx, ZMQ.REQ); r2.rcvtimeo = 3000; r2.linger = 0
-                KG.make_curve_client!(r2, spub, cpub, csec)
-                ZMQ.connect(r2, endpoint); ZMQ.send(r2, "ok")
-                @test String(ZMQ.recv(r2, Vector{UInt8})) == "ok"
-                ZMQ.close(r2)
-
-                # revoke WITHOUT restarting the handler → next handshake denied
-                @test KG.revoke_client!(cpub) == :removed
-                r3 = ZMQ.Socket(ctx, ZMQ.REQ); r3.rcvtimeo = 1200; r3.linger = 0
-                KG.make_curve_client!(r3, spub, cpub, csec)
-                ZMQ.connect(r3, endpoint); ZMQ.send(r3, "nope")
-                @test_throws ZMQ.TimeoutError ZMQ.recv(r3, Vector{UInt8})
-                ZMQ.close(r3)
-            finally
-                ZMQ.close(rep)
-                KG._RUNNING[] = false
-                sleep(0.4)
-                ZMQ.close(ctx)
-                KG._RUNNING[] = prev_running
-            end
-        end
-    end
-end
-
-@testset "serve(curve=true) + publish/subscribe (allow_any)" begin
-    Sys.iswindows() && (@test_skip true; return)
-    mktempdir() do dir
-        withenv("XDG_CACHE_HOME" => dir) do
-            sid = "test-curve-$(bytes2hex(rand(UInt8, 4)))"
-            KG._serve(name = "curve", session_id = sid, force = true, mode = :tcp,
-                      host = "127.0.0.1", port = 0, curve = true, allow_any = true)
-            sleep(0.25)
-            try
-                @test KG._RUNNING[]
-                @test KG._CURVE_ENABLED[]
-                spub = KG._CURVE_SERVER_PUBLIC[]
-                @test length(spub) == 40
-
-                rep_endpoint = rstrip(ZMQ._get_last_endpoint(KG._GATE_SOCKET[]), '\0')
-                pub_endpoint = KG._STREAM_ENDPOINT[]
-                ctx = ZMQ.Context()
-
-                # CURVE client (correct server key, ephemeral client key) → pong
-                cpub, csec = KG.curve_keypair()
-                req = ZMQ.Socket(ctx, ZMQ.REQ); req.rcvtimeo = 3000; req.linger = 0
-                KG.make_curve_client!(req, spub, cpub, csec)
-                ZMQ.connect(req, rep_endpoint)
-                resp = _zmq_req(req, (type = :ping,))
-                @test resp.type == :pong
-                @test resp.server_pubkey == spub
-                ZMQ.close(req)
-
-                # publish → subscribe over the encrypted PUB (2-frame [topic,payload])
-                sub = KG.subscribe(pub_endpoint; topic = "tui:", serverkey = spub, ctx = ctx)
-                sub.rcvtimeo = 3000
-                sleep(0.25)   # SUB handshake (slow joiner)
-                KG.publish("tui:demo", (frame = 1, txt = "hi"))
-                parts = ZMQ.recv_multipart(sub, Vector{UInt8})
-                @test String(parts[1]) == "tui:demo"
-                payload = Serialization.deserialize(IOBuffer(parts[2]))
-                @test payload.txt == "hi"
-                ZMQ.close(sub)
-                ZMQ.close(ctx)
-            finally
-                KG.stop(); sleep(0.2)
-            end
-        end
-    end
-end
-
-@testset "serve(curve=true) allow-list (fail-closed + enroll)" begin
-    Sys.iswindows() && (@test_skip true; return)
-    mktempdir() do dir
-        withenv("XDG_CACHE_HOME" => dir) do
+            # good client (correct server pubkey) → encrypted round-trip works
             cpub, csec = KG.curve_keypair()
-
-            # fail-closed: client not enrolled → ZAP denies → no pong
-            sid1 = "test-fc-$(bytes2hex(rand(UInt8, 4)))"
-            KG._serve(name = "fc", session_id = sid1, force = true, mode = :tcp,
-                      host = "127.0.0.1", port = 0, curve = true, allow_any = false)
-            sleep(0.25)
-            ep1 = rstrip(ZMQ._get_last_endpoint(KG._GATE_SOCKET[]), '\0')
-            spub = KG._CURVE_SERVER_PUBLIC[]
-            ctx = ZMQ.Context()
-            req = ZMQ.Socket(ctx, ZMQ.REQ); req.rcvtimeo = 1200; req.linger = 0
+            req = ZMQ.Socket(ctx, ZMQ.REQ)
+            req.rcvtimeo = 3000
+            req.linger = 0
             KG.make_curve_client!(req, spub, cpub, csec)
-            ZMQ.connect(req, ep1)
-            ZMQ.send(req, "x")
-            @test_throws ZMQ.TimeoutError ZMQ.recv(req, Vector{UInt8})
+            ZMQ.connect(req, endpoint)
+            ZMQ.send(req, "hello")
+            @test String(ZMQ.recv(req, Vector{UInt8})) == "hello"
             ZMQ.close(req)
-            KG.stop(); sleep(0.2)
 
-            # enrolled: same client key on the allow-list → pong
-            sid2 = "test-al-$(bytes2hex(rand(UInt8, 4)))"
-            KG._serve(name = "al", session_id = sid2, force = true, mode = :tcp,
-                      host = "127.0.0.1", port = 0, curve = true, allow_any = false,
-                      allowed_clients = [cpub])
-            sleep(0.25)
-            ep2 = rstrip(ZMQ._get_last_endpoint(KG._GATE_SOCKET[]), '\0')
-            spub2 = KG._CURVE_SERVER_PUBLIC[]
-            req2 = ZMQ.Socket(ctx, ZMQ.REQ); req2.rcvtimeo = 3000; req2.linger = 0
-            KG.make_curve_client!(req2, spub2, cpub, csec)
-            ZMQ.connect(req2, ep2)
-            resp = _zmq_req(req2, (type = :ping,))
-            @test resp.type == :pong
-            ZMQ.close(req2)
+            # wrong server key → handshake fails, no reply ever arrives
+            wrongpub, _ = KG.curve_keypair()
+            bcpub, bcsec = KG.curve_keypair()
+            bad = ZMQ.Socket(ctx, ZMQ.REQ)
+            bad.rcvtimeo = 1200
+            bad.linger = 0
+            KG.make_curve_client!(bad, wrongpub, bcpub, bcsec)
+            ZMQ.connect(bad, endpoint)
+            ZMQ.send(bad, "hello")
+            @test_throws ZMQ.TimeoutError ZMQ.recv(bad, Vector{UInt8})
+            ZMQ.close(bad)
+        finally
+            ZMQ.close(rep)
             ZMQ.close(ctx)
-            KG.stop(); sleep(0.2)
+            sleep(0.05)
         end
     end
-end
+
+    @testset "ZAP allow-list (mutual auth)" begin
+        spub, ssec = KG.curve_keypair()
+        good_pub, good_sec = KG.curve_keypair()
+        other_pub, other_sec = KG.curve_keypair()
+
+        mktempdir() do dir
+            withenv("XDG_CACHE_HOME" => dir) do
+                prev_running = KG._RUNNING[]
+                KG._RUNNING[] = true                       # let the handler loop run
+                KG.authorize_client!(good_pub)             # only this client is allowed
+                ctx = ZMQ.Context()
+                KG._start_zap_handler!(ctx; allow_any = false)
+                rep = ZMQ.Socket(ctx, ZMQ.REP)
+                rep.rcvtimeo = 1000
+                rep.linger = 0
+                KG.make_curve_server!(rep, ssec)
+                KG._setsockopt_str(rep, KG._ZMQ_ZAP_DOMAIN, KG._ZAP_DOMAIN)  # consult ZAP
+                ZMQ.bind(rep, "tcp://127.0.0.1:0")
+                endpoint = rstrip(ZMQ._get_last_endpoint(rep), '\0')
+                server = _echo_loop(rep)
+
+                try
+                    # allowed client → connects
+                    req = ZMQ.Socket(ctx, ZMQ.REQ)
+                    req.rcvtimeo = 3000
+                    req.linger = 0
+                    KG.make_curve_client!(req, spub, good_pub, good_sec)
+                    ZMQ.connect(req, endpoint)
+                    ZMQ.send(req, "ok")
+                    @test String(ZMQ.recv(req, Vector{UInt8})) == "ok"
+                    ZMQ.close(req)
+
+                    # client off the allow-list → ZAP denies, no reply
+                    bad = ZMQ.Socket(ctx, ZMQ.REQ)
+                    bad.rcvtimeo = 1200
+                    bad.linger = 0
+                    KG.make_curve_client!(bad, spub, other_pub, other_sec)
+                    ZMQ.connect(bad, endpoint)
+                    ZMQ.send(bad, "nope")
+                    @test_throws ZMQ.TimeoutError ZMQ.recv(bad, Vector{UInt8})
+                    ZMQ.close(bad)
+                finally
+                    ZMQ.close(rep)
+                    KG._RUNNING[] = false          # stop the ZAP handler loop
+                    sleep(0.4)                     # let it close its socket
+                    ZMQ.close(ctx)
+                    KG._RUNNING[] = prev_running
+                end
+            end
+        end
+    end
+
+    @testset "ZAP live re-read (authorize/revoke without restart)" begin
+        spub, ssec = KG.curve_keypair()
+        cpub, csec = KG.curve_keypair()
+
+        mktempdir() do dir
+            withenv("XDG_CACHE_HOME" => dir) do
+                prev_running = KG._RUNNING[]
+                KG._RUNNING[] = true
+                ctx = ZMQ.Context()
+                KG._start_zap_handler!(ctx; allow_any = false)   # empty allow-list at start
+                rep = ZMQ.Socket(ctx, ZMQ.REP)
+                rep.rcvtimeo = 1000
+                rep.linger = 0
+                KG.make_curve_server!(rep, ssec)
+                KG._setsockopt_str(rep, KG._ZMQ_ZAP_DOMAIN, KG._ZAP_DOMAIN)
+                ZMQ.bind(rep, "tcp://127.0.0.1:0")
+                endpoint = rstrip(ZMQ._get_last_endpoint(rep), '\0')
+                server = _echo_loop(rep)
+
+                try
+                    # not yet authorized → denied
+                    r1 = ZMQ.Socket(ctx, ZMQ.REQ)
+                    r1.rcvtimeo = 1200
+                    r1.linger = 0
+                    KG.make_curve_client!(r1, spub, cpub, csec)
+                    ZMQ.connect(r1, endpoint)
+                    ZMQ.send(r1, "x")
+                    @test_throws ZMQ.TimeoutError ZMQ.recv(r1, Vector{UInt8})
+                    ZMQ.close(r1)
+
+                    # authorize WITHOUT restarting the handler → next handshake allowed
+                    @test KG.authorize_client!(cpub) == :added
+                    r2 = ZMQ.Socket(ctx, ZMQ.REQ)
+                    r2.rcvtimeo = 3000
+                    r2.linger = 0
+                    KG.make_curve_client!(r2, spub, cpub, csec)
+                    ZMQ.connect(r2, endpoint)
+                    ZMQ.send(r2, "ok")
+                    @test String(ZMQ.recv(r2, Vector{UInt8})) == "ok"
+                    ZMQ.close(r2)
+
+                    # revoke WITHOUT restarting the handler → next handshake denied
+                    @test KG.revoke_client!(cpub) == :removed
+                    r3 = ZMQ.Socket(ctx, ZMQ.REQ)
+                    r3.rcvtimeo = 1200
+                    r3.linger = 0
+                    KG.make_curve_client!(r3, spub, cpub, csec)
+                    ZMQ.connect(r3, endpoint)
+                    ZMQ.send(r3, "nope")
+                    @test_throws ZMQ.TimeoutError ZMQ.recv(r3, Vector{UInt8})
+                    ZMQ.close(r3)
+                finally
+                    ZMQ.close(rep)
+                    KG._RUNNING[] = false
+                    sleep(0.4)
+                    ZMQ.close(ctx)
+                    KG._RUNNING[] = prev_running
+                end
+            end
+        end
+    end
+
+    @testset "serve(curve=true) + publish/subscribe (allow_any)" begin
+        Sys.iswindows() && (@test_skip true; return)
+        mktempdir() do dir
+            withenv("XDG_CACHE_HOME" => dir) do
+                sid = "test-curve-$(bytes2hex(rand(UInt8, 4)))"
+                KG._serve(
+                    name = "curve",
+                    session_id = sid,
+                    force = true,
+                    mode = :tcp,
+                    host = "127.0.0.1",
+                    port = 0,
+                    curve = true,
+                    allow_any = true,
+                )
+                sleep(0.25)
+                try
+                    @test KG._RUNNING[]
+                    @test KG._CURVE_ENABLED[]
+                    spub = KG._CURVE_SERVER_PUBLIC[]
+                    @test length(spub) == 40
+
+                    rep_endpoint = rstrip(ZMQ._get_last_endpoint(KG._GATE_SOCKET[]), '\0')
+                    pub_endpoint = KG._STREAM_ENDPOINT[]
+                    ctx = ZMQ.Context()
+
+                    # CURVE client (correct server key, ephemeral client key) → pong
+                    cpub, csec = KG.curve_keypair()
+                    req = ZMQ.Socket(ctx, ZMQ.REQ)
+                    req.rcvtimeo = 3000
+                    req.linger = 0
+                    KG.make_curve_client!(req, spub, cpub, csec)
+                    ZMQ.connect(req, rep_endpoint)
+                    resp = _zmq_req(req, (type = :ping,))
+                    @test resp.type == :pong
+                    @test resp.server_pubkey == spub
+                    ZMQ.close(req)
+
+                    # publish → subscribe over the encrypted PUB (2-frame [topic,payload])
+                    sub = KG.subscribe(
+                        pub_endpoint;
+                        topic = "tui:",
+                        serverkey = spub,
+                        ctx = ctx,
+                    )
+                    sub.rcvtimeo = 3000
+                    sleep(0.25)   # SUB handshake (slow joiner)
+                    KG.publish("tui:demo", (frame = 1, txt = "hi"))
+                    parts = ZMQ.recv_multipart(sub, Vector{UInt8})
+                    @test String(parts[1]) == "tui:demo"
+                    payload = Serialization.deserialize(IOBuffer(parts[2]))
+                    @test payload.txt == "hi"
+                    ZMQ.close(sub)
+                    ZMQ.close(ctx)
+                finally
+                    KG.stop()
+                    sleep(0.2)
+                end
+            end
+        end
+    end
+
+    @testset "serve(curve=true) allow-list (fail-closed + enroll)" begin
+        Sys.iswindows() && (@test_skip true; return)
+        mktempdir() do dir
+            withenv("XDG_CACHE_HOME" => dir) do
+                cpub, csec = KG.curve_keypair()
+
+                # fail-closed: client not enrolled → ZAP denies → no pong
+                sid1 = "test-fc-$(bytes2hex(rand(UInt8, 4)))"
+                KG._serve(
+                    name = "fc",
+                    session_id = sid1,
+                    force = true,
+                    mode = :tcp,
+                    host = "127.0.0.1",
+                    port = 0,
+                    curve = true,
+                    allow_any = false,
+                )
+                sleep(0.25)
+                ep1 = rstrip(ZMQ._get_last_endpoint(KG._GATE_SOCKET[]), '\0')
+                spub = KG._CURVE_SERVER_PUBLIC[]
+                ctx = ZMQ.Context()
+                req = ZMQ.Socket(ctx, ZMQ.REQ)
+                req.rcvtimeo = 1200
+                req.linger = 0
+                KG.make_curve_client!(req, spub, cpub, csec)
+                ZMQ.connect(req, ep1)
+                ZMQ.send(req, "x")
+                @test_throws ZMQ.TimeoutError ZMQ.recv(req, Vector{UInt8})
+                ZMQ.close(req)
+                KG.stop()
+                sleep(0.2)
+
+                # enrolled: same client key on the allow-list → pong
+                sid2 = "test-al-$(bytes2hex(rand(UInt8, 4)))"
+                KG._serve(
+                    name = "al",
+                    session_id = sid2,
+                    force = true,
+                    mode = :tcp,
+                    host = "127.0.0.1",
+                    port = 0,
+                    curve = true,
+                    allow_any = false,
+                    allowed_clients = [cpub],
+                )
+                sleep(0.25)
+                ep2 = rstrip(ZMQ._get_last_endpoint(KG._GATE_SOCKET[]), '\0')
+                spub2 = KG._CURVE_SERVER_PUBLIC[]
+                req2 = ZMQ.Socket(ctx, ZMQ.REQ)
+                req2.rcvtimeo = 3000
+                req2.linger = 0
+                KG.make_curve_client!(req2, spub2, cpub, csec)
+                ZMQ.connect(req2, ep2)
+                resp = _zmq_req(req2, (type = :ping,))
+                @test resp.type == :pong
+                ZMQ.close(req2)
+                ZMQ.close(ctx)
+                KG.stop()
+                sleep(0.2)
+            end
+        end
+    end
 
 end  # if !_RUNNING[]

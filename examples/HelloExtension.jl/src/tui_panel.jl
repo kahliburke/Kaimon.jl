@@ -66,7 +66,10 @@ function update!(state::HelloPanelState, ctx)
         n_new = length(state.greetings) - prev
         if n_new > 0
             state.push_count += 1
-            _log!(state, "push #$(state.push_count): greetings (+$n_new, total $(length(state.greetings)))")
+            _log!(
+                state,
+                "push #$(state.push_count): greetings (+$n_new, total $(length(state.greetings)))",
+            )
         end
     end
     if haskey(ps, "rolls")
@@ -75,7 +78,10 @@ function update!(state::HelloPanelState, ctx)
         n_new = length(state.rolls) - prev
         if n_new > 0
             state.push_count += 1
-            _log!(state, "push #$(state.push_count): rolls (+$n_new, total $(length(state.rolls)))")
+            _log!(
+                state,
+                "push #$(state.push_count): rolls (+$n_new, total $(length(state.rolls)))",
+            )
         end
     end
 end
@@ -99,7 +105,11 @@ function view(state::HelloPanelState, area::Tachikoma.Rect, buf::Tachikoma.Buffe
 
     # Horizontal split for greetings | rolls
     panes = Tachikoma.split_layout(
-        Tachikoma.Layout(Tachikoma.Horizontal, [Tachikoma.Fill(1), Tachikoma.Fill(1)]; spacing=1),
+        Tachikoma.Layout(
+            Tachikoma.Horizontal,
+            [Tachikoma.Fill(1), Tachikoma.Fill(1)];
+            spacing = 1,
+        ),
         vparts[1],
     )
 
@@ -120,13 +130,14 @@ function _render_list!(buf, area, title, items, focused)
 end
 
 function _render_activity!(buf, area, state)
-    style = state.selected == 3 ? Tachikoma.tstyle(:border_focus) : Tachikoma.tstyle(:border)
+    style =
+        state.selected == 3 ? Tachikoma.tstyle(:border_focus) : Tachikoma.tstyle(:border)
     block = Tachikoma.Block(
         title = " Activity Log ($(length(state.activity))) — ses=$(state.session_key) pushes=$(state.push_count) ",
         border_style = style,
     )
     inner = Tachikoma.render(block, area, buf)
-    dim = Tachikoma.Style(fg=Tachikoma.Color256(245))
+    dim = Tachikoma.Style(fg = Tachikoma.Color256(245))
     text = Tachikoma.tstyle(:text)
     for (i, msg) in enumerate(Iterators.reverse(state.activity))
         y = inner.y + i - 1
@@ -134,7 +145,13 @@ function _render_activity!(buf, area, state)
         bracket_end = findfirst(']', msg)
         if bracket_end !== nothing && bracket_end < length(msg)
             Tachikoma.set_string!(buf, inner.x, y, msg[1:bracket_end], dim)
-            Tachikoma.set_string!(buf, inner.x + bracket_end, y, msg[bracket_end+1:end], text)
+            Tachikoma.set_string!(
+                buf,
+                inner.x + bracket_end,
+                y,
+                msg[(bracket_end+1):end],
+                text,
+            )
         else
             Tachikoma.set_string!(buf, inner.x, y, msg, text)
         end
@@ -170,5 +187,4 @@ end
 # ── Protocol: cleanup! ───────────────────────────────────────────────────────
 # Called when the panel is closed (user presses Esc). Free resources here.
 
-function cleanup!(state::HelloPanelState, ctx)
-end
+function cleanup!(state::HelloPanelState, ctx) end

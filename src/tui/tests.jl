@@ -27,8 +27,13 @@ function _sync_tests_table!(m::KaimonModel)
     runs = m.test_runs
     n = length(runs)
 
-    dt_hash = hash((n, m.selected_test_run, m.tick ÷ 4,
-                     n > 0 ? (runs[end].status, runs[end].total_pass, length(runs[end].raw_output)) : nothing))
+    dt_hash = hash((
+        n,
+        m.selected_test_run,
+        m.tick ÷ 4,
+        n > 0 ? (runs[end].status, runs[end].total_pass, length(runs[end].raw_output)) :
+        nothing,
+    ))
     old_dt = m.tests_table
     if old_dt !== nothing && m._tests_table_hash == dt_hash
         return
@@ -85,7 +90,9 @@ function _sync_tests_table!(m::KaimonModel)
     end
 
     if isempty(col_status)
-        msg = !isempty(m.test_status_msg) ? m.test_status_msg : "No test runs yet. Press [r] to run tests."
+        msg =
+            !isempty(m.test_status_msg) ? m.test_status_msg :
+            "No test runs yet. Press [r] to run tests."
         push!(col_status, "")
         push!(col_project, Span(msg, tstyle(:text_dim)))
         push!(col_pass, "")
@@ -98,11 +105,11 @@ function _sync_tests_table!(m::KaimonModel)
     follow_str = m.test_follow ? "[F]ollow:on" : "[F]ollow:off"
     dt = DataTable(
         [
-            DataColumn("Status", col_status; width=12),
+            DataColumn("Status", col_status; width = 12),
             DataColumn("Project", col_project),
-            DataColumn("Pass", col_pass; width=7),
-            DataColumn("Fail", col_fail; width=7),
-            DataColumn("Duration", col_duration; width=10),
+            DataColumn("Pass", col_pass; width = 7),
+            DataColumn("Fail", col_fail; width = 7),
+            DataColumn("Duration", col_duration; width = 10),
         ];
         selected = display_sel,
         block = Block(
@@ -267,7 +274,7 @@ function _build_test_tree(run::TestRun)::TreeNode
         for (i, f) in enumerate(run.failures)
             loc = "$(f.file):$(f.line)"
             detail = isempty(f.expression) ? loc : "$loc — $(f.expression)"
-            loc_url = editor_file_url(f.file; line=f.line)
+            loc_url = editor_file_url(f.file; line = f.line)
             node_style = if isempty(loc_url)
                 tstyle(:error, bold = true)
             else
@@ -275,11 +282,7 @@ function _build_test_tree(run::TestRun)::TreeNode
             end
             push!(
                 fail_group.children,
-                TreeNode(
-                    "$i) $detail";
-                    expanded = false,
-                    style = node_style,
-                ),
+                TreeNode("$i) $detail"; expanded = false, style = node_style),
             )
         end
         push!(root.children, fail_group)
@@ -320,8 +323,13 @@ function _style_leaves!(node::TreeNode)
         if isempty(child.children)
             # Leaf: use dimmed version of current style
             s = child.style
-            child.style = Style(fg=s.fg, dim=true, bold=false,
-                                italic=s.italic, underline=s.underline)
+            child.style = Style(
+                fg = s.fg,
+                dim = true,
+                bold = false,
+                italic = s.italic,
+                underline = s.underline,
+            )
         else
             _style_leaves!(child)
         end
@@ -359,7 +367,8 @@ function _view_test_results(
     if m._test_tree_root === nothing || m._test_tree_synced != cur_len
         m._test_tree_root = _build_test_tree(run)
         m._test_tree_flat = _flatten_tree(m._test_tree_root)
-        m._test_tree_selected = clamp(m._test_tree_selected, 1, max(1, length(m._test_tree_flat)))
+        m._test_tree_selected =
+            clamp(m._test_tree_selected, 1, max(1, length(m._test_tree_flat)))
         m._test_tree_synced = cur_len
     end
 
@@ -381,10 +390,7 @@ function _view_test_results(
     else
         sp = m.test_results_pane
         # Update render callback + total (callback captures m, always reads latest state)
-        sp.content = (
-            (buf2, ta, off) -> _render_tree_rows!(buf2, ta, off, m),
-            total,
-        )
+        sp.content = ((buf2, ta, off) -> _render_tree_rows!(buf2, ta, off, m), total)
         sp.block = Block(
             title = title,
             border_style = _pane_border(m, TAB_TESTS, 2),
@@ -415,14 +421,23 @@ function _flatten_tree(root::TreeNode)::Vector{TreeFlatRow}
 end
 
 function _flatten_node!(rows, node, depth, is_last, parent_lasts)
-    push!(rows, TreeFlatRow(
-        node.label, depth, is_last, copy(parent_lasts),
-        !isempty(node.children), node.expanded, node.style, node))
+    push!(
+        rows,
+        TreeFlatRow(
+            node.label,
+            depth,
+            is_last,
+            copy(parent_lasts),
+            !isempty(node.children),
+            node.expanded,
+            node.style,
+            node,
+        ),
+    )
     if node.expanded
         new_lasts = vcat(parent_lasts, is_last)
         for (i, child) in enumerate(node.children)
-            _flatten_node!(rows, child, depth + 1,
-                           i == length(node.children), new_lasts)
+            _flatten_node!(rows, child, depth + 1, i == length(node.children), new_lasts)
         end
     end
 end
@@ -435,12 +450,12 @@ function _render_tree_rows!(buf::Buffer, text_area::Rect, offset::Int, m::Kaimon
     flat = m._test_tree_flat
     sel = m._test_tree_selected
     conn_style = tstyle(:primary)
-    sel_style = tstyle(:accent, bold=true)
+    sel_style = tstyle(:accent, bold = true)
     visible_h = text_area.height
     max_cx = right(text_area)
     n = length(flat)
 
-    for i in 1:visible_h
+    for i = 1:visible_h
         idx = offset + i
         idx > n && break
         row = flat[idx]
@@ -449,7 +464,7 @@ function _render_tree_rows!(buf::Buffer, text_area::Rect, offset::Int, m::Kaimon
 
         # Tree connectors
         if row.depth > 0
-            for d in 1:(row.depth - 1)
+            for d = 1:(row.depth-1)
                 if cx <= max_cx && d <= length(row.parent_lasts) && !row.parent_lasts[d]
                     set_char!(buf, cx, y, '│', conn_style)
                 end
@@ -476,7 +491,7 @@ function _render_tree_rows!(buf::Buffer, text_area::Rect, offset::Int, m::Kaimon
             set_char!(buf, cx, y, ' ', style)
             cx += 1
         end
-        set_string!(buf, cx, y, row.label, style; max_x=max_cx)
+        set_string!(buf, cx, y, row.label, style; max_x = max_cx)
     end
 end
 
@@ -529,7 +544,7 @@ function _handle_tree_nav_key!(m::KaimonModel, evt::KeyEvent)
                 _reflatten_tree!(m)
             elseif row.depth > 0
                 target_depth = row.depth - 1
-                for j in (sel - 1):-1:1
+                for j = (sel-1):-1:1
                     if flat[j].depth == target_depth
                         m._test_tree_selected = j
                         break
@@ -566,7 +581,8 @@ end
 function _reflatten_tree!(m::KaimonModel)
     m._test_tree_root === nothing && return
     m._test_tree_flat = _flatten_tree(m._test_tree_root)
-    m._test_tree_selected = clamp(m._test_tree_selected, 1, max(1, length(m._test_tree_flat)))
+    m._test_tree_selected =
+        clamp(m._test_tree_selected, 1, max(1, length(m._test_tree_flat)))
     sp = m.test_results_pane
     sp !== nothing && set_total!(sp, length(m._test_tree_flat))
 end
@@ -737,7 +753,8 @@ function _start_test_run_from_tui!(m::KaimonModel)
     end
 
     if isempty(testable)
-        names = join([isempty(c.display_name) ? c.name : c.display_name for c in conns], ", ")
+        names =
+            join([isempty(c.display_name) ? c.name : c.display_name for c in conns], ", ")
         m.test_status_msg = "No test/runtests.jl found in connected sessions ($names)"
         return
     end
@@ -751,8 +768,10 @@ function _start_test_run_from_tui!(m::KaimonModel)
     # Multiple sessions with tests — open picker
     m.test_status_msg = ""
     m.test_session_picker_items = [
-        (label = isempty(c.display_name) ? c.name : c.display_name, project_path = c.project_path)
-        for c in testable
+        (
+            label = isempty(c.display_name) ? c.name : c.display_name,
+            project_path = c.project_path,
+        ) for c in testable
     ]
     m.test_session_picker_selected = 1
     m.test_session_picker_open = true
@@ -822,7 +841,7 @@ function _view_test_session_picker(m::KaimonModel, area::Rect, buf::Buffer)
 
     for row = inner.y:bottom(inner)
         for col = inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
+            set_char!(buf, col, row, ' ', Style(bg = Tachikoma.theme().bg))
         end
     end
 

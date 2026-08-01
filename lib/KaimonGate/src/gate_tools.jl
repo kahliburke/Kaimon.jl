@@ -267,11 +267,11 @@ function _source_docstring(f::Function)::String
                         in_block = true
                     elseif startswith(stripped, "\"\"\"")
                         # Single-line: """content"""
-                        inner = stripped[4:end-3]
+                        inner = stripped[4:(end-3)]
                         return strip(inner)
                     else
                         # content""" — content before the closing delimiter
-                        pushfirst!(doc_lines, rstrip(l[1:end-3]))
+                        pushfirst!(doc_lines, rstrip(l[1:(end-3)]))
                         in_block = true
                     end
                 elseif isempty(stripped)
@@ -328,7 +328,10 @@ function _extract_kwarg_types(f::Function)::Dict{Symbol,Type}
 end
 
 """Extract kwarg types by finding the kwbody function via code_lowered."""
-function _extract_kwarg_types_from_lowered(f::Function, kw_names::Vector{Symbol})::Dict{Symbol,Type}
+function _extract_kwarg_types_from_lowered(
+    f::Function,
+    kw_names::Vector{Symbol},
+)::Dict{Symbol,Type}
     try
         cl = Base.code_lowered(f)
         isempty(cl) && return Dict{Symbol,Type}()
@@ -358,7 +361,7 @@ function _extract_kwarg_types_from_lowered(f::Function, kw_names::Vector{Symbol}
         # params = (InnerFuncType, kwarg_types..., OuterFuncType, positional_types...)
         nkw = length(kw_names)
         length(params) < nkw + 2 && return Dict{Symbol,Type}()
-        kw_types = params[2:1+nkw]
+        kw_types = params[2:(1+nkw)]
         Dict{Symbol,Type}(kw_names[i] => kw_types[i] for i in eachindex(kw_names))
     catch
         Dict{Symbol,Type}()
@@ -366,7 +369,10 @@ function _extract_kwarg_types_from_lowered(f::Function, kw_names::Vector{Symbol}
 end
 
 """Extract kwarg types from closure struct internals (legacy factory pattern)."""
-function _extract_kwarg_types_from_closure(f::Function, kw_names::Vector{Symbol})::Dict{Symbol,Type}
+function _extract_kwarg_types_from_closure(
+    f::Function,
+    kw_names::Vector{Symbol},
+)::Dict{Symbol,Type}
     fnames = fieldnames(typeof(f))
     isempty(fnames) && return Dict{Symbol,Type}()
     try
@@ -375,7 +381,7 @@ function _extract_kwarg_types_from_closure(f::Function, kw_names::Vector{Symbol}
         isempty(ms) && return Dict{Symbol,Type}()
         params = only(ms).sig.parameters   # (InnerT, kw_types..., OuterT)
         length(params) < 3 && return Dict{Symbol,Type}()
-        kw_types = params[2:end-1]
+        kw_types = params[2:(end-1)]
         length(kw_types) == length(kw_names) || return Dict{Symbol,Type}()
         Dict{Symbol,Type}(kw_names[i] => kw_types[i] for i in eachindex(kw_names))
     catch
@@ -401,7 +407,9 @@ function _extract_required_kwargs(f::Function)::Set{Symbol}
     for stmt in ci.code
         if stmt isa Expr && stmt.head == :call && length(stmt.args) >= 2
             callee = stmt.args[1]
-            if callee isa GlobalRef && callee.mod === Core && callee.name == :UndefKeywordError
+            if callee isa GlobalRef &&
+               callee.mod === Core &&
+               callee.name == :UndefKeywordError
                 arg = stmt.args[2]
                 if arg isa QuoteNode && arg.value isa Symbol
                     push!(required, arg.value)
@@ -618,7 +626,9 @@ function _kwarg_types(handler::Function)::Dict{Symbol,Any}
 
         inner_m = first(methods(inner_fn))
         sig = inner_m.sig
-        while sig isa UnionAll; sig = sig.body; end
+        while sig isa UnionAll
+            sig = sig.body
+        end
         # Layout: [typeof(inner), kwarg_types..., typeof(outer_fn)]
         params = sig.parameters
         for (i, kw) in enumerate(kw_names)
@@ -683,21 +693,34 @@ end
 """Build a concise, agent-facing explanation of why `args` don't fit `handler` —
 missing required params, unrecognized/misnamed ones, a did-you-mean for a 1:1 swap,
 and the full expected-parameter list."""
-function _tool_arg_error(tool_name::AbstractString, handler::Function, args::Dict{String,Any})
+function _tool_arg_error(
+    tool_name::AbstractString,
+    handler::Function,
+    args::Dict{String,Any},
+)
     pos, n_required, kw = _tool_param_names(handler)
     accepted = Set{String}(string(p) for p in pos)
     union!(accepted, (string(k) for k in kw))
     unknown = sort!(String[k for k in keys(args) if !(k in accepted)])
-    missing_req = String[string(pos[i]) for i = 1:n_required if !(string(pos[i]) in keys(args))]
+    missing_req =
+        String[string(pos[i]) for i = 1:n_required if !(string(pos[i]) in keys(args))]
     tn = isempty(tool_name) ? "This tool" : "Tool '$tool_name'"
     parts = String[]
-    push!(parts, isempty(missing_req) ?
+    push!(
+        parts,
+        isempty(missing_req) ?
         "$tn was called with parameters that don't match its signature." :
-        "$tn is missing required parameter(s): $(join(missing_req, ", ")).")
-    isempty(unknown) || push!(parts, "Unrecognized parameter(s) (ignored): $(join(unknown, ", ")).")
-    length(missing_req) == 1 && length(unknown) == 1 &&
+        "$tn is missing required parameter(s): $(join(missing_req, ", ")).",
+    )
+    isempty(unknown) ||
+        push!(parts, "Unrecognized parameter(s) (ignored): $(join(unknown, ", ")).")
+    length(missing_req) == 1 &&
+        length(unknown) == 1 &&
         push!(parts, "Did you mean '$(missing_req[1])' instead of '$(unknown[1])'?")
-    expected = String[i <= n_required ? string(pos[i]) : string(pos[i]) * " (optional)" for i in eachindex(pos)]
+    expected = String[
+        i <= n_required ? string(pos[i]) : string(pos[i]) * " (optional)" for
+        i in eachindex(pos)
+    ]
     append!(expected, string(k) * " (keyword)" for k in kw)
     isempty(expected) || push!(parts, "Expected: $(join(expected, ", ")).")
     return join(parts, " ")
@@ -711,8 +734,11 @@ function _coerce_arg(value, T, param::AbstractString, tool_name::AbstractString)
         return _coerce_value(value, T)
     catch
         tn = isempty(tool_name) ? "This tool" : "Tool '$tool_name'"
-        throw(ToolArgumentError(
-            "$tn: parameter '$param' expects $(T), but $(repr(value)) can't be converted to it."))
+        throw(
+            ToolArgumentError(
+                "$tn: parameter '$param' expects $(T), but $(repr(value)) can't be converted to it.",
+            ),
+        )
     end
 end
 
@@ -725,7 +751,11 @@ the method signature to reconstruct typed positional and keyword arguments. A
 parameter mismatch (missing required, wrong name) raises a `ToolArgumentError` with
 a concise message instead of a cryptic `MethodError`.
 """
-function _dispatch_tool_call(handler::Function, args::Dict{String,Any}; tool_name::AbstractString = "")
+function _dispatch_tool_call(
+    handler::Function,
+    args::Dict{String,Any};
+    tool_name::AbstractString = "",
+)
     # Fast path: handler explicitly declares a single raw-Dict argument. Must be
     # an explicit Dict-typed param — an untyped (::Any) first positional also
     # accepts a Dict but would swallow all args into one param (see _is_dict_handler).
@@ -781,11 +811,14 @@ function _dispatch_tool_call(handler::Function, args::Dict{String,Any}; tool_nam
         elseif first_gap == 0
             push!(pos_args, _coerce_arg(args[name], T, name, tool_name))
         else
-            throw(ToolArgumentError(
-                (isempty(tool_name) ? "This tool" : "Tool '$tool_name'") *
-                " was given '$name' but not '$(arg_names[first_gap])', which comes before it. " *
-                "Positional parameters can only be omitted from the END — pass " *
-                "'$(arg_names[first_gap])' as well, or leave '$name' out."))
+            throw(
+                ToolArgumentError(
+                    (isempty(tool_name) ? "This tool" : "Tool '$tool_name'") *
+                    " was given '$name' but not '$(arg_names[first_gap])', which comes before it. " *
+                    "Positional parameters can only be omitted from the END — pass " *
+                    "'$(arg_names[first_gap])' as well, or leave '$name' out.",
+                ),
+            )
         end
     end
 
@@ -817,4 +850,3 @@ function _dispatch_tool_call(handler::Function, args::Dict{String,Any}; tool_nam
         rethrow()
     end
 end
-

@@ -15,14 +15,19 @@ function detect_project_type(project_path::String)
 
     # Check markers in priority order
     markers = [
-        ("Project.toml",  "julia",   ["src", "test"],                   [".jl", ".md"]),
-        ("Cargo.toml",    "rust",    ["src"],                           [".rs", ".toml", ".md"]),
-        ("go.mod",        "go",      ["."],                             [".go", ".md"]),
-        ("pyproject.toml","python",  ["src", basename(path)],           [".py", ".md"]),
-        ("setup.py",      "python",  ["src"],                           [".py", ".md"]),
-        ("tsconfig.json", "node-ts", ["src", "lib"],                    [".ts", ".tsx", ".md"]),
-        ("package.json",  "node",    ["src", "lib"],                    [".ts", ".tsx", ".js", ".jsx", ".json", ".md"]),
-        ("CMakeLists.txt","cpp",     ["src", "include"],                [".c", ".cpp", ".h", ".hpp", ".md"]),
+        ("Project.toml", "julia", ["src", "test"], [".jl", ".md"]),
+        ("Cargo.toml", "rust", ["src"], [".rs", ".toml", ".md"]),
+        ("go.mod", "go", ["."], [".go", ".md"]),
+        ("pyproject.toml", "python", ["src", basename(path)], [".py", ".md"]),
+        ("setup.py", "python", ["src"], [".py", ".md"]),
+        ("tsconfig.json", "node-ts", ["src", "lib"], [".ts", ".tsx", ".md"]),
+        (
+            "package.json",
+            "node",
+            ["src", "lib"],
+            [".ts", ".tsx", ".js", ".jsx", ".json", ".md"],
+        ),
+        ("CMakeLists.txt", "cpp", ["src", "include"], [".c", ".cpp", ".h", ".hpp", ".md"]),
     ]
 
     for (marker, ptype, candidate_dirs, exts) in markers
@@ -71,9 +76,32 @@ function _fallback_detect(project_path::String)
 
     # Walk top 2 levels counting file extensions
     ext_counts = Dict{String,Int}()
-    source_exts = Set([".jl", ".py", ".rs", ".go", ".ts", ".tsx", ".js", ".jsx",
-                       ".c", ".cpp", ".h", ".hpp", ".java", ".kt", ".rb", ".ex",
-                       ".exs", ".zig", ".nim", ".md", ".toml", ".json", ".yaml", ".yml"])
+    source_exts = Set([
+        ".jl",
+        ".py",
+        ".rs",
+        ".go",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".c",
+        ".cpp",
+        ".h",
+        ".hpp",
+        ".java",
+        ".kt",
+        ".rb",
+        ".ex",
+        ".exs",
+        ".zig",
+        ".nim",
+        ".md",
+        ".toml",
+        ".json",
+        ".yaml",
+        ".yml",
+    ])
     for (root, dirs, files) in walkdir(project_path)
         # Limit depth to 2 levels
         depth = count(==('/'), relpath(root, project_path))
@@ -144,7 +172,7 @@ function auto_detect_project_config(project_path::String)
         end
 
         # Top extensions by frequency
-        sorted_exts = sort(collect(ext_counts); by=last, rev=true)
+        sorted_exts = sort(collect(ext_counts); by = last, rev = true)
         detected_exts = [first(p) for p in sorted_exts[1:min(10, length(sorted_exts))]]
         if isempty(detected_exts)
             detected_exts = copy(DEFAULT_INDEX_EXTENSIONS)
@@ -187,12 +215,17 @@ function auto_detect_project_config(project_path::String)
         marker_result = detect_project_type(path)
         ptype = marker_result.type
 
-        return (type=ptype, dirs=abs_dirs, extensions=detected_exts, git_aware=true)
+        return (type = ptype, dirs = abs_dirs, extensions = detected_exts, git_aware = true)
     end
 
     # Non-git fallback
     result = detect_project_type(path)
-    return (type=result.type, dirs=result.dirs, extensions=result.extensions, git_aware=false)
+    return (
+        type = result.type,
+        dirs = result.dirs,
+        extensions = result.extensions,
+        git_aware = false,
+    )
 end
 
 # Lightweight file tracking for indexing state.
@@ -260,9 +293,7 @@ function save_index_state(project_path::String, state)
         cache = _load_index_cache()
         ap = abspath(project_path)
         entry = get!(cache["projects"], ap, Dict{String,Any}())
-        idx = Dict{String,Any}(
-            "files" => get(state, "files", Dict()),
-        )
+        idx = Dict{String,Any}("files" => get(state, "files", Dict()))
         # Preserve last_indexed timestamp if present
         last_indexed = get(state, "last_indexed", nothing)
         if last_indexed !== nothing
@@ -308,19 +339,26 @@ end
 Get list of files that need re-indexing. Loads the index state once for the
 whole directory scan rather than once per file.
 """
-function get_stale_files(project_path::String, src_dir::String;
-                         extensions::Vector{String}=DEFAULT_INDEX_EXTENSIONS,
-                         exclude_dirs::Vector{String}=String[])
+function get_stale_files(
+    project_path::String,
+    src_dir::String;
+    extensions::Vector{String} = DEFAULT_INDEX_EXTENSIONS,
+    exclude_dirs::Vector{String} = String[],
+)
     stale = String[]
     isdir(src_dir) || return stale
 
     exclude_set = union(IGNORED_DIRS, Set(exclude_dirs))
     files_state = load_index_state(project_path)["files"]
 
-    onerr = e -> begin
-        with_index_logger(() -> @warn "Skipping unreadable directory during stale scan" project = project_path src_dir = src_dir exception = e)
-    end
-    for (root, dirs, files) in walkdir(src_dir; onerror=onerr)
+    onerr =
+        e -> begin
+            with_index_logger(
+                () -> @warn "Skipping unreadable directory during stale scan" project =
+                    project_path src_dir = src_dir exception = e
+            )
+        end
+    for (root, dirs, files) in walkdir(src_dir; onerror = onerr)
         filter!(d -> !startswith(d, ".") && d ∉ exclude_set, dirs)
 
         for file in files
@@ -378,7 +416,7 @@ end
 Generate a collection name based on the project directory.
 Uses the directory name, sanitized via `normalize_collection_name`.
 """
-function get_project_collection_name(project_path::String=pwd())
+function get_project_collection_name(project_path::String = pwd())
     name = normalize_collection_name(basename(abspath(project_path)))
     return _prefixed(name)
 end
@@ -389,7 +427,11 @@ end
 Return collections from `available` that are similar to `target`, sorted by relevance.
 Uses normalized prefix/substring matching and simple edit-distance heuristics.
 """
-function _suggest_collections(target::String, available::Vector{String}; max_suggestions::Int=5)
+function _suggest_collections(
+    target::String,
+    available::Vector{String};
+    max_suggestions::Int = 5,
+)
     isempty(available) && return String[]
     norm_target = normalize_collection_name(target)
 
@@ -401,13 +443,13 @@ function _suggest_collections(target::String, available::Vector{String}; max_sug
         # Exact normalized match (shouldn't reach here, but just in case)
         if norm_col == norm_target
             score = 1.0
-        # One is a prefix of the other
+            # One is a prefix of the other
         elseif startswith(norm_col, norm_target) || startswith(norm_target, norm_col)
             score = 0.8
-        # Substring match
+            # Substring match
         elseif contains(norm_col, norm_target) || contains(norm_target, norm_col)
             score = 0.6
-        # Shared prefix length
+            # Shared prefix length
         else
             shared = 0
             for (a, b) in zip(norm_target, norm_col)
@@ -420,7 +462,7 @@ function _suggest_collections(target::String, available::Vector{String}; max_sug
         score > 0.0 && push!(scored, (score, col))
     end
 
-    sort!(scored; by=first, rev=true)
+    sort!(scored; by = first, rev = true)
     return [s[2] for s in scored[1:min(max_suggestions, length(scored))]]
 end
 
@@ -430,12 +472,20 @@ end
 Resolve a collection name (possibly user-provided) against available collections.
 Returns `(resolved_name, error_message)`. If error_message is nothing, the name is valid.
 """
-function _resolve_collection(name::Union{String,Nothing}, available::Vector{String}; project_path::String="")
+function _resolve_collection(
+    name::Union{String,Nothing},
+    available::Vector{String};
+    project_path::String = "",
+)
     # Default to project collection if not specified
     if name === nothing || isempty(name)
         # Try last session's project path, fall back to pwd()
         if isempty(project_path)
-            lsp = try; parentmodule(@__MODULE__)._last_session_project_path(); catch; ""; end
+            lsp = try
+                parentmodule(@__MODULE__)._last_session_project_path()
+            catch
+                ""
+            end
             project_path = !isempty(lsp) ? lsp : pwd()
         end
         name = get_project_collection_name(project_path)
@@ -482,13 +532,21 @@ function _resolve_search_collection(raw::Union{String,Nothing}, available::Vecto
     K = parentmodule(@__MODULE__)
 
     # 1. The caller's bound session / captured workspace root.
-    proj = try; K._last_session_project_path(); catch; ""; end
+    proj = try
+        K._last_session_project_path()
+    catch
+        ""
+    end
     if !isempty(proj)
         rn, _ = _resolve_collection(get_project_collection_name(proj), available)
         rn in available && return (rn, nothing)
     end
 
-    mgr = try; K.GATE_CONN_MGR[]; catch; nothing; end
+    mgr = try
+        K.GATE_CONN_MGR[]
+    catch
+        nothing
+    end
     sessions = mgr === nothing ? () : K.connected_sessions(mgr)
 
     # 2. Embedded / no gates: the legacy pwd() default (one project == the cwd).
@@ -496,7 +554,10 @@ function _resolve_search_collection(raw::Union{String,Nothing}, available::Vecto
 
     # 3. Exactly one session: auto-pick it (mirrors `ex`'s single-session default).
     if length(sessions) == 1
-        rn, _ = _resolve_collection(get_project_collection_name(first(sessions).project_path), available)
+        rn, _ = _resolve_collection(
+            get_project_collection_name(first(sessions).project_path),
+            available,
+        )
         rn in available && return (rn, nothing)
     end
 
@@ -512,7 +573,10 @@ function _ambiguous_collection_error(available::Vector{String}, sessions)
     io = IOBuffer()
     print(io, "no `collection` specified and no session is bound to this agent. ")
     print(io, "Pass `collection=` explicitly, or run a session tool first (e.g. `ex` with ")
-    print(io, "`ses=<key>`) — the session you target becomes this agent's default for later searches.")
+    print(
+        io,
+        "`ses=<key>`) — the session you target becomes this agent's default for later searches.",
+    )
     if !isempty(sessions)
         print(io, "\n\nConnected REPL sessions (collection ↔ ses ↔ project):")
         for c in sessions
@@ -524,4 +588,3 @@ function _ambiguous_collection_error(available::Vector{String}, sessions)
     isempty(available) || print(io, "\n\nAll collections: ", join(available, ", "))
     return String(take!(io))
 end
-

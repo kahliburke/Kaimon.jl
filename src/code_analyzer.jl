@@ -140,7 +140,9 @@ function find_duplicates(directory::String = "src/"; threshold = 0.95)
         append!(all_functions, extract_functions(file))
     end
 
-    println("📊 Analyzed $(length(files)) files, found $(length(all_functions)) functions\n")
+    println(
+        "📊 Analyzed $(length(files)) files, found $(length(all_functions)) functions\n",
+    )
 
     # Group by fingerprint (exact structural duplicates)
     fingerprint_groups = Dict{UInt64,Vector{Any}}()

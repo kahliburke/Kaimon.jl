@@ -507,10 +507,7 @@ Strips `//` line comments before parsing (VS Code allows them, JSON doesn't).
 """
 function read_vscode_settings()
     # Try workspace settings first, then user settings
-    candidates = [
-        joinpath(pwd(), ".vscode", "settings.json"),
-        _vscode_user_settings_path(),
-    ]
+    candidates = [joinpath(pwd(), ".vscode", "settings.json"), _vscode_user_settings_path()]
     for path in candidates
         isfile(path) || continue
         try

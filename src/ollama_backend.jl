@@ -99,10 +99,20 @@ function _ollama_tools_spec(tools, allowed::Vector{String}, disallowed::Vector{S
     for t in tools
         bare = _bare_tool(string(t.name))
         _tool_permitted(bare, allowed, disallowed) || continue
-        params = t.parameters isa AbstractDict && !isempty(t.parameters) ? t.parameters :
-                 Dict("type" => "object", "properties" => Dict{String,Any}())
-        push!(spec, Dict("type" => "function", "function" => Dict(
-            "name" => bare, "description" => t.description, "parameters" => params)))
+        params =
+            t.parameters isa AbstractDict && !isempty(t.parameters) ? t.parameters :
+            Dict("type" => "object", "properties" => Dict{String,Any}())
+        push!(
+            spec,
+            Dict(
+                "type" => "function",
+                "function" => Dict(
+                    "name" => bare,
+                    "description" => t.description,
+                    "parameters" => params,
+                ),
+            ),
+        )
     end
     return spec
 end
@@ -120,16 +130,26 @@ end
 `model_text` is the text fed back to the model (most local models are text-only, so
 image blocks become a short note); `acp_content` is the ACP ToolCallContent the UI
 renders (text + images, exactly like ClaudeBackend's `_tool_result_content`)."""
-function _ollama_dispatch(name::AbstractString, args, allowed::Vector{String},
-                          disallowed::Vector{String})
+function _ollama_dispatch(
+    name::AbstractString,
+    args,
+    allowed::Vector{String},
+    disallowed::Vector{String},
+)
     bare = _bare_tool(name)
     # Defense in depth — re-enforce the boundary at call time.
     if !_tool_permitted(bare, allowed, disallowed)
-        return ("tool '$bare' is not permitted", ACP.ToolCallContent[
-            ACP.ContentToolContent(ACP.TextBlock("tool '$bare' is not permitted"))], true)
+        return (
+            "tool '$bare' is not permitted",
+            ACP.ToolCallContent[ACP.ContentToolContent(
+                ACP.TextBlock("tool '$bare' is not permitted"),
+            )],
+            true,
+        )
     end
-    dargs = args isa AbstractDict ? Dict{String,Any}(string(k) => v for (k, v) in args) :
-            Dict{String,Any}()
+    dargs =
+        args isa AbstractDict ? Dict{String,Any}(string(k) => v for (k, v) in args) :
+        Dict{String,Any}()
     res = _dispatch_tool_call((type = :tool_call, tool_name = Symbol(bare), args = dargs))
     if res.status !== :ok
         msg = "Error: $(res.message)"
@@ -148,7 +168,10 @@ function _ollama_dispatch(name::AbstractString, args, allowed::Vector{String},
         elseif get(b, "type", "") == "image"
             mime = String(get(b, "mimeType", "image/png"))
             push!(parts, "[image returned: $mime]")     # text-only models can't see it
-            push!(acp, ACP.ContentToolContent(ACP.ImageBlock(String(get(b, "data", "")), mime)))
+            push!(
+                acp,
+                ACP.ContentToolContent(ACP.ImageBlock(String(get(b, "data", "")), mime)),
+            )
         end
     end
     return (isempty(parts) ? raw : join(parts, "\n"), acp, is_err)
@@ -191,24 +214,33 @@ function _map_ollama_chunk(obj, acc::_OllamaTurnAcc)::Vector{ACP.AgentEvent}
         acc.usage = ACP.Usage(
             input_tokens = Int(something(_get(obj, "prompt_eval_count"), 0)),
             output_tokens = Int(something(_get(obj, "eval_count"), 0)),
-            cost_usd = 0.0)
+            cost_usd = 0.0,
+        )
     end
     return out
 end
 
 # ── Backend interface ─────────────────────────────────────────────────────────
 
-function backend_start(b::OllamaBackend; cwd::String, agent_id::String,
-                       parent_pid::Integer = getpid())
+function backend_start(
+    b::OllamaBackend;
+    cwd::String,
+    agent_id::String,
+    parent_pid::Integer = getpid(),
+)
     isdir(cwd) || throw(ArgumentError("agent cwd does not exist: $cwd"))
     log_dir = joinpath(kaimon_cache_dir(), "agents")
     mkpath(log_dir)
     log_file = joinpath(log_dir, "$(agent_id).log")
-    try; write(log_file, ""); catch; end
+    try
+        write(log_file, "")
+    catch
+    end
 
     messages = Any[]
-    sys = (b.system_prompt === nothing || isempty(b.system_prompt)) ?
-          OLLAMA_DEFAULT_SYSTEM : b.system_prompt
+    sys =
+        (b.system_prompt === nothing || isempty(b.system_prompt)) ? OLLAMA_DEFAULT_SYSTEM :
+        b.system_prompt
     push!(messages, Dict("role" => "system", "content" => sys))
     tools_spec = try
         _ollama_tools_spec(b.allowed_tools, b.disallowed_tools)
@@ -217,8 +249,19 @@ function backend_start(b::OllamaBackend; cwd::String, agent_id::String,
         Any[]
     end
 
-    OllamaHandle(b, Channel{ACP.AgentEvent}(Inf), messages, tools_spec,
-                 Ref(0), Ref(false), Ref(Task(() -> nothing)), cwd, agent_id, log_file, Ref(true))
+    OllamaHandle(
+        b,
+        Channel{ACP.AgentEvent}(Inf),
+        messages,
+        tools_spec,
+        Ref(0),
+        Ref(false),
+        Ref(Task(() -> nothing)),
+        cwd,
+        agent_id,
+        log_file,
+        Ref(true),
+    )
 end
 
 """Push a user turn and run the ReAct loop on a task. Events arrive on `events(h)`."""
@@ -236,19 +279,26 @@ function _run_ollama_turn(h::OllamaHandle, turn::Int)
     b = h.backend
     usage = ACP.Usage(cost_usd = 0.0)
     try
-        for roundno in 1:b.max_tool_rounds
+        for roundno = 1:b.max_tool_rounds
             if h.cancel[]
-                put!(h.events, ACP.TurnEnded(:cancelled, usage)); return
+                put!(h.events, ACP.TurnEnded(:cancelled, usage))
+                return
             end
             acc = _OllamaTurnAcc()
-            body = Dict("model" => b.model, "messages" => h.messages, "stream" => true,
-                        "tools" => h.tools_spec,
-                        "options" => Dict("num_ctx" => b.num_ctx, "temperature" => b.temperature))
+            body = Dict(
+                "model" => b.model,
+                "messages" => h.messages,
+                "stream" => true,
+                "tools" => h.tools_spec,
+                "options" =>
+                    Dict("num_ctx" => b.num_ctx, "temperature" => b.temperature),
+            )
             try
                 _ollama_stream_chat(b.host, body, h, acc)
             catch e
                 put!(h.events, ACP.AgentError("$(b.label): $(sprint(showerror, e))"))
-                put!(h.events, ACP.TurnEnded(:refusal, acc.usage)); return
+                put!(h.events, ACP.TurnEnded(:refusal, acc.usage))
+                return
             end
             h.cancel[] && (put!(h.events, ACP.TurnEnded(:cancelled, acc.usage)); return)
             usage = usage + acc.usage
@@ -261,7 +311,8 @@ function _run_ollama_turn(h::OllamaHandle, turn::Int)
             push!(h.messages, amsg)
 
             if isempty(acc.toolcalls)
-                put!(h.events, ACP.TurnEnded(:end_turn, usage)); return
+                put!(h.events, ACP.TurnEnded(:end_turn, usage))
+                return
             end
 
             for (i, tc) in enumerate(acc.toolcalls)
@@ -270,15 +321,28 @@ function _run_ollama_turn(h::OllamaHandle, turn::Int)
                 args = something(_get(fn, "arguments"), Dict{String,Any}())
                 bare = _bare_tool(name)
                 id = "ollama-$(turn)-$(roundno)-$(i)"
-                put!(h.events, ACP.ToolCallStarted(ACP.ToolCall(
-                    tool_call_id = id, title = bare, kind = _tool_kind(name),
-                    status = :in_progress, raw_input = args)))
+                put!(
+                    h.events,
+                    ACP.ToolCallStarted(
+                        ACP.ToolCall(
+                            tool_call_id = id,
+                            title = bare,
+                            kind = _tool_kind(name),
+                            status = :in_progress,
+                            raw_input = args,
+                        ),
+                    ),
+                )
                 # Mirror the MCP HTTP handler's Activity instrumentation so an agent's
                 # in-process tool call ALSO appears in the Server → Activity ring,
                 # attributed to THIS agent (not the server). TUI mode only; the agent
                 # stream (agent:<id>) carries it regardless.
                 tui = GATE_MODE[]
-                args_json = try; JSON.json(args); catch; "{}"; end
+                args_json = try
+                    JSON.json(args)
+                catch
+                    "{}"
+                end
                 inflight = 0
                 if tui
                     _push_activity!(:tool_start, bare, h.agent_id, "")
@@ -289,34 +353,64 @@ function _run_ollama_turn(h::OllamaHandle, turn::Int)
                     _ollama_dispatch(name, args, b.allowed_tools, b.disallowed_tools)
                 if tui
                     dur = time() - t0
-                    dstr = dur < 1.0 ? string(round(Int, dur * 1000), "ms") :
-                           string(round(dur; digits = 1), "s")
+                    dstr =
+                        dur < 1.0 ? string(round(Int, dur * 1000), "ms") :
+                        string(round(dur; digits = 1), "s")
                     _push_activity!(:tool_done, bare, h.agent_id, dstr; success = !is_err)
                     _push_inflight_done!(inflight)
-                    _push_tool_result!(ToolCallResult(now(), bare, args_json,
-                        _tool_result_log_text(model_text), dstr, !is_err, h.agent_id))
+                    _push_tool_result!(
+                        ToolCallResult(
+                            now(),
+                            bare,
+                            args_json,
+                            _tool_result_log_text(model_text),
+                            dstr,
+                            !is_err,
+                            h.agent_id,
+                        ),
+                    )
                 end
-                put!(h.events, ACP.ToolCallUpdated(ACP.ToolCallUpdate(
-                    tool_call_id = id, status = (is_err ? :failed : :completed),
-                    content = acp_content)))
-                push!(h.messages, Dict("role" => "tool", "name" => bare,
-                                       "content" => model_text))
+                put!(
+                    h.events,
+                    ACP.ToolCallUpdated(
+                        ACP.ToolCallUpdate(
+                            tool_call_id = id,
+                            status = (is_err ? :failed : :completed),
+                            content = acp_content,
+                        ),
+                    ),
+                )
+                push!(
+                    h.messages,
+                    Dict("role" => "tool", "name" => bare, "content" => model_text),
+                )
             end
             # loop: next round feeds the tool results back to the model
         end
         # Ran out of rounds without a final answer.
-        put!(h.events, ACP.AgentError("$(b.label): hit max tool rounds ($(b.max_tool_rounds))"))
+        put!(
+            h.events,
+            ACP.AgentError("$(b.label): hit max tool rounds ($(b.max_tool_rounds))"),
+        )
         put!(h.events, ACP.TurnEnded(:refusal, usage))
     catch e
         e isa InvalidStateException && return   # events channel closed (backend_close)
         put!(h.events, ACP.AgentError("$(b.label) turn crashed: $(sprint(showerror, e))"))
-        try; put!(h.events, ACP.TurnEnded(:refusal, usage)); catch; end
+        try
+            put!(h.events, ACP.TurnEnded(:refusal, usage))
+        catch
+        end
     end
 end
 
 """Stream `POST {host}/api/chat` (NDJSON), feeding each line through
 `_map_ollama_chunk` into `acc` and emitting the deltas. Honors `h.cancel`."""
-function _ollama_stream_chat(host::AbstractString, body, h::OllamaHandle, acc::_OllamaTurnAcc)
+function _ollama_stream_chat(
+    host::AbstractString,
+    body,
+    h::OllamaHandle,
+    acc::_OllamaTurnAcc,
+)
     url = rstrip(host, '/') * "/api/chat"
     payload = JSON.json(body)
     # vmlx/Ollama serve /api/chat from uvicorn, whose keep-alive idle timeout (~5s) closes a
@@ -346,7 +440,10 @@ function _ollama_stream_chat(host::AbstractString, body, h::OllamaHandle, acc::_
             end
             acc.done && break
         end
-        try; HTTP.closeread(io); catch; end
+        try
+            HTTP.closeread(io)
+        catch
+        end
     end
     # Retry ONCE on a fresh connection, but only while nothing has streamed yet (acc.frames==0):
     # a stale connection dies before the first frame, so this recovers it without duplicating
@@ -355,7 +452,8 @@ function _ollama_stream_chat(host::AbstractString, body, h::OllamaHandle, acc::_
         attempt()
     catch
         (acc.frames == 0 && !h.cancel[]) || rethrow()
-        attempt(); return nothing
+        attempt()
+        return nothing
     end
     # A server-side graceful close throws nothing — it just looks like a clean EOF with no
     # frames and no `done`. Same stale-connection signature, same single retry.
@@ -370,7 +468,13 @@ backend_interrupt(h::OllamaHandle) = (h.cancel[] = true; true)
 function backend_close(h::OllamaHandle)
     h.cancel[] = true
     h.alive[] = false
-    try; put!(h.events, ACP.StatusChanged(:dead)); catch; end
-    try; close(h.events); catch; end
+    try
+        put!(h.events, ACP.StatusChanged(:dead))
+    catch
+    end
+    try
+        close(h.events)
+    catch
+    end
     nothing
 end

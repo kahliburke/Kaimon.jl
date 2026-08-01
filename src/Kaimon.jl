@@ -61,10 +61,7 @@ function kaimon_cache_dir()
     # get our own subdir instead of scattering kaimon.db/sock/sessions.json into
     # the shared cache root. Mirrors kaimon_config_dir's (correct) handling. (#42)
     dir = if Sys.iswindows()
-        joinpath(
-            get(ENV, "LOCALAPPDATA", joinpath(homedir(), "AppData", "Local")),
-            "Kaimon",
-        )
+        joinpath(get(ENV, "LOCALAPPDATA", joinpath(homedir(), "AppData", "Local")), "Kaimon")
     else
         joinpath(get(ENV, "XDG_CACHE_HOME", joinpath(homedir(), ".cache")), "kaimon")
     end
@@ -85,10 +82,7 @@ Defaults to `~/.config/kaimon`.
 """
 function kaimon_config_dir()
     dir = if Sys.iswindows()
-        joinpath(
-            get(ENV, "APPDATA", joinpath(homedir(), "AppData", "Roaming")),
-            "Kaimon",
-        )
+        joinpath(get(ENV, "APPDATA", joinpath(homedir(), "AppData", "Roaming")), "Kaimon")
     else
         joinpath(get(ENV, "XDG_CONFIG_HOME", joinpath(homedir(), ".config")), "kaimon")
     end

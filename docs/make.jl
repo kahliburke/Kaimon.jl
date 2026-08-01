@@ -83,8 +83,7 @@ end
 
 # Step 3: Patch VitePress config.mts base path for deploy subfolder
 # (e.g. /Kaimon.jl/dev/ or /Kaimon.jl/previews/PR42/)
-let config_path =
-    joinpath(@__DIR__, "build", ".documenter", ".vitepress", "config.mts")
+let config_path = joinpath(@__DIR__, "build", ".documenter", ".vitepress", "config.mts")
     if isfile(config_path)
         deploy_decision = Documenter.deploy_folder(
             Documenter.auto_detect_deploy_system();

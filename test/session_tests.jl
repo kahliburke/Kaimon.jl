@@ -19,7 +19,9 @@ using Kaimon.Session: UNINITIALIZED, INITIALIZING, INITIALIZED, CLOSED
 
     @testset "elicitation capability gate is optimistic on empty caps" begin
         # Advertised elicitation → attempt.
-        @test Kaimon._caps_may_elicit(Dict{String,Any}("elicitation" => Dict(), "roots" => Dict()))
+        @test Kaimon._caps_may_elicit(
+            Dict{String,Any}("elicitation" => Dict(), "roots" => Dict()),
+        )
         # Empty / unknown caps → attempt anyway (capless reconnect sessions still support it).
         @test Kaimon._caps_may_elicit(Dict{String,Any}())
         @test Kaimon._caps_may_elicit(nothing)
@@ -31,14 +33,22 @@ using Kaimon.Session: UNINITIALIZED, INITIALIZING, INITIALIZED, CLOSED
         mktempdir() do cache
             withenv("XDG_CACHE_HOME" => cache) do
                 mkpath(joinpath(cache, "kaimon"))
-                Kaimon.save_persisted_sessions(Dict{String,Dict}(
-                    "capped" => Dict("created_at" => "2026-07-02T10:00:00",
-                        "last_seen" => "2026-07-02T12:00:00",
-                        "client_capabilities" => Dict("elicitation" => Dict(), "roots" => Dict()),
-                        "client_info" => Dict("name" => "claude-code")),
-                    "capless" => Dict("created_at" => "2026-07-02T11:00:00",
-                        "last_seen" => "2026-07-02T11:30:00", "workspace_root" => "/x"),
-                ))
+                Kaimon.save_persisted_sessions(
+                    Dict{String,Dict}(
+                        "capped" => Dict(
+                            "created_at" => "2026-07-02T10:00:00",
+                            "last_seen" => "2026-07-02T12:00:00",
+                            "client_capabilities" =>
+                                Dict("elicitation" => Dict(), "roots" => Dict()),
+                            "client_info" => Dict("name" => "claude-code"),
+                        ),
+                        "capless" => Dict(
+                            "created_at" => "2026-07-02T11:00:00",
+                            "last_seen" => "2026-07-02T11:30:00",
+                            "workspace_root" => "/x",
+                        ),
+                    ),
+                )
                 # A fresh (capless) session inherits the most-recent client's caps.
                 s = MCPSession()
                 @test isempty(s.client_capabilities)
@@ -55,8 +65,11 @@ using Kaimon.Session: UNINITIALIZED, INITIALIZING, INITIALIZED, CLOSED
 
     @testset "server→client request delivery tolerates session-id splits" begin
         schema = Dict{String,Any}("type" => "object", "properties" => Dict{String,Any}())
-        mkmsg() = Dict{String,Any}("jsonrpc" => "2.0", "id" => "rid-$(rand(UInt32))",
-            "method" => "elicitation/create")
+        mkmsg() = Dict{String,Any}(
+            "jsonrpc" => "2.0",
+            "id" => "rid-$(rand(UInt32))",
+            "method" => "elicitation/create",
+        )
 
         # Isolate _SESSION_OUTBOX so the any-open-stream fallback below only sees the
         # streams each sub-test registers (not a real client's live stream).
@@ -108,7 +121,11 @@ using Kaimon.Session: UNINITIALIZED, INITIALIZING, INITIALIZED, CLOSED
 
             # 4. No stream and no writer → undeliverable (caller maps this to :timeout).
             @testset "no channel → false" begin
-                @test !Kaimon._deliver_to_client!("nobody-$(rand(UInt32))", mkmsg(), nothing)
+                @test !Kaimon._deliver_to_client!(
+                    "nobody-$(rand(UInt32))",
+                    mkmsg(),
+                    nothing,
+                )
             end
 
             # Integration: request_elicitation delivers to the caller's stream and
@@ -122,10 +139,16 @@ using Kaimon.Session: UNINITIALIZED, INITIALIZING, INITIALIZED, CLOSED
                             sleep(0.005)
                         end
                         req = take!(ch)
-                        Kaimon._route_server_response!(Dict{String,Any}(
-                            "jsonrpc" => "2.0", "id" => req["id"],
-                            "result" => Dict{String,Any}("action" => "accept",
-                                "content" => Dict{String,Any}("remember" => false))))
+                        Kaimon._route_server_response!(
+                            Dict{String,Any}(
+                                "jsonrpc" => "2.0",
+                                "id" => req["id"],
+                                "result" => Dict{String,Any}(
+                                    "action" => "accept",
+                                    "content" => Dict{String,Any}("remember" => false),
+                                ),
+                            ),
+                        )
                     end
                     res = Kaimon.request_elicitation(sid, "approve?", schema; timeout = 5.0)
                     wait(client)
@@ -179,10 +202,15 @@ using Kaimon.Session: UNINITIALIZED, INITIALIZING, INITIALIZED, CLOSED
             withenv("XDG_CACHE_HOME" => cache) do
                 mkpath(joinpath(cache, "kaimon"))
                 caller = "test-caller-$(rand(UInt32))"
-                Kaimon.save_persisted_sessions(Dict{String,Dict}(
-                    caller => Dict("created_at" => "2026-07-03T10:00:00",
-                        "last_seen" => "2026-07-03T10:00:00",
-                        "workspace_root" => "/some/proj")))
+                Kaimon.save_persisted_sessions(
+                    Dict{String,Dict}(
+                        caller => Dict(
+                            "created_at" => "2026-07-03T10:00:00",
+                            "last_seen" => "2026-07-03T10:00:00",
+                            "workspace_root" => "/some/proj",
+                        ),
+                    ),
+                )
                 # No in-memory workspace root and no bound gate for this caller → the
                 # resolver must fall back to the caller's OWN persisted workspace root
                 # (not "", which would scope grep_code/search_code to the server cwd).
@@ -202,17 +230,24 @@ using Kaimon.Session: UNINITIALIZED, INITIALIZING, INITIALIZED, CLOSED
                 @test Kaimon._persisted_session_project(caller) === nothing
                 # Binding to a gate records the RESOLVED project (reliable, non-SSE).
                 Kaimon._persist_session_project!(caller, "/home/dev/KaimonSlate.jl")
-                @test Kaimon._persisted_session_project(caller) == "/home/dev/KaimonSlate.jl"
+                @test Kaimon._persisted_session_project(caller) ==
+                      "/home/dev/KaimonSlate.jl"
                 # Empty project is ignored (no spurious overwrite/entry).
                 Kaimon._persist_session_project!(caller, "")
-                @test Kaimon._persisted_session_project(caller) == "/home/dev/KaimonSlate.jl"
+                @test Kaimon._persisted_session_project(caller) ==
+                      "/home/dev/KaimonSlate.jl"
                 # On reconnect, resolution prefers the gate project over a broader
                 # workspace root — it's the project the agent actually worked in.
-                Kaimon.save_persisted_sessions(Dict{String,Dict}(
-                    caller => Dict("created_at" => "2026-07-04T10:00:00",
-                        "last_seen" => "2026-07-04T10:00:00",
-                        "workspace_root" => "/home/dev",
-                        "project_path" => "/home/dev/KaimonSlate.jl")))
+                Kaimon.save_persisted_sessions(
+                    Dict{String,Dict}(
+                        caller => Dict(
+                            "created_at" => "2026-07-04T10:00:00",
+                            "last_seen" => "2026-07-04T10:00:00",
+                            "workspace_root" => "/home/dev",
+                            "project_path" => "/home/dev/KaimonSlate.jl",
+                        ),
+                    ),
+                )
                 task_local_storage(:mcp_caller, caller) do
                     @test Kaimon._last_session_project_path() == "/home/dev/KaimonSlate.jl"
                 end
@@ -245,7 +280,12 @@ using Kaimon.Session: UNINITIALIZED, INITIALIZING, INITIALIZED, CLOSED
         Kaimon._set_session_agent_id!("", "x")
         @test Kaimon._session_agent_id("") == ""
         # Header extraction is case-insensitive; "" when absent.
-        with = (headers = ["Content-Type" => "application/json", "X-Kaimon-Agent-Id" => "aid-1"],)
+        with = (
+            headers = [
+                "Content-Type" => "application/json",
+                "X-Kaimon-Agent-Id" => "aid-1",
+            ],
+        )
         none = (headers = ["Content-Type" => "application/json"],)
         @test Kaimon.extract_agent_id(with) == "aid-1"
         @test Kaimon.extract_agent_id(none) == ""

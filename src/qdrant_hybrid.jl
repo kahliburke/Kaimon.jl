@@ -26,11 +26,16 @@ const _CONTENT_BOOST = 0.02 # hit text contains every query token (what FTS matc
 
 # Dedup key: same Qdrant point, else same file+span (a chunk found by several
 # methods collapses to one hit whose sources union and whose RRF scores sum).
-_hit_key(h::HybridHit) = h.point_id !== nothing ? "pid:" * h.point_id :
+_hit_key(h::HybridHit) =
+    h.point_id !== nothing ? "pid:" * h.point_id :
     string(h.file, ':', h.start_line, ':', h.end_line)
 
-function _rrf_accumulate!(acc::Dict{String,HybridHit}, ranked::Vector{HybridHit};
-                          weight::Float64 = 1.0, k::Int = _RRF_K)
+function _rrf_accumulate!(
+    acc::Dict{String,HybridHit},
+    ranked::Vector{HybridHit};
+    weight::Float64 = 1.0,
+    k::Int = _RRF_K,
+)
     for (rank, h) in enumerate(ranked)
         key = _hit_key(h)
         contrib = weight / (k + rank)
@@ -55,16 +60,22 @@ function _semantic_hits(results)::Vector{HybridHit}
     out = HybridHit[]
     for r in results
         payload = get(r, "payload", Dict())
-        push!(out, HybridHit(
-            (haskey(r, "id") && r["id"] !== nothing) ? string(r["id"]) : nothing,
-            string(get(payload, "file", "")),
-            string(get(payload, "name", "")),
-            string(get(payload, "type", "")),
-            Int(get(payload, "start_line", 0)),
-            Int(get(payload, "end_line", 0)),
-            string(get(payload, "text", "")),
-            payload, "", Set([:semantic]), 0.0,
-        ))
+        push!(
+            out,
+            HybridHit(
+                (haskey(r, "id") && r["id"] !== nothing) ? string(r["id"]) : nothing,
+                string(get(payload, "file", "")),
+                string(get(payload, "name", "")),
+                string(get(payload, "type", "")),
+                Int(get(payload, "start_line", 0)),
+                Int(get(payload, "end_line", 0)),
+                string(get(payload, "text", "")),
+                payload,
+                "",
+                Set([:semantic]),
+                0.0,
+            ),
+        )
     end
     return out
 end
@@ -73,10 +84,22 @@ end
 function _lexical_hits(hits::Vector{FtsIndex.FtsHit})::Vector{HybridHit}
     out = HybridHit[]
     for h in hits
-        push!(out, HybridHit(
-            h.point_id, h.file, h.name, h.type, h.start_line, h.end_line,
-            h.text, Dict(), h.snippet, Set([h.source]), 0.0,
-        ))
+        push!(
+            out,
+            HybridHit(
+                h.point_id,
+                h.file,
+                h.name,
+                h.type,
+                h.start_line,
+                h.end_line,
+                h.text,
+                Dict(),
+                h.snippet,
+                Set([h.source]),
+                0.0,
+            ),
+        )
     end
     return out
 end
@@ -132,8 +155,11 @@ function _classify_lexical_weight(query::AbstractString, capped::Int)
     toks = [t for t in split(q, r"\s+"; keepempty = false) if length(t) >= 2]
     n = length(toks)
     n == 0 && return 1.0
-    is_code(t) = occursin('_', t) || occursin(r"[a-z][A-Z]", t) ||
-                 occursin(r"[0-9]", t) || occursin(r"[!@.:/]", t)
+    is_code(t) =
+        occursin('_', t) ||
+        occursin(r"[a-z][A-Z]", t) ||
+        occursin(r"[0-9]", t) ||
+        occursin(r"[!@.:/]", t)
     code_ratio = count(is_code, toks) / n
     if n <= 3
         # Few tokens: a symbol hunt if they're code-shaped, else a short concept phrase.
@@ -147,13 +173,15 @@ end
 # Qdrant payload filter for the chunk_type facet (mirrors the legacy behavior).
 function _chunk_type_filter(chunk_type::AbstractString)
     if chunk_type == "definitions"
-        return Dict("should" => [
-            Dict("key" => "type", "match" => Dict("value" => "function")),
-            Dict("key" => "type", "match" => Dict("value" => "struct")),
-            Dict("key" => "type", "match" => Dict("value" => "macro")),
-            Dict("key" => "type", "match" => Dict("value" => "const")),
-            Dict("key" => "type", "match" => Dict("value" => "tool")),
-        ])
+        return Dict(
+            "should" => [
+                Dict("key" => "type", "match" => Dict("value" => "function")),
+                Dict("key" => "type", "match" => Dict("value" => "struct")),
+                Dict("key" => "type", "match" => Dict("value" => "macro")),
+                Dict("key" => "type", "match" => Dict("value" => "const")),
+                Dict("key" => "type", "match" => Dict("value" => "tool")),
+            ],
+        )
     elseif chunk_type == "windows"
         return Dict("must" => [Dict("key" => "type", "match" => Dict("value" => "window"))])
     end
@@ -170,8 +198,13 @@ function _build_qdrant_filter(chunk_type::AbstractString, filters)
         for (field, vals) in pairs(filters)
             vlist = vals isa AbstractVector ? collect(vals) : [vals]
             isempty(vlist) && continue
-            push!(must, Dict("key" => "metadata.$(field)",
-                             "match" => Dict("any" => [string(v) for v in vlist])))
+            push!(
+                must,
+                Dict(
+                    "key" => "metadata.$(field)",
+                    "match" => Dict("any" => [string(v) for v in vlist]),
+                ),
+            )
         end
     end
     ctf = _chunk_type_filter(chunk_type)
@@ -228,9 +261,10 @@ const _FTS_OPERATOR_WORDS = Set(("and", "not", "near"))
 # Significant (≥3-char) query tokens, lowercased — what we re-find in chunk text to
 # locate matched lines. Mirrors the tokenization used by `_apply_boosts!`, minus the
 # boolean operators (so `reactive AND refresh` doesn't bold stray `and`s in the source).
-_query_tokens(query::AbstractString) =
-    [t for t in split(lowercase(query), r"[^a-z0-9_]+"; keepempty = false)
-     if length(t) >= 3 && t ∉ _FTS_OPERATOR_WORDS]
+_query_tokens(query::AbstractString) = [
+    t for t in split(lowercase(query), r"[^a-z0-9_]+"; keepempty = false) if
+    length(t) >= 3 && t ∉ _FTS_OPERATOR_WORDS
+]
 
 # Grep-style matched lines: the actual source lines within a chunk that contain a
 # query token, each with its ABSOLUTE line number (chunk `start_line` + offset). The
@@ -242,8 +276,13 @@ _query_tokens(query::AbstractString) =
 # FTS5 doesn't expose match offsets, so we re-find the tokens in the chunk text; a
 # term that only matched via trigram across a line boundary won't be found here and
 # the hit falls back to its snippet/preview. Capped per hit to keep output lean.
-function _matched_lines(text::AbstractString, start_line::Int, toks::Vector{<:AbstractString};
-                        max_lines::Int = 3, width::Int = 160)
+function _matched_lines(
+    text::AbstractString,
+    start_line::Int,
+    toks::Vector{<:AbstractString};
+    max_lines::Int = 3,
+    width::Int = 160,
+)
     (start_line <= 0 || isempty(toks) || isempty(text)) && return Tuple{Int,String}[]
     out = Tuple{Int,String}[]
     for (i, ln) in enumerate(split(text, '\n'))
@@ -257,8 +296,14 @@ function _matched_lines(text::AbstractString, start_line::Int, toks::Vector{<:Ab
     return out
 end
 
-function _format_hybrid(query, where_label, hits::Vector{HybridHit},
-                        cross_project::Bool, notes::Vector{String}, mode::String)
+function _format_hybrid(
+    query,
+    where_label,
+    hits::Vector{HybridHit},
+    cross_project::Bool,
+    notes::Vector{String},
+    mode::String,
+)
     out = "🔍 \"$query\" in $where_label" * (mode == "hybrid" ? "" : " [$mode]") * ":\n"
     for n in notes
         out *= "  ⚠ $n\n"
@@ -376,7 +421,10 @@ function _qdrant_search_code(args)
         if cross_project
             gc = global_collection_name()
             if gc ∉ collections
-                try; populate_global_collection!(; verbose = false); catch; end
+                try
+                    populate_global_collection!(; verbose = false)
+                catch
+                end
                 collections = QdrantClient.list_collections()
             end
             sem_collection = gc ∈ collections ? gc : nothing
@@ -417,16 +465,22 @@ function _qdrant_search_code(args)
     if want_semantic && sem_collection !== nothing
         model = something(explicit_model, resolve_search_model(sem_collection))
         if !ping_ollama() || !check_ollama_model(model)
-            mode == "semantic" && return _require_services(need_ollama = true, model = model)
+            mode == "semantic" &&
+                return _require_services(need_ollama = true, model = model)
             push!(notes, "Embeddings unavailable (Ollama/model) — lexical results only.")
         else
             embedding = get_ollama_embedding(query; model = model)
             if isempty(embedding)
-                mode == "semantic" && return "Error: Failed to generate embedding with model '$model'."
+                mode == "semantic" &&
+                    return "Error: Failed to generate embedding with model '$model'."
                 push!(notes, "Embedding failed — lexical results only.")
             else
-                results = QdrantClient.search(sem_collection, embedding;
-                    limit = fetch, filter = _build_qdrant_filter(chunk_type, filters))
+                results = QdrantClient.search(
+                    sem_collection,
+                    embedding;
+                    limit = fetch,
+                    filter = _build_qdrant_filter(chunk_type, filters),
+                )
                 sem = _semantic_hits(results)
             end
         end
@@ -438,15 +492,23 @@ function _qdrant_search_code(args)
     lex_capped = 0
     if want_lexical
         try
-            lex = FtsIndex.search(query; collection = fts_collection, limit = fetch,
-                chunk_type = chunk_type, filters = filters)
+            lex = FtsIndex.search(
+                query;
+                collection = fts_collection,
+                limit = fetch,
+                chunk_type = chunk_type,
+                filters = filters,
+            )
             word, tri = lex.word, lex.tri
             lex_capped = lex.capped
             if lex.fellback
-                push!(notes, "Couldn't parse the query as FTS5 even after normalizing — " *
+                push!(
+                    notes,
+                    "Couldn't parse the query as FTS5 even after normalizing — " *
                     "searched it as a single literal phrase. Check for unbalanced quotes " *
                     "or stray operators. Bare terms are OR-joined; use `\"exact phrase\"`, " *
-                    "AND/OR/NOT, or `prefix*` for finer control.")
+                    "AND/OR/NOT, or `prefix*` for finer control.",
+                )
             end
             # NB: lex.capped is still consulted (it's the hard-NL signal for
             # _classify_lexical_weight), but we no longer warn the agent to "narrow the
@@ -482,14 +544,24 @@ function _qdrant_search_code(args)
 
     # Structured output (subsumes the old qdrant_fts_search): ranked hits as data.
     if format == "structured"
-        return JSON.json([(
-            point_id = h.point_id, name = h.name, file = h.file, type = h.type,
-            start_line = h.start_line, end_line = h.end_line, text = h.text,
-            snippet = h.snippet, sources = collect(h.sources), score = h.rrf,
-        ) for h in hits])
+        return JSON.json([
+            (
+                point_id = h.point_id,
+                name = h.name,
+                file = h.file,
+                type = h.type,
+                start_line = h.start_line,
+                end_line = h.end_line,
+                text = h.text,
+                snippet = h.snippet,
+                sources = collect(h.sources),
+                score = h.rrf,
+            ) for h in hits
+        ])
     end
 
-    where_label = sem_collection !== nothing ? sem_collection :
+    where_label =
+        sem_collection !== nothing ? sem_collection :
         (fts_collection !== nothing ? fts_collection : "all projects")
     return _format_hybrid(query, where_label, hits, cross_project, notes, mode)
 end

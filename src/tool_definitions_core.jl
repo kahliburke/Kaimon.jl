@@ -48,12 +48,19 @@ function pkg_operation_tool(operation::String, verb::String, args; session::Stri
 
         return if GATE_MODE[]
             Base.invokelatest(
-                execute_via_gate_streaming, code;
-                quiet = false, silent = false, session = session,
+                execute_via_gate_streaming,
+                code;
+                quiet = false,
+                silent = false,
+                session = session,
             )
         else
             Base.invokelatest(
-                execute_repllike, code; silent = false, quiet = false, session = session,
+                execute_repllike,
+                code;
+                silent = false,
+                quiet = false,
+                session = session,
             )
         end
     catch e
@@ -139,12 +146,13 @@ ping_tool = @mcp_tool(
             user_conns = filter(!is_extension, all_conns)
             connected_count = count(c -> c.status == :connected, user_conns)
             # Sort by connected_at descending (newest first)
-            sort!(user_conns; by=c -> c.connected_at, rev=true)
+            sort!(user_conns; by = c -> c.connected_at, rev = true)
             # The gate this agent is bound to (its default for unscoped tools/search),
             # set from its `ses=` or auto-matched from its MCP workspace root. Promote
             # it to the top and mark it so the agent knows its default at a glance.
             bound_key = let caller = _current_mcp_caller()
-                isempty(caller) ? "" : lock(STANDALONE_SESSIONS_LOCK) do
+                isempty(caller) ? "" :
+                lock(STANDALONE_SESSIONS_LOCK) do
                     s = get(STANDALONE_SESSIONS, caller, nothing)
                     s === nothing ? "" : something(s.target_julia_session_id, "")
                 end
@@ -162,8 +170,7 @@ ping_tool = @mcp_tool(
                 icon =
                     conn.status == :connected ? "●" :
                     conn.status == :evaluating ? "◐" :
-                    conn.status == :stalled ? "◑" :
-                    conn.status == :connecting ? "◐" : "○"
+                    conn.status == :stalled ? "◑" : conn.status == :connecting ? "◐" : "○"
                 ntools = length(conn.session_tools)
                 tools_info = ntools > 0 ? ", $(ntools) tools" : ""
                 # Uptime from connected_at
@@ -190,14 +197,21 @@ ping_tool = @mcp_tool(
                 else
                     ", free"
                 end
-                mine = (!isempty(bound_key) && key == bound_key) ?
-                    "  ← your session (default for unscoped tools/search; override with ses=)" : ""
+                mine =
+                    (!isempty(bound_key) && key == bound_key) ?
+                    "  ← your session (default for unscoped tools/search; override with ses=)" :
+                    ""
                 status *= "\n  $icon $key $dname ($(conn.status), up $(uptime_str), PID $(conn.pid)$tools_info$extra)$mine"
             end
             # Extension session summary (internal only, not addressable via tools)
             if !isempty(ext_conns)
-                active_ext = filter(c -> c.status == :connected || c.status == :evaluating, ext_conns)
-                names = [isempty(c.namespace) ? c.display_name : c.namespace for c in active_ext]
+                active_ext = filter(
+                    c -> c.status == :connected || c.status == :evaluating,
+                    ext_conns,
+                )
+                names = [
+                    isempty(c.namespace) ? c.display_name : c.namespace for c in active_ext
+                ]
                 status *= "\nExtensions (internal, not for agent use): $(length(active_ext)) active ($(join(names, ", ")))"
             end
         end
@@ -205,12 +219,13 @@ ping_tool = @mcp_tool(
         if extended
             # Server uptime
             uptime_ms = Dates.value(Dates.now() - _SERVER_START_TIME[])
-            uptime_str = let h = uptime_ms ÷ 3_600_000,
-                m = (uptime_ms % 3_600_000) ÷ 60_000,
-                s = (uptime_ms % 60_000) ÷ 1000
+            uptime_str =
+                let h = uptime_ms ÷ 3_600_000,
+                    m = (uptime_ms % 3_600_000) ÷ 60_000,
+                    s = (uptime_ms % 60_000) ÷ 1000
 
-                h > 0 ? "$(h)h $(m)m $(s)s" : m > 0 ? "$(m)m $(s)s" : "$(s)s"
-            end
+                    h > 0 ? "$(h)h $(m)m $(s)s" : m > 0 ? "$(m)m $(s)s" : "$(s)s"
+                end
             status *= "\n\nServer uptime: $uptime_str"
             status *= "\nStarted: $(Dates.format(_SERVER_START_TIME[], "yyyy-mm-dd HH:MM:SS"))"
             status *= "\nJulia v$(VERSION)  PID: $(getpid())  Threads: $(Threads.nthreads())"
@@ -234,7 +249,9 @@ ping_tool = @mcp_tool(
                     status *= "\n  Success: $n_ok  Error: $n_err  Error rate: $(err_rate)%"
                     t_ok = _LAST_TOOL_SUCCESS[]
                     t_err = _LAST_TOOL_ERROR[]
-                    t_ok > 0 && (status *= "  Last success: $(round(Int, time() - t_ok))s ago")
+                    t_ok > 0 && (
+                        status *= "  Last success: $(round(Int, time() - t_ok))s ago"
+                    )
                     if n_err > 0 && t_err > 0
                         status *= "\n  Last error: $(round(Int, time() - t_err))s ago"
                     end
@@ -245,7 +262,8 @@ ping_tool = @mcp_tool(
                         counts[r.tool_name] = get(counts, r.tool_name, 0) + 1
                     end
                     top = first(sort(collect(counts), by = last, rev = true), 5)
-                    status *= "\n  Top tools: " * join(["$(t) ($(c))" for (t, c) in top], ", ")
+                    status *=
+                        "\n  Top tools: " * join(["$(t) ($(c))" for (t, c) in top], ", ")
                 end
 
                 # Recent server errors from log buffer
@@ -307,16 +325,18 @@ server_log_tool = @mcp_tool(
             ts
         end
 
-        _apply_level_filter(entries, lf) = if lf in ("warn", "warning")
-            filter(e -> e.level in (:warn, :error), entries)
-        elseif lf == "error"
-            filter(e -> e.level == :error, entries)
-        else
-            entries
-        end
+        _apply_level_filter(entries, lf) =
+            if lf in ("warn", "warning")
+                filter(e -> e.level in (:warn, :error), entries)
+            elseif lf == "error"
+                filter(e -> e.level == :error, entries)
+            else
+                entries
+            end
 
-        _format_entry(e::ServerLogEntry) =
-            "$(Dates.format(e.timestamp, "yyyy-mm-dd HH:MM:SS")) [$(rpad(uppercase(string(e.level)),5))] $(e.message)"
+        _format_entry(
+            e::ServerLogEntry,
+        ) = "$(Dates.format(e.timestamp, "yyyy-mm-dd HH:MM:SS")) [$(rpad(uppercase(string(e.level)),5))] $(e.message)"
 
         # Read from persistent ring buffer (thread-safe, last 500 entries)
         entries = lock(_TUI_LOG_LOCK) do
@@ -332,8 +352,9 @@ server_log_tool = @mcp_tool(
         entries = _apply_level_filter(entries, level_filter)
 
         # Take the last N entries
-        length(entries) > limit && (entries = entries[end-limit+1:end])
-        isempty(entries) && return "No log entries found matching the specified criteria."
+        length(entries) > limit && (entries = entries[(end-limit+1):end])
+        isempty(entries) &&
+            return "No log entries found matching the specified criteria."
         return join([_format_entry(e) for e in entries], "\n")
     end
 )
@@ -341,11 +362,7 @@ server_log_tool = @mcp_tool(
 tui_screenshot_tool = @mcp_tool(
     :tui_screenshot,
     "Capture a text screenshot of the Kaimon TUI. Returns the current rendered view as plain text, including borders, status indicators, and layout. Updated every ~1 second. Useful for analyzing whitespace usage, widget layout, and visual appearance.",
-    Dict(
-        "type" => "object",
-        "properties" => Dict(),
-        "required" => [],
-    ),
+    Dict("type" => "object", "properties" => Dict(), "required" => []),
     args -> begin
         text = TUI_LAST_FRAME[]
         isempty(text) && return "No TUI frame captured yet (TUI may not be running)"
@@ -436,10 +453,13 @@ bare `agent>`). A common slip is passing the code as `code`, so the error calls 
 """
 function _ex_code_or_error(args)
     haskey(args, "e") && return (string(args["e"]), nothing)
-    hint = haskey(args, "code") ?
-           " (You passed `code` — this tool takes the code in `e`.)" : ""
-    return (nothing,
-        "Error: `ex` requires the Julia code in the `e` parameter, e.g. ex(e=\"1 + 1\").$hint")
+    hint =
+        haskey(args, "code") ? " (You passed `code` — this tool takes the code in `e`.)" :
+        ""
+    return (
+        nothing,
+        "Error: `ex` requires the Julia code in the `e` parameter, e.g. ex(e=\"1 + 1\").$hint",
+    )
 end
 
 repl_tool = @mcp_tool(
@@ -723,7 +743,8 @@ caller maps `:unsupported` back to the static allow-list guidance."""
 # caps are therefore not proof of no support. A client with no open receive stream fails fast
 # downstream (`request_elicitation` returns `nothing`), so an optimistic attempt is cheap and,
 # on failure, surfaces `:timeout` (agent retries) instead of a dead-end error.
-_caps_may_elicit(caps) = (caps isa AbstractDict && !isempty(caps)) ? haskey(caps, "elicitation") : true
+_caps_may_elicit(caps) =
+    (caps isa AbstractDict && !isempty(caps)) ? haskey(caps, "elicitation") : true
 
 function _elicit_session_consent(path::AbstractString)
     caller = _current_mcp_caller()
@@ -747,9 +768,10 @@ function _elicit_session_consent(path::AbstractString)
             ),
         ),
     )
-    msg = "Claude wants to start a Julia session for the project:\n$path\n\n" *
-          "Accept to allow. Check \"Always allow\" to add it to your allowed-projects " *
-          "list and skip this prompt next time."
+    msg =
+        "Claude wants to start a Julia session for the project:\n$path\n\n" *
+        "Accept to allow. Check \"Always allow\" to add it to your allowed-projects " *
+        "list and skip this prompt next time."
     # Cap the wait under the client's tool-call timeout (~60s) so we always return
     # a result over the wire rather than have the client give up mid-prompt — which
     # would orphan-spawn the session and break the result pipe. On no answer we
@@ -801,7 +823,8 @@ Call with no `project_path` to list allowed projects and their status.""",
         # No path → list allowed projects
         if isempty(raw_path)
             entries = load_projects_config()
-            isempty(entries) && return "No allowed projects are configured. Ask the user to add one from the Kaimon TUI Config tab [p]."
+            isempty(entries) &&
+                return "No allowed projects are configured. Ask the user to add one from the Kaimon TUI Config tab [p]."
             managed = get_managed_sessions()
             lines = String["Allowed projects:"]
             for entry in entries
@@ -903,4 +926,3 @@ Call with no `project_path` to list allowed projects and their status.""",
         return "Error: Timed out waiting for session to connect ($(Int(timeout))s). The process may still be starting — check log: $(ms.log_file)"
     end
 )
-

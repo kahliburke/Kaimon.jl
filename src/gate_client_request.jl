@@ -29,7 +29,10 @@ function _reap_parked_contexts!()
         keep = Tuple{ZMQ.Context,Float64}[]
         for (ctx, parked) in _PENDING_CONTEXTS
             if now_t - parked >= _CONTEXT_REAP_GRACE
-                try; close(ctx); catch; end   # close ≡ zmq_ctx_term; safe now
+                try
+                    close(ctx)
+                catch
+                end   # close ≡ zmq_ctx_term; safe now
             else
                 push!(keep, (ctx, parked))
             end
@@ -298,15 +301,18 @@ function eval_remote_async(
 
             # If no output for a while, send periodic keepalive progress
             # messages so the agent knows the session is still running.
-            if on_output !== nothing && silence >= silence_threshold &&
+            if on_output !== nothing &&
+               silence >= silence_threshold &&
                (time() - last_keepalive) >= keepalive_interval
                 elapsed = time() - start_time
                 mins = round(Int, elapsed ÷ 60)
                 secs = round(Int, elapsed % 60)
                 elapsed_str = mins > 0 ? "$(mins)m $(secs)s" : "$(secs)s"
-                on_output("stderr",
+                on_output(
+                    "stderr",
                     "⏳ Evaluation running ($elapsed_str elapsed, no output for $(round(Int, silence))s). " *
-                    "Session may be compiling, performing a long computation, or stuck.\n")
+                    "Session may be compiling, performing a long computation, or stuck.\n",
+                )
                 last_keepalive = time()
             end
 
@@ -327,8 +333,13 @@ function eval_remote_async(
             # still runs. Disconnect closes my_inbox → wakes us → loop guard catches.
             wake = last_activity + inactivity_timeout
             if on_output !== nothing
-                wake = min(wake, max(last_activity + silence_threshold,
-                                     last_keepalive + keepalive_interval))
+                wake = min(
+                    wake,
+                    max(
+                        last_activity + silence_threshold,
+                        last_keepalive + keepalive_interval,
+                    ),
+                )
             end
             msg = _await_inbox(my_inbox, wake)
 
@@ -435,7 +446,11 @@ function set_mirror_repl!(conn::REPLConnection, enabled::Bool)
     if conn.status ∉ (:connected, :evaluating) || conn.req_channel === nothing
         return false
     end
-    result = _req_send_recv(conn, (type = :set_option, key = "mirror_repl", value = enabled); caller_timeout = 10.0)
+    result = _req_send_recv(
+        conn,
+        (type = :set_option, key = "mirror_repl", value = enabled);
+        caller_timeout = 10.0,
+    )
     return result.ok && get(result.response, :type, :error) == :ok
 end
 
@@ -478,8 +493,10 @@ Send a `:restart` command to the gate. Returns `true` if the gate acknowledged.
 The gate will exec a fresh Julia process after replying.
 """
 function send_restart!(conn::REPLConnection)
-    (conn.status ∉ (:connected, :evaluating) || conn.req_channel === nothing) && return false
-    result = _req_send_recv(conn, (type = :restart, name = conn.name); caller_timeout = 10.0)
+    (conn.status ∉ (:connected, :evaluating) || conn.req_channel === nothing) &&
+        return false
+    result =
+        _req_send_recv(conn, (type = :restart, name = conn.name); caller_timeout = 10.0)
     return result.ok && get(result.response, :type, :error) == :ok
 end
 
@@ -490,8 +507,9 @@ Send a `:shutdown` command to the gate. Returns `true` if the gate acknowledged.
 The gate will stop its event loop and the Julia process will exit.
 """
 function send_shutdown!(conn::REPLConnection)
-    (conn.status ∉ (:connected, :evaluating, :stalled) || conn.req_channel === nothing) && return false
-    result = _req_send_recv(conn, (type = :shutdown, name = conn.name); caller_timeout = 10.0)
+    (conn.status ∉ (:connected, :evaluating, :stalled) || conn.req_channel === nothing) &&
+        return false
+    result =
+        _req_send_recv(conn, (type = :shutdown, name = conn.name); caller_timeout = 10.0)
     return result.ok && get(result.response, :type, :error) == :ok
 end
-

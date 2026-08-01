@@ -31,34 +31,35 @@ _now() = time()
 
 # ── Config (env, with conservative defaults; AIMD discovers the real ceiling) ──
 Base.@kwdef struct Config
-    max_concurrency::Int        = 4      # in-flight turns ceiling (backpressure)
-    rate_rps::Float64           = 2.0    # initial / target refill rate R (req/s)
-    rate_max::Float64           = 8.0    # R_max ceiling for AIMD recovery
-    rate_min::Float64           = 0.25   # R_min floor
-    rate_step::Float64          = 0.5    # additive increase per clean interval
-    decrease_factor::Float64    = 0.5    # multiplicative decrease on a rate error
-    bucket_capacity::Float64    = 8.0    # token-bucket burst capacity
-    tokens_per_min::Float64     = 0.0    # tokens/min budget; 0 = disabled
-    max_retries::Int            = 4      # per-turn rate-error retries
+    max_concurrency::Int = 4      # in-flight turns ceiling (backpressure)
+    rate_rps::Float64 = 2.0    # initial / target refill rate R (req/s)
+    rate_max::Float64 = 8.0    # R_max ceiling for AIMD recovery
+    rate_min::Float64 = 0.25   # R_min floor
+    rate_step::Float64 = 0.5    # additive increase per clean interval
+    decrease_factor::Float64 = 0.5    # multiplicative decrease on a rate error
+    bucket_capacity::Float64 = 8.0    # token-bucket burst capacity
+    tokens_per_min::Float64 = 0.0    # tokens/min budget; 0 = disabled
+    max_retries::Int = 4      # per-turn rate-error retries
     recover_interval_s::Float64 = 20.0   # clean window before additive increase
-    base_cooldown_s::Float64    = 5.0    # refill pause when retry_after is unknown
+    base_cooldown_s::Float64 = 5.0    # refill pause when retry_after is unknown
 end
 
-_envf(k, d) = (v = get(ENV, k, nothing); v === nothing ? d : something(tryparse(Float64, v), d))
+_envf(k, d) =
+    (v = get(ENV, k, nothing); v === nothing ? d : something(tryparse(Float64, v), d))
 _envi(k, d) = (v = get(ENV, k, nothing); v === nothing ? d : something(tryparse(Int, v), d))
 
 "Build a Config from KAIMON_AGENT_* env vars, falling back to the defaults above."
 function config_from_env()
     rmax = _envf("KAIMON_AGENT_RATE_MAX", 8.0)
     Config(
-        max_concurrency    = _envi("KAIMON_AGENT_MAX_CONCURRENCY", 4),
-        rate_rps           = _envf("KAIMON_AGENT_RATE_RPS", 2.0),
-        rate_max           = rmax,
-        rate_min           = _envf("KAIMON_AGENT_RATE_MIN", 0.25),
-        rate_step          = _envf("KAIMON_AGENT_RATE_STEP", 0.5),
-        bucket_capacity    = _envf("KAIMON_AGENT_RATE_BUCKET", rmax),  # default capacity = R_max
-        tokens_per_min     = _envf("KAIMON_AGENT_TOKENS_PER_MIN", 0.0),
-        max_retries        = _envi("KAIMON_AGENT_MAX_RETRIES", 4),
+        max_concurrency = _envi("KAIMON_AGENT_MAX_CONCURRENCY", 4),
+        rate_rps = _envf("KAIMON_AGENT_RATE_RPS", 2.0),
+        rate_max = rmax,
+        rate_min = _envf("KAIMON_AGENT_RATE_MIN", 0.25),
+        rate_step = _envf("KAIMON_AGENT_RATE_STEP", 0.5),
+        bucket_capacity = _envf("KAIMON_AGENT_RATE_BUCKET", rmax),  # default capacity = R_max
+        tokens_per_min = _envf("KAIMON_AGENT_TOKENS_PER_MIN", 0.0),
+        max_retries = _envi("KAIMON_AGENT_MAX_RETRIES", 4),
         recover_interval_s = _envf("KAIMON_AGENT_RECOVER_INTERVAL_S", 20.0),
     )
 end
@@ -84,8 +85,19 @@ const STATE = Ref{Union{State,Nothing}}(nothing)
 "(Re)initialize the global governor. Safe to call once at server start."
 function init!(cfg::Config = config_from_env())
     now = _now()
-    STATE[] = State(cfg, 0, cfg.rate_rps, cfg.bucket_capacity, now, 0.0, now, 0.0, 0,
-                    Tuple{Float64,Int}[], Threads.Condition())
+    STATE[] = State(
+        cfg,
+        0,
+        cfg.rate_rps,
+        cfg.bucket_capacity,
+        now,
+        0.0,
+        now,
+        0.0,
+        0,
+        Tuple{Float64,Int}[],
+        Threads.Condition(),
+    )
     return STATE[]
 end
 
@@ -138,7 +150,9 @@ end
 # time-based token bucket is always re-evaluated). Must be called holding the lock.
 function _timed_wait(cond::Threads.Condition, seconds::Float64)
     seconds = clamp(seconds, 0.05, 5.0)   # events still notify; cap only bounds time-polls
-    t = Timer(_ -> (lock(cond) do; notify(cond); end), seconds)
+    t = Timer(_ -> (lock(cond) do ;
+        notify(cond)
+    end), seconds)
     try
         wait(cond)
     finally
@@ -170,10 +184,11 @@ function _acquire!(s::State, cost::Float64)
             now = _now()
             _refill!(s, now)
             _maybe_recover!(s, now)
-            slot_ok   = s.in_flight < s.cfg.max_concurrency
-            token_ok  = s.tokens >= cost
-            paused    = now < s.paused_until
-            budget_ok = s.cfg.tokens_per_min <= 0 || _tokens_per_min(s, now) < s.cfg.tokens_per_min
+            slot_ok = s.in_flight < s.cfg.max_concurrency
+            token_ok = s.tokens >= cost
+            paused = now < s.paused_until
+            budget_ok =
+                s.cfg.tokens_per_min <= 0 || _tokens_per_min(s, now) < s.cfg.tokens_per_min
             if slot_ok && token_ok && budget_ok && !paused
                 s.in_flight += 1
                 s.tokens -= cost
@@ -215,7 +230,8 @@ function note_rate_error!(retry_after::Union{Real,Nothing} = nothing)
         s.rate = max(s.cfg.rate_min, s.rate * s.cfg.decrease_factor)
         s.rate_errors += 1
         s.last_rate_error = now
-        cooldown = retry_after === nothing ? s.cfg.base_cooldown_s : max(0.0, float(retry_after))
+        cooldown =
+            retry_after === nothing ? s.cfg.base_cooldown_s : max(0.0, float(retry_after))
         s.paused_until = max(s.paused_until, now + cooldown)
         s.last_refill = now
         notify(s.cond)     # wake waiters so they re-evaluate the pause
@@ -241,9 +257,8 @@ function record_turn_end!(total_tokens::Integer)
 end
 
 # ── Rate-limit classifier + backoff (§5.3 + §5.4) ─────────────────────────────
-const _RATE_PATTERNS = (
-    r"\b429\b", r"rate[ _-]?limit", r"overloaded", r"too many requests", r"quota exceeded",
-)
+const _RATE_PATTERNS =
+    (r"\b429\b", r"rate[ _-]?limit", r"overloaded", r"too many requests", r"quota exceeded")
 
 """
     is_rate_limited(msg) -> Bool
@@ -272,8 +287,13 @@ retry_after_seconds(::Nothing) = nothing
 Exponential backoff with jitter for retry #`attempt` (0-based): base 1s, ×2 per
 attempt, capped at 60s. Honors `retry_after` verbatim when known.
 """
-function backoff_seconds(attempt::Integer; base::Real = 1.0, factor::Real = 2.0,
-                         cap::Real = 60.0, retry_after::Union{Real,Nothing} = nothing)
+function backoff_seconds(
+    attempt::Integer;
+    base::Real = 1.0,
+    factor::Real = 2.0,
+    cap::Real = 60.0,
+    retry_after::Union{Real,Nothing} = nothing,
+)
     retry_after !== nothing && return max(0.0, float(retry_after))
     raw = min(float(cap), float(base) * float(factor)^attempt)
     return raw * (0.5 + 0.5 * rand())   # 50–100% jitter; rand() is fine in module code
@@ -296,17 +316,17 @@ function status()
         _refill!(s, now)
         paused_for = max(0.0, s.paused_until - now)
         (
-            in_flight       = s.in_flight,
+            in_flight = s.in_flight,
             max_concurrency = s.cfg.max_concurrency,
-            rate            = round(s.rate, digits = 3),
-            rate_max        = s.cfg.rate_max,
-            rate_min        = s.cfg.rate_min,
+            rate = round(s.rate, digits = 3),
+            rate_max = s.cfg.rate_max,
+            rate_min = s.cfg.rate_min,
             tokens_available = round(s.tokens, digits = 2),
-            tokens_per_min  = _tokens_per_min(s, now),
-            token_budget    = s.cfg.tokens_per_min,
-            throttled       = paused_for > 0 || s.in_flight >= s.cfg.max_concurrency,
+            tokens_per_min = _tokens_per_min(s, now),
+            token_budget = s.cfg.tokens_per_min,
+            throttled = paused_for > 0 || s.in_flight >= s.cfg.max_concurrency,
             cooldown_remaining = round(paused_for, digits = 2),
-            rate_errors     = s.rate_errors,
+            rate_errors = s.rate_errors,
         )
     end
 end

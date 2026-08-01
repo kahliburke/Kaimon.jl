@@ -12,8 +12,10 @@ using Kaimon
             Kaimon.kaimon_config_dir()                  # ensure <tmp>/kaimon exists
             pjson = Kaimon.get_projects_config_path()
 
-            allowed = mktempdir(); write(joinpath(allowed, "Project.toml"), "name = \"X\"\n")
-            other   = mktempdir(); write(joinpath(other, "Project.toml"), "name = \"Y\"\n")
+            allowed = mktempdir()
+            write(joinpath(allowed, "Project.toml"), "name = \"X\"\n")
+            other = mktempdir()
+            write(joinpath(other, "Project.toml"), "name = \"Y\"\n")
 
             # Without the flag: only the listed, enabled project is allowed.
             write(pjson, """{"projects":[{"project_path":"$allowed","enabled":true}]}""")
@@ -32,7 +34,8 @@ using Kaimon
             @test Kaimon.projects_allow_any() == false
             @test !Kaimon.is_project_allowed(other)
         finally
-            old === nothing ? delete!(ENV, "XDG_CONFIG_HOME") : (ENV["XDG_CONFIG_HOME"] = old)
+            old === nothing ? delete!(ENV, "XDG_CONFIG_HOME") :
+            (ENV["XDG_CONFIG_HOME"] = old)
         end
     end
 end
@@ -43,7 +46,8 @@ end
 
     @testset "command construction" begin
         proj = mktempdir()
-        img = joinpath(proj, "custom.so"); write(img, "x")
+        img = joinpath(proj, "custom.so")
+        write(img, "x")
 
         # Default: host Julia, no sysimage, startup.jl suppressed.
         cmd = K._build_julia_cmd(K.LaunchConfig(), "boot()"; project = proj)
@@ -62,31 +66,44 @@ end
         @test flagof(cmd, "--sysimage") < flagof(cmd, "-e")
 
         # Absolute paths and ~ are honored as-is.
-        abs_img = joinpath(mktempdir(), "abs.so"); write(abs_img, "x")
-        cmd = K._build_julia_cmd(K.LaunchConfig("", "", "", String[], abs_img, "", false),
-                                 "boot()"; project = proj)
+        abs_img = joinpath(mktempdir(), "abs.so")
+        write(abs_img, "x")
+        cmd = K._build_julia_cmd(
+            K.LaunchConfig("", "", "", String[], abs_img, "", false),
+            "boot()";
+            project = proj,
+        )
         @test "--sysimage=$abs_img" in cmd
 
         # A configured-but-missing image degrades to the default rather than failing the spawn.
-        cmd = K._build_julia_cmd(K.LaunchConfig("", "", "", String[], "gone.so", "", false),
-                                 "boot()"; project = proj)
+        cmd = K._build_julia_cmd(
+            K.LaunchConfig("", "", "", String[], "gone.so", "", false),
+            "boot()";
+            project = proj,
+        )
         @test !any(a -> startswith(a, "--sysimage"), cmd)
 
         # A custom binary (possibly a wrapper script) replaces the host Julia.
-        cmd = K._build_julia_cmd(K.LaunchConfig("", "", "", String[], "", "/opt/jl/run", false),
-                                 "boot()"; project = proj)
+        cmd = K._build_julia_cmd(
+            K.LaunchConfig("", "", "", String[], "", "/opt/jl/run", false),
+            "boot()";
+            project = proj,
+        )
         @test cmd[1] == "/opt/jl/run"
     end
 
     @testset "kaimon.toml [launch] + projects.json overlay" begin
         proj = mktempdir()
         write(joinpath(proj, "custom.so"), "x")
-        write(joinpath(proj, "kaimon.toml"), """
-        [launch]
-        sysimage = "custom.so"
-        threads = "4"
-        startup_file = true
-        """)
+        write(
+            joinpath(proj, "kaimon.toml"),
+            """
+[launch]
+sysimage = "custom.so"
+threads = "4"
+startup_file = true
+""",
+        )
 
         toml_lc = K.load_toml_launch_config(proj)
         @test toml_lc !== nothing
@@ -108,16 +125,20 @@ end
         ENV["XDG_CONFIG_HOME"] = mktempdir()
         try
             K.kaimon_config_dir()
-            write(K.get_projects_config_path(),
-                  """{"projects":[{"project_path":"$proj","enabled":true,
-                     "launch_config":{"threads":"8"}}]}""")
+            write(
+                K.get_projects_config_path(),
+                """{"projects":[{"project_path":"$proj","enabled":true,
+                   "launch_config":{"threads":"8"}}]}""",
+            )
             # Nested JSON objects parse as JSON.Object, not Dict — an `isa Dict` guard
             # silently drops every launch config / session pref read back from disk.
             @test K.load_projects_config()[1].launch_config.threads == "8"
-            write(K.get_projects_config_path(),
-                  """{"projects":[{"project_path":"$proj","enabled":true,
-                     "launch_config":{"threads":"8"}}],
-                     "session_prefs":{"$proj":{"allow_restart":false,"mirror_repl":true}}}""")
+            write(
+                K.get_projects_config_path(),
+                """{"projects":[{"project_path":"$proj","enabled":true,
+                   "launch_config":{"threads":"8"}}],
+                   "session_prefs":{"$proj":{"allow_restart":false,"mirror_repl":true}}}""",
+            )
             prefs = K.load_session_prefs()
             @test K.resolve_session_pref(prefs, proj, :allow_restart) === false
             @test K.resolve_session_pref(prefs, proj, :mirror_repl) === true
@@ -127,9 +148,10 @@ end
             @test eff.sysimage == "custom.so"
             cmd = K._build_julia_cmd(eff, "boot()"; project = proj)
             @test "--sysimage=$(abspath(joinpath(proj, "custom.so")))" in cmd
-            @test "-t" in cmd && cmd[flagof(cmd, "-t") + 1] == "8"
+            @test "-t" in cmd && cmd[flagof(cmd, "-t")+1] == "8"
         finally
-            old === nothing ? delete!(ENV, "XDG_CONFIG_HOME") : (ENV["XDG_CONFIG_HOME"] = old)
+            old === nothing ? delete!(ENV, "XDG_CONFIG_HOME") :
+            (ENV["XDG_CONFIG_HOME"] = old)
         end
     end
 

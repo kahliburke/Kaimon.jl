@@ -1,8 +1,17 @@
 using ReTest
 using Kaimon
-using Kaimon: _map_ollama_chunk, _OllamaTurnAcc, _ollama_tools_spec, _bare_tool,
-              AGENT_SELF_TOOLS, OllamaBackend, OllamaHandle, backend_start,
-              backend_status, backend_pid, backend_session_id
+using Kaimon:
+    _map_ollama_chunk,
+    _OllamaTurnAcc,
+    _ollama_tools_spec,
+    _bare_tool,
+    AGENT_SELF_TOOLS,
+    OllamaBackend,
+    OllamaHandle,
+    backend_start,
+    backend_status,
+    backend_pid,
+    backend_session_id
 const ACP = Kaimon.ACP
 
 @testset "Ollama: _bare_tool" begin
@@ -15,7 +24,8 @@ end
     acc = _OllamaTurnAcc()
 
     # text delta → streamed AgentMessageChunk(delta=true), accumulated
-    evs = _map_ollama_chunk(Dict("message" => Dict("content" => "Hel"), "done" => false), acc)
+    evs =
+        _map_ollama_chunk(Dict("message" => Dict("content" => "Hel"), "done" => false), acc)
     @test length(evs) == 1
     @test evs[1] isa ACP.AgentMessageChunk
     @test evs[1].delta === true
@@ -26,14 +36,24 @@ end
 
     # tool_calls fold into the accumulator (no event emitted for them)
     tc = Dict("function" => Dict("name" => "ex", "arguments" => Dict("e" => "6*7")))
-    evs2 = _map_ollama_chunk(Dict("message" => Dict("content" => "", "tool_calls" => [tc])), acc)
+    evs2 = _map_ollama_chunk(
+        Dict("message" => Dict("content" => "", "tool_calls" => [tc])),
+        acc,
+    )
     @test isempty(evs2)
     @test length(acc.toolcalls) == 1
     @test acc.toolcalls[1]["function"]["name"] == "ex"
 
     # done → usage captured, flagged done
-    _map_ollama_chunk(Dict("message" => Dict("content" => ""), "done" => true,
-                           "prompt_eval_count" => 11, "eval_count" => 5), acc)
+    _map_ollama_chunk(
+        Dict(
+            "message" => Dict("content" => ""),
+            "done" => true,
+            "prompt_eval_count" => 11,
+            "eval_count" => 5,
+        ),
+        acc,
+    )
     @test acc.done
     @test acc.usage.input_tokens == 11
     @test acc.usage.output_tokens == 5
@@ -41,16 +61,33 @@ end
 
     # thinking → AgentThoughtChunk
     acc2 = _OllamaTurnAcc()
-    evs3 = _map_ollama_chunk(Dict("message" => Dict("thinking" => "hmm", "content" => "")), acc2)
+    evs3 = _map_ollama_chunk(
+        Dict("message" => Dict("thinking" => "hmm", "content" => "")),
+        acc2,
+    )
     @test length(evs3) == 1 && evs3[1] isa ACP.AgentThoughtChunk
 end
 
 @testset "Ollama: tool-spec build + filter" begin
     tools = [
-        (name = Symbol("ex"), description = "eval", parameters = Dict("type" => "object",
-            "properties" => Dict("e" => Dict("type" => "string")))),
-        (name = Symbol("slate_add_cell"), description = "add", parameters = Dict("type" => "object")),
-        (name = Symbol("agent_open"), description = "spawn", parameters = Dict("type" => "object")),
+        (
+            name = Symbol("ex"),
+            description = "eval",
+            parameters = Dict(
+                "type" => "object",
+                "properties" => Dict("e" => Dict("type" => "string")),
+            ),
+        ),
+        (
+            name = Symbol("slate_add_cell"),
+            description = "add",
+            parameters = Dict("type" => "object"),
+        ),
+        (
+            name = Symbol("agent_open"),
+            description = "spawn",
+            parameters = Dict("type" => "object"),
+        ),
     ]
 
     # default: AGENT_SELF_TOOLS filtered (recursion guard), rest kept

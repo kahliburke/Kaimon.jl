@@ -5,18 +5,18 @@ _eval_icon(tick::Int) = _EVAL_SPINNER[mod1(tick ÷ 4 + 1, length(_EVAL_SPINNER))
 
 """Short, display-friendly fingerprint of a CURVE key (40-char Z85): `head…tail`."""
 _key_fingerprint(k::AbstractString) =
-    length(k) > 12 ? string(k[1:6], "…", k[end-3:end]) : String(k)
+    length(k) > 12 ? string(k[1:6], "…", k[(end-3):end]) : String(k)
 
 """Terse tag for a stall reason, shown after the session name (empty for :none)."""
 _stall_tag(r::Symbol) =
     r === :offline ? "offline" :
-    r === :key_changed ? "key?" :
-    r === :unresponsive ? "no pong" : ""
+    r === :key_changed ? "key?" : r === :unresponsive ? "no pong" : ""
 
 """Full explanation of a stall reason, shown on the Details Status line."""
 _stall_detail(r::Symbol) =
     r === :offline ? "gate offline (TCP refused)" :
-    r === :key_changed ? "reachable — CURVE handshake failing; server key may have changed (verify & re-pin)" :
+    r === :key_changed ?
+    "reachable — CURVE handshake failing; server key may have changed (verify & re-pin)" :
     r === :unresponsive ? "reachable — no pong; if CURVE, pin/verify its key" : ""
 
 function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
@@ -102,8 +102,11 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
         spawned_str = is_agent_spawned(conn) ? "agent $(m.personality_icon)" : "user"
         fields = [
             ("Name", dname),
-            ("Status", (conn.status == :stalled && conn.stall_reason != :none) ?
-                "stalled — $(_stall_detail(conn.stall_reason))" : string(conn.status)),
+            (
+                "Status",
+                (conn.status == :stalled && conn.stall_reason != :none) ?
+                "stalled — $(_stall_detail(conn.stall_reason))" : string(conn.status),
+            ),
             ("Path", _short_path(conn.project_path)),
             ("Julia", conn.julia_version),
             ("PID", string(conn.pid)),
@@ -120,12 +123,19 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
         if conn.status in (:connected, :evaluating, :stalled)
             push!(fields, ("Trace", "[t] profile"))
         end
-        append!(fields, [
-            ("Tool calls", string(conn.tool_call_count)),
-            ("Mirroring", mirror_str),
-            ("Restart", restart_str),
-            ("Session", startswith(conn.session_id, "tcp-") ? conn.session_id : conn.session_id[1:min(8, length(conn.session_id))] * "..."),
-        ])
+        append!(
+            fields,
+            [
+                ("Tool calls", string(conn.tool_call_count)),
+                ("Mirroring", mirror_str),
+                ("Restart", restart_str),
+                (
+                    "Session",
+                    startswith(conn.session_id, "tcp-") ? conn.session_id :
+                    conn.session_id[1:min(8, length(conn.session_id))] * "...",
+                ),
+            ],
+        )
         # CURVE transport: a non-empty pinned server key means the link is encrypted.
         # Status only here — the key/fingerprint lives in Key Management (not on this page).
         if !isempty(conn.server_pubkey)
@@ -316,7 +326,8 @@ function _sync_sessions_table!(m::KaimonModel, connections::Vector{REPLConnectio
         dname = isempty(conn.display_name) ? conn.name : conn.display_name
         agent_tag = is_agent_spawned(conn) ? " $(m.personality_icon)" : ""
         lock_tag = isempty(conn.server_pubkey) ? "" : " 🔒"   # CURVE-encrypted link
-        stall_tag = (conn.status == :stalled && conn.stall_reason != :none) ?
+        stall_tag =
+            (conn.status == :stalled && conn.stall_reason != :none) ?
             " · $(_stall_tag(conn.stall_reason))" : ""
         push!(col_names, Span("$icon $dname$agent_tag$lock_tag$stall_tag", style))
         push!(col_status, Span(string(conn.status), style))
@@ -334,8 +345,8 @@ function _sync_sessions_table!(m::KaimonModel, connections::Vector{REPLConnectio
     dt = DataTable(
         [
             DataColumn("Name", col_names),
-            DataColumn("Status", col_status; width=12),
-            DataColumn("PID", col_pid; width=7),
+            DataColumn("Status", col_status; width = 12),
+            DataColumn("PID", col_pid; width = 7),
         ];
         selected = n > 0 ? clamp(m.selected_connection, 1, n) : 0,
         block = Block(
@@ -392,8 +403,8 @@ function _sync_clients_table!(m::KaimonModel, mcp_clients)
     dt = DataTable(
         [
             DataColumn("Client", col_client),
-            DataColumn("Session", col_session; width=10),
-            DataColumn("Active", col_active; width=8),
+            DataColumn("Session", col_session; width = 10),
+            DataColumn("Active", col_active; width = 8),
         ];
         selected = 0,
         block = Block(
@@ -424,9 +435,7 @@ function _visible_connections(m::KaimonModel)
     conns = lock(m.conn_mgr.lock) do
         copy(m.conn_mgr.connections)
     end
-    ext_namespaces = Set(
-        ext.config.manifest.namespace for ext in get_managed_extensions()
-    )
+    ext_namespaces = Set(ext.config.manifest.namespace for ext in get_managed_extensions())
     filter!(conn -> !is_extension(conn) && !(conn.namespace in ext_namespaces), conns)
     return conns
 end
@@ -687,7 +696,8 @@ function _open_curve_modal!(m::KaimonModel)
     return nothing
 end
 
-_curve_close_modal!(m::KaimonModel) = (m.curve_modal = :none; m.curve_client_input = nothing)
+_curve_close_modal!(m::KaimonModel) =
+    (m.curve_modal = :none; m.curve_client_input = nothing)
 
 """Number of selectable rows in the active section (1=clients, 2=pins)."""
 _curve_section_len(m::KaimonModel) =
@@ -718,9 +728,14 @@ function _view_curve_modal(m::KaimonModel, area::Rect, buf::Buffer)
 
     border_s = tstyle(:accent, bold = true)
     inner = render(
-        Block(title = "🔒 CURVE Key Management", border_style = border_s,
-              title_style = border_s, box = BOX_HEAVY),
-        rect, buf,
+        Block(
+            title = "🔒 CURVE Key Management",
+            border_style = border_s,
+            title_style = border_s,
+            box = BOX_HEAVY,
+        ),
+        rect,
+        buf,
     )
     inner.width < 8 && return
     for row = inner.y:bottom(inner), col = inner.x:right(inner)
@@ -734,27 +749,48 @@ function _view_curve_modal(m::KaimonModel, area::Rect, buf::Buffer)
     nextrow() = (y += 1)
 
     # ── This instance (identity, read-only) ──
-    set_string!(buf, x, y, "This instance", tstyle(:text_dim)); nextrow()
+    set_string!(buf, x, y, "This instance", tstyle(:text_dim))
+    nextrow()
     set_string!(buf, x + 1, y, rpad("Client key", 12), tstyle(:text_dim), inner)
-    set_string!(buf, x + 13, y, isempty(m.curve_client_pub) ? "—" : fp(m.curve_client_pub),
-        tstyle(:accent), inner)
-    set_string!(buf, x + 27, y, "enroll on remote gates", tstyle(:text_dim), inner); nextrow()
+    set_string!(
+        buf,
+        x + 13,
+        y,
+        isempty(m.curve_client_pub) ? "—" : fp(m.curve_client_pub),
+        tstyle(:accent),
+        inner,
+    )
+    set_string!(buf, x + 27, y, "enroll on remote gates", tstyle(:text_dim), inner)
+    nextrow()
     set_string!(buf, x + 1, y, rpad("Server key", 12), tstyle(:text_dim), inner)
-    set_string!(buf, x + 13, y, isempty(m.curve_server_pub) ? "—" : fp(m.curve_server_pub),
-        tstyle(:text), inner)
+    set_string!(
+        buf,
+        x + 13,
+        y,
+        isempty(m.curve_server_pub) ? "—" : fp(m.curve_server_pub),
+        tstyle(:text),
+        inner,
+    )
     set_string!(buf, x + 27, y, "gates on this host present", tstyle(:text_dim), inner)
-    nextrow(); nextrow()
+    nextrow()
+    nextrow()
 
     sec1 = m.curve_modal_section == 1
     sec2 = m.curve_modal_section == 2
 
     # ── Authorized clients (allow-list) ──
-    set_string!(buf, x, y, "Authorized clients ($nc)",
-        sec1 ? tstyle(:accent, bold = true) : tstyle(:text_dim))
+    set_string!(
+        buf,
+        x,
+        y,
+        "Authorized clients ($nc)",
+        sec1 ? tstyle(:accent, bold = true) : tstyle(:text_dim),
+    )
     set_string!(buf, right(inner) - 18, y, "[a] add  [d] revoke", tstyle(:text_dim), inner)
     nextrow()
     if nc == 0
-        set_string!(buf, x + 2, y, "(none — fail-closed)", tstyle(:text_dim), inner); nextrow()
+        set_string!(buf, x + 2, y, "(none — fail-closed)", tstyle(:text_dim), inner)
+        nextrow()
     else
         for (i, k) in enumerate(m.curve_authorized)
             y > bot && break
@@ -768,12 +804,25 @@ function _view_curve_modal(m::KaimonModel, area::Rect, buf::Buffer)
     nextrow()
 
     # ── Pinned servers (known hosts, TOFU) ──
-    set_string!(buf, x, y, "Pinned servers ($np)",
-        sec2 ? tstyle(:accent, bold = true) : tstyle(:text_dim))
-    set_string!(buf, right(inner) - 21, y, "[u] unpin  [s] verify", tstyle(:text_dim), inner)
+    set_string!(
+        buf,
+        x,
+        y,
+        "Pinned servers ($np)",
+        sec2 ? tstyle(:accent, bold = true) : tstyle(:text_dim),
+    )
+    set_string!(
+        buf,
+        right(inner) - 21,
+        y,
+        "[u] unpin  [s] verify",
+        tstyle(:text_dim),
+        inner,
+    )
     nextrow()
     if np == 0
-        set_string!(buf, x + 2, y, "(none)", tstyle(:text_dim), inner); nextrow()
+        set_string!(buf, x + 2, y, "(none)", tstyle(:text_dim), inner)
+        nextrow()
     else
         for (i, (hostport, key)) in enumerate(m.curve_pins)
             y > bot && break
@@ -788,9 +837,11 @@ function _view_curve_modal(m::KaimonModel, area::Rect, buf::Buffer)
     nextrow()
 
     # ── Action zone (rule + 2 rows) — never overlaps the lists ──
-    set_string!(buf, x, y, "─"^max(0, inner.width - 2), tstyle(:border), inner); nextrow()
+    set_string!(buf, x, y, "─"^max(0, inner.width - 2), tstyle(:border), inner)
+    nextrow()
     if m.curve_modal == :add_client
-        set_string!(buf, x, y, "Add client key (40-char Z85):", tstyle(:text)); nextrow()
+        set_string!(buf, x, y, "Add client key (40-char Z85):", tstyle(:text))
+        nextrow()
         if m.curve_client_input !== nothing
             m.curve_client_input.tick = m.tick
             render(m.curve_client_input, Rect(x, y, max(8, inner.width - 2), 1), buf)
@@ -798,27 +849,53 @@ function _view_curve_modal(m::KaimonModel, area::Rect, buf::Buffer)
         nextrow()
     elseif m.curve_modal == :confirm
         if m.curve_confirm_action == :repin
-            set_string!(buf, x, y, "⚠️  SERVER KEY CHANGED for $(m.curve_confirm_arg)",
-                tstyle(:error)); nextrow()
+            set_string!(
+                buf,
+                x,
+                y,
+                "⚠️  SERVER KEY CHANGED for $(m.curve_confirm_arg)",
+                tstyle(:error),
+            )
+            nextrow()
             old = ""
             for (hp, k) in m.curve_pins
                 hp == m.curve_confirm_arg && (old = k)
             end
-            set_string!(buf, x, y, "old $(fp(old))   →   new $(fp(m.curve_confirm_key))",
-                tstyle(:secondary), inner); nextrow()
+            set_string!(
+                buf,
+                x,
+                y,
+                "old $(fp(old))   →   new $(fp(m.curve_confirm_key))",
+                tstyle(:secondary),
+                inner,
+            )
+            nextrow()
         else
             verb = m.curve_confirm_action == :revoke ? "Revoke client" : "Unpin server"
-            set_string!(buf, x, y, "$verb:", tstyle(:warning)); nextrow()
-            set_string!(buf, x, y, m.curve_confirm_arg, tstyle(:secondary), inner); nextrow()
+            set_string!(buf, x, y, "$verb:", tstyle(:warning))
+            nextrow()
+            set_string!(buf, x, y, m.curve_confirm_arg, tstyle(:secondary), inner)
+            nextrow()
         end
     else
         section_label = sec1 ? "Selected client key" : "Selected server key"
         sel_full = _curve_selected_key(m)
-        set_string!(buf, x, y, isempty(sel_full) ? "Selected key" : section_label,
-            tstyle(:text_dim)); nextrow()
-        set_string!(buf, x, y,
+        set_string!(
+            buf,
+            x,
+            y,
+            isempty(sel_full) ? "Selected key" : section_label,
+            tstyle(:text_dim),
+        )
+        nextrow()
+        set_string!(
+            buf,
+            x,
+            y,
             isempty(sel_full) ? "(select a row to view its full key)" : sel_full,
-            isempty(sel_full) ? tstyle(:text_dim) : tstyle(:secondary), inner)
+            isempty(sel_full) ? tstyle(:text_dim) : tstyle(:secondary),
+            inner,
+        )
         nextrow()
     end
     nextrow()
@@ -826,8 +903,14 @@ function _view_curve_modal(m::KaimonModel, area::Rect, buf::Buffer)
     # ── Hint / transient status ──
     if m.curve_modal == :confirm
         if m.curve_confirm_action == :repin
-            set_string!(buf, x, y, "[y] re-pin (trust NEW key)   [n] keep old",
-                tstyle(:warning), inner)
+            set_string!(
+                buf,
+                x,
+                y,
+                "[y] re-pin (trust NEW key)   [n] keep old",
+                tstyle(:warning),
+                inner,
+            )
         else
             set_string!(buf, x, y, "[y] yes   [n] no", tstyle(:warning), inner)
         end
@@ -860,8 +943,8 @@ function _curve_do_authorize!(m::KaimonModel, key::AbstractString)
         return
     end
     _refresh_curve_data!(m)
-    m.curve_modal_msg = r == :added ? "✓ Authorized $(_key_fingerprint(k))" :
-                                      "• Already authorized"
+    m.curve_modal_msg =
+        r == :added ? "✓ Authorized $(_key_fingerprint(k))" : "• Already authorized"
     return
 end
 
@@ -899,8 +982,8 @@ function _curve_do_repin!(m::KaimonModel, hostport::AbstractString, newkey::Abst
         return
     end
     try
-        host = String(hostport)[1:idx-1]
-        port = parse(Int, String(hostport)[idx+1:end])
+        host = String(hostport)[1:(idx-1)]
+        port = parse(Int, String(hostport)[(idx+1):end])
         KaimonGate.unpin_server!(String(hostport))
         KaimonGate.pin_server!(host, port, String(newkey))
     catch e
@@ -919,8 +1002,9 @@ function _handle_curve_modal_key!(m::KaimonModel, evt::KeyEvent)
         @match evt.key begin
             :escape => (m.curve_modal = :main; m.curve_client_input = nothing)
             :enter => begin
-                key = m.curve_client_input === nothing ? "" :
-                      Tachikoma.text(m.curve_client_input)
+                key =
+                    m.curve_client_input === nothing ? "" :
+                    Tachikoma.text(m.curve_client_input)
                 _curve_do_authorize!(m, key)
                 m.curve_modal = :main
                 m.curve_client_input = nothing
@@ -999,8 +1083,8 @@ function _handle_curve_modal_key!(m::KaimonModel, evt::KeyEvent)
                 hostport = m.curve_pins[m.curve_modal_sel][1]
                 idx = findlast(==(':'), hostport)
                 if idx !== nothing
-                    host = hostport[1:idx-1]
-                    port = parse(Int, hostport[idx+1:end])
+                    host = hostport[1:(idx-1)]
+                    port = parse(Int, hostport[(idx+1):end])
                     m.curve_modal_msg = "⏳ Verifying $hostport via SSH…"
                     spawn_task!(m._task_queue, :curve_ssh_verify) do
                         (; hostport, result = KaimonGate.verify_server_key_via_ssh(host, port))

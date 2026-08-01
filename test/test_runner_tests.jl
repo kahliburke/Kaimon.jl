@@ -9,10 +9,15 @@ using Kaimon
             @test_skip "spawn_test_run integration test (skipped in CI)"
         else
             project_path = pkgdir(Kaimon)
-            run = Kaimon.spawn_test_run(project_path; pattern = "Version Info Tests", verbose = 1)
+            run = Kaimon.spawn_test_run(
+                project_path;
+                pattern = "Version Info Tests",
+                verbose = 1,
+            )
 
             deadline = time() + 90.0
-            while (!run.reader_done || run.status == Kaimon.RUN_RUNNING) && time() < deadline
+            while (!run.reader_done || run.status == Kaimon.RUN_RUNNING) &&
+                  time() < deadline
                 sleep(0.25)
             end
 
@@ -51,12 +56,15 @@ using Kaimon
         src = joinpath(dir, "src")
         mkpath(src)
         # Synthetic .cov: '-' = non-executable, a number = coverable (covered if >0).
-        write(joinpath(src, "Foo.jl.12345.cov"), """
-                - module Foo
-                5 foo() = 1
-                0 bar() = 2
-                - end
-        """)
+        write(
+            joinpath(src, "Foo.jl.12345.cov"),
+            """
+        - module Foo
+        5 foo() = 1
+        0 bar() = 2
+        - end
+""",
+        )
         summary = Kaimon._collect_coverage(dir)
         @test occursin("1/2 lines (50.0%)", summary)
         @test occursin("src/Foo.jl", summary)

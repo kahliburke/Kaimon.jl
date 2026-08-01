@@ -122,14 +122,14 @@ _default_personality_provider() = begin
     return "⚡"
 end
 
-const _VERSION_PROVIDER     = Ref{Function}(_default_version_provider)
+const _VERSION_PROVIDER = Ref{Function}(_default_version_provider)
 const _MIRROR_PREF_PROVIDER = Ref{Function}(_default_mirror_pref_provider)
 const _PERSONALITY_PROVIDER = Ref{Function}(_default_personality_provider)
-const _TACHIKOMA            = Ref{Union{Module,Nothing}}(nothing)
+const _TACHIKOMA = Ref{Union{Module,Nothing}}(nothing)
 # TCP auth token for the gate when KAIMON_GATE_TOKEN is unset. Standalone there's
 # no token (open, same as :lax); the host (Kaimon) injects a provider that derives
 # one from its security config so a strict config still enforces auth.
-const _AUTH_TOKEN_PROVIDER  = Ref{Function}(() -> "")
+const _AUTH_TOKEN_PROVIDER = Ref{Function}(() -> "")
 
 """Default restart preamble for a standalone gate: reload KaimonGate and serve."""
 default_restart_code(serve_args::AbstractString) = """
@@ -141,17 +141,17 @@ KaimonGate.serve($serve_args)
 const _RESTART_CODE_BUILDER = Ref{Function}(default_restart_code)
 
 """Install the host's version provider — `() -> String` reported in the pong."""
-set_version_provider!(f)      = (_VERSION_PROVIDER[] = f)
+set_version_provider!(f) = (_VERSION_PROVIDER[] = f)
 """Install the host's REPL-mirror preference provider — `() -> Bool`."""
-set_mirror_pref_provider!(f)  = (_MIRROR_PREF_PROVIDER[] = f)
+set_mirror_pref_provider!(f) = (_MIRROR_PREF_PROVIDER[] = f)
 """Install the host's personality/emoticon provider — `() -> String`."""
-set_personality_provider!(f)  = (_PERSONALITY_PROVIDER[] = f)
+set_personality_provider!(f) = (_PERSONALITY_PROVIDER[] = f)
 """Install the host's Tachikoma module (or `nothing` to disable TTY hand-off)."""
-set_tachikoma!(m)             = (_TACHIKOMA[] = m)
+set_tachikoma!(m) = (_TACHIKOMA[] = m)
 """Install the host's TCP auth-token provider — `() -> String` (`""` for no auth)."""
-set_auth_token_provider!(f)   = (_AUTH_TOKEN_PROVIDER[] = f)
+set_auth_token_provider!(f) = (_AUTH_TOKEN_PROVIDER[] = f)
 """Install the host's restart-code builder — `(serve_args::String) -> code::String`."""
-set_restart_code_builder!(f)  = (_RESTART_CODE_BUILDER[] = f)
+set_restart_code_builder!(f) = (_RESTART_CODE_BUILDER[] = f)
 
 # The gate server, split from the former monolithic gate.jl. Order matters:
 # gate_state.jl (constants/state) must load first; the rest are functions that
@@ -179,7 +179,9 @@ REPL where KaimonGate is available:
 """
 function connect!()
     try
-        Base.require(Base.PkgId(Base.UUID("295af30f-e4ad-537b-8983-00126c2a3abe"), "Revise"))
+        Base.require(
+            Base.PkgId(Base.UUID("295af30f-e4ad-537b-8983-00126c2a3abe"), "Revise"),
+        )
         @info "Revise loaded"
     catch
         @info "Revise not available (optional)"

@@ -37,7 +37,7 @@ the accumulator state. Good for testing locals display + stepping through.
 """
 function debug_fibonacci(n::Int)
     a, b = 0, 1
-    for i in 1:n
+    for i = 1:n
         a, b = b, a + b
         if i == n ÷ 2
             # Pause halfway — inspect a, b, i, n
@@ -55,8 +55,10 @@ transforms the data and the breakpoint lets you inspect intermediate state.
 """
 function debug_data_pipeline()
     # Stage 1: Generate raw data
-    raw_data = [Dict("name" => n, "score" => rand(1:100), "active" => rand(Bool))
-                for n in ["Alice", "Bob", "Carol", "Dave", "Eve", "Frank"]]
+    raw_data = [
+        Dict("name" => n, "score" => rand(1:100), "active" => rand(Bool)) for
+        n in ["Alice", "Bob", "Carol", "Dave", "Eve", "Frank"]
+    ]
 
     # Stage 2: Filter active users
     active = filter(d -> d["active"], raw_data)
@@ -76,7 +78,7 @@ function debug_data_pipeline()
         "total_users" => length(raw_data),
         "active_users" => length(active),
         "filtered_out" => n_filtered,
-        "mean_score" => round(mean_score; digits=1),
+        "mean_score" => round(mean_score; digits = 1),
         "max_score" => max_score,
         "top_performer" => top_performer,
     )
@@ -95,7 +97,7 @@ function debug_matrix_solver(n::Int)
     b = randn(n)
 
     # Make it diagonally dominant (so it's well-conditioned)
-    for i in 1:n
+    for i = 1:n
         A[i, i] = sum(abs.(A[i, :])) + 1.0
     end
 
@@ -122,13 +124,17 @@ truncation in the locals pane.
 function debug_large_values()
     big_matrix = randn(200, 200)
     big_vector = collect(1:3000) .* π
-    long_string = join(["word$(i)" for i in 1:500], " — ")
+    long_string = join(["word$(i)" for i = 1:500], " — ")
     nested_dict = Dict(
         "users" => [
-            Dict("name" => "Alice", "scores" => rand(1:100, 20), "meta" => Dict("level" => i, "tags" => ["tag$j" for j in 1:10]))
-            for i in 1:15
+            Dict(
+                "name" => "Alice",
+                "scores" => rand(1:100, 20),
+                "meta" => Dict("level" => i, "tags" => ["tag$j" for j = 1:10]),
+            ) for i = 1:15
         ],
-        "config" => Dict("nested" => Dict("deep" => Dict("deeper" => Dict("value" => 42)))),
+        "config" =>
+            Dict("nested" => Dict("deep" => Dict("deeper" => Dict("value" => 42)))),
         "counts" => collect(1:100),
     )
     big_tuple = ntuple(i -> (i, i^2, sqrt(Float64(i))), 50)
@@ -136,7 +142,7 @@ function debug_large_values()
 
     @infiltrate
 
-    return (matrix=big_matrix, vector=big_vector)
+    return (matrix = big_matrix, vector = big_vector)
 end
 
 # Pull in LinearAlgebra for matrix operations
