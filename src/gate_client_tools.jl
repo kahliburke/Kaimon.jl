@@ -90,13 +90,67 @@ function _reflect_to_schema(tool_meta::Dict)::Dict{String,Any}
     return schema
 end
 
+# ── Session-tool deadline policy ─────────────────────────────────────────────
+# A session tool call fails on SILENCE, not on duration. Every frame the gate publishes for
+# the call — progress, completion — refreshes the clock, so a tool that reports progress at a
+# sane interval runs as long as it needs. This mirrors `eval_remote_async`, where any message
+# resets `last_activity`; a flat wall-clock deadline here meant a well-behaved, progress-
+# reporting tool and a genuinely wedged one met the same guillotine.
+#
+# Two budgets, both in seconds via env:
+#   KAIMON_SESSION_TOOL_TIMEOUT — how much CONTINUOUS silence is fatal (default 300)
+#   KAIMON_SESSION_TOOL_MAX     — absolute ceiling regardless of chatter; the runaway backstop
+#                                 for code that reports progress from inside a spin (default
+#                                 3600, matching a notebook worker's own eval ceiling; ≤0 = none)
+#
+# A tool may also declare its own silence budget (`GateTool(…; timeout_ms=…)`), reflected into
+# its metadata. That covers the case progress-refresh cannot: an operation that is legitimately
+# slow AND silent. The effective budget is the MORE GENEROUS of declared and global, so raising
+# the env floor never shortens a tool that asked for longer, and vice versa.
+const _SESSION_TOOL_SILENCE_DEFAULT_S = 300.0
+const _SESSION_TOOL_MAX_DEFAULT_S = 3600.0
+
+_env_seconds(key::String) = let v = tryparse(Float64, get(ENV, key, ""))
+    (v === nothing || isnan(v)) ? nothing : v
+end
+
+# Effective silence budget (seconds) for a call, given the tool's declared value (or `nothing`).
+function _session_tool_silence_s(declared_ms::Union{Nothing,Real} = nothing)
+    global_s = something(_env_seconds("KAIMON_SESSION_TOOL_TIMEOUT"), _SESSION_TOOL_SILENCE_DEFAULT_S)
+    global_s <= 0 && (global_s = _SESSION_TOOL_SILENCE_DEFAULT_S)
+    declared_s = (declared_ms === nothing || declared_ms <= 0) ? 0.0 : declared_ms / 1000.0
+    return max(global_s, declared_s)
+end
+
+# Absolute ceiling (seconds) — `Inf` when disabled.
+function _session_tool_max_s()
+    v = _env_seconds("KAIMON_SESSION_TOOL_MAX")
+    v === nothing && return _SESSION_TOOL_MAX_DEFAULT_S
+    return v <= 0 ? Inf : v
+end
+
+# A tool's declared silence budget in ms, or `nothing` when it didn't declare one. Absent for
+# every tool from a pre-`timeout_ms` gate, which is exactly the "use the client default" case.
+function _declared_timeout_ms(tool_meta::Dict)
+    v = get(tool_meta, "timeout_ms", nothing)
+    v === nothing && return nothing
+    v isa Real && return v > 0 ? Int(round(v)) : nothing
+    parsed = tryparse(Float64, string(v))
+    return (parsed === nothing || parsed <= 0) ? nothing : Int(round(parsed))
+end
+
 """
-    _call_session_tool(conn, tool_name, args) -> String
+    _call_session_tool(conn, tool_name, args; timeout_ms=nothing) -> String
 
 Send a `:tool_call` message through the gate's ZMQ REQ socket and return
 the result as a string.
+
+This is the blocking, no-progress path (used when no `_on_progress` callback was injected),
+so there are no frames to refresh a silence clock — it gets a single flat deadline, raised to
+the tool's declared budget when it has one.
 """
-function _call_session_tool(conn::REPLConnection, tool_name::String, args::Dict)
+function _call_session_tool(conn::REPLConnection, tool_name::String, args::Dict;
+                            timeout_ms::Union{Nothing,Real} = nothing)
     if conn.status ∉ (:connected, :evaluating) || conn.req_channel === nothing
         return "Error: Gate not connected (session=$(conn.session_id))"
     end
@@ -114,7 +168,8 @@ function _call_session_tool(conn::REPLConnection, tool_name::String, args::Dict)
         caller = caller_id,
         agent_id = agent_id,
     )
-    result = _req_send_recv(conn, request; caller_timeout = 30.0)
+    caller_timeout = timeout_ms === nothing ? 30.0 : max(30.0, timeout_ms / 1000.0)
+    result = _req_send_recv(conn, request; caller_timeout = caller_timeout)
     if result.ok
         conn.tool_call_count += 1
         resp_type = get(result.response, :type, :error)
@@ -128,7 +183,7 @@ function _call_session_tool(conn::REPLConnection, tool_name::String, args::Dict)
 end
 
 """
-    _call_session_tool_async(conn, tool_name, args; timeout_ms=300000, on_progress=nothing)
+    _call_session_tool_async(conn, tool_name, args; timeout_ms=nothing, on_progress=nothing)
 
 Asynchronous session tool call: sends `:tool_call_async` via REQ, gets `:accepted`
 ack immediately, then polls SUB socket for tool_complete/tool_error/tool_progress
@@ -140,13 +195,16 @@ pings and other operations to proceed. Mirrors the `eval_remote_async` pattern.
 `on_progress` callback, if provided, is called as `on_progress(message::String)`
 for each progress update received during streaming.
 
+`timeout_ms` is the tool's DECLARED silence budget (or `nothing`); the effective deadline
+also honours the global env budgets — see the deadline-policy notes above.
+
 Returns the tool result as a String.
 """
 function _call_session_tool_async(
     conn::REPLConnection,
     tool_name::String,
     args::Dict;
-    timeout_ms::Int = 300_000,
+    timeout_ms::Union{Nothing,Real} = nothing,
     on_progress::Union{Function,Nothing} = nothing,
 )
     if conn.status ∉ (:connected, :evaluating) || conn.req_channel === nothing
@@ -203,21 +261,72 @@ function _call_session_tool_async(
         return "Error: Unexpected ack type: $ack_type"
     end
 
-    # Phase 2: Wait for tool_complete/tool_error on the inbox.
+    # Phase 2: Wait for tool_complete/tool_error on the inbox. The clock measures SILENCE —
+    # every frame refreshes it — bounded by an absolute ceiling.
 
     try
-        deadline = time() + timeout_ms / 1000.0
-        while time() < deadline
+        start_time = time()
+        last_activity = start_time
+        silence_budget = _session_tool_silence_s(timeout_ms)
+        # The ceiling is a backstop against work with no stated bound, so it must never sit BELOW
+        # an explicitly-stated budget — otherwise a declared (or requested) 2h silently becomes 1h
+        # and the knob we advertise doesn't do what it says.
+        ceiling = max(_session_tool_max_s(), silence_budget)
+        hard_deadline = start_time + ceiling
+        silence_threshold = 60.0    # emit a keepalive after this much quiet
+        keepalive_interval = 30.0   # seconds between repeated keepalives
+        last_keepalive = 0.0
+
+        while true
+            now = time()
+            silence = now - last_activity
+
+            if silence >= silence_budget
+                return "Error: Gate tool call '$tool_name' timed out after " *
+                       "$(round(Int, silence))s with no output (silence budget " *
+                       "$(round(Int, silence_budget))s, $(round(Int, now - start_time))s elapsed). " *
+                       "The tool may be wedged; a legitimately slow-and-silent tool should " *
+                       "declare `GateTool(…; timeout_ms=…)` or report progress."
+            end
+            if now >= hard_deadline
+                return "Error: Gate tool call '$tool_name' exceeded the absolute ceiling of " *
+                       "$(round(Int, ceiling))s and was abandoned (it may still be running on the " *
+                       "session). Raise KAIMON_SESSION_TOOL_MAX if this is legitimate."
+            end
+
+            # Silent-but-alive is indistinguishable from wedged unless we say so. Report elapsed
+            # time upstream so the agent (and the TUI) can tell waiting from hanging.
+            if on_progress !== nothing && silence >= silence_threshold &&
+               (now - last_keepalive) >= keepalive_interval
+                elapsed = now - start_time
+                mins = round(Int, elapsed ÷ 60)
+                secs = round(Int, elapsed % 60)
+                elapsed_str = mins > 0 ? "$(mins)m $(secs)s" : "$(secs)s"
+                on_progress("⏳ $tool_name still running ($elapsed_str elapsed, no output for " *
+                            "$(round(Int, silence))s).")
+                last_keepalive = now
+            end
+
+            # Bail immediately if the session disconnected while we were waiting
             if !isopen(my_inbox) || conn.status == :disconnected
                 return "Error: Session disconnected during tool call. The process may have exited or been restarted."
             end
 
-            # Block for the next tool message (event-driven; tool_progress streams
-            # with low latency), waking by `deadline` at the latest. Disconnect
-            # closes my_inbox → wakes us → the guard above returns the error.
-            msg = _await_inbox(my_inbox, deadline)
+            # Block for the next tool message (event-driven; tool_progress streams with low
+            # latency), but wake no later than the next silence/keepalive/ceiling checkpoint so
+            # the periodic logic above still runs. Disconnect closes my_inbox → wakes us → the
+            # guard above returns the error.
+            wake = min(last_activity + silence_budget, hard_deadline)
+            if on_progress !== nothing
+                wake = min(wake, max(last_activity + silence_threshold,
+                                     last_keepalive + keepalive_interval))
+            end
+            msg = _await_inbox(my_inbox, wake)
 
             msg === nothing && continue
+
+            # Any frame counts as activity — this is what keeps a progress-reporting tool alive
+            last_activity = time()
 
             ch = string(get(msg, :channel, ""))
             data = string(get(msg, :data, ""))
@@ -232,7 +341,6 @@ function _call_session_tool_async(
                 return "Error: $data"
             end
         end
-        return "Error: Gate tool call timed out after $(timeout_ms)ms"
     finally
         lock(conn._eval_inboxes_lock) do
             delete!(conn._eval_inboxes, request_id)
@@ -259,9 +367,23 @@ function _create_session_tools(conn::REPLConnection)::Vector{MCPTool}
         description = get(tool_meta, "description", "Session tool: $raw_name")
         schema = _reflect_to_schema(tool_meta)
 
-        # Capture raw_name and conn in closure
+        # Capture raw_name, conn, and the tool's declared silence budget in the closure
         local_name = raw_name
         local_conn = conn
+        local_timeout = _declared_timeout_ms(tool_meta)
+
+        # Advertise the budget in the DESCRIPTION so the agent knows what it's working with — it
+        # decides whether to expect this call to outlive its budget, rather than discovering the
+        # wall by hitting it. There is deliberately no caller-facing override: a tool whose work
+        # can outrun its budget should report progress or promote to a background job, both of
+        # which serve the agent better than asking it to predict a duration.
+        if local_timeout !== nothing
+            description = rstrip(description) * "\n\nThis tool may run up to " *
+                          "$(round(_session_tool_silence_s(local_timeout), digits = 1))s without " *
+                          "producing output before the call is abandoned (the limit is on SILENCE " *
+                          "— each progress update resets it — and the work continues on the " *
+                          "session regardless)."
+        end
         handler = function (args)
             on_progress = pop!(args, "_on_progress", nothing)
             if on_progress !== nothing
@@ -269,10 +391,11 @@ function _create_session_tools(conn::REPLConnection)::Vector{MCPTool}
                     local_conn,
                     local_name,
                     args;
+                    timeout_ms = local_timeout,
                     on_progress = on_progress,
                 )
             else
-                _call_session_tool(local_conn, local_name, args)
+                _call_session_tool(local_conn, local_name, args; timeout_ms = local_timeout)
             end
         end
 

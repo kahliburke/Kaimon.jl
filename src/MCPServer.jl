@@ -816,6 +816,30 @@ end
 
 
 """
+    _resolve_progress_token(request, tool_name) -> token
+
+The `progressToken` to stamp on this call's `notifications/progress`.
+
+A client only honours progress for a token IT supplied in `params._meta.progressToken` —
+anything else matches no outstanding request and is silently dropped, so the client's idle
+timer never resets and a long-but-healthy call gets abandoned mid-flight. So the caller's
+token wins whenever it sent one.
+
+Falls back to a server-invented token otherwise. That keeps the notifications flowing for a
+client that doesn't participate in progress: our own in-flight display keys off the payload
+(`message` / `eval_id`), not the token, so it is unaffected either way.
+"""
+function _resolve_progress_token(request::AbstractDict, tool_name::AbstractString)
+    params = get(request, "params", nothing)
+    meta = params isa AbstractDict ? get(params, "_meta", nothing) : nothing
+    token = meta isa AbstractDict ? get(meta, "progressToken", nothing) : nothing
+    # A token may legitimately be a string OR an integer per the MCP spec; only `nothing`
+    # (absent) means "the client isn't tracking progress for this call".
+    token === nothing || return token
+    return "tool-$(tool_name)-$(round(Int, time()))"
+end
+
+"""
 Handle a gate-mode tool call with SSE progress notifications.
 
 Sends `Content-Type: text/event-stream` and streams:
@@ -864,7 +888,7 @@ function _handle_gate_tool_sse(
     HTTP.setheader(http, "Connection" => "keep-alive")
     HTTP.startwrite(http)
 
-    progress_token = "tool-$(tool_name_str)-$(round(Int, time()))"
+    progress_token = _resolve_progress_token(request, tool_name_str)
 
     # ── Flush pending notifications (e.g., resource/tool list changes) ────
     # Only those newer than this session's cursor (shared with its GET stream),

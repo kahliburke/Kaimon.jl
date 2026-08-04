@@ -372,6 +372,14 @@ With name: detailed view of one extension including per-tool documentation and p
                             push!(lines, "      $arg_name: $arg_type$req")
                         end
                     end
+
+                    # Declared silence budget, when the tool set one. Shown because the first
+                    # question after a tool times out is "how long was it actually given?" —
+                    # otherwise that number lives only in the extension's source.
+                    tms = _declared_timeout_ms(tool)
+                    tms === nothing ||
+                        push!(lines, "    Timeout: $(round(tms / 1000, digits = 1))s of silence " *
+                                     "(declared; refreshed by each progress update)")
                 end
             elseif conn !== nothing
                 push!(lines, "\nTools: (none registered)")

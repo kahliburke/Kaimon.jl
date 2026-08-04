@@ -438,3 +438,126 @@ end
 # spawns an @async task that calls _exec_restart → execvp / exit(1) after a
 # 0.3 s delay, which would kill the test process. The :restart message path
 # is covered by the MCP manage_repl integration tests instead.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Session-tool deadline policy (client side)
+# ─────────────────────────────────────────────────────────────────────────────
+
+"""Run `f` with the session-tool env budgets set to `vals`, restoring them after."""
+function with_tool_timeout_env(f, vals::Dict{String,Union{Nothing,String}})
+    keys_ = ["KAIMON_SESSION_TOOL_TIMEOUT", "KAIMON_SESSION_TOOL_MAX"]
+    saved = Dict(k => get(ENV, k, nothing) for k in keys_)
+    try
+        for (k, v) in vals
+            v === nothing ? delete!(ENV, k) : (ENV[k] = v)
+        end
+        f()
+    finally
+        for k in keys_
+            saved[k] === nothing ? delete!(ENV, k) : (ENV[k] = saved[k])
+        end
+    end
+end
+_no_tool_env() = Dict{String,Union{Nothing,String}}(
+    "KAIMON_SESSION_TOOL_TIMEOUT" => nothing, "KAIMON_SESSION_TOOL_MAX" => nothing)
+
+@testset "session tool declared timeout parsing" begin
+    dt = Kaimon._declared_timeout_ms
+    # Absent key ⇒ undeclared. This is every tool from a pre-timeout_ms gate, so it must mean
+    # "use the client default" rather than "no time at all".
+    @test dt(Dict{String,Any}()) === nothing
+    @test dt(Dict{String,Any}("timeout_ms" => nothing)) === nothing
+    @test dt(Dict{String,Any}("timeout_ms" => 900_000)) == 900_000
+    @test dt(Dict{String,Any}("timeout_ms" => 900_000.0)) == 900_000
+    @test dt(Dict{String,Any}("timeout_ms" => "900000")) == 900_000
+    # Non-positive or unparseable degrades to undeclared rather than producing an instant timeout.
+    @test dt(Dict{String,Any}("timeout_ms" => 0)) === nothing
+    @test dt(Dict{String,Any}("timeout_ms" => -5)) === nothing
+    @test dt(Dict{String,Any}("timeout_ms" => "soon")) === nothing
+end
+
+@testset "session tool silence budget resolution" begin
+    with_tool_timeout_env(_no_tool_env()) do
+        @test Kaimon._session_tool_silence_s() == Kaimon._SESSION_TOOL_SILENCE_DEFAULT_S
+        # Declared wins when it's more generous than the global floor.
+        @test Kaimon._session_tool_silence_s(900_000) == 900.0
+        # ...but never SHORTENS below the global floor — a tool asking for less than the
+        # default gets the default, so declaring a budget can only ever buy more headroom.
+        @test Kaimon._session_tool_silence_s(10_000) == Kaimon._SESSION_TOOL_SILENCE_DEFAULT_S
+    end
+
+    with_tool_timeout_env(Dict{String,Union{Nothing,String}}(
+            "KAIMON_SESSION_TOOL_TIMEOUT" => "1200", "KAIMON_SESSION_TOOL_MAX" => nothing)) do
+        @test Kaimon._session_tool_silence_s() == 1200.0
+        # Raising the env floor must not clip a tool that declared MORE, and vice versa —
+        # the effective budget is the more generous of the two, in either direction.
+        @test Kaimon._session_tool_silence_s(900_000) == 1200.0
+        @test Kaimon._session_tool_silence_s(1_800_000) == 1800.0
+    end
+
+    # A junk or non-positive env value falls back to the default instead of disabling the clock.
+    with_tool_timeout_env(Dict{String,Union{Nothing,String}}(
+            "KAIMON_SESSION_TOOL_TIMEOUT" => "not-a-number", "KAIMON_SESSION_TOOL_MAX" => nothing)) do
+        @test Kaimon._session_tool_silence_s() == Kaimon._SESSION_TOOL_SILENCE_DEFAULT_S
+    end
+    with_tool_timeout_env(Dict{String,Union{Nothing,String}}(
+            "KAIMON_SESSION_TOOL_TIMEOUT" => "0", "KAIMON_SESSION_TOOL_MAX" => nothing)) do
+        @test Kaimon._session_tool_silence_s() == Kaimon._SESSION_TOOL_SILENCE_DEFAULT_S
+    end
+end
+
+@testset "session tool absolute ceiling" begin
+    with_tool_timeout_env(_no_tool_env()) do
+        @test Kaimon._session_tool_max_s() == Kaimon._SESSION_TOOL_MAX_DEFAULT_S
+    end
+    with_tool_timeout_env(Dict{String,Union{Nothing,String}}(
+            "KAIMON_SESSION_TOOL_TIMEOUT" => nothing, "KAIMON_SESSION_TOOL_MAX" => "7200")) do
+        @test Kaimon._session_tool_max_s() == 7200.0
+    end
+    # ≤ 0 disables the backstop entirely (the documented escape hatch), rather than
+    # making every call fail immediately.
+    with_tool_timeout_env(Dict{String,Union{Nothing,String}}(
+            "KAIMON_SESSION_TOOL_TIMEOUT" => nothing, "KAIMON_SESSION_TOOL_MAX" => "0")) do
+        @test Kaimon._session_tool_max_s() == Inf
+    end
+end
+
+@testset "session tool ceiling yields to an explicit budget" begin
+    # The ceiling is a backstop for work with no stated bound. It must never sit BELOW an
+    # explicitly-declared budget, or a declared 2h silently becomes 1h and the advertised
+    # number is a lie. Mirrors the `max` in _call_session_tool_async.
+    with_tool_timeout_env(Dict{String,Union{Nothing,String}}(
+            "KAIMON_SESSION_TOOL_TIMEOUT" => nothing, "KAIMON_SESSION_TOOL_MAX" => "3600")) do
+        budget = Kaimon._session_tool_silence_s(7_200_000)   # a declared 2h
+        @test budget == 7200.0
+        @test max(Kaimon._session_tool_max_s(), budget) == 7200.0
+        # ...while an ordinary call still gets clamped by the backstop.
+        @test max(Kaimon._session_tool_max_s(), Kaimon._session_tool_silence_s()) == 3600.0
+    end
+end
+
+@testset "progress token resolution" begin
+    rt = Kaimon._resolve_progress_token
+
+    # The caller's token WINS. Without this the client discards every progress notification
+    # (it matches no outstanding request), its idle timer never resets, and a long healthy
+    # call is abandoned mid-flight — the whole reason progress reporting exists.
+    @test rt(Dict("params" => Dict("_meta" => Dict("progressToken" => "abc123"))), "slate.run") ==
+          "abc123"
+    # Integer tokens are legal per the MCP spec and must pass through unchanged (not stringified).
+    @test rt(Dict("params" => Dict("_meta" => Dict("progressToken" => 42))), "slate.run") === 42
+
+    # No token from the client ⇒ fall back to a server-invented one, so notifications keep
+    # flowing to our own in-flight display (which keys off the payload, not the token).
+    for req in (Dict("params" => Dict("_meta" => Dict())),
+                Dict("params" => Dict()),
+                Dict{String,Any}())
+        tok = rt(req, "slate.run")
+        @test tok isa String && startswith(tok, "tool-slate.run-")
+    end
+
+    # Malformed `_meta` must not throw — a bad frame should degrade to the fallback, not 500
+    # the tool call.
+    @test rt(Dict("params" => Dict("_meta" => "nonsense")), "x") isa String
+    @test rt(Dict("params" => "nonsense"), "x") isa String
+end

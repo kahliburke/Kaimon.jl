@@ -274,4 +274,37 @@ end
     t = KaimonGate.GateTool("my_tool", _greet)
     @test t.name == "my_tool"
     @test t.handler === _greet
+    @test t.timeout_ms === nothing        # undeclared is `nothing`, never a 0 sentinel
+end
+
+@testset "GateTool declared silence budget" begin
+    # A tool that is legitimately slow AND silent declares its own budget; the client can't
+    # know the number, so it rides in the reflected metadata.
+    t = KaimonGate.GateTool("slow_tool", _greet; timeout_ms = 900_000)
+    @test t.timeout_ms == 900_000
+    @test KaimonGate._reflect_tool(t)["timeout_ms"] == 900_000
+
+    # Undeclared OMITS the key rather than sending a sentinel — that's what makes a new gate
+    # safe against an old client (which ignores it) and an old gate safe against a new one
+    # (absent ⇒ the client's own default).
+    @test !haskey(KaimonGate._reflect_tool(KaimonGate.GateTool("plain", _greet)), "timeout_ms")
+
+    # A handler with no methods still reflects consistently.
+    nomethods = KaimonGate.GateTool("empty", _greet; timeout_ms = 5_000)
+    @test KaimonGate._reflect_tool(nomethods)["timeout_ms"] == 5_000
+
+    # 0 and negatives are mistakes, not "undeclared" — reject them at construction so the
+    # ambiguity ("instant timeout"? "no timeout"?) can never reach the wire.
+    @test_throws ArgumentError KaimonGate.GateTool("bad", _greet; timeout_ms = 0)
+    @test_throws ArgumentError KaimonGate.GateTool("bad", _greet; timeout_ms = -1)
+end
+
+@testset "GateTool declares no caller-facing timeout knob" begin
+    # A budget is the TOOL's to declare, never the caller's to override. Work that can outrun any
+    # sensible budget belongs in a background job (or should report progress, which refreshes the
+    # deadline) — both beat asking an agent to predict a duration it can't know.
+    refl = KaimonGate._reflect_tool(KaimonGate.GateTool("t", _greet; timeout_ms = 90_000))
+    @test refl["timeout_ms"] == 90_000
+    @test !haskey(refl, "timeout_overridable")
+    @test_throws MethodError KaimonGate.GateTool("t", _greet; timeout_overridable = true)
 end

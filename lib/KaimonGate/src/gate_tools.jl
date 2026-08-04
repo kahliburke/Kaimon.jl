@@ -5,11 +5,22 @@
 # ── Session-Scoped Tools ──────────────────────────────────────────────────────
 
 """
-    GateTool(name, handler)
+    GateTool(name, handler; timeout_ms=nothing)
 
 A tool declared by a gate session. The handler is a normal Julia function;
 the gate infrastructure reflects on its signature to generate MCP schema
 and reconstructs typed arguments from incoming Dict values.
+
+`timeout_ms` declares how long the tool may go SILENT before the client gives up on it;
+`nothing` (the default) means undeclared — the client applies its own. The client's
+deadline is refreshed by every progress frame, so a tool that calls `progress(…)` needs
+nothing here — this is for an operation that is legitimately slow AND produces no output
+while it runs (a bulk file materialize, a long export). The tool's author knows that
+budget; the calling agent does not, which is why it's declared here rather than passed
+per call. Must be positive when given: "undeclared" is `nothing`, not `0`.
+
+A tool whose work can outrun any sensible budget wants a background job, not a bigger number —
+report progress (which refreshes the deadline) or hand back a job id and let the caller poll.
 
 # Example
 ```julia
@@ -23,6 +34,16 @@ KaimonGate.serve(tools=[GateTool("send_key", send_key)])
 struct GateTool
     name::String
     handler::Function
+    timeout_ms::Union{Nothing,Int}
+end
+function GateTool(name::AbstractString, handler::Function;
+                  timeout_ms::Union{Nothing,Integer} = nothing)
+    if timeout_ms !== nothing && timeout_ms <= 0
+        throw(ArgumentError("GateTool(\"$name\"): timeout_ms must be positive " *
+                            "(got $timeout_ms); use `nothing` to leave it undeclared"))
+    end
+    return GateTool(String(name), handler,
+                    timeout_ms === nothing ? nothing : Int(timeout_ms))
 end
 
 const _SESSION_TOOLS = Ref{Vector{GateTool}}(GateTool[])
@@ -423,7 +444,8 @@ function _reflect_tool(tool::GateTool)
     ms = methods(f)
 
     if isempty(ms)
-        return Dict{String,Any}("name" => tool.name, "description" => "", "arguments" => [])
+        return _with_declared_timeout(
+            Dict{String,Any}("name" => tool.name, "description" => "", "arguments" => []), tool)
     end
 
     # A function with optional positional args defines one method PER ARITY. Reflect the
@@ -503,11 +525,21 @@ function _reflect_tool(tool::GateTool)
         description = _source_docstring(f)
     end
 
-    return Dict{String,Any}(
-        "name" => tool.name,
-        "description" => description,
-        "arguments" => args_meta,
-    )
+    return _with_declared_timeout(
+        Dict{String,Any}(
+            "name" => tool.name,
+            "description" => description,
+            "arguments" => args_meta,
+        ), tool)
+end
+
+# Attach the tool's declared silence budget, and ONLY when it has one. An undeclared tool
+# omits the key entirely rather than sending a sentinel, so the two mixed-version cases both
+# land on "absent ⇒ client default": an old gate never sends it, and a new gate talking to an
+# old client sends a key the client ignores.
+function _with_declared_timeout(meta::Dict{String,Any}, tool::GateTool)
+    tool.timeout_ms === nothing || (meta["timeout_ms"] = tool.timeout_ms)
+    return meta
 end
 
 """
