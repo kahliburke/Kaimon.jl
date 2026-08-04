@@ -3,6 +3,12 @@ using ReTest
 using Kaimon
 using Kaimon.Session
 using Kaimon.Session: UNINITIALIZED, INITIALIZING, INITIALIZED, CLOSED
+using Dates: Hour, Period, now, format
+
+# A persisted-session timestamp `ago` before now, in the on-disk format. Fixtures must be
+# relative: `load_persisted_sessions` filters entries older than a month, so an absolute date
+# turns into an expired fixture the moment the calendar passes it.
+_session_ts(ago::Period) = format(now() - ago, "yyyy-mm-dd\\THH:MM:SS")
 
 @testset "Session Management" begin
     @testset "Session Creation" begin
@@ -31,13 +37,17 @@ using Kaimon.Session: UNINITIALIZED, INITIALIZING, INITIALIZED, CLOSED
         mktempdir() do cache
             withenv("XDG_CACHE_HOME" => cache) do
                 mkpath(joinpath(cache, "kaimon"))
+                # Timestamps must be RELATIVE to now: load_persisted_sessions() drops entries
+                # older than a month, so hardcoded dates silently become expired fixtures and
+                # the assertions below start failing on a date that has nothing to do with the
+                # code under test.
                 Kaimon.save_persisted_sessions(Dict{String,Dict}(
-                    "capped" => Dict("created_at" => "2026-07-02T10:00:00",
-                        "last_seen" => "2026-07-02T12:00:00",
+                    "capped" => Dict("created_at" => _session_ts(Hour(4)),
+                        "last_seen" => _session_ts(Hour(2)),
                         "client_capabilities" => Dict("elicitation" => Dict(), "roots" => Dict()),
                         "client_info" => Dict("name" => "claude-code")),
-                    "capless" => Dict("created_at" => "2026-07-02T11:00:00",
-                        "last_seen" => "2026-07-02T11:30:00", "workspace_root" => "/x"),
+                    "capless" => Dict("created_at" => _session_ts(Hour(3)),
+                        "last_seen" => _session_ts(Hour(3)), "workspace_root" => "/x"),
                 ))
                 # A fresh (capless) session inherits the most-recent client's caps.
                 s = MCPSession()
@@ -180,8 +190,8 @@ using Kaimon.Session: UNINITIALIZED, INITIALIZING, INITIALIZED, CLOSED
                 mkpath(joinpath(cache, "kaimon"))
                 caller = "test-caller-$(rand(UInt32))"
                 Kaimon.save_persisted_sessions(Dict{String,Dict}(
-                    caller => Dict("created_at" => "2026-07-03T10:00:00",
-                        "last_seen" => "2026-07-03T10:00:00",
+                    caller => Dict("created_at" => _session_ts(Hour(1)),
+                        "last_seen" => _session_ts(Hour(1)),
                         "workspace_root" => "/some/proj")))
                 # No in-memory workspace root and no bound gate for this caller → the
                 # resolver must fall back to the caller's OWN persisted workspace root
