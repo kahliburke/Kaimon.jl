@@ -219,8 +219,8 @@ _session_ts(ago::Period) = format(now() - ago, "yyyy-mm-dd\\THH:MM:SS")
                 # On reconnect, resolution prefers the gate project over a broader
                 # workspace root — it's the project the agent actually worked in.
                 Kaimon.save_persisted_sessions(Dict{String,Dict}(
-                    caller => Dict("created_at" => "2026-07-04T10:00:00",
-                        "last_seen" => "2026-07-04T10:00:00",
+                    caller => Dict("created_at" => _session_ts(Hour(1)),
+                        "last_seen" => _session_ts(Hour(1)),
                         "workspace_root" => "/home/dev",
                         "project_path" => "/home/dev/KaimonSlate.jl")))
                 task_local_storage(:mcp_caller, caller) do

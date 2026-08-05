@@ -3,6 +3,12 @@
 
 using ReTest
 using Kaimon
+using Dates: Hour, Period, now, format
+
+# Persisted-session fixtures must be RELATIVE to now: load_persisted_sessions drops entries
+# older than a month, so an absolute date silently becomes an expired fixture — the scope
+# resolution below then sees no session at all and fails on a date unrelated to the code.
+_grep_ts(ago::Period) = format(now() - ago, "yyyy-mm-dd\\THH:MM:SS")
 
 @testset "grep_code" begin
     @testset "_grep_parse_rg — per-file counts, totals, verbatim lines" begin
@@ -114,8 +120,8 @@ using Kaimon
                 Kaimon.save_persisted_sessions(
                     Dict{String,Dict}(
                         caller => Dict(
-                            "created_at" => "2026-07-04T10:00:00",
-                            "last_seen" => "2026-07-04T10:00:00",
+                            "created_at" => _grep_ts(Hour(1)),
+                            "last_seen" => _grep_ts(Hour(1)),
                             "project_path" => proj,
                         ),
                     ),
@@ -155,8 +161,8 @@ using Kaimon
                 Kaimon.save_persisted_sessions(
                     Dict{String,Dict}(
                         caller => Dict(
-                            "created_at" => "2026-07-04T10:00:00",
-                            "last_seen" => "2026-07-04T10:00:00",
+                            "created_at" => _grep_ts(Hour(1)),
+                            "last_seen" => _grep_ts(Hour(1)),
                             "project_path" => proj,
                         ),
                     ),
@@ -204,8 +210,8 @@ using Kaimon
                 Kaimon.save_persisted_sessions(
                     Dict{String,Dict}(
                         caller => Dict(
-                            "created_at" => "2026-07-04T10:00:00",
-                            "last_seen" => "2026-07-04T10:00:00",
+                            "created_at" => _grep_ts(Hour(1)),
+                            "last_seen" => _grep_ts(Hour(1)),
                             "project_path" => proj,
                         ),
                     ),
@@ -243,8 +249,8 @@ using Kaimon
                 Kaimon.save_persisted_sessions(
                     Dict{String,Dict}(
                         caller => Dict(
-                            "created_at" => "2026-07-04T10:00:00",
-                            "last_seen" => "2026-07-04T10:00:00",
+                            "created_at" => _grep_ts(Hour(1)),
+                            "last_seen" => _grep_ts(Hour(1)),
                             "workspace_root" => parent,
                         ),
                     ),
