@@ -78,6 +78,51 @@ using JSON
             @test config2.editor == "cursor"
         end
 
+        @testset "Global Config Loading" begin
+            # kaimon_config_dir() honours XDG_CONFIG_HOME on Unix, APPDATA on Windows.
+            cfg_home = mktempdir()
+            var = Sys.iswindows() ? "APPDATA" : "XDG_CONFIG_HOME"
+            saved = get(ENV, var, nothing)
+            ENV[var] = cfg_home
+            try
+                cfg_path = Kaimon.get_global_config_path()
+
+                # A fractional created_at (as written by any producer that stores
+                # `time()` verbatim) must still load rather than fall through to the
+                # "no config" path and re-trigger the setup wizard.
+                write(
+                    cfg_path,
+                    JSON.json(
+                        Dict(
+                            "mode" => "strict",
+                            "api_keys" => ["kaimon_" * repeat("a", 40)],
+                            "allowed_ips" => ["127.0.0.1"],
+                            "port" => 3000,
+                            "created_at" => 1.7e9 + 0.5,
+                            "editor" => "zed",
+                        ),
+                    ),
+                )
+                loaded = Kaimon.load_global_config()
+                @test loaded !== nothing
+                @test loaded.created_at isa Int64
+                @test loaded.created_at == round(Int64, 1.7e9 + 0.5)
+                @test loaded.mode == :strict
+                @test loaded.port == 3000
+                @test loaded.editor == "zed"
+                @test loaded.qdrant_prefix == ""
+
+                # Integer created_at and an absent one both round-trip too.
+                write(cfg_path, JSON.json(Dict("mode" => "lax", "created_at" => 1700000000)))
+                @test Kaimon.load_global_config().created_at == 1700000000
+
+                write(cfg_path, JSON.json(Dict("mode" => "lax")))
+                @test Kaimon.load_global_config() !== nothing
+            finally
+                saved === nothing ? delete!(ENV, var) : (ENV[var] = saved)
+            end
+        end
+
         @testset "OAuth Not Implemented" begin
             # We run no OAuth authorization server; only the path predicate that
             # `_stream_oauth` uses to short-circuit these paths to 404 remains.

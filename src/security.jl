@@ -112,7 +112,11 @@ function load_global_config()
         api_keys = get(data, "api_keys", String[])
         allowed_ips = get(data, "allowed_ips", ["127.0.0.1", "::1"])
         port = get(data, "port", 0)
-        created_at = get(data, "created_at", time())
+        # Round rather than convert: the default is `time()` (a Float64) and JSON parses a
+        # decimal literal as one too, either of which would throw InexactError against the
+        # Int64 field — silently, since the catch below turns it into "no config" and the
+        # caller then launches the setup wizard.
+        created_at = round(Int64, get(data, "created_at", time()))
         editor = get(data, "editor", "vscode")
         qdrant_prefix = String(get(data, "qdrant_prefix", ""))
 
