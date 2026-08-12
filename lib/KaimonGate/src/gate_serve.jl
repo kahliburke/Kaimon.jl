@@ -19,7 +19,11 @@ to override the TTY check.
 # Arguments
 - `session_id::Union{String,Nothing}`: Reuse a session ID (e.g. after exec restart)
 - `force::Bool`: Skip the TTY gate (for non-interactive processes that want a gate)
-- `tools::Vector{GateTool}`: Session-scoped tools to expose via MCP
+- `tools::Vector{GateTool}`: Session-scoped tools to expose via MCP. Registration on an
+  already-running gate is ADDITIVE: a tool with a name already registered replaces that
+  one, and every other tool already on the gate survives. This is what lets a session have
+  several independent registrants, a host, a worker, and any package extension that
+  registers on load, none of which can see the others.
 - `namespace::String`: Stable prefix for tool names. Auto-derived from project basename
   if empty. Use explicit namespaces for multi-instance workflows:
   ```julia
@@ -218,6 +222,12 @@ function _serve(;
         end
     end
 
+    # Whether the CALLER named a namespace, captured before the auto-derive below fills one
+    # in. A late registrant joining a running gate must not rename the incumbent tools at the
+    # MCP layer, and after auto-derivation `namespace` is never empty, so the distinction
+    # cannot be recovered further down.
+    namespace_given = !isempty(namespace)
+
     # Auto-derive namespace from project basename if not specified
     if isempty(namespace)
         project = something(Base.active_project(), "julia")
@@ -240,15 +250,44 @@ function _serve(;
                 end
             end
         elseif !isempty(tools)
-            # Gate already running — replace tools; the TUI health checker
+            # Gate already running — MERGE tools by name; the TUI health checker
             # picks up changes via pong and sends tools/list_changed.
-            _SESSION_TOOLS[] = tools
-            _SESSION_NAMESPACE[] = namespace
+            #
+            # Registration is ADDITIVE because a session has more than one registrant and
+            # none of them can see the others. A gate host registers its own tools at boot,
+            # a notebook worker registers the tools its host drives it through, and any
+            # package extension loaded into the session registers on `__init__`. Under
+            # wholesale replacement whichever call ran last silently won, and the loser was
+            # not a missing feature but a broken session: a `using SomePackage` that fires an
+            # extension's `serve(tools = ...)` used to drop the worker's own tools, so the
+            # host could no longer talk to the process at all. An extension cannot merge from
+            # its side, because it has no way to read what is already registered.
+            #
+            # Same name replaces, so re-registering is still how a registrant updates its own
+            # tools; everything else survives. Order is stable: incumbents keep their
+            # positions and genuinely new tools append.
+            merged = copy(_SESSION_TOOLS[])
+            added = 0
+            for t in tools
+                idx = findfirst(x -> x.name == t.name, merged)
+                if idx === nothing
+                    push!(merged, t)
+                    added += 1
+                else
+                    merged[idx] = t
+                end
+            end
+            _SESSION_TOOLS[] = merged
+            # Only an EXPLICIT namespace re-labels a running gate. An auto-derived one says
+            # nothing the gate does not already know, and adopting it would rename every
+            # incumbent tool at the MCP layer on behalf of a caller that never asked.
+            namespace_given && (_SESSION_NAMESPACE[] = namespace)
             if !allow_mirror
                 _ALLOW_MIRROR[] = false
                 _MIRROR_REPL[] = false
             end
-            @info "Registered $(length(tools)) tool(s) on running gate (session=$(_SESSION_ID[]))"
+            @info "Registered $(length(tools)) tool(s) on running gate ($added new, \
+                   $(length(merged)) total; session=$(_SESSION_ID[]))"
             return _SESSION_ID[]
         else
             # Same session already running (e.g. startup.jl created the gate,
