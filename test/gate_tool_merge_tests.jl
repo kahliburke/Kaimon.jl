@@ -42,6 +42,53 @@ end
 
 toolnames() = [t.name for t in KG._SESSION_TOOLS[]]
 
+@testset "tool-call observers" begin
+
+    @testset "an observer sees a call without altering the tool" begin
+        # The point of an observer rather than a handler wrapper: a handler's SIGNATURE is its MCP
+        # schema (`_reflect_tool` reads it), so wrapping strips a tool's parameters and the agent
+        # can no longer call it. Observing has to leave the tool byte-identical.
+        seen = Any[]
+        KG.unobserve_tools!()
+        KG.observe_tools!((name, args, ok, res, secs) -> push!(seen, (name, args, ok, res)))
+        tool = KG.GateTool("greet", (name::String; loud::Bool = false) -> loud ? "HI $name" : "hi $name")
+        before = KG._reflect_tool(tool)
+        with_running_gate([tool]) do
+            r = KG.handle_message((type = :tool_call, name = "greet",
+                                   arguments = Dict{String,Any}("name" => "ada")))
+            @test r.type == :result && r.value == "hi ada"
+        end
+        @test length(seen) == 1
+        @test seen[1][1] == "greet" && seen[1][3] === true && seen[1][4] == "hi ada"
+        # The schema is untouched — the property a wrapper would have destroyed.
+        @test KG._reflect_tool(tool) == before
+        KG.unobserve_tools!()
+    end
+
+    @testset "a failing call is observed as a failure" begin
+        seen = Any[]
+        KG.unobserve_tools!()
+        KG.observe_tools!((name, args, ok, res, secs) -> push!(seen, (ok, res)))
+        with_running_gate([KG.GateTool("boom", () -> error("nope"))]) do
+            KG.handle_message((type = :tool_call, name = "boom", arguments = Dict{String,Any}()))
+        end
+        @test length(seen) == 1 && seen[1][1] === false && occursin("nope", seen[1][2])
+        KG.unobserve_tools!()
+    end
+
+    @testset "a throwing observer cannot break the call" begin
+        # Observing is diagnostic. If it can take down the tool it is observing, it is a liability.
+        KG.unobserve_tools!()
+        KG.observe_tools!((args...) -> error("observer is broken"))
+        with_running_gate([KG.GateTool("ok_tool", () -> "fine")]) do
+            r = KG.handle_message((type = :tool_call, name = "ok_tool", arguments = Dict{String,Any}()))
+            @test r.type == :result && r.value == "fine"
+        end
+        KG.unobserve_tools!()
+    end
+
+end
+
 @testset "serve(tools=...) on a running gate merges" begin
 
     @testset "incumbent tools survive a later registrant" begin

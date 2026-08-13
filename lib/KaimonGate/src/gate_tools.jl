@@ -48,6 +48,45 @@ end
 
 const _SESSION_TOOLS = Ref{Vector{GateTool}}(GateTool[])
 
+# ── Tool-call observers ───────────────────────────────────────────────────────
+# A hook for code that wants to KNOW a tool was called without changing what the call does — a
+# session recording an agent's actions, an audit log, a UI that shows activity.
+#
+# It exists because the alternative does not work: wrapping a handler replaces its signature, and
+# the signature IS the tool's MCP schema (`_reflect_tool` reads it), so a wrapped tool loses its
+# parameters and becomes uncallable by the agent it was meant to serve.
+#
+# Observers run AFTER the handler, never affect its result, and a throwing observer is swallowed —
+# observing a call must not be able to break it.
+const _TOOL_OBSERVERS = Vector{Any}()
+
+"""
+    observe_tools!(f) -> f
+
+Register `f(name, args, ok, result, seconds)` to be called after every session tool call.
+`args` is the argument Dict as dispatched, `ok` is false when the handler threw, and `result` is
+the handler's return (or the error message). Errors raised by an observer are discarded.
+"""
+function observe_tools!(f)
+    push!(_TOOL_OBSERVERS, f)
+    return f
+end
+
+"Drop every registered tool-call observer (a session teardown / test cleanup)."
+unobserve_tools!() = (empty!(_TOOL_OBSERVERS); nothing)
+
+function _notify_tool_observers(name, args, ok, result, seconds)
+    isempty(_TOOL_OBSERVERS) && return nothing
+    for f in _TOOL_OBSERVERS
+        try
+            Base.invokelatest(f, name, args, ok, result, seconds)
+        catch e
+            @debug "gate: tool observer failed" tool = name exception = e
+        end
+    end
+    return nothing
+end
+
 """Raised by the tool dispatcher when a call's arguments don't fit the handler's
 parameters (missing required, unknown/misnamed). Its `msg` is a concise, agent-facing
 explanation; the gate publishes it WITHOUT a backtrace (unlike a genuine runtime error),

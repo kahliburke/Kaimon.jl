@@ -459,14 +459,17 @@ function handle_message(request::NamedTuple)
         # that task. Scoping clears it on return. current_caller() reads :gate_caller.
         caller = string(get(request, :caller, ""))
         agent_id = string(get(request, :agent_id, ""))
+        _t0 = time()
         try
             result = task_local_storage(:gate_caller, caller) do
                 task_local_storage(:gate_agent_id, agent_id) do
                     _dispatch_tool_call(tool.handler, tool_args)
                 end
             end
+            _notify_tool_observers(tool.name, tool_args, true, result, time() - _t0)
             return (type = :result, value = result)
         catch e
+            _notify_tool_observers(tool.name, tool_args, false, sprint(showerror, e), time() - _t0)
             return (type = :error, message = sprint(showerror, e))
         end
     elseif msg_type == :tool_call_async
@@ -500,7 +503,16 @@ function handle_message(request::NamedTuple)
                 task_local_storage(:gate_caller, caller)
                 task_local_storage(:gate_agent_id, agent_id)
 
-                result = _dispatch_tool_call(tool.handler, tool_args; tool_name = tool.name)
+                _t0 = time()
+                result = try
+                    r = _dispatch_tool_call(tool.handler, tool_args; tool_name = tool.name)
+                    _notify_tool_observers(tool.name, tool_args, true, r, time() - _t0)
+                    r
+                catch e
+                    _notify_tool_observers(tool.name, tool_args, false, sprint(showerror, e),
+                                           time() - _t0)
+                    rethrow()
+                end
                 _stderr_finish!()
                 _publish_stream("tool_complete", string(result); request_id)
             catch e
