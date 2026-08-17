@@ -4,6 +4,7 @@ using SafeTestsets
 @safetestset "Type metadata" include("src/test_type_meta.jl")
 @safetestset "Value coercion" include("src/test_coercion.jl")
 @safetestset "Tool dispatch" include("src/test_dispatch.jl")
+@safetestset "Source docstring" include("src/test_source_docstring.jl")
 @safetestset "Message handler" include("src/test_handle_message.jl")
 @safetestset "Capture race" include("src/test_capture_race.jl")
 @safetestset "Stream guard" include("src/test_stream_guard.jl")

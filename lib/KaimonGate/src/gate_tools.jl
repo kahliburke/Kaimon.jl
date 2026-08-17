@@ -327,11 +327,13 @@ function _source_docstring(f::Function)::String
                         in_block = true
                     elseif startswith(stripped, "\"\"\"")
                         # Single-line: """content"""
-                        inner = stripped[4:end-3]
+                        # `chop` counts characters, so the delimiters come off
+                        # cleanly even when content ends in a multi-byte one.
+                        inner = chop(stripped; head = 3, tail = 3)
                         return strip(inner)
                     else
                         # content""" — content before the closing delimiter
-                        pushfirst!(doc_lines, rstrip(l[1:end-3]))
+                        pushfirst!(doc_lines, rstrip(chop(l; tail = 3)))
                         in_block = true
                     end
                 elseif isempty(stripped)
