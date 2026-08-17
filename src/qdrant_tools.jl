@@ -542,7 +542,7 @@ qdrant_browse_collection_tool = @mcp_tool(
             for (key, value) in payload
                 value_str = string(value)
                 if length(value_str) > 100
-                    value_str = value_str[1:100] * "..."
+                    value_str = first(value_str, 100) * "..."
                 end
                 output *= "   $key: $value_str\n"
             end

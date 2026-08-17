@@ -211,11 +211,10 @@ function truncate_output(output::String, max_length::Int, value = nothing)
                     if remaining > 100
                         keep_start = (remaining * 2) ÷ 3
                         keep_end = remaining ÷ 3
-                        truncated = output[1:min(keep_start, length(output))]
+                        truncated = String(first(output, keep_start))
                         if length(output) > keep_start + keep_end
                             truncated *= "\n... [~$(length(output) - keep_start - keep_end) chars omitted] ...\n"
-                            end_start = max(1, length(output) - keep_end + 1)
-                            truncated *= output[end_start:end]
+                            truncated *= last(output, keep_end)
                         end
                         return summary_str * "\n" * truncated
                     end
@@ -226,15 +225,15 @@ function truncate_output(output::String, max_length::Int, value = nothing)
         end
     end
 
-    # Simple truncation: show first 2/3 and last 1/3
+    # Simple truncation: show first 2/3 and last 1/3. `first`/`last` count
+    # characters, so a cut never lands inside a multi-byte codepoint.
     keep_start = (max_length * 2) ÷ 3
     keep_end = max_length ÷ 3
     omitted = length(output) - keep_start - keep_end
 
-    result = output[1:keep_start]
+    result = String(first(output, keep_start))
     result *= "\n\n... [~$omitted chars omitted] ...\n\n"
-    end_start = max(1, length(output) - keep_end + 1)
-    result *= output[end_start:end]
+    result *= last(output, keep_end)
 
     return result
 end

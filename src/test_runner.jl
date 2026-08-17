@@ -299,7 +299,7 @@ function _persist_test_run!(run::TestRun)
         run.status == RUN_ERROR ? "error" :
         run.status == RUN_CANCELLED ? "cancelled" : "running"
     summary = format_test_summary(run)
-    summary_short = length(summary) > 500 ? summary[1:500] : summary
+    summary_short = String(first(summary, 500))
 
     try
         Database.record_test_run!(

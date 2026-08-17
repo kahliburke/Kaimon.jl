@@ -382,7 +382,7 @@ function _persist_tool_complete!(db_request_id::String, r::ToolCallResult)
         else
             0.0
         end
-        summary = length(r.result_text) > 500 ? r.result_text[1:500] : r.result_text
+        summary = String(first(r.result_text, 500))
         Database.record_tool_complete!(db_request_id, dur_ms, sizeof(r.result_text),
             r.success ? "success" : "error", summary)
     catch e
