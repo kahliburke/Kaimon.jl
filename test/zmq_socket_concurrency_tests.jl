@@ -11,7 +11,11 @@
 #
 # This hammers the REAL helper from a multithreaded subprocess. With the lock the
 # subprocess exits cleanly; without it (regression) it throws
-# ConcurrencyViolationError / EMFILE / segfaults → nonzero exit → this test fails.
+# ConcurrencyViolationError or segfaults → nonzero exit → this test fails.
+#
+# The socket cap is raised in the child so that EMFILE cannot be reached through
+# ordinary reaper lag — an exhausted context would otherwise be indistinguishable
+# from the regression.
 
 using ReTest
 using Kaimon
@@ -24,6 +28,12 @@ using Kaimon
         using Kaimon
         const ZMQ = Kaimon.ZMQ
         ctx = ZMQ.Context()
+        # A context caps live sockets at 1023 by default. Only a handful are live
+        # here — each is closed immediately — but ZMQ's reaper releases them
+        # asynchronously, so under load the backlog can reach that cap and raise
+        # EMFILE for reasons unrelated to the race under test. Raise it well clear;
+        # the OS fd limit is orders of magnitude higher.
+        ctx.max_sockets = 32768
         N = max(Threads.nthreads(), 1)
         PER = 1500
         @sync for _t in 1:N
