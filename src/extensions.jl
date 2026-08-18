@@ -24,6 +24,16 @@ struct ExtensionManifest
     env::Dict{String,String}
 end
 
+# `env` is the newest field and the rarest to set, so it stays optional: a manifest that
+# declares no environment defaults constructs exactly as it did before the field existed.
+ExtensionManifest(
+    namespace, module_name, tools_function, description,
+    shutdown_function, event_topics, tui_file, julia_flags,
+) = ExtensionManifest(
+    namespace, module_name, tools_function, description,
+    shutdown_function, event_topics, tui_file, julia_flags, Dict{String,String}(),
+)
+
 """
     ExtensionEntry
 
