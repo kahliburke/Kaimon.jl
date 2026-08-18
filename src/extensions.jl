@@ -17,6 +17,11 @@ struct ExtensionManifest
     event_topics::Vector{String}  # stream channels to forward (e.g. ["breakpoint_hit"])
     tui_file::String            # optional path to TUI panel file (relative to project root)
     julia_flags::Vector{String} # optional Julia startup flags (e.g. ["-t4,1", "--heap-size-hint=1G"])
+    # Environment defaults for the extension process, applied only where the parent has not already
+    # set the variable — so a value exported by the user always wins. For the settings a runtime reads
+    # ONCE at startup and that no flag exposes: `JULIA_THREAD_SLEEP_THRESHOLD` is the motivating case,
+    # where an I/O-relay extension wants its idle threads to park immediately rather than spin.
+    env::Dict{String,String}
 end
 
 """
@@ -84,6 +89,9 @@ function parse_extension_manifest(project_path::AbstractString)
         String[String(f) for f in raw_flags]
     end
 
+    raw_env = get(ext, "env", Dict{String,Any}())
+    env = Dict{String,String}(String(k) => string(v) for (k, v) in raw_env)
+
     return ExtensionManifest(
         String(namespace),
         String(module_name),
@@ -93,6 +101,7 @@ function parse_extension_manifest(project_path::AbstractString)
         event_topics,
         tui_file,
         julia_flags,
+        env,
     )
 end
 

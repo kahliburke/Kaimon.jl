@@ -436,6 +436,12 @@ function spawn_extension!(ext::ManagedExtension)
         # Mark this process as Kaimon-spawned so we can identify orphans
         env["KAIMON_EXTENSION"] = ext.config.manifest.namespace
         env["KAIMON_PARENT_PID"] = string(getpid())
+        # Manifest `env` defaults, for settings a runtime reads once at startup and that no flag
+        # exposes. `get!` is the whole contract: the extension states what it wants, and anything
+        # already in the environment — exported by the user, or set for a debugging run — wins.
+        for (k, v) in ext.config.manifest.env
+            get!(env, k, v)
+        end
         flags = ext.config.manifest.julia_flags
         if isempty(flags)
             flags = ["-t", "auto"]

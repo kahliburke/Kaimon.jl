@@ -26,6 +26,9 @@ shutdown_function = "cleanup"           # optional
 tui_file = "src/tui_panel.jl"          # optional
 julia_flags = ["-t4,1"]               # optional
 event_topics = ["breakpoint_hit"]      # optional
+
+[extension.env]                        # optional
+JULIA_THREAD_SLEEP_THRESHOLD = "0"
 ```
 
 | Field | Required | Description |
@@ -38,6 +41,20 @@ event_topics = ["breakpoint_hit"]      # optional
 | `tui_file` | No | Path to a lightweight TUI panel file (relative to project root). Press `[u]` on the extension in the Extensions tab to open it. |
 | `julia_flags` | No | Julia startup flags for the extension process (e.g., `["-t4,1", "--heap-size-hint=1G"]`). Defaults to `-t auto`. |
 | `event_topics` | No | Stream channels to forward from gate sessions to the extension (e.g., `["breakpoint_hit"]`). Requires an `on_event(channel, data, session_name)` function in the module. |
+| `[extension.env]` | No | Environment variables for the extension process, applied only where the parent has not already set them — so a value you export always wins. For settings a runtime reads once at startup that no flag exposes; see below. |
+
+### `[extension.env]`
+
+Some runtime behaviour is only reachable through the environment, and only at process start. The case
+this exists for is `JULIA_THREAD_SLEEP_THRESHOLD`: a thread woken by an arriving task spins for 4 ms
+before parking, betting that more work is coming. That is right for a compute pool and wrong for an
+extension that relays I/O — messages arriving faster than the window expires leave every thread
+spinning between them. Slate's notebook hub sets it to `0` for that reason, which took one notebook
+streaming audio from 156% of a core to 22%.
+
+Values are stringified, so `PORT = 8080` reaches the process as `"8080"`. Defaults never overwrite an
+existing variable, so exporting one yourself is always enough to override a manifest for a debugging
+run.
 
 ## Extension Registry
 

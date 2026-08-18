@@ -262,3 +262,50 @@ end
         rm(d; recursive = true, force = true)
     end
 end
+
+# Manifest `env` — startup environment an extension asks for. It exists for settings a runtime reads
+# ONCE at process start and that no command-line flag exposes; the motivating case is an I/O-relay
+# extension wanting `JULIA_THREAD_SLEEP_THRESHOLD=0` so its idle threads park instead of spinning.
+@testset "manifest env defaults" begin
+    mktempdir() do dir
+        write(joinpath(dir, "kaimon.toml"), """
+        [extension]
+        namespace = "demo"
+        module = "Demo"
+        tools_function = "create_tools"
+
+        [extension.env]
+        JULIA_THREAD_SLEEP_THRESHOLD = "0"
+        SOME_NUMBER = 12
+        """)
+        m = Kaimon.parse_extension_manifest(dir)
+        @test m.env["JULIA_THREAD_SLEEP_THRESHOLD"] == "0"
+        # An environment is strings; TOML is typed. A number in the manifest must not reach `setenv`
+        # as an Int, which would throw at spawn — long after the typo that caused it.
+        @test m.env["SOME_NUMBER"] == "12"
+        @test all(v -> v isa String, values(m.env))
+    end
+
+    # A manifest without the table still loads, and asks for nothing.
+    mktempdir() do dir
+        write(joinpath(dir, "kaimon.toml"), """
+        [extension]
+        namespace = "bare"
+        module = "Bare"
+        tools_function = "create_tools"
+        """)
+        @test isempty(Kaimon.parse_extension_manifest(dir).env)
+    end
+end
+
+# The application rule, which is the part that matters for anyone debugging: a manifest default must
+# never overwrite what the parent environment already says. `get!` is what the spawn path uses.
+@testset "manifest env never overrides the parent" begin
+    parent = Dict("JULIA_THREAD_SLEEP_THRESHOLD" => "5000000", "OTHER" => "keep")
+    for (k, v) in Dict("JULIA_THREAD_SLEEP_THRESHOLD" => "0", "FRESH" => "added")
+        get!(parent, k, v)
+    end
+    @test parent["JULIA_THREAD_SLEEP_THRESHOLD"] == "5000000"   # the user's export wins
+    @test parent["FRESH"] == "added"                            # …and unset ones are filled in
+    @test parent["OTHER"] == "keep"
+end
