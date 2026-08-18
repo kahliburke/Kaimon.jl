@@ -979,7 +979,7 @@ function _mock_managed_ext(;
 )
     manifest = ExtensionManifest(
         namespace, module_name, "create_tools", description,
-        "on_shutdown", String[], tui_file, String[],
+        "on_shutdown", String[], tui_file, String[], Dict{String,String}(),
     )
     entry = ExtensionEntry(project_path, true, true)
     config = ExtensionConfig(entry, manifest)
