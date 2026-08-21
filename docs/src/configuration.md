@@ -183,16 +183,55 @@ See [Sessions](sessions.md#session-preferences) for details on how preferences a
 
 ## Tools Configuration
 
-The `.kaimon/tools.json` file controls which MCP tools are available in a project:
+The `.kaimon/tools.json` file controls which MCP tools are available in a project. This is
+useful for restricting which operations MCP agents can perform in sensitive projects, and for
+trimming the advertised surface so agents choose from a shorter, more relevant list.
+
+A config either **adjusts** the default surface or **selects** its own.
+
+To turn a few tools off and keep everything else — a file that only subtracts starts from the
+default surface:
 
 ```json
 {
-  "disabled_tools": ["pkg_add", "pkg_rm"],
-  "enabled_tools": ["*"]
+  "disabled_tools": ["pkg_add", "pkg_rm"]
 }
 ```
 
-This is useful for restricting which operations MCP agents can perform in sensitive projects.
+To advertise only a chosen set — naming tools makes the file an allowlist:
+
+```json
+{
+  "enabled_tools": ["ex", "search_code", "grep_code", "run_tests"]
+}
+```
+
+Named groups work too, and can be toggled together:
+
+```json
+{
+  "tool_sets": {
+    "search": { "enabled": true,  "tools": ["search_code", "grep_code"] },
+    "admin":  { "enabled": false, "tools": ["qdrant_create_collection"] }
+  },
+  "individual_overrides": { "run_tests": true, "_comment": "keys starting with _ are ignored" }
+}
+```
+
+### Keys
+
+| Key | Meaning |
+|-----|---------|
+| `tool_sets` | Named groups; every group with `"enabled": true` is unioned in. Selects. |
+| `enabled_tools` | Tool names to advertise. `"*"` means the whole default surface. Names select; `"*"` does not. |
+| `disabled_tools` | Tool names to remove. |
+| `individual_overrides` | `name: true/false`, applied last so it overrides everything above. Keys beginning with `_` are comments. |
+
+Some advanced and infrastructure tools are off the default surface. Naming one in
+`enabled_tools`, a `tool_set`, or `individual_overrides` is the way to bring it back.
+
+If a config resolves to zero tools, Kaimon warns rather than silently advertising nothing —
+that is nearly always a typo in a tool name.
 
 ## Environment Variables
 

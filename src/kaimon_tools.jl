@@ -6,13 +6,23 @@
     load_tools_config(config_path::String = ".kaimon/tools.json")
 
 Load the tools configuration from .kaimon/tools.json.
-Returns a Set of enabled tool names (as Symbols).
+Returns a Set of enabled tool ids (as Symbols).
 
-The configuration supports:
-- Tool sets that can be enabled/disabled as groups
-- Individual tool overrides that take precedence over tool set settings
+A config either **selects** a surface or **adjusts** the default one:
 
-If the config file doesn't exist, returns `nothing` to indicate all tools should be enabled.
+- `tool_sets` — named groups, unioned when `enabled`. A selection.
+- `enabled_tools` — a list of names, or `"*"` for the whole default surface. Names are a
+  selection; `"*"` is not.
+- `disabled_tools` — names to remove.
+- `individual_overrides` — `name => bool`, applied last so they beat everything above.
+  Keys starting with `_` are treated as comments.
+
+A file that only subtracts (`disabled_tools` and/or `individual_overrides` set to `false`,
+with no enabled `tool_sets` and no literal `enabled_tools`) starts from the default surface,
+so it reads as a denylist. Otherwise the file is an allowlist, which is also the only way to
+re-enable a `DEFAULT_OFF_TOOLS` entry.
+
+If the config file doesn't exist, returns `nothing` to indicate the default surface.
 """
 function load_tools_config(
     config_path::String = ".kaimon/tools.json",
@@ -29,39 +39,76 @@ function load_tools_config(
         config = JSON.parsefile(full_path; dicttype = Dict{String,Any})
         enabled_tools = Set{Symbol}()
 
-        # First, process tool sets
+        # A config either SELECTS a surface or ADJUSTS the default one. Enabled
+        # `tool_sets`, and a literal `enabled_tools` list, are selections: they start from
+        # nothing and opt tools in. A file that only subtracts adjusts instead, starting
+        # from the default surface — so `{"disabled_tools": ["pkg_add"]}` means "everything
+        # except pkg_add" rather than "nothing at all".
+        selects = false
+
         tool_sets = get(config, "tool_sets", Dict())
-        for (set_name, set_config) in tool_sets
+        for (_set_name, set_config) in tool_sets
             if get(set_config, "enabled", false)
-                tools = get(set_config, "tools", String[])
-                for tool_name in tools
+                selects = true
+                for tool_name in get(set_config, "tools", String[])
                     push!(enabled_tools, Symbol(tool_name))
                 end
             end
         end
 
-        # Then apply individual overrides
-        individual_overrides = get(config, "individual_overrides", Dict())
-        for (tool_name, enabled) in individual_overrides
-            # Skip comment entries
-            if startswith(tool_name, "_")
-                continue
-            end
-
-            tool_sym = Symbol(tool_name)
-            if enabled
-                push!(enabled_tools, tool_sym)
+        # `enabled_tools`: "*" pulls in the default surface, names select explicitly.
+        for name in get(config, "enabled_tools", String[])
+            if name == "*"
+                union!(enabled_tools, _default_surface_ids())
             else
-                delete!(enabled_tools, tool_sym)
+                selects = true
+                push!(enabled_tools, Symbol(name))
             end
         end
 
+        selects || union!(enabled_tools, _default_surface_ids())
+
+        for name in get(config, "disabled_tools", String[])
+            delete!(enabled_tools, Symbol(name))
+        end
+
+        # Individual overrides are the most specific layer, so they run last.
+        for (tool_name, enabled) in get(config, "individual_overrides", Dict())
+            startswith(tool_name, "_") && continue   # comment entries
+            tool_sym = Symbol(tool_name)
+            enabled ? push!(enabled_tools, tool_sym) : delete!(enabled_tools, tool_sym)
+        end
+
+        # Validate against the registry, not just the config: a misspelled name yields a
+        # non-empty set that still matches no tool, which is the failure worth reporting.
+        known = _known_tool_ids()
+        if !isempty(known)
+            unknown = sort!(String.(collect(setdiff(enabled_tools, known))))
+            isempty(unknown) ||
+                @warn "Unknown tool names in tools configuration — check the spelling." path =
+                    full_path names = unknown
+            if isempty(intersect(enabled_tools, known))
+                @warn "Tools configuration resolved to zero tools — no MCP tools will be \
+                       advertised." path = full_path
+            end
+        end
         return enabled_tools
     catch e
         @warn "Error loading tools configuration from $full_path: $e. Enabling all tools."
         return nothing
     end
 end
+
+"""Every registered tool id. Empty when the registry hasn't been populated yet — both
+callers set `ALL_TOOLS[]` before reading the config."""
+function _known_tool_ids()::Set{Symbol}
+    registry = ALL_TOOLS[]
+    registry === nothing && return Set{Symbol}()
+    return Set{Symbol}(t.id for t in registry)
+end
+
+"""Tool ids on the default agent surface: everything registered except `DEFAULT_OFF_TOOLS`."""
+_default_surface_ids()::Set{Symbol} = setdiff(_known_tool_ids(), DEFAULT_OFF_TOOLS)
 
 """
     filter_tools_by_config(enabled_tools::Union{Set{Symbol},Nothing})
