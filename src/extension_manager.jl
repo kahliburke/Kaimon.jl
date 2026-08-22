@@ -463,6 +463,9 @@ function spawn_extension!(ext::ManagedExtension)
         proc = run(pipeline(cmd; stdout = log_io, stderr = log_io); wait = false)
         ext.process = proc
         ext.status = :starting
+        # Re-stamp: the startup budget belongs to the BOOT, not to building the managed environment
+        # above, which for a package that just moved to a new version means a full precompile.
+        ext.started_at = time()
         ext.last_heartbeat = time()
 
         # Background task to detect process exit
@@ -740,9 +743,10 @@ function _rescan_registry_if_changed!()
     mt == baseline && return false
     _ext_registry_mtime[] = mt
     r = rescan_extensions!()
-    (isempty(r.added) && isempty(r.removed)) ||
+    (isempty(r.added) && isempty(r.removed) && isempty(r.relocated)) ||
         _push_log!(:info,
-            "extensions.json changed → rescan (added=$(r.added) removed=$(r.removed))")
+            "extensions.json changed → rescan (added=$(r.added) removed=$(r.removed) " *
+            "relocated=$(r.relocated))")
     return true
 end
 
@@ -793,8 +797,13 @@ function _monitor_extensions!(conn_mgr)
 
                 # Timeout: give up only after a generous, precompile-aware budget (a dead
                 # process is caught above; this is the "alive but not serving yet" case).
+                # No process yet means `spawn_extension!` is still ahead of the launch — building
+                # the managed environment for an install that moved, which precompiles the whole dep
+                # tree. Timing that out would mark a healthy spawn crashed and start a SECOND one on
+                # top of it, since the relocation path spawns outside MANAGED_EXTENSIONS_LOCK.
                 timeout = _extension_startup_timeout()
-                if ext.status == :starting && time() - ext.started_at > timeout
+                if ext.status == :starting && ext.process !== nothing &&
+                   time() - ext.started_at > timeout
                     ext.status = :crashed
                     # Split the failure mode: did the extension's gate advertise at all?
                     advertised = try
@@ -878,16 +887,79 @@ function start_extensions!()
     _ext_registry_mtime[] = _registry_mtime()
 end
 
+# Did the registry entry change under a namespace we already manage? Only the fields that decide
+# WHERE the package is and WHETHER it may run — the manifest is deliberately not compared, because
+# kaimon.toml is edited in place in a dev checkout and bouncing a live extension on every save is
+# not what its author wants.
+_entry_differs(old::ExtensionEntry, new::ExtensionEntry) =
+    normalize_path(old.project_path) != normalize_path(new.project_path) ||
+    old.enabled != new.enabled || old.auto_start != new.auto_start
+
+# What a changed entry means for the process currently running under that namespace. Pure, so the
+# policy is testable without spawning anything.
+#
+# The case this exists for: an UPGRADE. A registry- or app-installed package lives at
+# `<depot>/packages/<Name>/<slug>`, the slug follows the version's tree hash, and the updated package
+# repoints its own registration at the new directory. Reconciling by namespace alone, we kept the
+# process launched from the OLD slug — which still exists until a `gc`, so nothing errored and the
+# update simply appeared not to have happened.
+#
+# A move only restarts something that is actually LIVE: an extension the user stopped by hand stays
+# stopped, and one that is crashing keeps its backoff (the monitor restarts it, now from the new
+# path). `:start` covers the opposite hand edit — `enabled` flipped back on in the file.
+function _registry_change_action(old::ExtensionEntry, new::ExtensionEntry, status::Symbol)
+    live = status in (:running, :starting)
+    new.enabled || return live ? :stop : :none
+    moved = normalize_path(old.project_path) != normalize_path(new.project_path)
+    moved && live && return :restart
+    !old.enabled && new.auto_start && status in (:stopped, :crashed) && return :start
+    return :none
+end
+
+# Adopt entries that changed under namespaces we already manage, and apply the consequences. Runs
+# OUTSIDE `MANAGED_EXTENSIONS_LOCK` — a relocated extension rebuilds its managed environment before
+# it boots, which can take far longer than a lock should ever be held. Returns the namespaces whose
+# process was replaced.
+function _apply_registry_changes!(changed::Vector{Tuple{ManagedExtension,ExtensionConfig}})
+    restarted = String[]
+    for (ext, config) in changed
+        ns = config.manifest.namespace
+        old = ext.config.entry
+        action = _registry_change_action(old, config.entry, ext.status)
+        ext.config = config          # adopt first: anything spawned below must use the NEW path
+        if normalize_path(old.project_path) != normalize_path(config.entry.project_path)
+            _push_log!(:info, "Extension '$ns' moved: $(old.project_path) → $(config.entry.project_path)")
+        end
+        try
+            if action == :stop
+                stop_extension!(ext)
+            elseif action == :restart
+                stop_extension!(ext)
+                ext.restart_count = 0     # the crash history belonged to the copy we just replaced
+                spawn_extension!(ext)
+                push!(restarted, ns)
+            elseif action == :start
+                spawn_extension!(ext)
+            end
+        catch e
+            _push_log!(:warn, "Extension '$ns' could not apply its registry change ($action): " *
+                              first(sprint(showerror, e), 200))
+        end
+    end
+    return restarted
+end
+
 """
-    rescan_extensions!() -> (; added, removed, kept)
+    rescan_extensions!() -> (; added, removed, kept, relocated)
 
 Reconcile `MANAGED_EXTENSIONS` against `extensions.json` on disk at runtime, so a
 newly-added (or removed) extension is picked up WITHOUT restarting Kaimon — and
 WITHOUT bouncing extensions that are unchanged. Newly-configured extensions are
 added (and spawned when enabled + auto_start); extensions dropped from disk are
-stopped and removed; existing ones keep running with their current state. Returns
-the namespaces in each bucket. Runs in the main Kaimon process, where the
-extension processes live (not a gate session).
+stopped and removed; an entry whose `project_path` or flags changed is adopted, and
+the process replaced when it was running (`relocated`); everything else keeps
+running with its current state. Returns the namespaces in each bucket. Runs in the
+main Kaimon process, where the extension processes live (not a gate session).
 """
 function rescan_extensions!()
     configs = load_extension_configs()
@@ -905,25 +977,38 @@ function rescan_extensions!()
 
     added = String[]
     kept = String[]
+    changed = Tuple{ManagedExtension,ExtensionConfig}[]
     lock(MANAGED_EXTENSIONS_LOCK) do
         filter!(e -> e.config.manifest.namespace in disk_ns, MANAGED_EXTENSIONS)
-        known = Set(e.config.manifest.namespace for e in MANAGED_EXTENSIONS)
+        by_ns = Dict(e.config.manifest.namespace => e for e in MANAGED_EXTENSIONS)
         for config in configs
             ns = config.manifest.namespace
-            if ns in known
+            ext = get(by_ns, ns, nothing)
+            if ext !== nothing
+                # Two entries can't share a namespace: the gate routes by it, so a second copy
+                # would fight the first for the same session and tool names. The first entry wins.
+                if ns in kept
+                    _push_log!(:warn, "Ignoring a second extension registered as '$ns': " *
+                                      "$(config.entry.project_path)")
+                    continue
+                end
                 push!(kept, ns)
+                _entry_differs(ext.config.entry, config.entry) && push!(changed, (ext, config))
                 continue
             end
             ext = ManagedExtension(config)
             push!(MANAGED_EXTENSIONS, ext)
+            by_ns[ns] = ext
             push!(added, ns)
             config.entry.enabled && config.entry.auto_start && spawn_extension!(ext)
         end
     end
 
+    relocated = _apply_registry_changes!(changed)
     removed = String[e.config.manifest.namespace for e in to_remove]
-    _push_log!(:info, "Extension rescan: added=$(added) removed=$(removed) kept=$(kept)")
-    return (; added, removed, kept)
+    _push_log!(:info, "Extension rescan: added=$(added) removed=$(removed) kept=$(kept)" *
+                      (isempty(relocated) ? "" : " relocated=$(relocated)"))
+    return (; added, removed, kept, relocated)
 end
 
 """

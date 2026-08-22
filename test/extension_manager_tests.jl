@@ -170,6 +170,77 @@ end
     end
 end
 
+@testset "a moved extension install is adopted and its process replaced" begin
+    # The upgrade case: a registry/app install lives at `<depot>/packages/<Name>/<slug>`, the slug
+    # follows the version's tree hash, and the updated package repoints its own registration. Before
+    # this, reconciling by namespace kept the process launched from the OLD slug — which still
+    # exists until a `gc`, so nothing errored and the update looked inert.
+    @testset "policy" begin
+        entry(p; enabled = true, auto = true) = Kaimon.ExtensionEntry(p, enabled, auto)
+        a, b = "/tmp/pkgs/Slate/aaa", "/tmp/pkgs/Slate/bbb"
+        act = Kaimon._registry_change_action
+        @test act(entry(a), entry(b), :running) == :restart      # moved under a live process
+        @test act(entry(a), entry(b), :starting) == :restart
+        @test act(entry(a), entry(b), :stopped) == :none         # stopped by hand → stays stopped
+        @test act(entry(a), entry(b), :crashed) == :none         # the monitor's backoff owns this
+        @test act(entry(a), entry(a), :running) == :none         # no move, no flags change
+        @test act(entry(a), entry(b; enabled = false), :running) == :stop
+        @test act(entry(a), entry(a; enabled = false), :stopped) == :none
+        @test act(entry(a; enabled = false), entry(a), :stopped) == :start        # re-enabled by hand
+        @test act(entry(a; enabled = false), entry(a; auto = false), :stopped) == :none
+        # A move plus a disable is a disable — never start the new copy just because it moved.
+        @test act(entry(a), entry(b; enabled = false), :starting) == :stop
+        @test Kaimon._entry_differs(entry(a), entry(b))
+        @test !Kaimon._entry_differs(entry(a), entry(a))
+        @test Kaimon._entry_differs(entry(a), entry(a; auto = false))
+    end
+
+    # End-to-end through the registry, with auto_start=false so nothing is ever spawned: the point
+    # here is that the new path is ADOPTED (this is the row the TUI renders, which used to go on
+    # showing the replaced install).
+    withenv("XDG_CONFIG_HOME" => mktempdir()) do
+        make_ext = function (ns)
+            dir = mktempdir()
+            write(joinpath(dir, "kaimon.toml"),
+                "[extension]\nnamespace = \"$ns\"\nmodule = \"M\"\ntools_function = \"t\"\n")
+            dir
+        end
+        old_slug, new_slug = make_ext("moved_x"), make_ext("moved_x")
+        path_of() = only(Kaimon.get_managed_extensions()).config.entry.project_path
+        saved = lock(Kaimon.MANAGED_EXTENSIONS_LOCK) do
+            s = copy(Kaimon.MANAGED_EXTENSIONS); empty!(Kaimon.MANAGED_EXTENSIONS); s
+        end
+        try
+            Kaimon.save_extensions_config([Kaimon.ExtensionEntry(old_slug, true, false)])
+            @test Set(Kaimon.rescan_extensions!().added) == Set(["moved_x"])
+            @test path_of() == old_slug
+
+            Kaimon.save_extensions_config([Kaimon.ExtensionEntry(new_slug, true, false)])
+            r = Kaimon.rescan_extensions!()
+            @test Set(r.kept) == Set(["moved_x"])                # same namespace — not re-added
+            @test isempty(r.added) && isempty(r.removed)
+            @test isempty(r.relocated)                           # nothing was running to replace
+            @test path_of() == new_slug                          # …but the entry moved with it
+            @test length(Kaimon.get_managed_extensions()) == 1   # adopted, not duplicated
+
+            # A second entry claiming the same namespace is ignored rather than run twice — the gate
+            # routes by namespace, so both copies would fight over one session.
+            Kaimon.save_extensions_config([Kaimon.ExtensionEntry(new_slug, true, false),
+                                           Kaimon.ExtensionEntry(old_slug, true, false)])
+            r2 = Kaimon.rescan_extensions!()
+            @test r2.kept == ["moved_x"]
+            @test length(Kaimon.get_managed_extensions()) == 1
+            @test path_of() == new_slug
+        finally
+            lock(Kaimon.MANAGED_EXTENSIONS_LOCK) do
+                empty!(Kaimon.MANAGED_EXTENSIONS); append!(Kaimon.MANAGED_EXTENSIONS, saved)
+            end
+            rm(old_slug; recursive = true, force = true)
+            rm(new_slug; recursive = true, force = true)
+        end
+    end
+end
+
 @testset "extensions.json watch reconciles only after seeding, on change" begin
     withenv("XDG_CONFIG_HOME" => mktempdir()) do
         dir = mktempdir()
