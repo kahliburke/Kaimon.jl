@@ -217,6 +217,31 @@ using DBInterface
         @test isempty(Kaimon.project_test_runs(proj))
     end
 
+    @testset "Collecting a run whose process never exits is bounded" begin
+        # A suite that leaks a daemon hands its stdout to a grandchild that outlives it, so
+        # the pipe never hits EOF and the process never looks done. The runner's DONE line
+        # has already given us status and results, so collecting must format what it has
+        # rather than blocking forever — this hung `check_tests` indefinitely in practice.
+        proc = open(`sleep 300`, "r")
+        try
+            r = Kaimon.TestRun(; id = 93001, project_path = mktempdir(), pattern = "")
+            r.process = proc
+            r.status = Kaimon.RUN_PASSED
+            r.reader_done = false              # reader still blocked on the open pipe
+
+            t0 = time()
+            out = Kaimon._finish_and_format(r, r.project_path, "", false, false)
+            elapsed = time() - t0
+
+            # Two bounded waits of 5s each, so ~10s worst case; anything near 30s is a hang.
+            @test elapsed < 20
+            @test out isa String
+            @test !isempty(out)
+        finally
+            process_running(proc) && kill(proc)
+        end
+    end
+
     @testset "Status labels read as words, not enum names" begin
         @test Kaimon.test_status_label(Kaimon.RUN_PASSED) == "passed"
         @test Kaimon.test_status_label(Kaimon.RUN_FAILED) == "failed"

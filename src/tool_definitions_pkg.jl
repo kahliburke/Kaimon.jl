@@ -259,17 +259,20 @@ function _finish_and_format(
 )
     # The runner marks status on TEST_RUNNER:DONE before the reader task
     # necessarily finishes parsing the final summary block.
+    #
+    # Both waits are bounded. A suite that leaks a daemon — a server left listening, say —
+    # hands the child's stdout to a grandchild that outlives it, so the pipe never reaches
+    # EOF: the reader never finishes and the process never looks done. Status and results
+    # are already parsed from the runner's own DONE line, so a collect call formats what it
+    # has rather than blocking forever on output nobody is going to send.
     reader_deadline = time() + 5.0
     while !run.reader_done && time() < reader_deadline
         sleep(0.05)
     end
-
-    # If the process has exited but only summary-table output was emitted,
-    # parse the buffered raw output one last time before formatting.
     if run.process !== nothing
-        try
-            wait(run.process)
-        catch
+        exit_deadline = time() + 5.0
+        while !process_exited(run.process) && time() < exit_deadline
+            sleep(0.05)
         end
     end
     _parse_raw_summary!(run)
