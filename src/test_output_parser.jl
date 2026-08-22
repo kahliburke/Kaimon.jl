@@ -57,9 +57,16 @@ mutable struct TestRun
     total_tests::Int
     pid::Int                      # test subprocess PID
     process::Union{Base.Process,Nothing}
+    coverage::Bool                # recorded because it dominates runtime, so duration
+                                  # estimates must key on it alongside the pattern
 end
 
-function TestRun(; id::Int = 0, project_path::String = "", pattern::String = "")
+function TestRun(;
+    id::Int = 0,
+    project_path::String = "",
+    pattern::String = "",
+    coverage::Bool = false,
+)
     return TestRun(
         id,
         project_path,
@@ -77,6 +84,7 @@ function TestRun(; id::Int = 0, project_path::String = "", pattern::String = "")
         0,
         0,
         nothing,
+        coverage,
     )
 end
 

@@ -50,6 +50,144 @@ function _write_test_runner_script()::String
     return path
 end
 
+# ── Live-run registry, duration estimation, backgrounding threshold ──────────
+#
+# A backgrounded run outlives the tool call that started it, so the agent gets a handle
+# (the TestRun id) and comes back for the result. These are the process-local runs that a
+# handle resolves against; completed runs also land in the analytics DB, but the in-memory
+# copy is what still holds the formatted output and failure detail.
+
+const _LIVE_TEST_RUNS = Dict{Int,TestRun}()
+const _LIVE_TEST_RUNS_LOCK = ReentrantLock()
+const _LIVE_TEST_RUNS_MAX = 32
+
+"""Track a run so `check_tests` can find it by id. Evicts the oldest finished runs."""
+function _register_live_run!(run::TestRun)
+    lock(_LIVE_TEST_RUNS_LOCK) do
+        _LIVE_TEST_RUNS[run.id] = run
+        over = length(_LIVE_TEST_RUNS) - _LIVE_TEST_RUNS_MAX
+        if over > 0
+            finished = sort!([k for (k, r) in _LIVE_TEST_RUNS if r.status != RUN_RUNNING])
+            for k in finished[1:min(over, length(finished))]
+                delete!(_LIVE_TEST_RUNS, k)
+            end
+        end
+    end
+    return run
+end
+
+"""The tracked run with this id, or `nothing`."""
+get_live_test_run(id::Integer) =
+    lock(_LIVE_TEST_RUNS_LOCK) do
+        get(_LIVE_TEST_RUNS, Int(id), nothing)
+    end
+
+"""Tracked runs still executing, oldest first."""
+running_test_runs() =
+    lock(_LIVE_TEST_RUNS_LOCK) do
+        sort!([r for r in values(_LIVE_TEST_RUNS) if r.status == RUN_RUNNING]; by = r -> r.id)
+    end
+
+"""
+    find_running_test_run(project_path, pattern, coverage) -> Union{TestRun,Nothing}
+
+An in-flight run of this exact invocation, or `nothing`. Used to hand back an existing run
+rather than spawning a duplicate that would just contend for the same cores.
+"""
+function find_running_test_run(
+    project_path::String,
+    pattern::String,
+    coverage::Bool,
+)::Union{TestRun,Nothing}
+    for r in running_test_runs()
+        r.project_path == project_path && r.pattern == pattern && r.coverage == coverage &&
+            return r
+    end
+    return nothing
+end
+
+"""
+    test_concurrency() -> Int
+
+Concurrent test runs allowed per project. Env (`KAIMON_TEST_CONCURRENCY`) > persisted
+preference > 1.
+"""
+function test_concurrency()::Int
+    v = tryparse(Int, get(ENV, "KAIMON_TEST_CONCURRENCY", ""))
+    v === nothing && (v = get_test_concurrency_preference())
+    return max(1, v)
+end
+
+"""In-flight runs for a project, oldest first."""
+project_test_runs(project_path::String) =
+    filter(r -> r.project_path == project_path, running_test_runs())
+
+"""
+    test_promote_after() -> Float64
+
+Seconds a test run may hold the foreground before it's backgrounded. Resolved as env
+(`KAIMON_TEST_PROMOTE_AFTER`) > persisted preference > 30s default; `<= 0` disables
+backgrounding entirely, mirroring `_promote_after` for evals.
+"""
+function test_promote_after()::Float64
+    v = tryparse(Float64, get(ENV, "KAIMON_TEST_PROMOTE_AFTER", ""))
+    v === nothing && (v = get_test_promote_after_preference())
+    return v <= 0 ? Inf : v
+end
+
+"""
+    estimate_test_duration(project_path, pattern, coverage) -> Union{Float64,Nothing}
+
+Median duration in seconds of recent runs of this exact invocation, or `nothing` when
+there's no history for it.
+
+The match is deliberately exact. Falling back to project-wide history would estimate a fast
+subset from full-suite runs and background it for no reason, so an unseen pattern counts as
+unknown — the caller then runs it in the foreground and promotes on the clock, which records
+a duration and makes the next run predictable.
+
+Median rather than mean, so one pathological run (a hang, a cold cache) doesn't skew it.
+"""
+function estimate_test_duration(
+    project_path::String,
+    pattern::String,
+    coverage::Bool,
+)::Union{Float64,Nothing}
+    # Estimation is an optimisation, so a DB problem must not fail the test run — but log
+    # it rather than swallowing it silently, or a broken query looks like "no history".
+    durations = try
+        Database.get_test_run_durations(project_path, pattern, coverage)
+    catch e
+        @debug "Test duration lookup failed" exception = (e, catch_backtrace())
+        Float64[]
+    end
+    isempty(durations) && return nothing
+    return _median(durations) / 1000.0
+end
+
+"""Median of a non-empty vector (avoids a Statistics dependency for one call)."""
+function _median(xs::Vector{Float64})
+    s = sort(xs)
+    n = length(s)
+    return isodd(n) ? s[(n + 1) ÷ 2] : (s[n ÷ 2] + s[n ÷ 2 + 1]) / 2
+end
+
+"""Lowercase name for a run status (`passed`, not `RUN_PASSED`) — used in the DB rows and
+in anything an agent reads."""
+test_status_label(status::TestRunStatus) =
+    status == RUN_PASSED ? "passed" :
+    status == RUN_FAILED ? "failed" :
+    status == RUN_ERROR ? "error" :
+    status == RUN_CANCELLED ? "cancelled" : "running"
+
+"""Human-readable duration: `45s`, `2m30s`."""
+function format_duration(secs::Real)
+    s = max(0, round(Int, secs))
+    s < 60 && return "$(s)s"
+    m, r = divrem(s, 60)
+    return r == 0 ? "$(m)m" : "$(m)m$(r)s"
+end
+
 """
     spawn_test_run(project_path::String; pattern="", verbose=1) -> TestRun
 
@@ -68,7 +206,13 @@ function spawn_test_run(
         _TEST_RUN_COUNTER[]
     end
 
-    run = TestRun(; id = run_id, project_path = project_path, pattern = pattern)
+    run = TestRun(;
+        id = run_id,
+        project_path = project_path,
+        pattern = pattern,
+        coverage = coverage,
+    )
+    _register_live_run!(run)
 
     script_path = _write_test_runner_script()
 
@@ -293,11 +437,7 @@ function _persist_test_run!(run::TestRun)
     fmt(t) = Dates.format(t, dateformat"yyyy-mm-dd HH:MM:SS")
     duration_ms = run.finished_at !== nothing ?
         Float64(Dates.value(run.finished_at - run.started_at)) : 0.0
-    status_str =
-        run.status == RUN_PASSED ? "passed" :
-        run.status == RUN_FAILED ? "failed" :
-        run.status == RUN_ERROR ? "error" :
-        run.status == RUN_CANCELLED ? "cancelled" : "running"
+    status_str = test_status_label(run.status)
     summary = format_test_summary(run)
     summary_short = String(first(summary, 500))
 
@@ -309,7 +449,7 @@ function _persist_test_run!(run::TestRun)
              status = status_str, pattern = run.pattern,
              total_pass = run.total_pass, total_fail = run.total_fail,
              total_error = run.total_error, total_tests = run.total_tests,
-             duration_ms = duration_ms, summary = summary_short),
+             duration_ms = duration_ms, summary = summary_short, coverage = run.coverage),
             [(name = r.name, depth = r.depth, pass_count = r.pass_count, fail_count = r.fail_count,
               error_count = r.error_count, total_count = r.total_count) for r in run.results],
             [(file = f.file, line = f.line, expression = f.expression, evaluated = f.evaluated,

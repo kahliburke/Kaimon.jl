@@ -105,7 +105,8 @@ Kaimon integrates with Infiltrator.jl for interactive breakpoint debugging. When
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `run_tests` | Run project tests in a subprocess. Supports pattern filtering and coverage. | `pattern` (ReTest regex), `coverage`, `verbose`, `project_path`, `session` |
+| `run_tests` | Run project tests in a subprocess. Supports pattern filtering and coverage. Long suites background automatically. | `pattern` (ReTest regex), `coverage`, `verbose`, `project_path`, `session` |
+| `check_tests` | Check or cancel a backgrounded test run, or list runs in flight. | `run_id`, `action` (`status`/`cancel`) |
 | `profile_code` | Profile Julia code to identify performance bottlenecks. Uses `@profile` with flat output. | `code`, `session` |
 | `stress_test` | Spawn concurrent simulated MCP agents to stress-test a session. | `code`, `num_agents`, `stagger`, `timeout`, `session` |
 
@@ -125,6 +126,29 @@ run_tests(project_path="/path/to/MyPackage.jl")
 ```
 
 Provide `project_path` (absolute path to the project) or `session` to identify the project. If neither is given and only one session is connected, that session's project is used. The test runner handles both `test/Project.toml` environments and legacy `[extras]/[targets]` layouts automatically.
+
+**Long suites background automatically**
+
+A suite that will take longer than the threshold (default 30s) doesn't hold the call open. Kaimon estimates the duration from previous runs of the *same* invocation — the estimate is keyed on project, pattern and coverage together, because a filtered subset and a full suite are not comparable. When there's no history the run starts in the foreground and moves to the background if it passes the threshold, which records a duration and makes the next run predictable.
+
+```
+run_tests(pattern="Integration")
+# => 🧪 Test run backgrounded. Run id: 7
+#    Backgrounded before starting — previous runs of this pattern "Integration" took about 4m10s.
+
+check_tests(run_id=7)
+# While running: a one-line progress summary with elapsed time and ETA
+# Once finished: exactly what run_tests would have returned, failures included
+
+check_tests()                          # list runs still in flight
+check_tests(run_id=7, action="cancel") # kill the test subprocess
+```
+
+Set the threshold in the Config tab, or with `KAIMON_TEST_PROMOTE_AFTER`. `0` disables backgrounding, so `run_tests` always blocks until the suite finishes.
+
+**Runs on one project are serialised**
+
+Only one test run per project is in flight at a time. Overlapping runs are rarely independent — a filtered subset and the full suite share fixtures, temp directories, ports and any global state the suite mutates, so running them together can fail outright, or pass in a way that hides a real problem. Re-requesting a run that's already going returns the existing handle; requesting a *different* one while a run is in flight tells you to wait or cancel. Raise `KAIMON_TEST_CONCURRENCY` if a suite is isolated enough to overlap safely.
 
 ## Code Search
 

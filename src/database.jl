@@ -38,6 +38,7 @@ export init_db!,
     get_deleted_files,
     record_test_run!,
     get_test_runs,
+    get_test_run_durations,
     get_test_results,
     get_test_failures,
     persist_job!,
@@ -140,7 +141,8 @@ const _SCHEMA = String[
         started_at DATETIME NOT NULL, finished_at DATETIME, status TEXT NOT NULL,
         pattern TEXT DEFAULT '', total_pass INTEGER DEFAULT 0, total_fail INTEGER DEFAULT 0,
         total_error INTEGER DEFAULT 0, total_tests INTEGER DEFAULT 0,
-        duration_ms REAL DEFAULT 0, summary TEXT DEFAULT '')""",
+        duration_ms REAL DEFAULT 0, summary TEXT DEFAULT '',
+        coverage INTEGER DEFAULT 0)""",
     "CREATE INDEX IF NOT EXISTS idx_test_runs_project ON test_runs(project_path, started_at DESC)",
     """CREATE TABLE IF NOT EXISTS test_results (
         id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL REFERENCES test_runs(id),
@@ -168,8 +170,19 @@ function init_db!(db_path::String = get_default_db_path())
         for ddl in _SCHEMA
             DBInterface.execute(db, ddl)
         end
+        # `CREATE TABLE IF NOT EXISTS` leaves an existing table alone, so columns added
+        # after a DB was first created have to be applied separately.
+        _ensure_column!(db, "test_runs", "coverage", "INTEGER DEFAULT 0")
         db
     end
+end
+
+"""Add `column` to `table` if it isn't there yet. Caller holds `_LOCK`."""
+function _ensure_column!(db, table::String, column::String, decl::String)
+    existing = DataFrame(DBInterface.execute(db, "PRAGMA table_info($table)"))
+    column in existing.name && return false
+    DBInterface.execute(db, "ALTER TABLE $table ADD COLUMN $column $decl")
+    return true
 end
 
 """Close the connection."""
@@ -290,8 +303,8 @@ end
 
 const _INSERT_TEST_RUN = """INSERT INTO test_runs
     (project_path, started_at, finished_at, status, pattern, total_pass, total_fail,
-     total_error, total_tests, duration_ms, summary)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+     total_error, total_tests, duration_ms, summary, coverage)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 const _INSERT_TEST_RESULT = """INSERT INTO test_results
     (run_id, testset_name, depth, pass_count, fail_count, error_count, total_count)
     VALUES (?, ?, ?, ?, ?, ?, ?)"""
@@ -312,7 +325,8 @@ function record_test_run!(run, results, failures)
     _withdb() do db
         DBInterface.execute(db, _INSERT_TEST_RUN,
             (run.project_path, run.started_at, run.finished_at, run.status, run.pattern,
-             run.total_pass, run.total_fail, run.total_error, run.total_tests, run.duration_ms, run.summary))
+             run.total_pass, run.total_fail, run.total_error, run.total_tests, run.duration_ms,
+             run.summary, hasproperty(run, :coverage) && run.coverage ? 1 : 0))
         run_id = (DBInterface.execute(db, "SELECT last_insert_rowid()") |> DataFrame)[1, 1]
         for r in results
             DBInterface.execute(db, _INSERT_TEST_RESULT,
@@ -334,6 +348,31 @@ function get_test_runs(; project_path::String = "", limit::Int = 50)
         _query("SELECT $cols FROM test_runs ORDER BY started_at DESC LIMIT ?", (limit,)) :
         _query("SELECT $cols FROM test_runs WHERE project_path = ? ORDER BY started_at DESC LIMIT ?",
             (project_path, limit))
+end
+
+"""
+    get_test_run_durations(project_path, pattern, coverage; limit=5) -> Vector{Float64}
+
+Durations (ms) of the most recent COMPLETED runs matching this exact invocation, newest
+first. The match is exact on `(project_path, pattern, coverage)` because those dominate
+runtime — a filtered subset and a full suite of the same project are not comparable, and
+neither is a coverage run. Cancelled/running rows are excluded: their durations say nothing
+about how long the suite takes.
+"""
+function get_test_run_durations(
+    project_path::String,
+    pattern::String,
+    coverage::Bool;
+    limit::Int = 5,
+)::Vector{Float64}
+    rows = _query(
+        """SELECT duration_ms FROM test_runs
+           WHERE project_path = ? AND pattern = ? AND coverage = ?
+             AND status IN ('passed', 'failed') AND duration_ms > 0
+           ORDER BY started_at DESC LIMIT ?""",
+        (project_path, pattern, coverage ? 1 : 0, limit),
+    )
+    return Float64[Float64(r["duration_ms"]) for r in rows]
 end
 
 """Per-testset results for a test run."""

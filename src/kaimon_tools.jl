@@ -185,6 +185,7 @@ function collect_tools()::Vector{MCPTool}
         pkg_add_tool,
         pkg_rm_tool,
         run_tests_tool,
+        check_tests_tool,
         stress_test_tool,
         extension_info_tool,
         manage_extension_tool,

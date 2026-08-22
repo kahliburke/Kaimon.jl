@@ -241,6 +241,8 @@ that is nearly always a typo in a tool name.
 | `APPDATA` | Windows | Windows config directory. Kaimon stores config in `$APPDATA/Kaimon/`. |
 | `XDG_CACHE_HOME` | Linux/macOS | Override the default cache directory (`~/.cache`). Kaimon stores data in `$XDG_CACHE_HOME/kaimon/`. |
 | `LOCALAPPDATA` | Windows | Windows equivalent of the cache directory. Kaimon stores data in `$LOCALAPPDATA/Kaimon/`. |
+| `KAIMON_TEST_PROMOTE_AFTER` | all | Seconds a test run may hold the foreground before `run_tests` backgrounds it (default `30`). `0` never backgrounds. |
+| `KAIMON_TEST_CONCURRENCY` | all | Test runs allowed in flight per project (default `1`). Runs are serialised because overlapping suites share fixtures and global state. |
 | `KAIMON_GATE_MODE` | all | Gate transport: `"ipc"` (default) or `"tcp"`. |
 | `KAIMON_GATE_HOST` | all | TCP bind address (default `127.0.0.1`). |
 | `KAIMON_GATE_PORT` | all | TCP REP socket port (default `0` = ephemeral). Setting it implies TCP mode. |

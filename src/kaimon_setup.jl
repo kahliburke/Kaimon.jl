@@ -13,6 +13,8 @@ public tui
 public setup_wizard_tui
 public get_gate_mirror_repl_preference, set_gate_mirror_repl_preference!
 public get_gate_promote_after_preference, set_gate_promote_after_preference!
+public get_test_promote_after_preference, set_test_promote_after_preference!
+public get_test_concurrency_preference, set_test_concurrency_preference!
 
 # ============================================================================
 # Port Management

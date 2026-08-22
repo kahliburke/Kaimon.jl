@@ -177,18 +177,55 @@ one session is connected, that session's project is used.""",
         # suite runs — warn rather than imply the run was filtered.
         pattern_ignored = !isempty(pattern) && !_pattern_likely_honored(project_path)
 
+        cov_on = coverage_enabled === true
+
+        # Runs on one project are serialised by default. Overlapping runs are rarely
+        # independent — a subset and the full suite share fixtures, temp dirs, ports and
+        # whatever global state the suite touches, so concurrency can fail outright or
+        # pass misleadingly. Identical re-invocations get the running handle back;
+        # different ones are told to wait, because silently returning a run of something
+        # else would be worse than saying no.
+        existing = find_running_test_run(project_path, pattern, cov_on)
+        if existing !== nothing
+            elapsed = (now() - existing.started_at).value / 1000.0
+            return "🧪 Already running as run $(existing.id) ($(format_duration(elapsed))) " *
+                   "— check_tests(run_id=$(existing.id)) to collect."
+        end
+        in_flight = project_test_runs(project_path)
+        if length(in_flight) >= test_concurrency()
+            other = first(in_flight)
+            scope = isempty(other.pattern) ? "full suite" : "\"$(other.pattern)\""
+            elapsed = (now() - other.started_at).value / 1000.0
+            return "🧪 Not started — run $(other.id) already in flight for this project " *
+                   "($scope, $(format_duration(elapsed))); runs are serialised. " *
+                   "check_tests(run_id=$(other.id)) to wait or cancel, or raise " *
+                   "KAIMON_TEST_CONCURRENCY."
+        end
+
+        # Predict from history for THIS exact invocation. A known-slow run is backgrounded
+        # before it starts; an unknown one runs in the foreground and is promoted on the
+        # clock, which records a duration so the next one is predictable.
+        estimate = estimate_test_duration(project_path, pattern, cov_on)
+        threshold = test_promote_after()
+        background_upfront = estimate !== nothing && estimate > threshold
+
         on_progress !== nothing &&
             on_progress("Spawning test subprocess for $(basename(project_path))...")
 
-        # Spawn ephemeral test subprocess
         run = spawn_test_run(project_path; pattern = pattern, verbose = verbose,
-                             coverage = coverage_enabled === true)
+                             coverage = cov_on)
 
         # Push to TUI buffer so the Tests tab picks it up
         _push_test_update!(:update, run)
 
-        # Poll for completion — timeout after 10 min to prevent hanging MCP calls
-        deadline = time() + 600.0
+        if background_upfront
+            return _backgrounded_message(run, estimate, pattern_ignored, pattern;
+                                         upfront = true)
+        end
+
+        # Foreground: stream progress while we wait, and hand back a handle rather than
+        # cancelling if the suite outlasts the threshold.
+        promote_at = time() + threshold
         while run.status == RUN_RUNNING
             sleep(0.5)
             if on_progress !== nothing
@@ -201,45 +238,149 @@ one session is connected, that session's project is used.""",
                     "$p passed, $f failed ($n_sets testsets done)",
                 )
             end
-            if time() > deadline
-                cancel_test_run!(run)
-                return "Test run timed out after 10 minutes.\n\n$(format_test_summary(run))"
+            if time() > promote_at
+                return _backgrounded_message(run, estimate, pattern_ignored, pattern;
+                                             upfront = false)
             end
         end
 
-        # The runner marks status on TEST_RUNNER:DONE before the reader task
-        # necessarily finishes parsing the final summary block.
-        reader_deadline = time() + 5.0
-        while !run.reader_done && time() < reader_deadline
-            sleep(0.05)
+        return _finish_and_format(run, project_path, pattern, pattern_ignored, cov_on)
+    end
+)
+
+"""Wait out the reader/process, then render the completed run exactly as `run_tests`
+always has. Shared with `check_tests` so a finished run reads identically either way."""
+function _finish_and_format(
+    run::TestRun,
+    project_path::String,
+    pattern::String,
+    pattern_ignored::Bool,
+    cov_on::Bool,
+)
+    # The runner marks status on TEST_RUNNER:DONE before the reader task
+    # necessarily finishes parsing the final summary block.
+    reader_deadline = time() + 5.0
+    while !run.reader_done && time() < reader_deadline
+        sleep(0.05)
+    end
+
+    # If the process has exited but only summary-table output was emitted,
+    # parse the buffered raw output one last time before formatting.
+    if run.process !== nothing
+        try
+            wait(run.process)
+        catch
+        end
+    end
+    _parse_raw_summary!(run)
+
+    warning = pattern_ignored ?
+        "⚠️  pattern \"$pattern\" was NOT applied — the whole suite ran. Only a " *
+        "runtests.jl that reads ARGS (ReTest's `retest(ARGS...)`) filters by " *
+        "pattern; Test.jl / SafeTestsets / TestItemRunner ignore it.\n\n" : ""
+    coverage = ""
+    if cov_on
+        cov = try
+            _collect_coverage(project_path)
+        catch e
+            "Coverage: collection failed ($(first(sprint(showerror, e), 120)))."
+        end
+        coverage = "\n" * cov * "\n"
+    end
+    return warning * format_test_summary(run) * coverage
+end
+
+"""The reply handing an agent a still-running suite: why it backgrounded, how long it's
+expected to take, and how to collect the result."""
+function _backgrounded_message(
+    run::TestRun,
+    estimate::Union{Float64,Nothing},
+    pattern_ignored::Bool,
+    pattern::String;
+    upfront::Bool,
+)
+    scope = isempty(pattern) ? "full suite" : "\"$pattern\""
+    when = upfront ? "" : " after $(format_duration(test_promote_after()))"
+    eta = estimate === nothing ? "no estimate yet" : "~$(format_duration(estimate))"
+    warning = pattern_ignored ? "\n⚠️  pattern \"$pattern\" NOT applied — whole suite running." : ""
+    return "🧪 Backgrounded as run $(run.id)$when — $scope, $eta. " *
+           "check_tests(run_id=$(run.id)) to collect.$warning"
+end
+
+check_tests_tool = @mcp_tool(
+    :check_tests,
+    """Check or cancel a backgrounded test run (the run id comes from run_tests).
+
+While running: a one-line progress summary. Once finished: exactly what run_tests would
+have returned, failures included. No arguments lists runs still in flight.""",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "run_id" => Dict(
+                "type" => "integer",
+                "description" => "The run id reported by run_tests. Omit to list running tests.",
+            ),
+            "action" => Dict(
+                "type" => "string",
+                "description" => "'status' (default) or 'cancel' to kill the test subprocess.",
+                "enum" => ["status", "cancel"],
+            ),
+        ),
+        "required" => [],
+    ),
+    function (args)
+        run_id = get(args, "run_id", nothing)
+        action = String(get(args, "action", "status"))
+
+        if run_id === nothing
+            running = running_test_runs()
+            isempty(running) && return "No test runs in flight."
+            lines = ["Running test suites:"]
+            for r in running
+                elapsed = (now() - r.started_at).value / 1000.0
+                est = estimate_test_duration(r.project_path, r.pattern, r.coverage)
+                eta = est === nothing ? "" : " of ~$(format_duration(est))"
+                scope = isempty(r.pattern) ? "full suite" : "\"$(r.pattern)\""
+                push!(lines,
+                    "  id=$(r.id)  $(basename(r.project_path))  $scope  " *
+                    "$(format_duration(elapsed))$eta elapsed")
+            end
+            return join(lines, "\n")
         end
 
-        # If the process has exited but only summary-table output was emitted,
-        # parse the buffered raw output one last time before formatting.
-        if run.process !== nothing
-            try
-                wait(run.process)
-            catch
-            end
-        end
-        _parse_raw_summary!(run)
+        run = get_live_test_run(Int(run_id))
+        run === nothing && return "No test run with id $run_id. It may have been evicted " *
+                                  "after completing; check_tests() lists runs in flight."
 
-        # Return focused summary (not raw output dump), prefixed with the
-        # pattern-ignored warning when the filter could not be applied.
-        warning = pattern_ignored ?
-            "⚠️  pattern \"$pattern\" was NOT applied — the whole suite ran. Only a " *
-            "runtests.jl that reads ARGS (ReTest's `retest(ARGS...)`) filters by " *
-            "pattern; Test.jl / SafeTestsets / TestItemRunner ignore it.\n\n" : ""
-        coverage = ""
-        if coverage_enabled === true
-            cov = try
-                _collect_coverage(project_path)
-            catch e
-                "Coverage: collection failed ($(first(sprint(showerror, e), 120)))."
-            end
-            coverage = "\n" * cov * "\n"
+        if action == "cancel"
+            run.status == RUN_RUNNING || return "Run $run_id already finished " *
+                                                "($(test_status_label(run.status)))."
+            cancel_test_run!(run)
+            return "Cancelled test run $run_id."
         end
-        return warning * format_test_summary(run) * coverage
+
+        if run.status == RUN_RUNNING
+            elapsed = (now() - run.started_at).value / 1000.0
+            est = estimate_test_duration(run.project_path, run.pattern, run.coverage)
+            p = run.total_pass > 0 ? run.total_pass :
+                sum((r.pass_count for r in run.results), init = 0)
+            f = run.total_fail > 0 ? run.total_fail :
+                sum((r.fail_count for r in run.results), init = 0)
+            eta = if est === nothing
+                "no estimate yet"
+            elseif elapsed > est
+                "over the ~$(format_duration(est)) estimate"
+            else
+                "~$(format_duration(est - elapsed)) remaining of ~$(format_duration(est))"
+            end
+            return "Run $run_id still going — $(format_duration(elapsed)) elapsed, $eta. " *
+                   "$(length(run.results)) testsets done, $p passed, $f failed."
+        end
+
+        # Finished: same output run_tests produces, so the agent handles one shape.
+        pattern_ignored = !isempty(run.pattern) && !_pattern_likely_honored(run.project_path)
+        return _finish_and_format(run, run.project_path, run.pattern, pattern_ignored,
+                                  run.coverage)
     end
 )
 
