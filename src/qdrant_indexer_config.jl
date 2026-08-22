@@ -339,6 +339,15 @@ function get_collection_model(collection::String)
     m === nothing ? nothing : String(m)
 end
 
+"""The embedding model configured in search.json, else `DEFAULT_EMBEDDING_MODEL`.
+
+This is what a caller gets when it asks to embed without naming a model. It is NOT
+interchangeable with `resolve_search_model` — that answers "what was this collection
+built with", which is a property of the stored vectors and must not follow config.
+"""
+configured_embedding_model() =
+    String(get(load_search_config(), "embedding_model", DEFAULT_EMBEDDING_MODEL))
+
 """Resolve which embedding model to query `collection` with: the model it was
 indexed with if recorded, else `DEFAULT_EMBEDDING_MODEL` (the long-standing
 default that legacy/unstamped collections were almost certainly built with —

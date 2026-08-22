@@ -1014,13 +1014,16 @@ ollama_embed_tool = @mcp_tool(
                 Dict("type" => "string", "description" => "Text to embed"),
             "model" => Dict(
                 "type" => "string",
-                "description" => "Ollama embedding model (default: $DEFAULT_EMBEDDING_MODEL)",
+                "description" => "Ollama embedding model (default: the model configured in search.json, else $DEFAULT_EMBEDDING_MODEL)",
             ),
         ),
         "required" => ["text"],
     ),
     function (args)
-        model = get(args, "model", DEFAULT_EMBEDDING_MODEL)
+        # Follow the configured model, not the compiled-in default: an extension
+        # embedding through this tool has to land in the same vector space as the
+        # collections the indexer builds, or its vectors are silently unusable.
+        model = get(args, "model", configured_embedding_model())
         err = _require_services(need_ollama = true, model = model)
         err !== nothing && return err
 
