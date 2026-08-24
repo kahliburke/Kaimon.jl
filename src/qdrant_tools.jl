@@ -617,12 +617,12 @@ qdrant_index_project_tool = @mcp_tool(
             "extra_dirs" => Dict(
                 "type" => "array",
                 "items" => Dict("type" => "string"),
-                "description" => "Additional directories to index beyond src/ (e.g., [\"frontend/src\", \"dashboard-ui/src\"])",
+                "description" => "Additional directories to index beyond the resolved set (e.g., [\"frontend/src\", \"dashboard-ui/src\"])",
             ),
             "extensions" => Dict(
                 "type" => "array",
                 "items" => Dict("type" => "string"),
-                "description" => "File extensions to index (default: [\".jl\", \".ts\", \".tsx\", \".jsx\", \".md\"])",
+                "description" => "File extensions to index. Defaults to the project's configured list, else git-aware auto-detection of the languages actually present.",
             ),
             "wait" => Dict(
                 "type" => "boolean",

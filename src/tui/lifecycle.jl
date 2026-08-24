@@ -184,7 +184,10 @@ function _auto_index_project!(project_path::String)
                     )
                 end
             else
-                # Collection doesn't exist → detect project type and full index
+                # Collection doesn't exist → full index. Extensions are left to
+                # index_project's resolver: it honours a configured extension list and
+                # otherwise uses git-aware detection, both of which beat the
+                # marker-based guess this used to pass in.
                 detected = detect_project_type(project_path)
                 _push_log!(
                     :info,
@@ -194,7 +197,6 @@ function _auto_index_project!(project_path::String)
                     project_path;
                     collection = col_name,
                     silent = true,
-                    extensions = detected.extensions,
                     source = "gate",
                 )
                 _push_log!(:info, "Auto-index complete ($col_name)")

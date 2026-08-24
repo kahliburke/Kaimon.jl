@@ -163,13 +163,41 @@ const EMBEDDING_CONFIGS = Dict(
 const CHUNK_SIZE = 1500  # Target chunk size in characters
 const CHUNK_OVERLAP = 200  # Overlap between chunks
 
-# Supported file extensions for indexing
-# Note: .js excluded to avoid indexing compiled output (use .ts/.tsx for TypeScript sources)
-const DEFAULT_INDEX_EXTENSIONS = [".jl", ".ts", ".tsx", ".jsx", ".md"]
+# Default file extensions to index. Broad on purpose: an extension costs nothing for a
+# project that has no files of that type, whereas a narrow default silently indexes
+# NOTHING for a project in a language it omits. Per-project `extensions` config (or
+# auto-detection) narrows this where it matters.
+#
+# `.js`/`.mjs` are deliberately absent — in a repo that ships JS, the committed `.js` is
+# usually build output; TypeScript/JSX sources are indexed instead. Data and lock formats
+# (`.json`, `.xml`, `.lock`) are excluded as bulk without search value. Both can be opted
+# into explicitly per project.
+const DEFAULT_INDEX_EXTENSIONS = [
+    ".jl",                                    # Julia
+    ".py", ".pyi",                            # Python
+    ".rs",                                    # Rust
+    ".go",                                    # Go
+    ".ts", ".tsx", ".jsx",                    # TypeScript / JSX
+    ".c", ".h", ".cpp", ".cc", ".hpp", ".hh", # C / C++
+    ".java", ".kt", ".kts", ".scala",         # JVM
+    ".cs", ".fs",                             # .NET
+    ".rb", ".php", ".swift", ".m", ".mm",     # Ruby / PHP / Apple
+    ".ex", ".exs", ".erl", ".hrl",            # BEAM
+    ".hs", ".ml", ".mli", ".clj", ".cljs",    # Functional
+    ".lua", ".zig", ".nim", ".r", ".R",       # Other languages
+    ".sh", ".bash", ".zsh",                   # Shell
+    ".sql", ".proto", ".graphql",             # Schemas / IDL
+    ".vue", ".svelte",                        # Component frameworks
+    ".md", ".mdx", ".rst",                    # Prose / docs
+    ".toml",                                  # Project metadata (Project/Cargo/pyproject)
+]
 
-# Default source directories to index (relative to project root)
-# Additional directories can be specified via index_project(extra_dirs=...)
-const DEFAULT_SOURCE_DIRS = ["src", "test", "scripts"]
+# Extensions that auto-detection will never select on its own. `.js` is the important
+# one: in a JS/TS project the committed `.js` is usually build output, not source (the
+# same reason it's absent from DEFAULT_INDEX_EXTENSIONS). Data/lock formats add bulk
+# without helping code search. A user can still index any of these by listing them
+# explicitly in the project's `extensions` config.
+const AUTO_DETECT_EXTENSION_DENY = Set([".js", ".json", ".xml", ".lock", ".map"])
 
 # Known source file extensions for auto-detection (superset of per-language lists)
 const SOURCE_EXTENSIONS = Set([
@@ -184,13 +212,44 @@ const SOURCE_EXTENSIONS = Set([
     ".vue", ".svelte",
 ])
 
-# Directories to skip during walkdir and auto-detection, even if tracked by git
+# Directories to skip during walkdir and auto-detection, even if tracked by git.
+# `.gitignore` already excludes most of these in a well-kept repo, but plenty of
+# projects commit their build output, and a single committed JS bundle directory is
+# enough to swamp a collection — so the name list is the second line of defence.
 const IGNORED_DIRS = Set([
-    "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache",
-    "vendor", "dist", "build", "_build", ".next", ".nuxt",
-    "coverage", ".tox", "target", ".gradle", ".cache",
-    ".eggs", ".egg-info", "venv", ".venv", "env",
+    # Dependencies / language caches
+    "node_modules", "bower_components", "jspm_packages", "vendor",
+    "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+    ".eggs", ".egg-info", "venv", ".venv", "env", ".tox",
+    # Generic build output
+    "dist", "build", "_build", "out", "target", "bin", "obj",
+    # JS/TS toolchain output — bundlers, frameworks, and transpile targets
+    ".next", ".nuxt", ".output", ".svelte-kit", ".astro", ".docusaurus",
+    ".parcel-cache", ".turbo", ".vite", ".webpack", ".rollup.cache",
+    ".angular", ".vercel", ".netlify", "storybook-static",
+    "es", "esm", "cjs", "umd", "amd",
+    # Misc caches and reports
+    "coverage", ".nyc_output", ".gradle", ".cache", "site-packages",
 ])
+# Deliberately NOT ignored: `deps/` is real source in a Julia package (build.jl), and
+# `lib/` holds sub-packages rather than build output.
+
+# Files that are generated/compiled artifacts regardless of which directory they sit
+# in. Minified bundles are the pathological case: a single line megabytes long, which
+# is pure noise in a semantic index and expensive to embed.
+const GENERATED_FILE_SUFFIXES = [
+    ".min.js", ".min.css", ".min.mjs",
+    ".bundle.js", "-bundle.js", ".bundle.mjs",
+    ".chunk.js", "-chunk.js",
+    ".js.map", ".css.map", ".mjs.map",
+    ".d.ts", ".d.mts", ".d.cts",
+    "_pb2.py", "_pb2_grpc.py", ".pb.go", "_generated.go",
+]
+
+# Hard ceilings for a single indexed file. Anything past these is treated as generated
+# content: real source rarely trips them, bundles and vendored blobs always do.
+const MAX_INDEX_FILE_BYTES = 1_500_000
+const MAX_INDEX_LINE_BYTES = 5_000
 
 # Get embedding config for a model
 function get_embedding_config(model::String)

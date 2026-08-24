@@ -435,8 +435,9 @@ end
     index_directory(dir_path::String, collection::String; project_path::String=pwd(), extensions::Vector{String}=DEFAULT_INDEX_EXTENSIONS, verbose::Bool=true, silent::Bool=false) -> Int
 
 Index all matching files in a directory. Returns total chunks indexed.
-Supports multiple file extensions (.jl, .ts, .tsx, .jsx, .md by default).
-Set silent=true to suppress all output (logs to file only).
+File selection goes through `collect_index_files`, so `.gitignore`, build/vendor
+directories, and generated artifacts are excluded here exactly as they are for a
+whole-project index. Set silent=true to suppress all output (logs to file only).
 """
 function index_directory(
     dir_path::String,
@@ -452,25 +453,8 @@ function index_directory(
     total_chunks = 0
     isdir(dir_path) || return total_chunks
 
-    # Build exclude set from user config + built-in ignores
-    exclude_set = union(IGNORED_DIRS, Set(exclude_dirs))
-
-    # Find all matching files
-    files = String[]
-    onerr = e -> begin
-        with_index_logger(() -> @warn "Skipping unreadable directory during indexing" dir = dir_path collection = collection exception = e)
-    end
-    for (root, dirs, filenames) in walkdir(dir_path; onerror=onerr)
-        # Skip hidden directories, well-known noise, and user-excluded dirs
-        filter!(d -> !startswith(d, ".") && d ∉ exclude_set, dirs)
-
-        for filename in filenames
-            # Check if file matches any of the supported extensions
-            if any(ext -> endswith(filename, ext), extensions)
-                push!(files, joinpath(root, filename))
-            end
-        end
-    end
+    files = collect_index_files(project_path; dirs=[dir_path],
+                                extensions=extensions, exclude_dirs=exclude_dirs)
 
     !silent && verbose && println("Found $(length(files)) files to index")
     with_index_logger(() -> @info "Indexing directory" dir = dir_path file_count = length(files))
@@ -496,15 +480,19 @@ Index a Julia project into Qdrant. Uses project directory name as collection if 
 - `recreate`: Delete and recreate collection (default: false)
 - `silent`: Suppress all output (default: false)
 - `extra_dirs`: Additional directories to index beyond configured defaults (e.g., ["frontend/src", "dashboard-ui/src"])
-- `extensions`: File extensions to index (default: from config or [".jl", ".ts", ".tsx", ".jsx", ".md"])
+- `extensions`: File extensions to index (default: the project's configured list, else
+  git-aware auto-detection, else `DEFAULT_INDEX_EXTENSIONS`)
 
 # Returns
 Total number of chunks indexed across all directories.
 
 # Configuration
-Directories and extensions are resolved from the search config
-(`~/.config/kaimon/search.json`), which stores per-project `dirs` and `extensions`
-arrays. Use the Search Config panel in the TUI to update these settings.
+Directories and extensions are resolved by `resolve_index_config`: the search config
+(`~/.config/kaimon/search.json`) first, then the index-state cache, then git-aware
+auto-detection. Use the Search Config panel in the TUI to pin them explicitly.
+
+The file set itself comes from `collect_index_files`, which the stale-file counter also
+uses — so what the Collection Manager reports as stale is what a sync actually visits.
 """
 function index_project(
     project_path::String=pwd();
@@ -520,62 +508,26 @@ function index_project(
     # Use project name as collection if not specified; always normalize
     col_name = collection === nothing ? get_project_collection_name(project_path) : normalize_collection_name(collection)
 
-    # Config resolution priority: explicit args → registry → defaults
-    registry_config = get_project_config(project_path)
+    # Config resolution and file enumeration are shared with sync_index and the
+    # Collection Manager's stale count, so all three see the same file set (#80).
+    cfg = resolve_index_config(project_path; extensions=extensions, extra_dirs=extra_dirs)
+    dirs_to_index = cfg.dirs
+    actual_extensions = cfg.extensions
+    config_exclude_dirs = cfg.exclude_dirs
 
-    config_dirs = String[]
-    config_extensions = DEFAULT_INDEX_EXTENSIONS
-
-    config_exclude_dirs = String[]
-
-    # Use registry dirs/extensions/exclude if available
-    if registry_config !== nothing
-        reg_dirs = get(registry_config, "dirs", String[])
-        if !isempty(reg_dirs)
-            config_dirs = String.(reg_dirs)
-        end
-        reg_exts = get(registry_config, "extensions", nothing)
-        if reg_exts !== nothing && !isempty(reg_exts)
-            config_extensions = String.(reg_exts)
-        end
-        reg_exclude = get(registry_config, "exclude_dirs", String[])
-        if !isempty(reg_exclude)
-            config_exclude_dirs = String.(reg_exclude)
-        end
+    if !isempty(cfg.missing_dirs)
+        !silent && @warn "Configured index directory not found, skipping" dirs = cfg.missing_dirs
+        with_index_logger(() -> @warn "Configured index directory not found" project = project_path dirs = cfg.missing_dirs)
     end
 
-    # Use provided extensions or fall back to registry/defaults
-    actual_extensions = extensions !== nothing ? extensions : config_extensions
+    files_to_index = collect_index_files(project_path; dirs=dirs_to_index,
+        extensions=actual_extensions, exclude_dirs=config_exclude_dirs)
 
-    # Build list of directories to index
-    dirs_to_index = String[]
-
-    # If config has index_dirs set, use those as the base
-    if !isempty(config_dirs)
-        for dir in config_dirs
-            full_path = isabspath(dir) ? dir : joinpath(project_path, dir)
-            if isdir(full_path)
-                push!(dirs_to_index, full_path)
-            else
-                !silent && @warn "Configured index directory not found, skipping" dir = dir
-            end
-        end
-    else
-        # Fall back to src/ if it exists; don't blindly recurse the project root
-        src_dir = joinpath(project_path, "src")
-        if isdir(src_dir)
-            push!(dirs_to_index, src_dir)
-        end
-    end
-
-    # Add extra directories (e.g., frontend, dashboard-ui) - these are additional to config
-    for dir in extra_dirs
-        full_path = joinpath(project_path, dir)
-        if isdir(full_path) && !(full_path in dirs_to_index)
-            push!(dirs_to_index, full_path)
-        elseif !isdir(full_path)
-            !silent && @warn "Extra directory not found, skipping" dir = dir
-        end
+    # Registration and collection setup still run on an empty result, so a `recreate`
+    # of an emptied project still purges and the project stays configurable.
+    if isempty(files_to_index)
+        !silent && @warn "No indexable files found" project = project_path dirs = dirs_to_index extensions = actual_extensions
+        with_index_logger(() -> @warn "No indexable files found" project = project_path dirs = dirs_to_index extensions = actual_extensions origin = cfg.origin)
     end
 
     # Resolve the effective model. A recreate (or a brand-new collection) uses the
@@ -621,8 +573,8 @@ function index_project(
     # indexing stays consistent.
     set_collection_model!(col_name, embedding_model)
 
-    !silent && println("Indexing $(length(dirs_to_index)) director$(length(dirs_to_index) == 1 ? "y" : "ies") into collection '$col_name'...")
-    with_index_logger(() -> @info "Indexing project" collection = col_name dirs = dirs_to_index extensions = actual_extensions)
+    !silent && println("Indexing $(length(files_to_index)) file$(length(files_to_index) == 1 ? "" : "s") from $(length(dirs_to_index)) director$(length(dirs_to_index) == 1 ? "y" : "ies") into collection '$col_name'...")
+    with_index_logger(() -> @info "Indexing project" collection = col_name dirs = dirs_to_index extensions = actual_extensions files = length(files_to_index) origin = cfg.origin)
 
     # Register project before indexing so that record_indexed_file can persist
     # per-file state to the registry during the loop (external projects store
@@ -637,19 +589,13 @@ function index_project(
         source = source,
     )
 
-    # Index each directory and sum total chunks. The progress callback is uniform
-    # `(phase, done, total, chunks)`; per-file done/total restart at each directory while
-    # the chunk count stays cumulative (most projects index a single `src/` anyway).
-    total_chunks = 0
-    for dir in dirs_to_index
-        base = total_chunks
-        dir_cb = progress_cb === nothing ? nothing :
-            (phase, done, tot, chunks) -> progress_cb(phase, done, tot, base + chunks)
-        chunks = index_directory(dir, col_name; project_path=project_path, silent=silent,
-            extensions=actual_extensions, exclude_dirs=config_exclude_dirs,
-            embedding_model=embedding_model, progress_cb=dir_cb)
-        total_chunks += chunks
-    end
+    # One pass over the whole enumerated set, so progress `(phase, done, total, chunks)`
+    # counts against the project's real file total instead of restarting per directory.
+    total_chunks = _index_files_two_pass(
+        files_to_index, col_name;
+        project_path=project_path, embedding_model=embedding_model,
+        reindex=false, verbose=!silent, silent=silent, progress_cb=progress_cb,
+    )
 
     # Save completion timestamp to index cache
     state = load_index_state(project_path)
@@ -755,37 +701,10 @@ function _sync_index_impl(
 )
     col_name = collection === nothing ? get_project_collection_name(project_path) : normalize_collection_name(collection)
 
-    # Load indexing configuration from previous index_project call
-    state = load_index_state(project_path)
-    dirs_to_sync = state["config"]["dirs"]
-    extensions = state["config"]["extensions"]
-
-    exclude_dirs = String[]
-
-    # Fallback chain: index state → registry → src/ heuristic
-    if isempty(dirs_to_sync)
-        reg_config = get_project_config(project_path)
-        if reg_config !== nothing
-            reg_dirs = get(reg_config, "dirs", String[])
-            if !isempty(reg_dirs)
-                dirs_to_sync = String.(reg_dirs)
-            end
-            reg_exts = get(reg_config, "extensions", nothing)
-            if reg_exts !== nothing && !isempty(reg_exts)
-                extensions = String.(reg_exts)
-            end
-            reg_exclude = get(reg_config, "exclude_dirs", String[])
-            if !isempty(reg_exclude)
-                exclude_dirs = String.(reg_exclude)
-            end
-        end
-    end
-    if isempty(dirs_to_sync)
-        src_dir = joinpath(project_path, "src")
-        if isdir(src_dir)
-            push!(dirs_to_sync, src_dir)
-        end
-    end
+    # Same resolver the indexer and the Collection Manager use, so a sync visits exactly
+    # the files the TUI reported as stale (#80).
+    cfg = resolve_index_config(project_path)
+    dirs_to_sync = cfg.dirs
     if isempty(dirs_to_sync)
         !silent && verbose && println("⚠️  No indexable directories found for '$col_name'")
         with_index_logger(() -> @warn "No indexable directories found" collection = col_name project = project_path)
@@ -793,13 +712,11 @@ function _sync_index_impl(
     end
 
     !silent && verbose && println("🔄 Syncing index for collection '$col_name' ($(length(dirs_to_sync)) director$(length(dirs_to_sync) == 1 ? "y" : "ies"))...")
-    with_index_logger(() -> @info "Starting index sync" collection = col_name dirs = dirs_to_sync extensions = extensions)
+    with_index_logger(() -> @info "Starting index sync" collection = col_name dirs = dirs_to_sync extensions = cfg.extensions origin = cfg.origin)
 
-    # Get files that need re-indexing from all directories
-    stale_files = String[]
-    for dir in dirs_to_sync
-        append!(stale_files, get_stale_files(project_path, dir; extensions=extensions, exclude_dirs=exclude_dirs))
-    end
+    all_files = collect_index_files(project_path; dirs=dirs_to_sync,
+        extensions=cfg.extensions, exclude_dirs=cfg.exclude_dirs)
+    stale_files = _filter_stale(project_path, all_files)
 
     # Deleted files: the union of cache-tracked-but-missing (fast path) and any
     # orphans the cache no longer knows about (cache reset, narrowed dirs, indexed

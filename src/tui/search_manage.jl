@@ -103,26 +103,12 @@ function _open_search_manage!(m::KaimonModel)
             end
             # Count stale files
             if !isempty(proj_path) && isdir(proj_path)
-                try
-                    state = load_index_state(proj_path)
-                    dirs = get(get(state, "config", Dict()), "dirs", String[])
-                    extensions = get(
-                        get(state, "config", Dict()),
-                        "extensions",
-                        DEFAULT_INDEX_EXTENSIONS,
-                    )
-                    if isempty(dirs)
-                        src = joinpath(proj_path, "src")
-                        dirs = isdir(src) ? [src] : [proj_path]
-                    end
-                    total_stale = 0
-                    for d in dirs
-                        total_stale +=
-                            length(get_stale_files(proj_path, d; extensions = extensions))
-                    end
-                    stale_counts[col] = total_stale
+                # Whole-project stale scan, resolved exactly the way indexing resolves
+                # it, so the count matches the work a sync will actually do (#80).
+                stale_counts[col] = try
+                    length(get_stale_files(proj_path))
                 catch
-                    stale_counts[col] = -1
+                    -1
                 end
             end
         end
@@ -347,10 +333,13 @@ function _handle_add_config_edit!(m::KaimonModel, evt::KeyEvent)
         exts_raw = filter(!isempty, strip.(split(m.search_manage_config_exts, ",")))
         exclude_raw = filter(!isempty, strip.(split(m.search_manage_config_exclude, ",")))
 
+        # A trailing `/*` marks a non-recursive target; resolve the directory part to an
+        # absolute path and put the marker back so the stored entry keeps its meaning.
         abs_dirs = String[]
         for d in dirs_raw
-            full = d == "." ? path : joinpath(path, d)
-            push!(abs_dirs, abspath(full))
+            entry, recursive = _parse_target(String(d))
+            full = abspath(entry == "." ? path : joinpath(path, entry))
+            push!(abs_dirs, recursive ? full : _nonrecursive(full))
         end
 
         col_name = get_project_collection_name(path)
@@ -424,16 +413,24 @@ function _start_configure_project!(m::KaimonModel, entry)
     m.search_manage_exclude_input = TextInput(text = m.search_manage_config_exclude, label = "Exclude: ", tick = m.tick)
 end
 
-"""Convert an absolute dir path to relative if it's under project_path."""
+"""
+Convert an absolute dir path to relative if it's under project_path.
+
+A non-recursive entry (trailing `/*` — "the files in this directory, not its subtree")
+keeps its marker, so what the user edits is what actually gets scanned.
+"""
 function _make_relative(dir::String, project_path::String)
+    path, recursive = _parse_target(dir)
     pp = abspath(project_path)
-    ad = abspath(dir)
-    if ad == pp
-        return "."
+    ad = abspath(path)
+    rel = if ad == pp
+        "."
     elseif startswith(ad, pp * "/")
-        return ad[length(pp)+2:end]
+        ad[length(pp)+2:end]
+    else
+        ad
     end
-    return ad
+    return recursive ? rel : rstrip(rel, '/') * "/*"
 end
 
 """Handle key events during the configure-project sub-flow."""
@@ -554,26 +551,12 @@ function _refresh_search_manage!(m::KaimonModel)
                 col_info[col] = info
             end
             if !isempty(proj_path) && isdir(proj_path)
-                try
-                    state = load_index_state(proj_path)
-                    dirs = get(get(state, "config", Dict()), "dirs", String[])
-                    extensions = get(
-                        get(state, "config", Dict()),
-                        "extensions",
-                        DEFAULT_INDEX_EXTENSIONS,
-                    )
-                    if isempty(dirs)
-                        src = joinpath(proj_path, "src")
-                        dirs = isdir(src) ? [src] : [proj_path]
-                    end
-                    total_stale = 0
-                    for d in dirs
-                        total_stale +=
-                            length(get_stale_files(proj_path, d; extensions = extensions))
-                    end
-                    stale_counts[col] = total_stale
+                # Whole-project stale scan, resolved exactly the way indexing resolves
+                # it, so the count matches the work a sync will actually do (#80).
+                stale_counts[col] = try
+                    length(get_stale_files(proj_path))
                 catch
-                    stale_counts[col] = -1
+                    -1
                 end
             end
         end

@@ -140,13 +140,24 @@ qdrant_index_project(project_path="/path/to/project")
 qdrant_index_project(recreate=true)   # rebuild from scratch
 ```
 
-Indexing scans `.jl`, `.ts`, `.tsx`, `.jsx`, and `.md` files under the project's `src/`, `test/`, and `scripts/` directories. It splits them into chunks, computes embeddings, and stores everything in a Qdrant collection named after the project.
+Indexing splits the project's source files into chunks, computes embeddings, and stores everything in a Qdrant collection named after the project.
+
+### What gets indexed
+
+Kaimon resolves the file set in one place, so the stale-file count shown in the Collection Manager is exactly the set a sync will visit.
+
+- **Directories** come from the project's configuration (Search Config panel → `~/.config/kaimon/search.json`) when set. Otherwise Kaimon auto-detects them from the repository.
+- A directory entry ending in `/*` is scanned **non-recursively** — the files directly inside it, not its subtree. Auto-detection uses this for the project root, so root-level files (`README.md`, `Project.toml`, top-level scripts) are indexed while the real source directories stay listed in their own right. That keeps the scope explicit: a new top-level directory isn't silently swallowed, and the directory list alone tells you exactly what gets scanned.
+- **Extensions** likewise come from configuration when set, otherwise from the languages actually present in the repo — so a Python, Rust, or Go project is indexed as readily as a Julia one.
+- **Exclusions** are applied in layers: `.gitignore` (in a git repository the candidate list comes from git, so the index sees the same files as `grep_code`), then well-known build and vendor directories (`node_modules/`, `dist/`, `.next/`, `target/`, …), then generated artifacts by name (`*.min.js`, `*.d.ts`, source maps) and by shape — oversized files and single-line bundles are skipped.
+
+Committed build output is the case these layers exist for: without them a checked-in JS bundle directory can easily outweigh a project's real sources.
 
 ### Auto-Indexing
 
 When a Julia REPL gate connects to Kaimon, the server automatically indexes its project in the background:
 
-- If no collection exists yet, Kaimon detects the project type and runs a full index.
+- If no collection exists yet, Kaimon runs a full index.
 - If a collection already exists, Kaimon runs an incremental sync to pick up any changed files.
 
 File-change notifications from the gate trigger incremental re-indexing automatically, with a 5-second debounce to batch rapid edits.

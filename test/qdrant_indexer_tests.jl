@@ -341,3 +341,248 @@ end
         @test n[] == 1
     end
 end
+
+# Index target resolution (#80). These build throwaway projects that are never
+# registered, so resolution always takes the auto-detection path.
+@testset "index target resolution" begin
+    K = Kaimon
+    _git = Sys.which("git") !== nothing
+    _init_repo(p) = (run(`git -C $p init -q`); run(`git -C $p add -A`); nothing)
+    _rel(files, p) = sort(relpath.(files, p))
+
+    @testset "root-level sources are indexed when there is no src/" begin
+        # The reported bug: a project whose code sits in the root. The stale count
+        # scanned the whole tree while indexing visited nothing.
+        p = mktempdir()
+        write(joinpath(p, "Project.toml"), "name = \"RootScripts\"\n")
+        write(joinpath(p, "analysis.jl"), "f(x) = x^2\n")
+        write(joinpath(p, "README.md"), "# hi\n")
+        mkpath(joinpath(p, "docs"))
+        write(joinpath(p, "docs", "guide.md"), "# guide\n")
+        _git && _init_repo(p)
+
+        files = _rel(K.project_index_files(p), p)
+        @test "analysis.jl" in files
+        @test "docs/guide.md" in files
+    end
+
+    @testset "root-level sources survive alongside subdirectories" begin
+        # Auto-detection used to drop root files whenever any subdir had sources.
+        p = mktempdir()
+        write(joinpath(p, "Project.toml"), "name = \"Both\"\n")
+        write(joinpath(p, "toplevel.jl"), "t() = 1\n")
+        mkpath(joinpath(p, "src"))
+        write(joinpath(p, "src", "inner.jl"), "i() = 2\n")
+        _git && _init_repo(p)
+
+        files = _rel(K.project_index_files(p), p)
+        @test "toplevel.jl" in files
+        @test "src/inner.jl" in files
+    end
+
+    @testset "the stale count is the set indexing will visit" begin
+        # The invariant behind #80: the Collection Manager's number and the indexer's
+        # work must come from one enumeration. Nothing is indexed yet, so every
+        # enumerated file is stale.
+        p = mktempdir()
+        write(joinpath(p, "Project.toml"), "name = \"Sync\"\n")
+        write(joinpath(p, "root.jl"), "r() = 1\n")
+        mkpath(joinpath(p, "lib"))
+        write(joinpath(p, "lib", "helper.jl"), "h() = 2\n")
+        _git && _init_repo(p)
+
+        @test Set(K.get_stale_files(p)) == Set(K.project_index_files(p))
+        @test length(K.get_stale_files(p)) >= 2
+    end
+
+    @testset "sources are found across languages" begin
+        p = mktempdir()
+        write(joinpath(p, "Project.toml"), "name = \"Poly\"\n")
+        mkpath(joinpath(p, "src")); write(joinpath(p, "src", "s.jl"), "s() = 1\n")
+        mkpath(joinpath(p, "api")); write(joinpath(p, "api", "h.py"), "def h(): pass\n")
+        mkpath(joinpath(p, "core")); write(joinpath(p, "core", "e.rs"), "fn main() {}\n")
+        mkpath(joinpath(p, "web")); write(joinpath(p, "web", "A.tsx"), "export const A = 1\n")
+        _git && _init_repo(p)
+
+        files = _rel(K.project_index_files(p), p)
+        @test "src/s.jl" in files
+        @test "api/h.py" in files
+        @test "core/e.rs" in files
+        @test "web/A.tsx" in files
+    end
+
+    @testset "committed build output is excluded" begin
+        p = mktempdir()
+        write(joinpath(p, "package.json"), "{}\n")
+        mkpath(joinpath(p, "src")); write(joinpath(p, "src", "app.ts"), "export const a = 1\n")
+        mkpath(joinpath(p, "dist"))
+        write(joinpath(p, "dist", "b.min.js"), "var a=1;"^2000)
+        write(joinpath(p, "dist", "b.ts"), "export const b = 2\n")
+        mkpath(joinpath(p, "types")); write(joinpath(p, "types", "api.d.ts"), "export type A = 1\n")
+        _git && run(`git -C $p init -q`)
+        _git && run(`git -C $p add -A -f`)   # -f: force past any global gitignore
+
+        files = _rel(K.project_index_files(p), p)
+        @test "src/app.ts" in files
+        @test !any(f -> startswith(f, "dist/"), files)   # build directory
+        @test !("types/api.d.ts" in files)               # generated typings
+    end
+
+    @testset "a minified file outside a build directory is rejected" begin
+        p = mktempdir()
+        mkpath(joinpath(p, "src"))
+        write(joinpath(p, "src", "real.ts"), "export const r = 1\n")
+        # One line, well past the ceiling — the shape of generated output.
+        write(joinpath(p, "src", "blob.ts"), "export const B = \"" * "x"^(K.MAX_INDEX_LINE_BYTES + 500) * "\"")
+        _git && _init_repo(p)
+
+        files = _rel(K.project_index_files(p), p)
+        @test "src/real.ts" in files
+        @test !("src/blob.ts" in files)
+    end
+
+    @testset ".gitignore is honoured" begin
+        if _git
+            p = mktempdir()
+            write(joinpath(p, "Project.toml"), "name = \"Ign\"\n")
+            mkpath(joinpath(p, "src")); write(joinpath(p, "src", "a.jl"), "a() = 1\n")
+            # A build directory whose name is not in IGNORED_DIRS — only .gitignore
+            # can exclude it.
+            mkpath(joinpath(p, "generated_output"))
+            write(joinpath(p, "generated_output", "big.jl"), "z() = 1\n")
+            write(joinpath(p, ".gitignore"), "generated_output/\n")
+            _init_repo(p)
+
+            files = _rel(K.project_index_files(p), p)
+            @test "src/a.jl" in files
+            @test !any(f -> startswith(f, "generated_output/"), files)
+        end
+    end
+
+    @testset "non-git projects fall back to a directory walk" begin
+        p = mktempdir()
+        write(joinpath(p, "main.py"), "def m(): pass\n")
+        mkpath(joinpath(p, "node_modules", "pkg"))
+        write(joinpath(p, "node_modules", "pkg", "i.ts"), "export const i = 1\n")
+        mkpath(joinpath(p, "dist")); write(joinpath(p, "dist", "o.ts"), "export const o = 1\n")
+
+        files = _rel(K.project_index_files(p), p)
+        @test "main.py" in files
+        @test !any(f -> startswith(f, "node_modules/"), files)
+        @test !any(f -> startswith(f, "dist/"), files)
+    end
+
+    @testset "overlapping directories enumerate each file once" begin
+        p = mktempdir()
+        mkpath(joinpath(p, "src")); write(joinpath(p, "src", "a.jl"), "a() = 1\n")
+        _git && _init_repo(p)
+
+        @test K._collapse_subsumed_dirs([joinpath(p, "src"), p]) == [abspath(p)]
+        files = K.collect_index_files(p; dirs=[p, joinpath(p, "src")], extensions=[".jl"])
+        @test length(files) == length(unique(files))
+        @test length(files) == 1
+    end
+
+    @testset "an explicit extension list narrows the scan" begin
+        p = mktempdir()
+        mkpath(joinpath(p, "src"))
+        write(joinpath(p, "src", "a.jl"), "a() = 1\n")
+        write(joinpath(p, "src", "b.py"), "def b(): pass\n")
+        _git && _init_repo(p)
+
+        files = _rel(K.project_index_files(p; extensions=[".jl"]), p)
+        @test files == ["src/a.jl"]
+    end
+
+    @testset "Julia's deps/ is source, not build output" begin
+        # `deps/build.jl` is real source in a Julia package; it must not be swept up
+        # with the generic build-output directory names.
+        @test !("deps" in K.IGNORED_DIRS)
+        p = mktempdir()
+        write(joinpath(p, "Project.toml"), "name = \"WithDeps\"\n")
+        mkpath(joinpath(p, "src")); write(joinpath(p, "src", "a.jl"), "a() = 1\n")
+        mkpath(joinpath(p, "deps")); write(joinpath(p, "deps", "build.jl"), "b() = 1\n")
+        _git && _init_repo(p)
+
+        @test "deps/build.jl" in _rel(K.project_index_files(p), p)
+    end
+
+    @testset "the root is a non-recursive target, not a catch-all" begin
+        # Root-level sources must be indexed without the root swallowing the whole
+        # tree — the detected subdirectories stay listed in their own right.
+        if _git
+            p = mktempdir()
+            write(joinpath(p, "Project.toml"), "name = \"Collapse\"\n")
+            write(joinpath(p, "README.md"), "# readme\n")
+            mkpath(joinpath(p, "src")); write(joinpath(p, "src", "a.jl"), "a() = 1\n")
+            mkpath(joinpath(p, "docs")); write(joinpath(p, "docs", "d.md"), "# d\n")
+            _init_repo(p)
+
+            dirs = K.auto_detect_project_config(p).dirs
+            parsed = map(K._parse_target, dirs)
+            root = first(t for t in parsed if t[1] == abspath(p))
+            @test root[2] == false                                   # root does not recurse
+            @test abspath(joinpath(p, "src")) in [t[1] for t in parsed]
+            @test abspath(joinpath(p, "docs")) in [t[1] for t in parsed]
+        end
+    end
+
+    @testset "a new top-level directory is not silently absorbed" begin
+        if _git
+            p = mktempdir()
+            write(joinpath(p, "Project.toml"), "name = \"Bounded\"\n")
+            mkpath(joinpath(p, "src")); write(joinpath(p, "src", "a.jl"), "a() = 1\n")
+            _init_repo(p)
+            dirs = K.auto_detect_project_config(p).dirs
+
+            # A directory that appears after the scope was resolved stays out of it.
+            mkpath(joinpath(p, "scratch"))
+            write(joinpath(p, "scratch", "junk.jl"), "j() = 1\n")
+            run(`git -C $p add -A`)
+
+            files = _rel(K.collect_index_files(p; dirs=dirs, extensions=[".jl", ".toml"]), p)
+            @test "src/a.jl" in files
+            @test !("scratch/junk.jl" in files)
+        end
+    end
+
+    @testset "a non-recursive target yields only its own files" begin
+        p = mktempdir()
+        write(joinpath(p, "top.jl"), "t() = 1\n")
+        mkpath(joinpath(p, "sub")); write(joinpath(p, "sub", "deep.jl"), "d() = 1\n")
+        _git && _init_repo(p)
+
+        files = _rel(K.collect_index_files(p; dirs=[K._nonrecursive(p)], extensions=[".jl"]), p)
+        @test files == ["top.jl"]
+
+        # And the marker survives a round trip through the collapse step.
+        @test K._parse_target(K._nonrecursive(p)) == (abspath(p), false)
+        kept = K._collapse_subsumed_dirs([K._nonrecursive(p), joinpath(p, "sub")])
+        @test length(kept) == 2   # non-recursive root does not subsume the subdirectory
+    end
+
+    @testset "a missing directory is reported, not silently dropped" begin
+        p = mktempdir()
+        mkpath(joinpath(p, "src")); write(joinpath(p, "src", "a.jl"), "a() = 1\n")
+        cfg = K.resolve_index_config(p; extra_dirs=["does_not_exist"])
+        @test any(d -> endswith(d, "does_not_exist"), cfg.missing_dirs)
+        @test !any(d -> endswith(d, "does_not_exist"), cfg.dirs)
+    end
+
+    @testset "auto-detection ignores build output when choosing extensions" begin
+        # A committed bundle directory must not make `.js` look like the project's
+        # dominant source language.
+        p = mktempdir()
+        mkpath(joinpath(p, "src")); write(joinpath(p, "src", "a.jl"), "a() = 1\n")
+        mkpath(joinpath(p, "dist"))
+        for i in 1:20
+            write(joinpath(p, "dist", "chunk$i.js"), "var x = $i;\n")
+        end
+        if _git
+            run(`git -C $p init -q`); run(`git -C $p add -A -f`)
+            detected = K.auto_detect_project_config(p)
+            @test ".jl" in detected.extensions
+            @test !(".js" in detected.extensions)
+        end
+    end
+end
