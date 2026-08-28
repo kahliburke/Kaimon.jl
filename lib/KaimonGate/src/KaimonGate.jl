@@ -166,6 +166,7 @@ include("gate_serve.jl")
 include("gate_jobs.jl")
 include("gate_service.jl")
 include("gate_curve.jl")
+include("precompile.jl")
 
 """
     connect!()
