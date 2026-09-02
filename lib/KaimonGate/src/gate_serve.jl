@@ -313,6 +313,9 @@ function _serve(;
     # Generate or reuse session ID
     sid = session_id !== nothing ? session_id : string(Base.UUID(rand(UInt128)))
     _SESSION_ID[] = sid
+    # Checked here rather than at each bind so an over-long cache dir fails before
+    # any socket exists, not between the two. Mode is already Windows-coerced.
+    mode === :ipc && _check_ipc_path_length(sid)
     _START_TIME[] = time()
     _MIRROR_REPL[] = if allow_mirror
         try

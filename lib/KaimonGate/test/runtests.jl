@@ -2,6 +2,7 @@ using SafeTestsets
 
 @safetestset "Aqua" include("src/test_aqua.jl")
 @safetestset "Precompile directives" include("src/test_precompile.jl")
+@safetestset "Socket path length" include("src/test_sock_path.jl")
 @safetestset "Type metadata" include("src/test_type_meta.jl")
 @safetestset "Value coercion" include("src/test_coercion.jl")
 @safetestset "Tool dispatch" include("src/test_dispatch.jl")

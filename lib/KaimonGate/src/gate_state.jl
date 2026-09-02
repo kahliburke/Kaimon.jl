@@ -94,6 +94,30 @@ function sock_dir()
     return d
 end
 
+# `sun_path` in `sockaddr_un` holds the socket path plus its NUL terminator —
+# 104 bytes on macOS/BSD, 108 on Linux — so the usable path is one byte less.
+# Both figures confirmed by binding at the boundary on each platform.
+const _SUN_PATH_MAX = Sys.isbsd() ? 104 : 108
+
+"""
+    _check_ipc_path_length(session_id)
+
+Reject a `sock_dir()` deep enough that this session's socket paths overflow
+`sun_path`. Left to ZMQ, the overflow surfaces from `bind` as a bare
+"File name too long" naming neither the path nor the cache directory behind it,
+and only after the first of the two sockets is already bound. (#84)
+"""
+function _check_ipc_path_length(session_id::AbstractString)
+    # The stream socket has the longer of the two names this session binds.
+    path = joinpath(sock_dir(), "$(session_id)-stream.sock")
+    n = ncodeunits(path)
+    n < _SUN_PATH_MAX && return nothing
+    throw(ArgumentError("""
+        IPC socket path is $n bytes, over this platform's limit of $(_SUN_PATH_MAX - 1):
+          $path
+        Set XDG_CACHE_HOME to a shorter directory, or start the gate with mode=:tcp."""))
+end
+
 """
     _install_peek_report_override(session_id::String)
 
