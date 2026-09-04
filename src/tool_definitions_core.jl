@@ -389,9 +389,10 @@ usage_quiz_tool = @mcp_tool(
 
 Default: returns quiz questions. With show_sols=true: returns solutions and grading rubric.
 Covers the shared REPL model, q-flag usage, sessions/routing, picking purpose-built tools
-(search/introspection/testing/debugging), eval tracking + background jobs, the search tools
-(search_code/grep_code), and environment discipline. Scored out of 100; if < 75, review
-usage_instructions and retake.""",
+(search/introspection/testing/debugging), eval tracking + background jobs, backgrounded test
+runs (and why sleeping to wait for one is always wrong), the search tools
+(search_code/grep_code), scoped multi-file editing (edit_code), and environment discipline.
+Scored out of 120; if < 75%, review usage_instructions and retake.""",
     Dict(
         "type" => "object",
         "properties" => Dict(

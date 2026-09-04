@@ -9,6 +9,7 @@ Kaimon provides Julia-native code discovery tools. Prefer these over grep/shell:
 
 - **`search_code(query="...")`** — find code by MEANING (a concept/behaviour); semantic-ranked
 - **`grep_code(pattern="...")`** — find an EXACT pattern/regex over the live tree, with enclosing symbol
+- **`edit_code(pattern="...", replacement="...")`** — grep_code's write side: scoped multi-file find/replace, parsed before writing, returns the diff
 - **`type_info("Type")`** — Complete type info: fields, hierarchy, subtypes
 - **`search_methods("function")`** — All method signatures and overloads
 - **`list_names("Module")`** — Exported (or all) names in a module
@@ -43,6 +44,36 @@ Two tools, picked by **what you have in hand** — both beat shell grep/find (re
 
 Full references: `tool_help("search_code", extended=true)` and
 `tool_help("grep_code", extended=true)`.
+
+### Changing code across files
+
+**`edit_code(pattern="…", replacement="…")`** is `grep_code`'s write side and takes the same
+scoping arguments (`path=` / `file=` / `glob=`, project-root-anchored, `.gitignore`-aware),
+so you locate with one and change with the other without rewriting the scope.
+
+Reach for it for **any multi-file mechanical change** — a rename, a signature update,
+retiring a deprecated call — rather than a shell/python one-liner or a run of
+single-file edits. What it gives you that a script doesn't:
+
+- **Validated before writing.** Every modified `.jl` is parsed and every `.toml` checked
+  *before the first write*; one failure aborts the whole batch and **nothing** is written,
+  including the files that were fine. A half-applied edit is not a reachable outcome.
+- **The diff is the result.** It returns a unified diff, so the change is reviewable in
+  place — no follow-up `git diff`, and a human skimming the transcript can see it.
+- **Bounded, so it can be approved once.** Unlike `python3 -c`, whose contract is
+  "arbitrary code" and so must prompt forever.
+
+```julia
+edit_code(pattern="old_name", replacement="new_name", path="src", word=true)
+```
+
+Matching is **line-wise by default** (the sed model): `^`/`$` mean line start/end and the
+diff comes back exactly line-aligned. Pass `multiline=true` only when the pattern must span
+lines. Use `fixed=true` for literal text, `word=true` for identifier renames, `dry_run=true`
+when the pattern is untrusted, and `max_files=` to cap the blast radius.
+
+**It edits text, not syntax** — a pattern matches inside strings, comments, and docstrings
+too. Prefer `word=true` plus a narrow `glob` over a broad pattern.
 
 ---
 
@@ -145,6 +176,28 @@ results                                      # final expression → the job's re
 
 Jobs **persist across a Kaimon restart** (reconciled from SQLite), so an eval ID stays checkable.
 
+## Backgrounded Test Runs — and Never Sleeping
+
+`run_tests` promotes a slow suite to a **background run** and returns a run id
+(`🧪 Backgrounded as run 3 … check_tests(run_id=3) to collect`). `check_tests(run_id=…)`
+gives a one-line progress summary while it runs, and exactly what `run_tests` would have
+returned once it finishes. With no arguments it lists runs still in flight.
+
+**Never `sleep` in Bash to wait for a backgrounded run, an eval, a build, or a restarted
+process.** This is the single most common way agents waste a user's time, and it defeats the
+entire purpose: backgrounding exists to **free you to do other work**. Start the run, go do
+the next thing, and collect the result when you actually need it.
+
+- `sleep 60` to wait for tests is always wrong. So is polling every few seconds.
+- Sleeping *longer* than the work takes is worse still — you pay the full wait **and** learn
+  nothing sooner than collecting on demand would have told you.
+- Assume tests pass (they do the overwhelming majority of the time) and keep working; check
+  before you commit, which is the only point where the answer actually gates you.
+- Same for a restarted server or extension: do something else and check later.
+
+If there is genuinely nothing else to do, **say so and return** rather than burning wall-clock
+in a `sleep`. The user can see the run is in flight.
+
 ## Environment & Packages
 
 - **Revise.jl** auto-reloads `src/` edits before every eval (the gate replays Revise's `revise_first` transform). Never call `Revise.revise()` yourself — it's a redundant no-op and is stripped from your code automatically, like `println`. If a change isn't picked up, restart the session.
@@ -156,8 +209,9 @@ Jobs **persist across a Kaimon restart** (reconciled from SQLite), so an eval ID
 **Execution:** `ex(e="code")` — primary tool for everything
 **Introspection:** `list_names("Module")`, `type_info("Type")`, `search_methods("func")`
 **Code search:** `search_code(query="...")` (by meaning) · `grep_code(pattern="...")` (exact pattern/regex) · `qdrant_list_collections()`
+**Code editing:** `edit_code(pattern="...", replacement="...")` — scoped multi-file find/replace, validated before writing, returns the diff
 **Code navigation:** `goto_definition()`, `document_symbols()`, `workspace_symbols()`
-**Testing:** `run_tests(pattern="...")` — spawns subprocess, streams results
+**Testing:** `run_tests(pattern="...")` — spawns subprocess, backgrounds a slow suite · `check_tests(run_id=N)` to collect (never `sleep` to wait)
 **Debugging:** `debug_ctrl()`, `debug_eval()`, `debug_exfiltrate()`, `debug_safehouse(action="inspect"|"clear")`
 **Utilities:** `format_code(path)`, `ping()`, `investigate_environment()`
 **Help:** `tool_help("tool_name")` or `tool_help("tool_name", extended=true)`
