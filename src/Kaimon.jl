@@ -182,6 +182,7 @@ include("qdrant_tools.jl")
 include("qdrant_hybrid.jl")   # hybrid (semantic+lexical RRF) impl behind qdrant_search_code
 include("grep_code.jl")       # exact-pattern (ripgrep) search behind grep_code
 include("edit_code.jl")       # scoped, validated bulk edit — grep_code's write side
+include("rename_symbol.jl")   # identifier-aware rename, on the token stream not on text
 # Qdrant indexer, split from the former monolithic qdrant_indexer.jl. Order
 # follows the original (config/consts first, then cache, discovery, chunking,
 # indexing, revise hook).

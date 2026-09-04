@@ -10,6 +10,7 @@ Kaimon provides Julia-native code discovery tools. Prefer these over grep/shell:
 - **`search_code(query="...")`** — find code by MEANING (a concept/behaviour); semantic-ranked
 - **`grep_code(pattern="...")`** — find an EXACT pattern/regex over the live tree, with enclosing symbol
 - **`edit_code(pattern="...", replacement="...")`** — grep_code's write side: scoped multi-file find/replace, parsed before writing, returns the diff
+- **`rename_symbol(old_name="...", new_name="...")`** — identifier rename on the parsed token stream; skips comments, strings and docstrings
 - **`type_info("Type")`** — Complete type info: fields, hierarchy, subtypes
 - **`search_methods("function")`** — All method signatures and overloads
 - **`list_names("Module")`** — Exported (or all) names in a module
@@ -74,6 +75,31 @@ when the pattern is untrusted, and `max_files=` to cap the blast radius.
 
 **It edits text, not syntax** — a pattern matches inside strings, comments, and docstrings
 too. Prefer `word=true` plus a narrow `glob` over a broad pattern.
+
+### Renaming a symbol
+
+**`rename_symbol(old_name="…", new_name="…")`** is the syntax-aware answer to exactly that
+weakness, and is what you should reach for whenever the change is a **Julia identifier
+rename**. It matches on JuliaSyntax's token stream instead of on text, so the lexer makes the
+distinction for you:
+
+```julia
+foo(1)                  # Identifier → renamed
+# foo in a comment      # Comment    → untouched
+"plain foo here"        # String     → untouched
+"""docstring … foo"""   # String     → untouched
+"interp $foo here"      # Identifier → renamed (a real reference)
+@foo x                  # MacroName  → only with macros=true
+```
+
+Everything outside the renamed tokens is preserved byte-for-byte, so spacing and comments
+survive exactly. `.jl` files only; `new_name` must be a valid identifier or the call is
+refused. A file that *already* fails to parse is skipped and reported, rather than being
+renamed and then blamed for breakage that predates you. Same all-or-nothing batching, atomic
+writes, and returned diff as `edit_code`.
+
+**It is not scope-aware.** An unrelated local named `foo` in another function is renamed too
+— real scope resolution needs binding analysis. Scope with `path`/`glob` and read the diff.
 
 ---
 
@@ -209,7 +235,7 @@ in a `sleep`. The user can see the run is in flight.
 **Execution:** `ex(e="code")` — primary tool for everything
 **Introspection:** `list_names("Module")`, `type_info("Type")`, `search_methods("func")`
 **Code search:** `search_code(query="...")` (by meaning) · `grep_code(pattern="...")` (exact pattern/regex) · `qdrant_list_collections()`
-**Code editing:** `edit_code(pattern="...", replacement="...")` — scoped multi-file find/replace, validated before writing, returns the diff
+**Code editing:** `edit_code(pattern="...", replacement="...")` — scoped multi-file find/replace, validated before writing, returns the diff · `rename_symbol(old_name="...", new_name="...")` — identifier rename on the token stream, skips comments/strings
 **Code navigation:** `goto_definition()`, `document_symbols()`, `workspace_symbols()`
 **Testing:** `run_tests(pattern="...")` — spawns subprocess, backgrounds a slow suite · `check_tests(run_id=N)` to collect (never `sleep` to wait)
 **Debugging:** `debug_ctrl()`, `debug_eval()`, `debug_exfiltrate()`, `debug_safehouse(action="inspect"|"clear")`

@@ -90,9 +90,14 @@ c) **Nothing is written at all** — all twelve stay byte-identical, including t
    partially applied bulk edit is the worst available outcome, because the tree is in a state
    nobody intended and nobody knows which files moved. Aborting whole leaves exactly one thing
    to do — fix the pattern and re-run. (3)
-d) **No — it edits text, not syntax**, so it matches inside strings, comments, and docstrings
-   as happily as in code. Scope it deliberately: `word=true`, a narrow `glob`, and read the
-   returned diff rather than assuming. (3)
+d) **`edit_code` does not** — it edits text, so it matches inside strings, comments, and
+   docstrings as happily as in code. **`rename_symbol(old_name=…, new_name=…)` does**: it
+   matches on JuliaSyntax's **token stream**, so the lexer separates an Identifier from a
+   Comment or a String for you — and an interpolated `$old_name` inside a string is still
+   renamed, because that one *is* a real reference. What it still gets wrong: it is **not
+   scope-aware**, so an unrelated local of the same name elsewhere is renamed too. So: use
+   `rename_symbol` for an identifier rename, `edit_code` for anything else, and in both cases
+   scope with `path`/`glob` and read the returned diff. (3)
 
 ---
 

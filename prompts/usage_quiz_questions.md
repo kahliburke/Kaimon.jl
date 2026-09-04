@@ -70,7 +70,8 @@ b) You could write a `python3 -c` or `sed` one-liner instead. Give **three** con
 c) One of twelve files would fail to parse after the substitution. What happens to the other
    eleven, and why is that the design rather than a limitation?
 d) The rename also hits `"old_name"` inside a log string and a mention in a docstring. Does
-   the tool know the difference? What does that imply for how you scope it?
+   `edit_code` know the difference? Which tool does, how does it manage it, and what does it
+   still get wrong?
 
 ---
 
