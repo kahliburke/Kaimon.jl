@@ -176,6 +176,7 @@ function collect_tools()::Vector{MCPTool}
         code_lowered_tool,
         code_typed_tool,
         format_tool,
+        edit_code_tool,
         lint_tool,
         navigate_to_file_tool,
         debug_exfiltrate_tool,
