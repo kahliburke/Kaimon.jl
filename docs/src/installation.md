@@ -32,6 +32,16 @@ To pin a specific version:
 ]app add Kaimon@1.2.2
 ```
 
+!!! warning "`app` commands fail with `Permission denied`"
+    Kaimon 2.8.1 and earlier pulled in a Tachikoma version whose build step registered a
+    `Tachi` app pointing into the read-only package tree. That entry makes every later
+    `app` operation fail, including updating Kaimon itself. Upgrading does not remove it,
+    so drop it once by hand:
+
+    ```julia
+    ]app rm Tachi
+    ```
+
 ### Connect a Julia session (KaimonGate)
 
 To make one of your project's Julia sessions reachable by the `kaimon` dashboard,
