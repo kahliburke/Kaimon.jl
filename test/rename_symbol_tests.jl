@@ -50,6 +50,33 @@ using Kaimon
         @test occursin("@baz x", out)
     end
 
+    # A macro name is recognised by the preceding `@`, not by a token kind — the kind is not
+    # the same across Julia versions. These pin every spelling of "the `@` is not adjacent".
+    @testset "macro forms are recognised in every spelling" begin
+        for src in ("@foo x\n", "Base.@foo x\n", "@ foo x\n", "Mod.Sub.@foo x\n")
+            @test isempty(Kaimon._rename_ranges(src, "foo", false))
+            @test length(Kaimon._rename_ranges(src, "foo", true)) == 1
+            # Only the name is spliced, so the `@` and any spacing survive verbatim.
+            @test Kaimon._rename_apply(src, Kaimon._rename_ranges(src, "foo", true), "baz") ==
+                  replace(src, "foo" => "baz")
+        end
+        # `@foo` must not drag in the module path or the macro's arguments.
+        src = "Base.@foo foo\n"
+        @test length(Kaimon._rename_ranges(src, "foo", false)) == 1   # the argument only
+        @test length(Kaimon._rename_ranges(src, "foo", true)) == 2
+        @test Kaimon._rename_apply(src, Kaimon._rename_ranges(src, "Base", false), "Core") ==
+              "Core.@foo foo\n"
+    end
+
+    # The `K"…"` kinds come from Base.JuliaSyntax, which is internal and has changed shape
+    # between releases. A missing kind is a LOAD error for all of Kaimon, so assert the
+    # lookup degrades to `nothing` instead of throwing.
+    @testset "kind lookup tolerates a kind this Julia doesn't have" begin
+        @test Kaimon._js_kind("Identifier") === Base.JuliaSyntax.K"Identifier"
+        @test Kaimon._js_kind("NoSuchKindNameAnywhere") === nothing
+        @test Kaimon._K_MACRO_NAME === nothing || Kaimon._K_MACRO_NAME isa Base.JuliaSyntax.Kind
+    end
+
     @testset "quoted symbols and keyword names are identifiers" begin
         @test length(Kaimon._rename_ranges("Val{:foo}\n", "foo", false)) == 1
         @test length(Kaimon._rename_ranges("f(; foo = 1) = foo\n", "foo", false)) == 2

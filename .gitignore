@@ -20,6 +20,7 @@ example-project/
 # Environment
 .env
 Manifest.toml
+Manifest-v*.toml
 
 # Kaimon configuration (contains API keys, security settings, and session data)
 .kaimon/security.json

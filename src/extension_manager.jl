@@ -325,12 +325,18 @@ end
 # mtime captures both a new slug (path changes) and an in-place edit. Kaimon's own
 # source is part of the identity because the env resolves Kaimon too: a Kaimon
 # upgrade must re-resolve the shared dependencies, not reuse the old versions.
+#
+# The Julia minor version is part of it as well: a manifest resolved under one minor
+# pins stdlib JLL versions that the next one ships different copies of, and reusing it
+# fails the extension at load with a precompiled-image mismatch rather than anything
+# that names the real cause. Users move between minors with juliaup routinely.
 function _extension_env_fingerprint(project_path::AbstractString)
     stamp(dir) = let pf = joinpath(dir, "Project.toml")
         string(abspath(dir), "@", isfile(pf) ? mtime(pf) : 0)
     end
     kaimon = pkgdir(@__MODULE__)
-    return string(stamp(project_path), "|", kaimon === nothing ? "" : stamp(kaimon))
+    return string("julia", VERSION.major, ".", VERSION.minor, "|",
+                  stamp(project_path), "|", kaimon === nothing ? "" : stamp(kaimon))
 end
 
 """
