@@ -233,7 +233,9 @@ function _acp_decide(b::ACPClientBackend, tool::AbstractString)
             Dict("allow" => false, "why" => "auto preset cannot consult a classifier over ACP") :
             Dict("allow" => true)
     end
-    Dict("allow" => true)
+    # An unrecognized preset is a typo, and a typo used to mean "allow everything" — the one
+    # direction a policy must never fail in. Refuse, and say which name was not understood.
+    return Dict("allow" => false, "why" => "unknown permission preset '$(b.permission)'")
 end
 
 # ── JSON-RPC plumbing ─────────────────────────────────────────────────────────
@@ -285,8 +287,11 @@ function _pick_permission(options)
     for want in ("allow_once", "allow_always"), o in options
         o isa AbstractDict && get(o, "kind", "") == want && return get(o, "optionId", nothing)
     end
-    o = first(options)
-    o isa AbstractDict ? get(o, "optionId", nothing) : nothing
+    # No option says it allows anything, so there is nothing here to choose. Taking the first one
+    # by position picked whatever the agent happened to list first, which for an agent that leads
+    # with its reject option meant silently rejecting every request. Answer `cancelled` instead:
+    # the caller turns that into an explicit outcome rather than a decision nobody made.
+    return nothing
 end
 
 """
@@ -387,12 +392,35 @@ end
 
 # ── session/update → ACP.AgentEvent ───────────────────────────────────────────
 
+"""
+Map one ACP content block onto its type.
+
+Every variant the spec defines is constructed. Falling through to `TextBlock(get(c,"text",""))`
+turned a resource, a link or an audio block into an EMPTY text block, so the content vanished with
+nothing to show it had been sent. An unrecognized type keeps its payload as text rather than
+discarding it.
+"""
 function _content_block(c)
     c isa AbstractDict || return ACP.TextBlock(c === nothing ? "" : string(c))
-    t = get(c, "type", "text")
-    t == "image" ? ACP.ImageBlock(String(get(c, "data", "")), String(get(c, "mimeType", "image/png")),
-                                  get(c, "uri", nothing)) :
-                   ACP.TextBlock(String(get(c, "text", "")))
+    t = String(get(c, "type", "text"))
+    if t == "text"
+        return ACP.TextBlock(String(get(c, "text", "")))
+    elseif t == "image"
+        return ACP.ImageBlock(String(get(c, "data", "")), String(get(c, "mimeType", "image/png")),
+                              get(c, "uri", nothing))
+    elseif t == "audio"
+        return ACP.AudioBlock(String(get(c, "data", "")), String(get(c, "mimeType", "audio/wav")))
+    elseif t == "resource_link"
+        return ACP.ResourceLinkBlock(String(get(c, "uri", "")), get(c, "name", nothing),
+                                     get(c, "mimeType", nothing))
+    elseif t == "resource"
+        r = get(c, "resource", Dict{String,Any}())
+        r isa AbstractDict || (r = Dict{String,Any}())
+        return ACP.ResourceBlock(String(get(r, "uri", "")),
+                                 get(r, "text", nothing), get(r, "blob", nothing),
+                                 get(r, "mimeType", nothing))
+    end
+    return ACP.TextBlock(String(get(c, "text", isempty(c) ? "" : JSON.json(c))))
 end
 
 _locations(v) = v isa AbstractVector ?
@@ -432,8 +460,10 @@ function _acp_turn_usage(u, cost::Union{Float64,Nothing} = nothing)
 end
 
 # Updates we knowingly drop: they carry no information an AgentEvent models.
-const ACP_IGNORED_UPDATES = ("available_commands_update", "current_mode_update",
-                             "usage_update")
+# `current_mode_update` is NOT ignored: it is how an agent reports it changed its own mode, and
+# `permission_mode` (notably "plan") is enforced by the agent rather than by us. Silently dropping
+# it meant plan mode could lapse with nothing anywhere saying so. Handled below.
+const ACP_IGNORED_UPDATES = ("available_commands_update", "usage_update")
 
 function _map_acp_update(upd)::Vector{ACP.AgentEvent}
     upd isa AbstractDict || return ACP.AgentEvent[]
@@ -466,6 +496,11 @@ function _map_acp_update(upd)::Vector{ACP.AgentEvent}
             locations = haskey(upd, "locations") ? _locations(upd["locations"]) : nothing,
             raw_input = get(upd, "rawInput", nothing),
             raw_output = get(upd, "rawOutput", nothing))))
+    elseif kind == "current_mode_update"
+        # The agent enforces its own mode, so a change here can quietly undo what was asked for at
+        # spawn. Surfaced rather than mapped to an event: the consumers read a fixed set of event
+        # kinds, and a mode is worth knowing about without inventing one for them to learn.
+        @info "ACP agent changed mode" mode = String(get(upd, "currentModeId", "?"))
     elseif kind == "plan"
         entries = get(upd, "entries", Any[])
         push!(out, ACP.PlanUpdated([
