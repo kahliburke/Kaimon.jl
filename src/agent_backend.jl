@@ -114,6 +114,11 @@ mutable struct ClaudeHandle <: AgentHandle
     cwd::String
     log_file::String
     ctrl_seq::Base.RefValue{Int}           # monotonic id for control requests (interrupts)
+    # An interrupt we asked for is in flight. The CLI reports a cancelled turn as a FAILED one —
+    # `is_error: true`, `subtype: "error_during_execution"` — which is indistinguishable from a
+    # real failure in the event itself. Stopping something on purpose is not an error, and saying
+    # so trains people to ignore the errors that are.
+    interrupting::Base.RefValue{Bool}
 end
 
 backend_status(h::ClaudeHandle) =
@@ -185,7 +190,7 @@ function backend_start(b::ClaudeBackend; cwd::String, agent_id::String,
 
     events = Channel{ACP.AgentEvent}(Inf)
     h = ClaudeHandle(b, proc, proc.in, proc.out, events, Task(() -> nothing),
-                     Ref(0), Ref(""), Dict{Int,String}(), cwd, log_file, Ref(0))
+                     Ref(0), Ref(""), Dict{Int,String}(), cwd, log_file, Ref(0), Ref(false))
     h.reader = _start_reader!(h, log_io)
     h
 end
@@ -202,7 +207,7 @@ function _start_reader!(h::ClaudeHandle, log_io::IO)
                     put!(h.events, ACP.AgentError("stream-json parse error", line))
                     continue
                 end
-                for ev in _map_claude_event(obj, h.session_id, h.tool_blocks)
+                for ev in _map_claude_event(obj, h.session_id, h.tool_blocks, h.interrupting)
                     put!(h.events, ev)
                 end
             end
@@ -243,6 +248,7 @@ the control request isn't accepted.)
 """
 function backend_interrupt(h::ClaudeHandle)
     Base.process_running(h.proc) || return false
+    h.interrupting[] = true
     ctrl = Dict("type" => "control_request",
                 "request_id" => "int-$(h.ctrl_seq[] += 1)",   # unique per interrupt (no collisions)
                 "request" => Dict("subtype" => "interrupt"))
@@ -292,7 +298,8 @@ _get(d, k, default=nothing) = d isa AbstractDict ? get(d, k, default) : default
 """Map one stream-JSON object to zero or more ACP events. Takes only the
 `session_id` Ref it needs from the handle (so it's unit-testable without a process)."""
 function _map_claude_event(obj, session_id::Base.RefValue{String},
-                           tool_blocks::Dict{Int,String} = Dict{Int,String}())::Vector{ACP.AgentEvent}
+                           tool_blocks::Dict{Int,String} = Dict{Int,String}(),
+                           interrupting::Base.RefValue{Bool} = Ref(false))::Vector{ACP.AgentEvent}
     out = ACP.AgentEvent[]
     t = _get(obj, "type")
     if t == "system"
@@ -378,7 +385,11 @@ function _map_claude_event(obj, session_id::Base.RefValue{String},
         # CLI carries in the `result` event is dropped. Surface it as an AgentError so
         # observers and the rate governor can classify it (e.g. is_rate_limited). The CLI
         # retries transient 429s internally and only emits this once it has given up.
-        if is_err
+        # A turn we interrupted arrives looking exactly like a failed one, so the only thing that
+        # can tell them apart is knowing we asked. Consume the flag either way: it covers one turn.
+        asked_to_stop = interrupting[]
+        interrupting[] = false
+        if is_err && !asked_to_stop
             subtype = _get(obj, "subtype")          # e.g. "error_during_execution", "error_max_turns"
             rtext   = _get(obj, "result")           # error description / final text
             msg = rtext isa AbstractString && !isempty(rtext) ? String(rtext) :
@@ -386,7 +397,8 @@ function _map_claude_event(obj, session_id::Base.RefValue{String},
             push!(out, ACP.AgentError(msg, Dict("subtype" => subtype, "is_error" => true,
                                                 "result" => rtext)))
         end
-        stop = sr isa AbstractString ? ACP.as_enum(sr, ACP.STOP_REASONS, :end_turn) :
+        stop = asked_to_stop ? :cancelled :
+               sr isa AbstractString ? ACP.as_enum(sr, ACP.STOP_REASONS, :end_turn) :
                (is_err ? :refusal : :end_turn)
         push!(out, ACP.TurnEnded(stop, usage))
     elseif t == "control_response"
