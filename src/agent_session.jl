@@ -162,13 +162,16 @@ function agent_open(; cwd::String,
         ACPClientBackend(; argv = acp_argv, model = acp_model,
                          permission = permission, permission_mode = final_mode,
                          disallowed_tools = disallowed_tools,
-                         # Composed with the preset like every other backend. Note `lab`'s
-                         # `mcp__kaimon` widens an allowlist to all of Kaimon — a specialist
-                         # wants a preset with no allowances of its own (`default`).
-                         allowed_tools = final_allowed,
+                         # Passed apart rather than merged, so an explicit allowlist can exclude
+                         # what the preset would allow. `final_allowed` still governs every
+                         # other backend.
+                         allowed_tools = allowed_tools, preset_tools = pallow,
                          system_prompt = system_prompt,
                          mcp_servers = _acp_mcp_servers(aid),
-                         plugin_dir = _acp_plugin_dir())
+                         # The bridge plugin is an opencode plugin. Any other agent ignores it,
+                         # so the preset and the recursion guard would enforce nothing; those
+                         # agents are governed at the permission branch instead.
+                         plugin_dir = _acp_plugin_supported(acp_argv) ? _acp_plugin_dir() : nothing)
     elseif startswith(model, VMLX_PREFIX)
         OllamaBackend(; model = chop(model; head = length(VMLX_PREFIX), tail = 0),
                       host = get(ENV, "VMLX_HOST", "http://127.0.0.1:8000"),

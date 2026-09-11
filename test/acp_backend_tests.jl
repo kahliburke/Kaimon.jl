@@ -101,7 +101,9 @@ end
     opts = [Dict("optionId" => "b", "kind" => "reject_once"),
             Dict("optionId" => "a", "kind" => "allow_once")]
     @test _pick_permission(opts) == "a"                       # prefers a one-shot allow
-    @test _pick_permission([Dict("optionId" => "z", "kind" => "weird")]) == "z"
+    # An option whose kind we don't recognise is not picked. Choosing it meant granting
+    # whatever it happened to mean.
+    @test _pick_permission([Dict("optionId" => "z", "kind" => "weird")]) === nothing
     @test _pick_permission([]) === nothing
     @test _pick_permission(nothing) === nothing
 end
@@ -138,6 +140,48 @@ end
 
     # An agent we can't identify gets nothing.
     @test acp_bridge_decide("no-such-agent", "read", nothing)["allow"] === false
+end
+
+@testset "ACP: a specialist allowlist outranks its preset" begin
+    # The whole point of the two fields. Merged into one, a `lab` specialist carried
+    # `mcp__kaimon` it never asked for and every Kaimon tool was in its world.
+    spec = ACPClientBackend(; permission = "lab",
+                            allowed_tools = ["mcp__kaimon__slate_dbg_step"],
+                            preset_tools = ["mcp__kaimon", "fs/read_text_file"])
+    @test _acp_decide(spec, "mcp__kaimon__slate_dbg_step")["allow"] === true
+    @test _acp_decide(spec, "mcp__kaimon__slate_dbg_read")["allow"] === false
+    @test _acp_decide(spec, "fs/read_text_file")["allow"] === false
+
+    # With no allowlist of its own, the preset's allowances are what the agent gets.
+    plain = ACPClientBackend(; permission = "lab", preset_tools = ["mcp__kaimon", "fs/read_text_file"])
+    @test _acp_decide(plain, "mcp__kaimon__slate_dbg_read")["allow"] === true
+    @test _acp_decide(plain, "fs/read_text_file")["allow"] === true
+
+    # A preset allowance widens a preset that would otherwise refuse.
+    strict = ACPClientBackend(; permission = "auto", disallowed_tools = String[],
+                              preset_tools = ["write"])
+    @test _acp_decide(strict, "write")["allow"] === true
+    @test _acp_decide(strict, "bash")["allow"] === false
+end
+
+@testset "ACP: policy at the MCP boundary" begin
+    # A caller that is not a Kaimon-owned agent is not judged here at all — the human's own
+    # MCP session must keep working.
+    @test Kaimon.agent_tool_refusal("", "ex") === nothing
+    @test Kaimon.agent_tool_refusal("no-such-agent", "ex") === nothing
+
+    # An extension tool answers to both `ns.verb` and `ns_verb`. Allowlists use the underscore
+    # spelling, so a caller using the dotted one must still match — refusing it turned every
+    # allowed verb into a denial the moment the canonical name was used.
+    @test Kaimon._acp_tool_matches("mcp__kaimon__" * replace("slate_dbg.dbg_frame", '.' => '_'),
+                                   "slate_dbg_dbg_frame")
+    @test !Kaimon._acp_tool_matches("mcp__kaimon__slate_dbg.dbg_frame", "slate_dbg_dbg_frame")
+
+    resp = Kaimon._tool_refusal_response(Dict("id" => 7), "ex", "not in this agent's allowlist")
+    body = JSON.parse(String(resp.body))
+    @test body["id"] == 7
+    @test body["result"]["isError"] === true          # a tool error, not a protocol error
+    @test occursin("ex refused", body["result"]["content"][1]["text"])
 end
 
 @testset "ACP: bridge tokens" begin
@@ -257,3 +301,129 @@ end
     @test isempty(Kaimon._authoritative_events("", ""))
     @test isempty(Kaimon._authoritative_events("  \n ", "\t"))
 end
+
+# ── against a fake agent ──────────────────────────────────────────────────────────────────────
+# These exercise what the CLIENT does when an agent misbehaves, which is the whole subject of the
+# reader-task change and is unreachable with a real agent: you cannot ask opencode to read a named
+# pipe on command, or to race a permission prompt against an update.
+include("acp_fake_agent.jl")
+
+const _HAVE_NODE = try; success(`node --version`); catch; false; end
+
+# The FIFO case needs more than one OS thread, and fails by WEDGING rather than by failing: the
+# blocking handler stalls the only thread, nothing else is scheduled, and the process then
+# survives SIGTERM so even a `timeout` wrapper leaves it behind. Measured on this suite:
+#
+#   -t 1     (1 default, 0 interactive, 1 OS thread)   hangs
+#   default  (1 default, 1 interactive, 2 OS threads)  passes
+#   -t 1,1   (1 default, 1 interactive, 2 OS threads)  passes
+#   -t 2     (2 default, 1 interactive, 3 OS threads)  passes
+#
+# The hub spawns Kaimon with no `--threads`, so it is the `default` row. Skip rather than wedge if
+# someone runs the suite under `-t 1`, since a hang is the least informative way to learn this.
+const _OS_THREADS = Threads.nthreads() + Threads.nthreads(:interactive)
+
+if !_HAVE_NODE
+    @info "skipping ACP fake-agent tests: node not on PATH"
+elseif _OS_THREADS < 2
+    @info "skipping ACP fake-agent tests: need >1 OS thread, have $_OS_THREADS (try -t 1,1)"
+else
+@testset "ACP: a blocking client request does not stall the stream" begin
+    # The wedge: fs/read on a FIFO never returns. Handled inline, this stopped the reader, so the
+    # update after it never arrived and every call in flight timed out.
+    dir = mktempdir()
+    fifo = joinpath(dir, "pipe")
+    run(`mkfifo $fifo`)
+    # Unwedging the read has to happen even when the assertion below fails, so it goes in a
+    # `finally` rather than after the assertion. A handler still blocked in `open` keeps the
+    # process alive against SIGTERM — Julia catches the signal, tries to shut down, and cannot —
+    # so a failed run leaves a process that only SIGKILL removes, and the `timeout` wrapper the
+    # run came in does not help. Unlinking the FIFO does not release a pending open either; the
+    # only thing that does is giving it the writer it is waiting for.
+    try
+    with_fake_agent(cwd = dir,
+        allowed_tools = ["fs/read_text_file"],
+        steps = Any[
+            Dict("request" => Dict("method" => "fs/read_text_file",
+                                   "params" => Dict("sessionId" => "fake-session", "path" => fifo))),
+            Dict("send" => Dict("jsonrpc" => "2.0", "method" => "session/update",
+                                "params" => Dict("sessionId" => "fake-session",
+                                                 "update" => Dict("sessionUpdate" => "agent_message_chunk",
+                                                                  "content" => Dict("type" => "text",
+                                                                                    "text" => "still here"))))),
+        ]) do h
+        evs = drain_events(h; n = 1, timeout = 8.0)
+        # The update must arrive even though the read is still blocked on the FIFO.
+        #
+        # One assertion is enough, and deliberately so. The read never completes, so a handler on
+        # the reader task would block it forever and this update could not be processed at all —
+        # "it was merely fast" is not an available explanation. Asserting that the read's reply has
+        # NOT arrived would exclude nothing. That assertion belongs with a large-real-file variant,
+        # where the read does finish and fast competes with off-task.
+        @test any(e -> e isa ACP.AgentMessageChunk, evs)
+    end
+    finally
+        # `r+` rather than `w`: opening a FIFO blocks until the opposite end is present, so a
+        # write-only open would hang here in exactly the case this cleanup exists for — a failure
+        # before the read was ever issued, leaving no reader to pair with. O_RDWR is both ends at
+        # once, so it cannot block, and it still releases a reader that is already waiting.
+        # POSIX leaves O_RDWR on a FIFO undefined; Linux and macOS both behave as described, which
+        # is enough for a test helper but is not a portability guarantee.
+        try; open(fifo, "r+") do io; write(io, "done\n"); end; catch; end
+    end
+end
+
+@testset "ACP: a permission prompt keeps its place in the stream" begin
+    # Regression for the ordering bug the spawn fix introduced: emitted from the spawned half, a
+    # PermissionRequested could be overtaken by updates the reader kept consuming.
+    with_fake_agent(steps = Any[
+            Dict("request" => Dict("method" => "session/request_permission",
+                                   "params" => Dict("sessionId" => "fake-session",
+                                                    "toolCall" => Dict("toolCallId" => "tc1"),
+                                                    "options" => Any[Dict("optionId" => "y",
+                                                                          "name" => "Allow",
+                                                                          "kind" => "allow_once")]))),
+            Dict("send" => Dict("jsonrpc" => "2.0", "method" => "session/update",
+                                "params" => Dict("sessionId" => "fake-session",
+                                                 "update" => Dict("sessionUpdate" => "agent_message_chunk",
+                                                                  "content" => Dict("type" => "text",
+                                                                                    "text" => "after"))))),
+        ]) do h
+        evs = drain_events(h; n = 2, timeout = 8.0)
+        ip = findfirst(e -> e isa ACP.PermissionRequested, evs)
+        ic = findfirst(e -> e isa ACP.AgentMessageChunk, evs)
+        @test ip !== nothing && ic !== nothing
+        @test ip < ic
+    end
+end
+
+@testset "ACP: a malformed permission payload does not kill the reader" begin
+    with_fake_agent(steps = Any[
+            # `options` a string rather than an array: the announce must survive it.
+            Dict("request" => Dict("method" => "session/request_permission",
+                                   "params" => Dict("sessionId" => "fake-session",
+                                                    "options" => "not-an-array"))),
+            Dict("send" => Dict("jsonrpc" => "2.0", "method" => "session/update",
+                                "params" => Dict("sessionId" => "fake-session",
+                                                 "update" => Dict("sessionUpdate" => "agent_message_chunk",
+                                                                  "content" => Dict("type" => "text",
+                                                                                    "text" => "alive"))))),
+        ]) do h
+        evs = drain_events(h; n = 3, timeout = 8.0)
+        @test any(e -> e isa ACP.AgentMessageChunk, evs)
+    end
+end
+
+@testset "ACP: the handshake reply is kept" begin
+    caps = Dict("_meta" => Dict("claudeCode" => Dict("promptQueueing" => true)),
+                "sessionCapabilities" => Dict("fork" => true))
+    with_fake_agent(caps = caps) do h
+        @test Kaimon.acp_queues_prompts(h)
+        @test get(Kaimon.acp_capabilities(h), "protocolVersion", nothing) == 1
+        @test get(get(Kaimon.acp_capabilities(h), "session", Dict()), "sessionId", "") == "fake-session"
+    end
+    with_fake_agent(caps = Dict{String,Any}()) do h
+        @test !Kaimon.acp_queues_prompts(h)   # absent capability is not queueing
+    end
+end
+end  # _HAVE_NODE

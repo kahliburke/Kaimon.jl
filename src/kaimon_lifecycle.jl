@@ -667,6 +667,17 @@ function _ensure_headless_config!()
     return nothing
 end
 
+"""
+    kaimon_embedded() -> Bool
+
+Is this host running inside another app's terminal rather than the user's own?
+
+Set by the parent at spawn (`KAIMON_EMBEDDED=1`). It does not change what the host DOES — the MCP
+server, the gate and the extensions are identical — only what its TUI may decide on the user's
+behalf. Quitting is the case that matters: the parent owns the process lifetime.
+"""
+kaimon_embedded() = get(ENV, "KAIMON_EMBEDDED", "") in ("1", "true", "yes")
+
 function (@main)(ARGS)
     # Fire-and-forget: resolve the user's global environment in the background.
     # When Kaimon gains new deps, the global env manifest (where Kaimon is dev'd)

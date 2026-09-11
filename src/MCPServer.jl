@@ -1247,6 +1247,21 @@ function start_mcp_server(
                get(parsed_request, "method", "") == "tools/call"
 
                 tool_name_str = get(get(parsed_request, "params", Dict()), "name", "")
+
+                # Policy before the SSE stream opens, so a refusal is an ordinary JSON reply.
+                # `_rpc_tools_call` checks the same thing for everything that doesn't stream.
+                let aid = _session_agent_id(session === nothing ? "" : session.id),
+                    why = agent_tool_refusal(aid, tool_name_str)
+                    if why !== nothing
+                        resp = _tool_refusal_response(parsed_request, tool_name_str, why)
+                        HTTP.setstatus(http, 200)
+                        HTTP.setheader(http, "Content-Type" => "application/json")
+                        HTTP.startwrite(http)
+                        write(http, String(resp.body))
+                        return nothing
+                    end
+                end
+
                 # Tools that execute via gate and may run long
                 gate_exec_tools =
                     Set(["ex", "run_tests", "profile_code", "lint_package", "stress_test"])

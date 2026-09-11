@@ -25,12 +25,9 @@ const ACP_PREFIX = "acp:"
 """
 Known ACP agents → the argv that starts them in ACP mode.
 
-`claude` is Claude Code itself, through the official adapter. It matters more than one more entry
-in a table: once Claude Code is reachable over ACP it is a Kaimon-owned agent like any other, with
-an id that can be SENT to. An orchestrator that is merely talking to Kaimon over MCP cannot be
-pushed at — it has to poll — whereas one that is spawned here can be handed a turn the moment a
-specialist asks it something. That is the difference between agents that interact and agents that
-take turns checking on each other.
+`claude` is Claude Code itself, through the official adapter. A Claude spawned here is a
+Kaimon-owned agent with an id, so `agent_send` can hand it a turn. A Claude that is only talking
+to Kaimon over MCP has no such id and can only poll.
 """
 const ACP_AGENTS = Dict{String,Vector{String}}(
     "opencode" => ["opencode", "acp"],
@@ -53,6 +50,23 @@ end
 _acp_plugin_dir() = get(ENV, "KAIMON_ACP_PLUGIN_DIR",
                         normpath(joinpath(@__DIR__, "assets", "acp")))
 
+"""
+Can this agent load the bridge plugin?
+
+Only opencode: the plugin is written against its plugin API and config layout. Any other agent
+ignores the generated file, so the preset enforces nothing while still reading as configured.
+"""
+_acp_plugin_supported(argv::Vector{String}) = !isempty(argv) && basename(first(argv)) == "opencode"
+
+"""
+Does the per-session config directory mean anything to this agent?
+
+`_acp_session_config` writes opencode's `opencode.json` and points `XDG_CONFIG_HOME` at it, which
+is also how the model gets chosen. An agent that reads neither runs its own default model, so the
+requested one has to be set over the wire instead.
+"""
+_acp_config_supported(argv::Vector{String}) = _acp_plugin_supported(argv)
+
 
 """
     ACPClientBackend(; argv, model, system_prompt, permission, mcp_servers, config_dir)
@@ -69,11 +83,13 @@ Base.@kwdef struct ACPClientBackend <: AgentBackend
     permission::String = "default"                       # preset, enforced by the bridge plugin
     permission_mode::String = ""                         # "plan" maps onto the agent's own plan mode
     disallowed_tools::Vector{String} = copy(AGENT_SELF_TOOLS)
-    # Empty = no allowlist, i.e. whatever the preset permits. Non-empty makes this agent a
-    # SPECIALIST: the listed tools are the whole of its world and everything else is refused,
-    # whatever the preset would otherwise allow. Enforced here rather than dropped, because an
-    # allowlist that silently does nothing is worse than one that isn't offered.
+    # The caller's own allowlist. Non-empty makes this agent a specialist: the listed tools are
+    # the whole of its world, and anything else is refused even if the preset would permit it.
+    # Must stay separate from `preset_tools`, since merging them makes every preset-carrying
+    # agent look like a specialist whose allowlist happens to be wide.
     allowed_tools::Vector{String} = String[]
+    # What the preset permits. Consulted only when `allowed_tools` is empty.
+    preset_tools::Vector{String} = String[]
     mcp_servers::Vector{Any} = Any[]                     # passed to session/new
     plugin_dir::Union{String,Nothing} = nothing          # bridge plugin source, copied per session
     allow_writes::Bool = true                            # client fs capability we advertise
@@ -107,6 +123,12 @@ mutable struct ACPHandle <: AgentHandle
     # first update arrive BEFORE the permission request that names the same id, and those do carry
     # the path. So the path is on the wire; it is just not on the message that asks.
     tool_paths::Dict{String,Vector{String}}
+    # Tool calls seen started and not yet seen finish. Cancelling a turn stops the agent without
+    # it retracting them, so they would otherwise stay spinning in the UI forever.
+    open_tools::Vector{String}
+    # When the agent last said anything at all. A prompt waits without a deadline, so this is the
+    # only way to tell a long turn from a wedged one.
+    last_rx::Base.RefValue{Float64}
     lk::ReentrantLock
 end
 
@@ -169,7 +191,22 @@ function acp_bridge_decide(agent_id::AbstractString, tool::AbstractString, args)
     s === nothing && return Dict("allow" => false, "why" => "unknown agent")
     b = s.backend
     b isa ACPClientBackend || return Dict("allow" => false, "why" => "not an ACP agent")
-    return _acp_decide(b, tool)
+    d = _acp_decide(b, tool)
+    get(d, "allow", false) === true || return d
+    # Confine to the session cwd here as well as in the permission branch. An agent that asks
+    # permission gets checked there; opencode never asks, and reaches this hook instead. Without
+    # the check its only boundary is the tool name, which cannot say which file a call touches.
+    h = s.handle
+    if h isa ACPHandle && args isa AbstractDict
+        for p in _tool_call_paths(Dict{String,Any}("rawInput" => args))
+            try
+                _acp_confine(h, p)
+            catch e
+                return Dict("allow" => false, "why" => sprint(showerror, e))
+            end
+        end
+    end
+    return d
 end
 
 "Name we register Kaimon's MCP server under, and therefore the prefix its tools carry."
@@ -228,10 +265,14 @@ function _acp_decide(b::ACPClientBackend, tool::AbstractString)
         _acp_tool_matches(tool, entry) && return Dict("allow" => false, "why" => "denied by policy")
     end
     # Before the preset, not after: a specialist's allowlist has to out-rank a permissive preset,
-    # or "default"/"lab" would wave through the very tools it was drawn up to exclude.
+    # or "default"/"lab" would wave through the very tools it was drawn up to exclude. The
+    # preset's own allowances are deliberately not consulted here.
     if !isempty(b.allowed_tools) && !any(e -> _acp_tool_matches(tool, e), b.allowed_tools)
         return Dict("allow" => false, "why" => "not in this agent's allowlist")
     end
+    # The preset's own allowances widen whatever it would otherwise permit. This is how `lab`
+    # reaches the fs callbacks.
+    any(e -> _acp_tool_matches(tool, e), b.preset_tools) && return Dict("allow" => true)
 
     preset = lowercase(b.permission)
     preset in ("bypass", "lab", "default") && return Dict("allow" => true)
@@ -248,6 +289,50 @@ function _acp_decide(b::ACPClientBackend, tool::AbstractString)
     return Dict("allow" => false, "why" => "unknown permission preset '$(b.permission)'")
 end
 
+"""
+    agent_tool_refusal(agent_id, tool, args) -> Union{Nothing,String}
+
+Why this agent may not call this Kaimon MCP tool, or `nothing` to let it through.
+
+Called from `tools/call` dispatch, so the policy holds at the door Kaimon controls rather than
+only inside each agent's own bridge. The bridge is still the better place to refuse, because it
+stops the call before it is made; this is the backstop for agents that never consult it.
+
+`tool` arrives bare, since this server is the one being called. Qualifying it is what lets a
+preset entry naming the whole server (`mcp__kaimon`) match.
+
+An extension tool answers to two spellings: `slate_dbg.dbg_frame` is the canonical registered
+name and `slate_dbg_dbg_frame` is the alias an MCP client sees, and both reach the same handler.
+Allowlists are written in the underscore spelling, so the separator is normalised before matching.
+
+That normalisation is required, not defensive. The agent sends the underscore alias, but
+`_rpc_tools_call` resolves it and passes `tool.name` — the canonical dotted form — so the name
+checked here is one the agent never sent. Without normalising, an allowlist written in the
+spelling agents use is compared against a spelling they never use, and every permitted verb is
+refused.
+
+Normalising collapses `<ns>.<verb>` pairs that differ only in where the split falls, so
+`slate.dbg_frame` and `slate_dbg.frame` would both match an entry naming either. Comparing a
+canonical tool identity from the registry would not have that property. It is not done here
+because an agent's allowlist is generated from a single namespace, which keeps the ambiguity out
+of reach; a tool list assembled from two namespaces that share a prefix would need the stronger
+comparison.
+
+Only ACP agents are judged. The claude CLI enforces its own allowlist, and an empty `agent_id`
+means a caller that is not a Kaimon-owned agent at all.
+"""
+function agent_tool_refusal(agent_id::AbstractString, tool::AbstractString, args = nothing)
+    isempty(agent_id) && return nothing
+    s = lock(AGENT_SESSIONS_LOCK) do; get(AGENT_SESSIONS, String(agent_id), nothing); end
+    s === nothing && return nothing
+    s.backend isa ACPClientBackend || return nothing
+    bare = replace(String(tool), '.' => '_')
+    qualified = _acp_qualified(bare) ? bare : "mcp__$(ACP_MCP_SERVER)__$bare"
+    d = _acp_decide(s.backend, qualified)
+    get(d, "allow", false) === true && return nothing
+    return String(get(d, "why", "refused by policy"))
+end
+
 # ── JSON-RPC plumbing ─────────────────────────────────────────────────────────
 
 function _rpc_write!(h::ACPHandle, obj::AbstractDict)
@@ -258,7 +343,19 @@ function _rpc_write!(h::ACPHandle, obj::AbstractDict)
     nothing
 end
 
-"Send a request and block until the matching response arrives."
+"A request that got no reply, kept distinct so a caller can tell it from an agent-side error."
+struct ACPTimeout <: Exception
+    method::String
+end
+Base.showerror(io::IO, e::ACPTimeout) = print(io, "ACP $(e.method) timed out or the agent went away")
+
+"""
+Send a request and block until the matching response arrives.
+
+`timeout = 0` waits indefinitely. That is right for `session/prompt`, whose duration is the
+agent's to decide; the reader releases every pending call when the process dies, so waiting
+without a deadline still ends.
+"""
 function _rpc_call!(h::ACPHandle, method::AbstractString, params; timeout::Real = 600)
     id, ch = lock(h.lk) do
         h.next_id[] += 1
@@ -268,21 +365,28 @@ function _rpc_call!(h::ACPHandle, method::AbstractString, params; timeout::Real 
     end
     _rpc_write!(h, Dict("jsonrpc" => "2.0", "id" => id, "method" => method, "params" => params))
     reply = nothing
-    timer = Timer(timeout) do _
+    timer = timeout > 0 ? Timer(timeout) do _
         isready(ch) || (isopen(ch) && close(ch))
-    end
+    end : nothing
     try
         reply = take!(ch)
     catch
-        throw(ErrorException("ACP $method timed out or the agent went away"))
+        throw(ACPTimeout(String(method)))
     finally
-        close(timer)
+        timer === nothing || close(timer)
         lock(h.lk) do; delete!(h.pending, id); end
     end
     haskey(reply, "error") && error("ACP $method failed: $(JSON.json(reply["error"]))")
     return get(reply, "result", nothing)
 end
 
+"""
+Answer an agent→client request.
+
+Do not look for the reply in the agent's wire log. That log is the agent's stdout and stderr; this
+writes to its stdin, so nothing sent from here is ever in it. Checking a decision means reading
+the `AgentError` event or the agent's own account of what it got.
+"""
 _rpc_respond!(h::ACPHandle, id, result) =
     _rpc_write!(h, Dict("jsonrpc" => "2.0", "id" => id, "result" => result))
 _rpc_error!(h::ACPHandle, id, code::Int, msg::AbstractString) =
@@ -359,6 +463,44 @@ function _remember_tool_paths!(h::ACPHandle, upd)
     lock(h.lk) do
         length(h.tool_paths) > 512 && empty!(h.tool_paths)
         h.tool_paths[String(id)] = paths
+    end
+    return nothing
+end
+
+"Note a tool call as open or finished, from the event about to be published."
+function _track_tool_call!(h::ACPHandle, ev)
+    id, status = if ev isa ACP.ToolCallStarted
+        ev.call.tool_call_id, ev.call.status
+    elseif ev isa ACP.ToolCallUpdated
+        ev.update.tool_call_id, ev.update.status
+    else
+        return nothing
+    end
+    lock(h.lk) do
+        if status === :completed || status === :failed
+            filter!(!=(id), h.open_tools)
+        elseif status !== nothing && !(id in h.open_tools)
+            push!(h.open_tools, id)
+        end
+    end
+    return nothing
+end
+
+"""
+Retire every open tool call as failed, with `why` as its result.
+
+ACP has no cancelled tool status, so `:failed` is the only terminal one available. Without this
+a cancelled turn leaves its calls in `:in_progress` and nothing ever moves them.
+"""
+function _close_open_tools!(h::ACPHandle, why::AbstractString)
+    ids = lock(h.lk) do
+        got = copy(h.open_tools); empty!(h.open_tools); got
+    end
+    isopen(h.events) || return nothing
+    for id in ids
+        put!(h.events, ACP.ToolCallUpdated(ACP.ToolCallUpdate(;
+            tool_call_id = id, status = :failed,
+            content = [ACP.ContentToolContent(ACP.TextBlock(String(why)))])))
     end
     return nothing
 end
@@ -745,6 +887,7 @@ function _start_acp_reader!(h::ACPHandle, log_io::IO)
     @async begin
         try
             for line in eachline(h.out)
+                h.last_rx[] = time()
                 isempty(strip(line)) && continue
                 println(log_io, line); flush(log_io)
                 local obj
@@ -788,6 +931,7 @@ function _start_acp_reader!(h::ACPHandle, log_io::IO)
                         # follows it can be judged even when it carries a bare toolCall.
                         _remember_tool_paths!(h, upd)
                         for ev in _map_acp_update(upd)
+                            _track_tool_call!(h, ev)
                             if ev isa ACP.AgentMessageChunk
                                 lock(h.lk) do; push!(h.msg_buf, _txt_of(ev.content)); end
                             elseif ev isa ACP.AgentThoughtChunk
@@ -804,6 +948,12 @@ function _start_acp_reader!(h::ACPHandle, log_io::IO)
         catch e
             e isa InterruptException || put!(h.events, ACP.AgentError("ACP reader crashed: $(sprint(showerror, e))"))
         finally
+            _close_open_tools!(h, "agent exited")
+            # Nothing else will ever answer these, so release them instead of leaving each caller
+            # to wait out its own timeout.
+            lock(h.lk) do
+                for c in values(h.pending); isopen(c) && close(c); end
+            end
             put!(h.events, ACP.StatusChanged(:dead))
             close(h.events)
             try; close(log_io); catch; end
@@ -884,7 +1034,8 @@ function backend_start(b::ACPClientBackend; cwd::String, agent_id::String,
                   Ref(0), Ref(""), Ref(0), Dict{Int,Channel{Any}}(),
                   String(cwd), config_dir, log_file, agent_id,
                   Ref{Union{Float64,Nothing}}(nothing), String[], String[],
-                  Dict{String,Any}(), Dict{String,Vector{String}}(), ReentrantLock())
+                  Dict{String,Any}(), Dict{String,Vector{String}}(), String[],
+                  Ref(time()), ReentrantLock())
     h.reader = _start_acp_reader!(h, log_io)
 
     # Handshake. Both calls must land before the handle is usable, so they run
@@ -905,10 +1056,43 @@ function backend_start(b::ACPClientBackend; cwd::String, agent_id::String,
                       Dict("cwd" => abspath(cwd), "mcpServers" => b.mcp_servers); timeout = 120)
     sess isa AbstractDict && (h.caps["session"] = Dict{String,Any}(String(k) => v for (k, v) in sess))
     h.session_id[] = String(get(sess, "sessionId", ""))
+    # An agent that does not read the generated config never saw `model`, so select it over the
+    # wire. A failure is reported rather than swallowed, since the agent then runs its default.
+    if !isempty(b.model) && !_acp_config_supported(b.argv)
+        acp_set_model!(h, b.model) ||
+            put!(h.events, ACP.AgentError("could not select model '$(b.model)'; " *
+                                          "the agent is running its own default"))
+    end
     # Plan mode is the agent's own restriction on edit tools; prefer it over the
     # bridge, which can only refuse a call after the model has committed to it.
     lowercase(b.permission_mode) == "plan" && acp_set_mode!(h, "plan")
     h
+end
+
+"How long an agent may say nothing during a turn before we say so."
+const ACP_SILENCE_WARN = 300.0
+
+"""
+Report a turn that has gone quiet, without ending it.
+
+A prompt waits indefinitely, which is right: only the agent knows how long its turn is, and the
+reader releases the wait when the process dies. That covers a crashed agent and not a live one
+that has stopped answering, which would otherwise hold the turn with nothing surfaced. So the
+silence is reported as an error event and the wait continues. Ending the turn here would
+truncate a long one that is merely thinking.
+"""
+function _watch_silence!(h::ACPHandle, done::Ref{Bool})
+    @async begin
+        warned = false
+        while !done[] && Base.process_running(h.proc)
+            sleep(5.0)
+            if !warned && !done[] && time() - h.last_rx[] > ACP_SILENCE_WARN
+                warned = true
+                isopen(h.events) && put!(h.events, ACP.AgentError(
+                    "no response for $(round(Int, time() - h.last_rx[]))s; the turn is still open"))
+            end
+        end
+    end
 end
 
 """
@@ -929,10 +1113,12 @@ function backend_send(h::ACPHandle, text::AbstractString)
     # buffers are already empty by the time the queued turn starts.
     acp_queues_prompts(h) || lock(h.lk) do; empty!(h.msg_buf); empty!(h.think_buf); end
     put!(h.events, ACP.TurnStarted())
+    done = Ref(false)
+    _watch_silence!(h, done)
     @async try
         res = _rpc_call!(h, "session/prompt", Dict(
             "sessionId" => h.session_id[],
-            "prompt" => [Dict("type" => "text", "text" => String(text))]))
+            "prompt" => [Dict("type" => "text", "text" => String(text))]); timeout = 0)
         _flush_authoritative!(h)
         put!(h.events, ACP.TurnEnded(
             ACP.as_enum(get(res, "stopReason", ""), ACP.STOP_REASONS, :end_turn),
@@ -941,7 +1127,11 @@ function backend_send(h::ACPHandle, text::AbstractString)
         isopen(h.events) || return
         put!(h.events, ACP.AgentError("turn failed: $(sprint(showerror, e))"))
         _flush_authoritative!(h)   # a failed turn still has partial text worth keeping
-        put!(h.events, ACP.TurnEnded(:refusal, nothing))
+        # `:refusal` is reserved for what the agent actually said. A turn ended by a lost
+        # connection reports as cancelled.
+        put!(h.events, ACP.TurnEnded(e isa ACPTimeout ? :cancelled : :refusal, nothing))
+    finally
+        done[] = true
     end
     turn
 end
@@ -952,30 +1142,34 @@ end
 # methods, so a picker change can land on the next turn instead.
 
 """
-Try a standard ACP method, then opencode's `session/set_config_option` fallback.
+Try a standard ACP method, then the `session/set_config_option` fallback in both its spellings.
 
-Returns whether either stuck. Both spellings are attempted because the standard
-method is the portable one and the fallback is what opencode advertises in the
-`configOptions` it returns from `session/new` — an agent implementing only one of
-them should still be configurable.
+Returns whether any of them stuck. The standard method is the portable one; the fallback is what
+both agents advertise in the `configOptions` they return from `session/new`, and they disagree on
+what the id field is called — opencode reads `optionId`, claude-agent-acp reads `configId` and
+rejects the request outright without it. An agent implementing only one of these should still be
+configurable, so all three are tried before giving up.
 """
 function _acp_set_option!(h::ACPHandle, method::AbstractString, key::AbstractString,
                           param::AbstractString, value::AbstractString)
     isempty(value) && return false
-    try
-        _rpc_call!(h, method, Dict("sessionId" => h.session_id[], param => value); timeout = 30)
-        return true
-    catch
+    attempts = [(method, Dict{String,Any}(param => value))]
+    for idkey in ("configId", "optionId")
+        push!(attempts, ("session/set_config_option",
+                         Dict{String,Any}(idkey => key, "value" => value)))
     end
-    try
-        _rpc_call!(h, "session/set_config_option",
-                   Dict("sessionId" => h.session_id[], "optionId" => key, "value" => value);
-                   timeout = 30)
-        return true
-    catch e
-        put!(h.events, ACP.AgentError("could not set $key=$value: $(sprint(showerror, e))"))
-        return false
+    err = nothing
+    for (m, extra) in attempts
+        try
+            _rpc_call!(h, m, merge(Dict{String,Any}("sessionId" => h.session_id[]), extra);
+                       timeout = 30)
+            return true
+        catch e
+            err = e
+        end
     end
+    put!(h.events, ACP.AgentError("could not set $key=$value: $(sprint(showerror, err))"))
+    return false
 end
 
 "Switch the model on a live session, keeping its history."
@@ -995,6 +1189,7 @@ function backend_interrupt(h::ACPHandle)
     try
         _rpc_write!(h, Dict("jsonrpc" => "2.0", "method" => "session/cancel",
                             "params" => Dict("sessionId" => h.session_id[])))
+        _close_open_tools!(h, "cancelled")
         true
     catch
         false
