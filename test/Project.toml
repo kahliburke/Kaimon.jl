@@ -61,4 +61,8 @@ GateToolTest = {path = "GateToolTest.jl"}
 Aqua = "0.8"
 HTTP = "2"
 JET = "0.11"
+# ReTest 0.3.4 claims julia 1.10+ but does not precompile on 1.13 — it imports
+# Test.push_testset/pop_testset, which 1.13 removed. 0.4 is the 1.13 release and is
+# itself gated to julia >= 1.13, so listing both lets each Julia take the one that works.
+ReTest = "0.3.4, 0.4"
 Supposition = "0.3.5"

@@ -366,6 +366,10 @@ end
     # resolve to two versions across the LOAD_PATH stack), so its source is part of the env's
     # identity: an upgraded Kaimon must re-resolve rather than reuse the old versions.
     @test occursin(abspath(pkgdir(Kaimon)), fp1)
+    # A manifest resolved under a different Julia minor pins stdlib JLLs this one doesn't
+    # ship, so the minor is part of the identity too — otherwise switching minors reuses an
+    # env that fails to load.
+    @test occursin("julia$(VERSION.major).$(VERSION.minor)", fp1)
 
     for d in (sound, bare, empty, other)
         rm(d; recursive = true, force = true)

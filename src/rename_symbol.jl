@@ -14,7 +14,7 @@
 #   \"\"\"docstring … foo\"\"\"                     → String       → untouched
 #   "interp $foo here"                      → Identifier   → renamed (a real reference)
 #   Val{:foo}                               → Identifier   → renamed
-#   @foo x                                  → MacroName    → only with macros=true
+#   @foo x                                  → after an `@` → only with macros=true
 #
 # What it is NOT: scope-aware. It renames every identifier token with that exact name in
 # scope, so an unrelated local named `foo` in another function is renamed too. Real
@@ -27,25 +27,43 @@
 # Base vendors JuliaSyntax as its own parser, so this needs no dependency and is guaranteed
 # to agree with the `Meta.parseall` check that validates the result. The trade is that it's
 # Base-internal rather than public API: the surface used here is small on purpose —
-# `tokenize`, `kind`, the `K"…"` kinds, and `Token.range` — and the tests pin every one of
-# them, so a change under a future Julia fails loudly here rather than silently renaming the
-# wrong thing. Compat is `julia = "1.12"`.
+# `tokenize`, `kind`, the `K"…"` kinds, and `Token.range`.
 const _JS = Base.JuliaSyntax
+
+# `K"…"` resolves its name during LOWERING, so a kind that a given Julia doesn't have is a
+# load error for the whole package, not a test failure — which is what happened when 1.13
+# dropped the terminal `MacroName` kind (the macro name became a parse-tree node, and the
+# name itself now lexes as a plain `Identifier`). So any kind that isn't stable across
+# supported versions is looked up by string here and allowed to be absent.
+_js_kind(name::AbstractString) = try _JS.Kind(name) catch; nothing end
+
+const _K_IDENTIFIER = _JS.K"Identifier"
+const _K_AT = _JS.K"@"
+const _K_MACRO_NAME = _js_kind("MacroName")   # `nothing` from 1.13 on
+const _K_TRIVIA = (_JS.K"Whitespace", _JS.K"NewlineWs", _JS.K"Comment")
 
 # Byte ranges of identifier tokens whose text is exactly `name`, in ascending order.
 # Compared over code units so a multi-byte source (identifiers may be non-ASCII) can't
 # produce an invalid string index.
+#
+# A macro name is identified by the preceding `@` rather than by its own kind, which is the
+# one signal both tokenizations agree on — `@foo`, `Base.@foo`, and the legal-but-rare
+# `@ foo` all reach the name with `@` as the last non-trivia token before it.
 function _rename_ranges(src::AbstractString, name::AbstractString, macros::Bool)
     out = UnitRange{Int}[]
     cu = codeunits(src)
     target = codeunits(name)
+    prev = _JS.K"None"
     for t in _JS.tokenize(src)
         k = _JS.kind(t)
-        (k === _JS.K"Identifier" || (macros && k === _JS.K"MacroName")) || continue
-        r = Int(first(t.range)):Int(last(t.range))
-        (checkbounds(Bool, cu, r) && length(r) == length(target)) || continue
-        view(cu, r) == target || continue
-        push!(out, r)
+        k in _K_TRIVIA && continue
+        if (k === _K_IDENTIFIER || k === _K_MACRO_NAME) && (macros || prev !== _K_AT)
+            r = Int(first(t.range)):Int(last(t.range))
+            if checkbounds(Bool, cu, r) && length(r) == length(target) && view(cu, r) == target
+                push!(out, r)
+            end
+        end
+        prev = k
     end
     return out
 end

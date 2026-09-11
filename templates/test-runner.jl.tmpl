@@ -87,13 +87,21 @@ import Test
 
 _testset_depth = Ref(0)
 
+# Hook the keyword constructor, not the testset stack. 1.12 had `Test.push_testset`, but
+# 1.13 moved the stack to ScopedValues and dropped it (JuliaLang/julia#53462), and made
+# `verbose` a const field so it can no longer be flipped after construction. The keyword
+# constructor is the one entry point both versions share, and passing `verbose = true`
+# through it is the only way to force verbosity on 1.13.
 let _w = Base.get_world_counter()
-    @eval function Test.push_testset(ts::Test.DefaultTestSet)
-        ts.verbose = true
+    @eval function Test.DefaultTestSet(desc::AbstractString; kwargs...)
         $_testset_depth[] += 1
-        println($_RUNNER_OUT, "TEST_RUNNER: TESTSET_START name=", ts.description)
+        println($_RUNNER_OUT, "TEST_RUNNER: TESTSET_START name=", desc)
         flush($_RUNNER_OUT)
-        return Base.invoke_in_world($_w, Test.push_testset, ts)
+        return Base.invoke_in_world(
+            $_w, Test.DefaultTestSet, desc;
+            Base.structdiff(NamedTuple(kwargs), NamedTuple{(:verbose,)})...,
+            verbose = true,
+        )
     end
 end
 
