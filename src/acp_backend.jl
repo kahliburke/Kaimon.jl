@@ -285,9 +285,9 @@ _rpc_error!(h::ACPHandle, id, code::Int, msg::AbstractString) =
 # ── agent → client requests ───────────────────────────────────────────────────
 
 "Least destructive option the agent offered, preferring a one-shot allow."
-function _pick_permission(options)
+function _pick_permission(options; want = ("allow_once", "allow_always"))
     options isa AbstractVector && !isempty(options) || return nothing
-    for want in ("allow_once", "allow_always"), o in options
+    for want in want, o in options
         o isa AbstractDict && get(o, "kind", "") == want && return get(o, "optionId", nothing)
     end
     # No option says it allows anything, so there is nothing here to choose. Taking the first one
@@ -311,6 +311,58 @@ function _acp_read_capped(path::AbstractString)
     sz > ACP_READ_CAP && throw(ArgumentError(
         "file is $(sz) bytes, over the $(ACP_READ_CAP) byte read limit; ask for a line range"))
     return read(path, String)
+end
+
+"Every path a tool call names, from wherever the agent chose to put it."
+function _tool_call_paths(tc)
+    tc isa AbstractDict || return String[]
+    out = String[]
+    ri = get(tc, "rawInput", nothing)
+    if ri isa AbstractDict
+        # Agents name the argument differently (`file_path`, `path`, `notebook_path`), and an edit
+        # carries a list. Take anything that looks like one rather than guessing a single key.
+        for (k, v) in ri
+            ks = lowercase(String(k))
+            (occursin("path", ks) || ks == "file") || continue
+            v isa AbstractString && push!(out, String(v))
+            v isa AbstractVector && for x in v; x isa AbstractString && push!(out, String(x)); end
+        end
+    end
+    locs = get(tc, "locations", nothing)
+    locs isa AbstractVector && for l in locs
+        l isa AbstractDict || continue
+        p = get(l, "path", nothing)
+        p isa AbstractString && push!(out, String(p))
+    end
+    return unique!(out)
+end
+
+"""
+Why this tool call should be refused, or `nothing` to let it through.
+
+The workspace boundary, applied to every path the call names. This is where it has to happen: both
+agents we ship through do their own file I/O and ask here, so the `fs/*` callbacks that already
+confine are a door neither of them uses.
+
+Deliberately NOT the tool-name allowlist. A preset's allowance names Kaimon's MCP tools and the
+`fs/*` callbacks, not an agent's native `Read` and `Edit`, so checking the name here would refuse
+an ordinary `lab` agent every file operation it has always been allowed. Naming each agent's own
+tools is guesswork; the path is the part that means the same thing for all of them. Keeping tools
+out of a specialist's hands belongs at the MCP boundary, where identity is already established.
+
+A call that names no path is allowed — refusing what cannot be parsed would break every tool that
+touches no file.
+"""
+function _permission_refusal(h::ACPHandle, tc)
+    tc isa AbstractDict || return nothing
+    for p in _tool_call_paths(tc)
+        try
+            _acp_confine(h, p)
+        catch e
+            return sprint(showerror, e)
+        end
+    end
+    return nothing
 end
 
 """
@@ -420,11 +472,26 @@ function _handle_request!(h::ACPHandle, id, method::AbstractString, params)
     if method == "session/request_permission"
         # The event was ANNOUNCED on the reader (see `_announce_request!`); this half only
         # decides and answers. Blocking on a human here would hang every headless turn.
+        #
+        # THIS is the door the agents we actually ship through use. Neither opencode nor
+        # claude-agent-acp calls `fs/read_text_file`: both do their own file I/O and ask here
+        # instead. So a branch that just picked an allow option was the whole file boundary, and it
+        # authorised a read four levels outside the workspace with the scope printed in the option
+        # name it accepted. Policy and confinement have to be applied here or they apply to nobody.
         opts = get(params, "options", Any[])
-        opt = _pick_permission(opts)
-        _rpc_respond!(h, id, opt === nothing ?
-            Dict("outcome" => Dict("outcome" => "cancelled")) :
-            Dict("outcome" => Dict("outcome" => "selected", "optionId" => opt)))
+        why = _permission_refusal(h, get(params, "toolCall", nothing))
+        if why !== nothing
+            rej = _pick_permission(opts; want = ("reject_once", "reject_always"))
+            put!(h.events, ACP.AgentError("refused a tool call: $why"))
+            _rpc_respond!(h, id, rej === nothing ?
+                Dict("outcome" => Dict("outcome" => "cancelled")) :
+                Dict("outcome" => Dict("outcome" => "selected", "optionId" => rej)))
+        else
+            opt = _pick_permission(opts)
+            _rpc_respond!(h, id, opt === nothing ?
+                Dict("outcome" => Dict("outcome" => "cancelled")) :
+                Dict("outcome" => Dict("outcome" => "selected", "optionId" => opt)))
+        end
 
     elseif method == "fs/read_text_file"
         try
