@@ -97,6 +97,9 @@ mutable struct ACPHandle <: AgentHandle
     last_cost::Base.RefValue{Union{Float64,Nothing}}   # newest usage_update cost, folded into TurnEnded
     msg_buf::Vector{String}       # streamed assistant text, replayed as one authoritative chunk
     think_buf::Vector{String}     # same for reasoning
+    # What the agent said it can do, from `initialize` (plus the `session/new` reply under
+    # "session"). Kept because capability differs per agent and guessing means assuming the least.
+    caps::Dict{String,Any}
     lk::ReentrantLock
 end
 
@@ -292,6 +295,31 @@ function _pick_permission(options)
     # with its reject option meant silently rejecting every request. Answer `cancelled` instead:
     # the caller turns that into an explicit outcome rather than a decision nobody made.
     return nothing
+end
+
+"""
+    acp_capabilities(h) -> Dict
+
+What the agent said it can do at `initialize`, plus the `session/new` reply under `"session"`.
+"""
+acp_capabilities(h::ACPHandle) = h.caps
+
+"""
+Does this agent QUEUE a prompt sent while a turn is running?
+
+Asked rather than assumed. An agent that cannot queue loses the reply in progress when a second
+prompt arrives, so a caller has to hold the message back; one that can queue takes it immediately,
+and holding it back is a limitation borrowed from a different agent. The capability is on the wire
+at `initialize`, and answering "no" for everything is what discarding the handshake amounted to.
+"""
+function acp_queues_prompts(h::ACPHandle)
+    caps = get(h.caps, "agentCapabilities", nothing)
+    caps isa AbstractDict || return false
+    meta = get(caps, "_meta", nothing)
+    meta isa AbstractDict || return false
+    cc = get(meta, "claudeCode", nothing)
+    cc isa AbstractDict || return false
+    return get(cc, "promptQueueing", false) === true
 end
 
 """
@@ -669,18 +697,27 @@ function backend_start(b::ACPClientBackend; cwd::String, agent_id::String,
     h = ACPHandle(b, proc, inp, outp, Channel{ACP.AgentEvent}(Inf), Task(() -> nothing),
                   Ref(0), Ref(""), Ref(0), Dict{Int,Channel{Any}}(),
                   String(cwd), config_dir, log_file, agent_id,
-                  Ref{Union{Float64,Nothing}}(nothing), String[], String[], ReentrantLock())
+                  Ref{Union{Float64,Nothing}}(nothing), String[], String[],
+                  Dict{String,Any}(), ReentrantLock())
     h.reader = _start_acp_reader!(h, log_io)
 
     # Handshake. Both calls must land before the handle is usable, so they run
     # here rather than lazily on the first turn.
-    _rpc_call!(h, "initialize", Dict(
+    #
+    # The reply is KEPT. It carries what this agent can actually do, and discarding it meant
+    # treating every agent as the least capable one we had met: `prompt_queueing` in particular
+    # decides whether a second message during a turn is queued or destroys the reply in progress,
+    # and that differs between agents. It is also why setting an option had to be done by trying
+    # both method names and catching the failure.
+    init = _rpc_call!(h, "initialize", Dict(
         "protocolVersion" => 1,
         "clientCapabilities" => Dict(
             "fs" => Dict("readTextFile" => true, "writeTextFile" => b.allow_writes),
             "terminal" => false)); timeout = 60)
+    init isa AbstractDict && merge!(h.caps, Dict{String,Any}(String(k) => v for (k, v) in init))
     sess = _rpc_call!(h, "session/new",
                       Dict("cwd" => abspath(cwd), "mcpServers" => b.mcp_servers); timeout = 120)
+    sess isa AbstractDict && (h.caps["session"] = Dict{String,Any}(String(k) => v for (k, v) in sess))
     h.session_id[] = String(get(sess, "sessionId", ""))
     # Plan mode is the agent's own restriction on edit tools; prefer it over the
     # bridge, which can only refuse a call after the model has committed to it.

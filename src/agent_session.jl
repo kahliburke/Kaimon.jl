@@ -593,8 +593,15 @@ function agent_status(id::String)
         "transcript" => _transcript_path(s),       # claude's own (vendor-specific) transcript
         "event_log" => _event_log_path(s.id),       # Kaimon-owned normalized JSONL
         "usage" => ACP.to_dict(s.usage),
+        # Whether a message sent DURING a turn is queued or destroys the reply in progress. A
+        # caller that wants to steer an agent mid-turn has to know, and only the agent can say.
+        "queues_prompts" => _queues_prompts(s.handle),
     )
 end
+
+# Non-ACP backends have no such capability to report, and answering false for them is correct:
+# the claude CLI and Ollama paths both take one turn at a time.
+_queues_prompts(h) = h isa ACPHandle ? acp_queues_prompts(h) : false
 
 """
     agent_set_model(id, model) -> Bool
