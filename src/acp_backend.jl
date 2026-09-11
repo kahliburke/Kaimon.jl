@@ -100,6 +100,13 @@ mutable struct ACPHandle <: AgentHandle
     # What the agent said it can do, from `initialize` (plus the `session/new` reply under
     # "session"). Kept because capability differs per agent and guessing means assuming the least.
     caps::Dict{String,Any}
+    # toolCallId → the paths that call named, learned from its `tool_call` update.
+    #
+    # A permission request is allowed to carry a bare toolCall: `rawInput` and `locations` are
+    # optional in the schema, and claude-agent-acp sends the minimal form. But the call and its
+    # first update arrive BEFORE the permission request that names the same id, and those do carry
+    # the path. So the path is on the wire; it is just not on the message that asks.
+    tool_paths::Dict{String,Vector{String}}
     lk::ReentrantLock
 end
 
@@ -338,6 +345,25 @@ function _tool_call_paths(tc)
 end
 
 """
+Record the paths a `tool_call` / `tool_call_update` named, against its id.
+
+The permission request for that call arrives afterwards and may name only the id. Bounded, because
+a long turn is thousands of calls and this is a lookaside, not a record.
+"""
+function _remember_tool_paths!(h::ACPHandle, upd)
+    upd isa AbstractDict || return nothing
+    id = get(upd, "toolCallId", nothing)
+    id isa AbstractString && !isempty(id) || return nothing
+    paths = _tool_call_paths(upd)
+    isempty(paths) && return nothing
+    lock(h.lk) do
+        length(h.tool_paths) > 512 && empty!(h.tool_paths)
+        h.tool_paths[String(id)] = paths
+    end
+    return nothing
+end
+
+"""
 Why this tool call should be refused, or `nothing` to let it through.
 
 The workspace boundary, applied to every path the call names. This is where it has to happen: both
@@ -355,7 +381,17 @@ touches no file.
 """
 function _permission_refusal(h::ACPHandle, tc)
     tc isa AbstractDict || return nothing
-    for p in _tool_call_paths(tc)
+    paths = _tool_call_paths(tc)
+    if isempty(paths)
+        # The asking message carried no path. Fall back to what the call itself announced: the
+        # `tool_call` update precedes the permission request for the same id, which is exactly the
+        # ordering the inline announce preserves.
+        id = get(tc, "toolCallId", nothing)
+        if id isa AbstractString
+            paths = lock(h.lk) do; copy(get(h.tool_paths, String(id), String[])); end
+        end
+    end
+    for p in paths
         try
             _acp_confine(h, p)
         catch e
@@ -748,6 +784,9 @@ function _start_acp_reader!(h::ACPHandle, log_io::IO)
                             c = get(upd, "cost", nothing)
                             c isa AbstractDict && (h.last_cost[] = Float64(get(c, "amount", 0.0)))
                         end
+                        # Remember what each tool call named, so the permission request that
+                        # follows it can be judged even when it carries a bare toolCall.
+                        _remember_tool_paths!(h, upd)
                         for ev in _map_acp_update(upd)
                             if ev isa ACP.AgentMessageChunk
                                 lock(h.lk) do; push!(h.msg_buf, _txt_of(ev.content)); end
@@ -845,7 +884,7 @@ function backend_start(b::ACPClientBackend; cwd::String, agent_id::String,
                   Ref(0), Ref(""), Ref(0), Dict{Int,Channel{Any}}(),
                   String(cwd), config_dir, log_file, agent_id,
                   Ref{Union{Float64,Nothing}}(nothing), String[], String[],
-                  Dict{String,Any}(), ReentrantLock())
+                  Dict{String,Any}(), Dict{String,Vector{String}}(), ReentrantLock())
     h.reader = _start_acp_reader!(h, log_io)
 
     # Handshake. Both calls must land before the handle is usable, so they run
