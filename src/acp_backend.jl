@@ -391,20 +391,36 @@ function _acp_confine(h::ACPHandle, path::AbstractString)
     return full
 end
 
+"""
+Emit whatever a client request should put on the event stream, ON the reader task.
+
+Ordering is the reason this is separate from `_handle_request!`. That runs on its own task now, so
+an event emitted inside it can be overtaken by later `session/update` lines the reader is still
+consuming: a permission prompt could arrive after the tool-call update that already resolved it.
+Announcing here keeps every event in wire order, and costs the reader nothing, because this does
+no I/O. The work that can block stays off-task.
+"""
+function _announce_request!(h::ACPHandle, id, method::AbstractString, params)
+    method == "session/request_permission" || return nothing
+    params = params isa AbstractDict ? params : Dict{String,Any}()
+    opts = get(params, "options", Any[])
+    put!(h.events, ACP.PermissionRequested(
+        ACP.ToolCallUpdate(; tool_call_id = String(get(get(params, "toolCall", Dict()), "toolCallId", ""))),
+        ACP.PermissionOption[
+            ACP.PermissionOption(String(get(o, "optionId", "")), String(get(o, "name", "")),
+                                 ACP.as_enum(get(o, "kind", ""), ACP.PERMISSION_KINDS, :allow_once))
+            for o in opts if o isa AbstractDict],
+        string(id)))
+    return nothing
+end
+
 function _handle_request!(h::ACPHandle, id, method::AbstractString, params)
     params = params isa AbstractDict ? params : Dict{String,Any}()
 
     if method == "session/request_permission"
-        # Surface it so the UI can show what was asked, then answer immediately.
-        # Blocking on a human here would hang every headless turn.
+        # The event was ANNOUNCED on the reader (see `_announce_request!`); this half only
+        # decides and answers. Blocking on a human here would hang every headless turn.
         opts = get(params, "options", Any[])
-        put!(h.events, ACP.PermissionRequested(
-            ACP.ToolCallUpdate(; tool_call_id = String(get(get(params, "toolCall", Dict()), "toolCallId", ""))),
-            ACP.PermissionOption[
-                ACP.PermissionOption(String(get(o, "optionId", "")), String(get(o, "name", "")),
-                                     ACP.as_enum(get(o, "kind", ""), ACP.PERMISSION_KINDS, :allow_once))
-                for o in opts if o isa AbstractDict],
-            string(id)))
         opt = _pick_permission(opts)
         _rpc_respond!(h, id, opt === nothing ?
             Dict("outcome" => Dict("outcome" => "cancelled")) :
@@ -645,6 +661,10 @@ function _start_acp_reader!(h::ACPHandle, log_io::IO)
                     # network mount) wedged the connection for good. `_rpc_write!` takes the lock,
                     # so replies from several handlers cannot interleave.
                     let rid = obj["id"], meth = String(obj["method"]), prm = get(obj, "params", nothing)
+                        # Announce in wire order, serve off-task. Emitting from the spawned half
+                        # let later `session/update` events overtake a permission prompt, so a UI
+                        # could render it after the tool call it had already resolved.
+                        try; _announce_request!(h, rid, meth, prm); catch; end
                         Threads.@spawn try
                             _handle_request!(h, rid, meth, prm)
                         catch e
@@ -795,7 +815,13 @@ and `TurnEnded` reaches the event channel whenever the agent is done.
 function backend_send(h::ACPHandle, text::AbstractString)
     Base.process_running(h.proc) || throw(ArgumentError("agent process is not running"))
     turn = (h.turn[] += 1)
-    lock(h.lk) do; empty!(h.msg_buf); empty!(h.think_buf); end
+    # Clearing the buffers is right for an agent that takes one turn at a time: the send starts a
+    # turn, and whatever is in them belongs to the last one. For a QUEUEING agent it is wrong and
+    # destructive — the running turn is still streaming into them, and this would discard its text
+    # to make room for a turn that has not begun. Queueing is read as serialising (see
+    # `acp_queues_prompts`), so each turn's text is flushed at its own prompt response and the
+    # buffers are already empty by the time the queued turn starts.
+    acp_queues_prompts(h) || lock(h.lk) do; empty!(h.msg_buf); empty!(h.think_buf); end
     put!(h.events, ACP.TurnStarted())
     @async try
         res = _rpc_call!(h, "session/prompt", Dict(
