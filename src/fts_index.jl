@@ -20,14 +20,22 @@ those services are down (the resilience half of the delivery).
 """
 module FtsIndex
 
-using SQLite
 using DBInterface
+
+# SQLite is loaded on FIRST USE, not at module load. `using Kaimon` is how an
+# extension reaches the gate client, and that pulled SQLite — and therefore
+# WeakRefStrings, and therefore a hard Parsers 2 bound — into every extension
+# process, for a database none of them touch. Tool calls that do use it are RPCs
+# to the Kaimon host (KaimonGate.call_tool), so they run where SQLite is loaded.
+const _SQLITE = Ref{Union{Nothing,Module}}(nothing)
+_sqlite() = (_SQLITE[] === nothing && (_SQLITE[] = Base.require(@__MODULE__, :SQLite)); _SQLITE[])
+
 
 export FtsHit
 
 # ── Connection ────────────────────────────────────────────────────────────────
 
-const DB = Ref{Union{SQLite.DB,Nothing}}(nothing)
+const DB = Ref{Any}(nothing)
 const DB_PATH = Ref{String}("")
 
 # A separator-free, single FTS5 token encoding a collection name, so a scoped search
@@ -74,24 +82,30 @@ end
 
 Open the lexical index DB and create the schema if absent. Idempotent.
 """
+# See Database.init_db! — SQLite's methods land in a newer world than this frame.
 function init!(path::String = default_db_path())
+    _sqlite()
+    return Base.invokelatest(_init_impl!, path)
+end
+
+function _init_impl!(path::String)
     mkpath(dirname(path))
     return lock(LOCK) do
-    db = SQLite.DB(path)
+    db = _sqlite().DB(path)
     DB[] = db
     DB_PATH[] = path
 
     # WAL + a busy timeout so concurrent readers (search) never block on the
     # indexer's write bursts, and a brief writer contention just waits.
-    SQLite.execute(db, "PRAGMA journal_mode=WAL;")
-    SQLite.execute(db, "PRAGMA busy_timeout=5000;")
-    SQLite.execute(db, "PRAGMA synchronous=NORMAL;")
+    _sqlite().execute(db, "PRAGMA journal_mode=WAL;")
+    _sqlite().execute(db, "PRAGMA busy_timeout=5000;")
+    _sqlite().execute(db, "PRAGMA synchronous=NORMAL;")
 
     # `coltok` is a VIRTUAL generated column (no storage) so the external-content
     # FTS5 table below can carry a matching `coltok` column — FTS5 reads original
     # column values from this content table for snippet()/bm25(), so every FTS column
     # MUST exist here. Keep the expression byte-identical to `_coltok` and the triggers.
-    SQLite.execute(db, """
+    _sqlite().execute(db, """
         CREATE TABLE IF NOT EXISTS chunks(
             id         INTEGER PRIMARY KEY,
             point_id   TEXT,
@@ -107,12 +121,12 @@ function init!(path::String = default_db_path())
                        ('zc'||replace(replace(lower(collection),'_',''),'-','')) VIRTUAL
         );
     """)
-    SQLite.execute(db, "CREATE INDEX IF NOT EXISTS idx_chunks_cf ON chunks(collection, file);")
-    SQLite.execute(db, "CREATE INDEX IF NOT EXISTS idx_chunks_pid ON chunks(point_id);")
+    _sqlite().execute(db, "CREATE INDEX IF NOT EXISTS idx_chunks_cf ON chunks(collection, file);")
+    _sqlite().execute(db, "CREATE INDEX IF NOT EXISTS idx_chunks_pid ON chunks(point_id);")
 
     # code_fts carries a separator-free `coltok` column so a collection-scoped search
     # can prune the scan via `coltok:<tok>` in the MATCH (see _coltok).
-    SQLite.execute(db, """
+    _sqlite().execute(db, """
         CREATE VIRTUAL TABLE IF NOT EXISTS code_fts USING fts5(
             text, name, file, coltok, content='chunks', content_rowid='id'
         );
@@ -120,7 +134,7 @@ function init!(path::String = default_db_path())
     # code_tri carries the same `coltok` column as code_fts so a scoped trigram
     # search can prune the MATCH to one collection (cost ∝ collection size, not corpus
     # size) instead of scanning whole-corpus and filtering after.
-    SQLite.execute(db, """
+    _sqlite().execute(db, """
         CREATE VIRTUAL TABLE IF NOT EXISTS code_tri USING fts5(
             text, name, coltok, content='chunks', content_rowid='id', tokenize='trigram'
         );
@@ -128,25 +142,25 @@ function init!(path::String = default_db_path())
 
     # Keep the FTS shadow tables in sync with `chunks` (insert + delete only;
     # reindex is delete-then-insert, so no update trigger is needed).
-    SQLite.execute(db, """
+    _sqlite().execute(db, """
         CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
             INSERT INTO code_fts(rowid, text, name, file, coltok)
                 VALUES (new.id, new.text, new.name, new.file, new.coltok);
         END;
     """)
-    SQLite.execute(db, """
+    _sqlite().execute(db, """
         CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
             INSERT INTO code_fts(code_fts, rowid, text, name, file, coltok)
                 VALUES('delete', old.id, old.text, old.name, old.file, old.coltok);
         END;
     """)
-    SQLite.execute(db, """
+    _sqlite().execute(db, """
         CREATE TRIGGER IF NOT EXISTS chunks_ai_tri AFTER INSERT ON chunks BEGIN
             INSERT INTO code_tri(rowid, text, name, coltok)
                 VALUES (new.id, new.text, new.name, new.coltok);
         END;
     """)
-    SQLite.execute(db, """
+    _sqlite().execute(db, """
         CREATE TRIGGER IF NOT EXISTS chunks_ad_tri AFTER DELETE ON chunks BEGIN
             INSERT INTO code_tri(code_tri, rowid, text, name, coltok)
                 VALUES('delete', old.id, old.text, old.name, old.coltok);
@@ -161,7 +175,7 @@ end
 function close!()
     lock(LOCK) do
         db = DB[]
-        db !== nothing && (SQLite.close(db); DB[] = nothing)
+        db !== nothing && (_sqlite().close(db); DB[] = nothing)
     end
     return nothing
 end
@@ -195,7 +209,7 @@ function add_chunks!(rows)
     lock(LOCK) do
     db = _db()
     n = 0
-    SQLite.transaction(db) do
+    _sqlite().transaction(db) do
         stmt = """
             INSERT INTO chunks(point_id, collection, file, name, type, start_line, end_line, text, metadata)
             VALUES (?,?,?,?,?,?,?,?,?)
