@@ -298,6 +298,22 @@ function _pick_permission(options)
 end
 
 """
+Largest whole-file read served to an agent over `fs/read_text_file`.
+
+A cap rather than no cap: the call names a path and gets the file, and an agent that asks for
+something enormous should get an error it can act on instead of this process growing to match.
+ACP applies the same idea to terminal output through `outputByteLimit`.
+"""
+const ACP_READ_CAP = 8 * 1024 * 1024
+
+function _acp_read_capped(path::AbstractString)
+    sz = try; filesize(path); catch; 0; end
+    sz > ACP_READ_CAP && throw(ArgumentError(
+        "file is $(sz) bytes, over the $(ACP_READ_CAP) byte read limit; ask for a line range"))
+    return read(path, String)
+end
+
+"""
     acp_capabilities(h) -> Dict
 
 What the agent said it can do at `initialize`, plus the `session/new` reply under `"session"`.
@@ -306,6 +322,13 @@ acp_capabilities(h::ACPHandle) = h.caps
 
 """
 Does this agent QUEUE a prompt sent while a turn is running?
+
+Queueing is read as SERIALISING: the queued prompt does not begin streaming until the running turn
+has finished and its `session/prompt` has answered. Everything downstream depends on that, because
+`session/update` carries a session id and no turn id — if two turns ever streamed at once their
+chunks would be indistinguishable and neither message could be reconstructed. The protocol does
+not promise serialisation, so an agent that advertised queueing and meant concurrency would break
+the reassembly rather than merely surprise it.
 
 Asked rather than assumed. An agent that cannot queue loses the reply in progress when a second
 prompt arrives, so a caller has to hold the message back; one that can queue takes it immediately,
@@ -334,7 +357,20 @@ cannot edit files" untrue.
 
 Resolution happens BEFORE the check and follows symlinks, so a link inside the workspace cannot
 be used to step outside it. A path that does not exist yet is resolved through its nearest
-existing parent, because a write to a new file is legitimate.
+existing parent, because a write to a new file is legitimate. The resolved path is what the caller
+then opens, so a lexical `..` cannot mean one thing here and another to the OS.
+
+WHAT THIS IS NOT. It is a correctness boundary against a cooperative agent, not a sandbox against
+a hostile one, and two gaps are inherent rather than oversights:
+
+  * The check and the open are separate steps, and an agent doing its own file I/O can replace a
+    component with a symlink in between. Closing that needs `openat`/`O_NOFOLLOW` walked component
+    by component, which is a great deal of machinery for a threat model where the agent is trusted
+    to run in this workspace at all.
+  * A hard link inside the workspace pointing at a file outside it resolves to an inside path, so
+    containment passes and the outside content is read. No path-based check can see this.
+
+An agent that would exploit either is one that should not have been summoned.
 """
 function _acp_confine(h::ACPHandle, path::AbstractString)
     isempty(path) && throw(ArgumentError("no path given"))
@@ -381,12 +417,24 @@ function _handle_request!(h::ACPHandle, id, method::AbstractString, params)
             d = _acp_decide(h.backend, "fs/read_text_file")
             get(d, "allow", false) === true ||
                 return _rpc_error!(h, id, -32000, String(get(d, "why", "denied by policy")))
-            content = read(_acp_confine(h, String(get(params, "path", ""))), String)
-            if haskey(params, "line") || haskey(params, "limit")
-                lines = split(content, '\n')
+            path = _acp_confine(h, String(get(params, "path", "")))
+            content = if haskey(params, "line") || haskey(params, "limit")
+                # Read only as far as the requested window. Slicing AFTER a whole-file read meant
+                # `limit: 10` still pulled a multi-gigabyte file into memory to throw nearly all
+                # of it away.
                 from = max(1, Int(get(params, "line", 1)))
-                n = Int(get(params, "limit", length(lines)))
-                content = join(lines[from:min(end, from + n - 1)], '\n')
+                n = Int(get(params, "limit", typemax(Int)))
+                want = String[]
+                open(path, "r") do io
+                    for (i, ln) in enumerate(eachline(io))
+                        i < from && continue
+                        length(want) >= n && break
+                        push!(want, ln)
+                    end
+                end
+                join(want, '\n')
+            else
+                _acp_read_capped(path)
             end
             _rpc_respond!(h, id, Dict("content" => content))
         catch e
@@ -590,7 +638,19 @@ function _start_acp_reader!(h::ACPHandle, log_io::IO)
                 obj isa AbstractDict || continue
 
                 if haskey(obj, "method") && haskey(obj, "id")
-                    _handle_request!(h, obj["id"], String(obj["method"]), get(obj, "params", nothing))
+                    # Off the reader, always. Handling a client request inline stalled this loop
+                    # for as long as the request took, and the loop is also what delivers every
+                    # `_rpc_call!` response — so one slow fs call timed out every call in flight,
+                    # and one that never returns (a named pipe inside the workspace, a stalled
+                    # network mount) wedged the connection for good. `_rpc_write!` takes the lock,
+                    # so replies from several handlers cannot interleave.
+                    let rid = obj["id"], meth = String(obj["method"]), prm = get(obj, "params", nothing)
+                        Threads.@spawn try
+                            _handle_request!(h, rid, meth, prm)
+                        catch e
+                            try; _rpc_error!(h, rid, -32000, sprint(showerror, e)); catch; end
+                        end
+                    end
                 elseif haskey(obj, "method")
                     if String(obj["method"]) == "session/update"
                         upd = get(get(obj, "params", Dict()), "update", nothing)
