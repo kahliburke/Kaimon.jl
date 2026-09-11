@@ -228,30 +228,36 @@ function _build_extension_script(config::ExtensionConfig; resolve::Bool = true)
     end
     event_hook = if !isempty(m.event_topics)
         # Subscribe to Kaimon's global event PUB socket with topic filtering.
+        # Reached through KaimonGate: an extension must not have to load Kaimon.
         # Uses recv(sub, Vector{UInt8}) to avoid Message finalizer segfaults.
-        topics_code = join(["Kaimon.ZMQ.subscribe(sub, $(repr(t)))" for t in m.event_topics], "\n        ")
+        topics_code = join(["KaimonGate.ZMQ.subscribe(sub, $(repr(t)))" for t in m.event_topics], "\n        ")
         """
     # Event subscription: connect SUB to Kaimon's global event PUB
     using Serialization
-    let sock_dir = Kaimon.KaimonGate.sock_dir()
-        sub = Kaimon.ZMQ.Socket(Kaimon.KaimonGate.gate_context(), Kaimon.ZMQ.SUB)
+    let sock_dir = KaimonGate.sock_dir()
+        sub = KaimonGate.ZMQ.Socket(KaimonGate.gate_context(), KaimonGate.ZMQ.SUB)
         sub.rcvtimeo = 1000  # 1s timeout so loop can check for shutdown
         if Sys.iswindows()
-            Kaimon.ZMQ.connect(sub, "tcp://127.0.0.1:\$(Kaimon._EVENT_PUB_TCP_PORT[])")
+            KaimonGate.ZMQ.connect(sub, "tcp://127.0.0.1:\$(something(tryparse(Int, get(ENV, "KAIMON_EVENT_PUB_TCP_PORT", "")), 9878))")
         else
-            Kaimon.ZMQ.connect(sub, "ipc://\$(sock_dir)/kaimon-events.sock")
+            KaimonGate.ZMQ.connect(sub, "ipc://\$(sock_dir)/kaimon-events.sock")
         end
         $topics_code
         @async begin
             while true
                 try
-                    topic = Kaimon.ZMQ.recv(sub, String)       # frame 1: channel name
-                    payload = Kaimon.ZMQ.recv(sub, Vector{UInt8})  # frame 2: serialized data
-                    msg = Kaimon._safe_deserialize(payload; label = "ext_event")
+                    topic = KaimonGate.ZMQ.recv(sub, String)       # frame 1: channel name
+                    payload = KaimonGate.ZMQ.recv(sub, Vector{UInt8})  # frame 2: serialized data
+                    # Guarded deserialize, inline: a torn or corrupt frame must not
+                    # take the subscriber down, and this is the only thing the hook
+                    # still wanted from Kaimon.
+                    length(payload) > 64 * 1024 * 1024 &&
+                        error("event payload too large: \$(length(payload)) bytes")
+                    msg = deserialize(IOBuffer(payload))
                     $(m.module_name).on_event(msg.channel, msg.data, msg.session_name)
                 catch e
                     e isa InterruptException && break
-                    e isa Kaimon.ZMQ.TimeoutError && continue
+                    e isa KaimonGate.ZMQ.TimeoutError && continue
                     @debug "Event recv error" exception=e
                     sleep(0.1)
                 end
@@ -274,17 +280,39 @@ function _build_extension_script(config::ExtensionConfig; resolve::Bool = true)
         using Revise
     catch; end
     $resolve_line
-    using Kaimon
-    # Auto-flushing logger so extension output is visible immediately in the log file
-    # (formatter lives in Kaimon so it's testable and keeps structured kwargs).
-    using LoggingExtras, Logging
+    using KaimonGate
+    # An extension needs only KaimonGate: `GateTool` and `serve` are both there.
+    # Loading Kaimon for the log format pulled its whole dependency graph, SQLite
+    # included, into every extension process — which left an extension pinned to the
+    # same `Parsers` version as a database driver it never calls. The formatter is
+    # written out here instead, so nothing but the gate is required to boot.
+    using LoggingExtras, Logging, Dates
+    function _extlog(io, args)
+        println(io, "[", Dates.format(Dates.now(), Dates.DateFormat("HH:MM:SS")), " ",
+                args.level, "] ", args.message)
+        for (k, v) in args.kwargs
+            str = try
+                if k === :exception && v isa Exception
+                    sprint(showerror, v)
+                elseif k === :exception && v isa Tuple && length(v) == 2 && v[1] isa Exception
+                    sprint(showerror, v[1], v[2])
+                else
+                    sprint(show, v; context = :limit => true)
+                end
+            catch e
+                "<error rendering value: \$(sprint(showerror, e))>"
+            end
+            sizeof(str) > 4096 && (str = first(str, 4096) * "\u22ef")
+            println(io, "  ", k, " = ", replace(str, "\n" => "\n  "))
+        end
+    end
     global_logger(MinLevelLogger(
-        FormatLogger(Kaimon._format_extension_log, stderr; always_flush=true),
+        FormatLogger(_extlog, stderr; always_flush=true),
         Logging.Info,
     ))
     using $(m.module_name)
-    tools = $(m.module_name).$(m.tools_function)(Kaimon.KaimonGate.GateTool)
-    Kaimon.KaimonGate.serve(tools=tools, namespace=$(repr(m.namespace)), force=true, allow_mirror=false, allow_restart=false, spawned_by="extension"$on_shutdown_kwarg)
+    tools = $(m.module_name).$(m.tools_function)(KaimonGate.GateTool)
+    KaimonGate.serve(tools=tools, namespace=$(repr(m.namespace)), force=true, allow_mirror=false, allow_restart=false, spawned_by="extension"$on_shutdown_kwarg)
     $event_hook
     while true; sleep(60); end
     """
@@ -452,8 +480,8 @@ function spawn_extension!(ext::ManagedExtension)
         #
         # Prefer the RUNNING instance's active environment over `pkgdir(Kaimon)`: for a
         # registry install (e.g. `pkg> app add Kaimon`) the depot package dir has a
-        # Project.toml but NO Manifest.toml, so `using Kaimon` from it cannot resolve
-        # Kaimon's deps and the extension crashes on boot ("Package JSON is required but
+        # Project.toml but NO Manifest.toml, so `using KaimonGate` from it cannot
+        # resolve its deps and the extension crashes on boot ("Package JSON is required but
         # does not seem to be installed"). The active environment (the app env, or a dev
         # checkout's project) carries an instantiated manifest. Fall back to pkgdir when
         # the active project has no manifest (e.g. a bare --project=@temp session).
