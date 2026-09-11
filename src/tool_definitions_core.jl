@@ -757,6 +757,10 @@ function _elicit_session_consent(path::AbstractString)
     # return :timeout (distinct from :unsupported) so the caller tells the agent to
     # retry instead of falling back to the can't-elicit guidance.
     res = request_elicitation(caller, msg, schema; timeout = elicitation_timeout())
+    # `:undeliverable` means the prompt never reached the client — there is nothing to approve and
+    # retrying will not help, so it reports as `:unsupported` (allow it from the TUI) rather than
+    # as a timeout that invites the user to answer a dialog they were never shown.
+    res === :undeliverable && return :unsupported
     res isa AbstractDict || return :timeout
     get(res, "action", "") == "accept" || return :denied
     content = get(res, "content", nothing)

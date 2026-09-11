@@ -598,7 +598,10 @@ function _request_from_client(session_id::AbstractString, method::AbstractString
         # any open receive stream (clients like Claude Code can split their POST vs
         # GET session ids), else the in-flight tool-call SSE stream as a last resort.
         writer = get(task_local_storage(), :mcp_sse_request, nothing)
-        _deliver_to_client!(session_id, msg, writer) || return nothing
+        # Undeliverable is not the same as unanswered. Returning `nothing` for both told the
+        # caller "no response within Ns" when in fact nothing was ever shown — so the user was
+        # asked to approve a prompt that had never appeared, and waiting longer could not help.
+        _deliver_to_client!(session_id, msg, writer) || return :undeliverable
         if Base.timedwait(() -> isready(sink), timeout) !== :ok
             # Timed out waiting for the user. Cancel the request client-side so a
             # lingering prompt (e.g. an elicitation dialog) is dismissed instead of
@@ -1265,11 +1268,17 @@ function start_mcp_server(
                 # Tools that execute via gate and may run long
                 gate_exec_tools =
                     Set(["ex", "run_tests", "profile_code", "lint_package", "stress_test"])
+                # Tools that ask the USER something mid-call need this path too, for a different
+                # reason: `elicitation/create` is a server→client REQUEST, and the only writer
+                # guaranteed open for the duration of a call is that call's own SSE stream. On the
+                # plain path there is no writer at all, so the prompt cannot be delivered and the
+                # tool fails without the user ever seeing it.
+                eliciting_tools = Set(["start_session"])
 
                 # Session tools (namespaced: "prefix.toolname") also use SSE streaming
                 is_session_tool = occursin('.', tool_name_str)
 
-                if tool_name_str in gate_exec_tools || is_session_tool
+                if tool_name_str in gate_exec_tools || tool_name_str in eliciting_tools || is_session_tool
                     return _handle_gate_tool_sse(
                         http,
                         parsed_request,
