@@ -22,10 +22,20 @@ import JSON
 # "acp:opencode:opencode/minimax-m3" has to keep the provider prefix intact.
 const ACP_PREFIX = "acp:"
 
-"Known ACP agents → the argv that starts them in ACP mode."
+"""
+Known ACP agents → the argv that starts them in ACP mode.
+
+`claude` is Claude Code itself, through the official adapter. It matters more than one more entry
+in a table: once Claude Code is reachable over ACP it is a Kaimon-owned agent like any other, with
+an id that can be SENT to. An orchestrator that is merely talking to Kaimon over MCP cannot be
+pushed at — it has to poll — whereas one that is spawned here can be handed a turn the moment a
+specialist asks it something. That is the difference between agents that interact and agents that
+take turns checking on each other.
+"""
 const ACP_AGENTS = Dict{String,Vector{String}}(
     "opencode" => ["opencode", "acp"],
     "gemini"   => ["gemini", "--experimental-acp"],
+    "claude"   => ["claude-agent-acp"],
 )
 
 "Split \"acp:opencode:opencode/minimax-m3\" into its argv and model."
@@ -59,6 +69,11 @@ Base.@kwdef struct ACPClientBackend <: AgentBackend
     permission::String = "default"                       # preset, enforced by the bridge plugin
     permission_mode::String = ""                         # "plan" maps onto the agent's own plan mode
     disallowed_tools::Vector{String} = copy(AGENT_SELF_TOOLS)
+    # Empty = no allowlist, i.e. whatever the preset permits. Non-empty makes this agent a
+    # SPECIALIST: the listed tools are the whole of its world and everything else is refused,
+    # whatever the preset would otherwise allow. Enforced here rather than dropped, because an
+    # allowlist that silently does nothing is worse than one that isn't offered.
+    allowed_tools::Vector{String} = String[]
     mcp_servers::Vector{Any} = Any[]                     # passed to session/new
     plugin_dir::Union{String,Nothing} = nothing          # bridge plugin source, copied per session
     allow_writes::Bool = true                            # client fs capability we advertise
@@ -202,6 +217,11 @@ function _acp_decide(b::ACPClientBackend, tool::AbstractString)
     for entry in b.disallowed_tools
         _acp_tool_matches(tool, entry) && return Dict("allow" => false, "why" => "denied by policy")
     end
+    # Before the preset, not after: a specialist's allowlist has to out-rank a permissive preset,
+    # or "default"/"lab" would wave through the very tools it was drawn up to exclude.
+    if !isempty(b.allowed_tools) && !any(e -> _acp_tool_matches(tool, e), b.allowed_tools)
+        return Dict("allow" => false, "why" => "not in this agent's allowlist")
+    end
 
     preset = lowercase(b.permission)
     preset in ("bypass", "lab", "default") && return Dict("allow" => true)
@@ -269,6 +289,39 @@ function _pick_permission(options)
     o isa AbstractDict ? get(o, "optionId", nothing) : nothing
 end
 
+"""
+Resolve a path the agent asked for, and refuse it unless it is inside the session's `cwd`.
+
+The fs callbacks are a second door into this process, and they used to open straight onto the
+filesystem: a bare `read`, and a `write` gated only by one all-or-nothing flag. An agent summoned
+with a seven-verb allowlist could still read `~/.ssh/id_rsa`, because these calls never went near
+the policy. That is the same shape as the allowlist bug this file already fixed once — a
+restriction that appears to constrain and does not — and it made a system prompt saying "you
+cannot edit files" untrue.
+
+Resolution happens BEFORE the check and follows symlinks, so a link inside the workspace cannot
+be used to step outside it. A path that does not exist yet is resolved through its nearest
+existing parent, because a write to a new file is legitimate.
+"""
+function _acp_confine(h::ACPHandle, path::AbstractString)
+    isempty(path) && throw(ArgumentError("no path given"))
+    root = try; realpath(h.cwd); catch; abspath(h.cwd); end
+    p = abspath(isabspath(path) ? String(path) : joinpath(root, String(path)))
+    # Resolve as far as the filesystem knows, then re-attach the part that doesn't exist yet.
+    probe, rest = p, String[]
+    while !ispath(probe)
+        parent = dirname(probe)
+        parent == probe && break
+        pushfirst!(rest, basename(probe))
+        probe = parent
+    end
+    resolved = try; realpath(probe); catch; probe; end
+    full = isempty(rest) ? resolved : joinpath(resolved, rest...)
+    (full == root || startswith(full, root * "/")) ||
+        throw(ArgumentError("path is outside this agent's workspace: $path"))
+    return full
+end
+
 function _handle_request!(h::ACPHandle, id, method::AbstractString, params)
     params = params isa AbstractDict ? params : Dict{String,Any}()
 
@@ -290,7 +343,12 @@ function _handle_request!(h::ACPHandle, id, method::AbstractString, params)
 
     elseif method == "fs/read_text_file"
         try
-            content = read(String(get(params, "path", "")), String)
+            # Policy first, then the workspace boundary. The allowlist names it `fs/read_text_file`
+            # so a specialist's toolset can exclude reading outright, not merely reading elsewhere.
+            d = _acp_decide(h.backend, "fs/read_text_file")
+            get(d, "allow", false) === true ||
+                return _rpc_error!(h, id, -32000, String(get(d, "why", "denied by policy")))
+            content = read(_acp_confine(h, String(get(params, "path", ""))), String)
             if haskey(params, "line") || haskey(params, "limit")
                 lines = split(content, '\n')
                 from = max(1, Int(get(params, "line", 1)))
@@ -303,11 +361,16 @@ function _handle_request!(h::ACPHandle, id, method::AbstractString, params)
         end
 
     elseif method == "fs/write_text_file"
+        d = _acp_decide(h.backend, "fs/write_text_file")
         if !h.backend.allow_writes
             _rpc_error!(h, id, -32000, "client denied write to $(get(params, "path", "?"))")
+        elseif get(d, "allow", false) !== true
+            _rpc_error!(h, id, -32000, String(get(d, "why", "denied by policy")))
         else
             try
-                path = String(get(params, "path", ""))
+                # Confined before anything is created: `mkpath` on an unchecked path would build
+                # directories outside the workspace even when the write itself then failed.
+                path = _acp_confine(h, String(get(params, "path", "")))
                 mkpath(dirname(path))
                 write(path, String(get(params, "content", "")))
                 _rpc_respond!(h, id, nothing)
@@ -554,6 +617,7 @@ function backend_start(b::ACPClientBackend; cwd::String, agent_id::String,
     env["KAIMON_AGENT_ID"] = agent_id
     env["KAIMON_AGENT_PERMISSION"] = b.permission
     env["KAIMON_AGENT_DENY_TOOLS"] = join(b.disallowed_tools, ",")
+    isempty(b.allowed_tools) || (env["KAIMON_AGENT_ALLOW_TOOLS"] = join(b.allowed_tools, ","))
     b.system_prompt === nothing || (env["KAIMON_AGENT_SYSTEM_PROMPT"] = b.system_prompt)
 
     args = _spawn_argv(b.argv)

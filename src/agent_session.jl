@@ -66,7 +66,11 @@ channel `agent:<id>`.
 # recursion guard (disallowed agent_* tools) stays on regardless.
 function _permission_preset(p::AbstractString)
     pl = lowercase(p)
-    pl == "lab"    ? ("acceptEdits", ["mcp__kaimon"], false) :      # drive the lab: slate.*/ex/...
+    # `lab` drives the lab: Kaimon's tools, plus the ACP fs callbacks so an agent can still read
+    # and edit inside its workspace. Those are named explicitly because the fs path now consults
+    # the allowlist — before, it consulted nothing, so a specialist restricted to seven tools
+    # could read any file on the machine through it.
+    pl == "lab"    ? ("acceptEdits", ["mcp__kaimon", "fs/read_text_file", "fs/write_text_file"], false) :
     pl == "auto"   ? ("auto", String[], false) :                   # model classifier self-governs
     pl == "bypass" ? ("bypassPermissions", String[], true) :       # no checks (sandbox/trusted only)
                      ("acceptEdits", String[], false)              # "default": edits only
@@ -158,6 +162,10 @@ function agent_open(; cwd::String,
         ACPClientBackend(; argv = acp_argv, model = acp_model,
                          permission = permission, permission_mode = final_mode,
                          disallowed_tools = disallowed_tools,
+                         # Composed with the preset like every other backend. Note `lab`'s
+                         # `mcp__kaimon` widens an allowlist to all of Kaimon — a specialist
+                         # wants a preset with no allowances of its own (`default`).
+                         allowed_tools = final_allowed,
                          system_prompt = system_prompt,
                          mcp_servers = _acp_mcp_servers(aid),
                          plugin_dir = _acp_plugin_dir())
