@@ -220,6 +220,34 @@ function _stream_hook_nudge(http, req, body)
     return false
 end
 
+# Tool-policy questions from an ACP agent's bridge plugin. Runs before the security
+# gate because the plugin holds no API key; its credential is instead the per-agent
+# bridge token minted at spawn, which also makes every decision attributable. An
+# unrecognised or missing token is refused rather than ignored — this endpoint says
+# yes or no to tool execution, so failing open would hand policy to anything that
+# can reach the port.
+function _stream_agent_bridge(http, req, body)
+    (req.method == "POST" && startswith(req.target, "/agent/permission")) || return false
+    K = parentmodule(@__MODULE__)
+    verdict = try
+        aid = HTTP.header(req, "X-Kaimon-Agent-Id", "")
+        tok = HTTP.header(req, "X-Kaimon-Bridge-Token", "")
+        if isempty(aid) || isempty(tok) || tok != K._acp_token(aid)
+            Dict("allow" => false, "why" => "bad bridge credential")
+        else
+            payload = JSON.parse(body)
+            K.acp_bridge_decide(aid, String(get(payload, "tool", "")), get(payload, "args", nothing))
+        end
+    catch
+        Dict("allow" => false, "why" => "bridge error")
+    end
+    HTTP.setstatus(http, 200)
+    HTTP.setheader(http, "Content-Type" => "application/json")
+    HTTP.startwrite(http)
+    write(http, JSON.json(verdict))
+    return true
+end
+
 # We intentionally run NO OAuth authorization server (see mcp_rpc_methods.jl — an
 # anonymous localhost auto-mint would bypass strict/relaxed mode). Serve a clean
 # 404 for OAuth discovery/endpoint paths BEFORE the security gate, so a client

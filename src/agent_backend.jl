@@ -47,7 +47,8 @@ chat (M1).
 const AGENT_SELF_TOOLS = ["mcp__kaimon__agent_open", "mcp__kaimon__agent_send",
     "mcp__kaimon__agent_run",
     "mcp__kaimon__agent_interrupt", "mcp__kaimon__agent_close",
-    "mcp__kaimon__agent_status", "mcp__kaimon__agent_list"]
+    "mcp__kaimon__agent_status", "mcp__kaimon__agent_list",
+    "mcp__kaimon__agent_set_model"]
 
 Base.@kwdef struct ClaudeBackend <: AgentBackend
     claude_path::String = _find_claude()

@@ -98,6 +98,22 @@ const agent_status_tool = @mcp_tool :agent_status "Get an agent's status, model,
     end
 end
 
+const agent_set_model_tool = @mcp_tool :agent_set_model "Repoint a LIVE agent at another model, keeping its conversation. Only works for ACP agents (acp:<agent>:<model>) staying on the same agent — returns {switched:false} otherwise, and the caller should close and reopen instead." Dict(
+    "type" => "object",
+    "properties" => Dict(
+        "agent_id" => Dict("type" => "string", "description" => "Agent id from agent_open."),
+        "model" => Dict("type" => "string", "description" => "Full Kaimon model id, e.g. 'acp:opencode:opencode/glm-5.3-flash'."),
+    ),
+    "required" => ["agent_id", "model"],
+) (args) -> begin
+    try
+        ok = agent_set_model(String(get(args, "agent_id", "")), String(get(args, "model", "")))
+        JSON.json(Dict("switched" => ok))
+    catch e
+        "Error switching model: $(sprint(showerror, e))"
+    end
+end
+
 const agent_output_tool = @mcp_tool :agent_output "Read a backgrounded agent's assistant output WITHOUT blocking — the companion to agent_send (dispatch async, then poll this until done=true, instead of blocking on agent_run). Reconstructs text from Kaimon's own event log (completed turns) + an in-memory stream buffer (the current, still-working turn), so it returns partial output mid-turn and still works for a reaped/dead agent whose log persists on disk. Returns {agent_id, turn, status, done, text, truncated, dropped_chars, usage}." Dict(
     "type" => "object",
     "properties" => Dict(

@@ -151,7 +151,17 @@ function agent_open(; cwd::String,
     # local model in-process (no CLI, no MCP subprocess) over the Ollama /api/chat
     # wire protocol; vmlx is Ollama-compatible and defaults to its own port (:8000),
     # so no OLLAMA_HOST env hack. Anything else is the claude CLI.
-    backend = if startswith(model, VMLX_PREFIX)
+    backend = if startswith(model, ACP_PREFIX)
+        # Any ACP-speaking agent. Tool policy can't ride the protocol, so the
+        # preset and the recursion guard are handed to the bridge plugin instead.
+        acp_argv, acp_model = _parse_acp_model(model)
+        ACPClientBackend(; argv = acp_argv, model = acp_model,
+                         permission = permission, permission_mode = final_mode,
+                         disallowed_tools = disallowed_tools,
+                         system_prompt = system_prompt,
+                         mcp_servers = _acp_mcp_servers(aid),
+                         plugin_dir = _acp_plugin_dir())
+    elseif startswith(model, VMLX_PREFIX)
         OllamaBackend(; model = chop(model; head = length(VMLX_PREFIX), tail = 0),
                       host = get(ENV, "VMLX_HOST", "http://127.0.0.1:8000"),
                       label = "vmlx",
@@ -576,6 +586,35 @@ function agent_status(id::String)
         "event_log" => _event_log_path(s.id),       # Kaimon-owned normalized JSONL
         "usage" => ACP.to_dict(s.usage),
     )
+end
+
+"""
+    agent_set_model(id, model) -> Bool
+
+Repoint a live agent at another model, keeping its conversation.
+
+Only backends whose protocol carries a model method can do this. `ClaudeBackend`
+binds the model to the process at spawn, so it returns `false` and the caller's
+fallback is what it always was: reap the agent and open a new one. Switching
+between two different ACP agents is a respawn too — the model moves, the process
+can't.
+"""
+function agent_set_model(id::AbstractString, model::AbstractString)
+    s = _get_agent(String(id))
+    s === nothing && return false
+    h = s.handle
+    h isa ACPHandle || return false
+    startswith(model, ACP_PREFIX) || return false
+    argv, bare = try
+        _parse_acp_model(model)
+    catch
+        return false
+    end
+    argv == s.backend.argv || return false
+    acp_set_model!(h, bare) || return false
+    lock(s.lock) do; s.model = String(model); end
+    _push_log!(:info, "Agent '$(s.id)' switched to $model")
+    true
 end
 
 function list_agents()
