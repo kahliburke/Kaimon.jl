@@ -61,19 +61,41 @@ _gen_agent_id() = bytes2hex(rand(UInt8, 4))
 Spawn and own a new agent. Returns the agent id. Events stream on the gate bus
 channel `agent:<id>`.
 """
-# High-level permission posture → (permission_mode, extra allowed tools, skip-flag).
-# Lets a consumer pick one word per spawn instead of assembling raw flags. The
-# recursion guard (disallowed agent_* tools) stays on regardless.
+# The CLI's own file and shell tools. An agent working ON a notebook has better versions of every
+# one of these — `slate.read` sees the live cell and its output, `grep` sees the text last written
+# to disk — so reaching for these is both a worse answer and how an agent asked to debug one cell
+# ends up reading the whole repository.
+const AGENT_NATIVE_FILE_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit"]
+
+"""
+A permission posture as one word → `(permission_mode, allowed, disallowed, dangerous)`, so a
+consumer picks a preset per spawn instead of assembling raw flags. The recursion guard (disallowed
+`agent_*` tools) stays on regardless.
+
+`disallowed` is the newer half and the reason this is a 4-tuple: a mode like `acceptEdits` says
+what to PROMPT for, not what exists, so `lab` auto-approved edits while leaving every native tool
+in place — which read as "Kaimon tools only" and was not.
+"""
 function _permission_preset(p::AbstractString)
     pl = lowercase(p)
     # `lab` drives the lab: Kaimon's tools, plus the ACP fs callbacks so an agent can still read
     # and edit inside its workspace. Those are named explicitly because the fs path now consults
     # the allowlist — before, it consulted nothing, so a specialist restricted to seven tools
     # could read any file on the machine through it.
-    pl == "lab"    ? ("acceptEdits", ["mcp__kaimon", "fs/read_text_file", "fs/write_text_file"], false) :
-    pl == "auto"   ? ("auto", String[], false) :                   # model classifier self-governs
-    pl == "bypass" ? ("bypassPermissions", String[], true) :       # no checks (sandbox/trusted only)
-                     ("acceptEdits", String[], false)              # "default": edits only
+    # `notebook` is what an agent working on a notebook should be: Kaimon's tools, and not the
+    # CLI's own shell and file tools, which duplicate them badly and lead somewhere else.
+    # The fs callbacks are left OUT of it deliberately: they are a file tool by another route, and
+    # an ACP agent that has them has not been restricted to the slate tools at all.
+    pl == "notebook" ? ("acceptEdits", ["mcp__kaimon"], copy(AGENT_NATIVE_FILE_TOOLS), false) :
+    # `specialist` is `notebook` without the allowance. A specialist is spawned with an allowlist of
+    # a few named tools, and on the CLI path a preset's allowances are UNIONED with it — so allowing
+    # `mcp__kaimon` here would widen a debugger from nine verbs to every tool Kaimon has.
+    pl == "specialist" ? ("acceptEdits", String[], copy(AGENT_NATIVE_FILE_TOOLS), false) :
+    pl == "lab"    ? ("acceptEdits", ["mcp__kaimon", "fs/read_text_file", "fs/write_text_file"],
+                      String[], false) :
+    pl == "auto"   ? ("auto", String[], String[], false) :         # model classifier self-governs
+    pl == "bypass" ? ("bypassPermissions", String[], String[], true) :  # no checks (sandbox only)
+                     ("acceptEdits", String[], String[], false)    # "default": edits only
 end
 
 """Split an optional inline effort suffix off a Claude model string:
@@ -148,7 +170,10 @@ function agent_open(; cwd::String,
         end
     end
 
-    pmode, pallow, dangerous = _permission_preset(permission)
+    pmode, pallow, pdeny, dangerous = _permission_preset(permission)
+    # The preset's denials ride ON TOP of the caller's, never instead: the recursion guard
+    # (AGENT_SELF_TOOLS) is in that default and a preset must not be able to lift it.
+    disallowed_tools = unique(vcat(disallowed_tools, pdeny))
     final_mode = permission_mode === nothing ? pmode : permission_mode  # explicit mode overrides preset
     final_allowed = unique(vcat(allowed_tools, pallow))                  # preset composes with explicit allowlist
     # Backend selection by model string — "ollama:<tag>" and "vmlx:<tag>" drive a

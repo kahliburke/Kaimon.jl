@@ -276,6 +276,18 @@ function _acp_decide(b::ACPClientBackend, tool::AbstractString)
 
     preset = lowercase(b.permission)
     preset in ("bypass", "lab", "default") && return Dict("allow" => true)
+    # `notebook` allows the Kaimon tools and nothing else, so anything reaching here is refused.
+    # It gets its own answer rather than falling through to the unknown-preset one below, because
+    # the refusal is read by the agent and the next thing it should do is in the message.
+    preset == "notebook" && return Dict("allow" => false,
+        "why" => "the `notebook` preset has no shell or file tools — use the slate tools, or " *
+                 "ask for file access with slate_request_file_access")
+    # A specialist is gated by its own allowlist above, which it has already passed to reach here.
+    # With no allowlist there was no gate, and the preset is not one: refuse rather than hand a
+    # misconfigured role everything the deny list happens not to name.
+    preset == "specialist" && return isempty(b.allowed_tools) ?
+        Dict("allow" => false, "why" => "a specialist with no allowlist may call nothing") :
+        Dict("allow" => true)
     if preset == "auto"
         # `auto` means the agent's own classifier governs. ACP gives us no way to
         # consult it, so rather than inventing a second classifier here, refuse
