@@ -42,6 +42,36 @@ function _push_error!(ext::ManagedExtension, msg::String)
     length(ext.error_log) > 20 && deleteat!(ext.error_log, 1:length(ext.error_log) - 20)
 end
 
+# Banner `spawn_extension!` writes to the log at each boot. The log is APPENDED across
+# restarts, so it is also the marker that separates this boot's output from the last one's.
+const _EXT_BOOT_BANNER = "--- Extension "
+
+"""
+    _first_error_line(log_file) -> Union{String,Nothing}
+
+First error line this boot wrote to `log_file`, for the extension's error list. An exit
+code alone says only that the extension died; the cause is a precompile or load error
+sitting in a file nobody thinks to open.
+
+Scans forward from the LAST boot banner, never the whole file: the log is appended across
+restarts, and reporting a previous run's error against this one is worse than reporting
+nothing.
+"""
+function _first_error_line(log_file::AbstractString; max_len::Int = 300)
+    isfile(log_file) || return nothing
+    lines = try
+        readlines(log_file)
+    catch
+        return nothing
+    end
+    boot = something(findlast(l -> startswith(l, _EXT_BOOT_BANNER), lines), 0)
+    for i in (boot + 1):length(lines)
+        l = strip(lines[i])
+        (startswith(l, "ERROR") || occursin("ERROR:", l)) && return String(first(l, max_len))
+    end
+    return nothing
+end
+
 """Send SIGTERM, wait up to 3s, then SIGKILL if still alive."""
 function _kill_process!(proc::Base.Process)
     try
@@ -262,10 +292,12 @@ function _build_extension_script(config::ExtensionConfig; resolve::Bool = true)
         ""
     end
 
-    # Picks up a dev checkout's edited deps before boot. Only ever emitted for a project we
-    # own (see `spawn_extension!`) — against a read-only depot install it fails, and if the
-    # install happens to be writable it is worse: it writes a Manifest.toml into the package
-    # dir, which makes `_project_has_manifest` treat it as a dev checkout from then on.
+    # Picks up edited deps before boot, for a caller that launches a project directly. No
+    # longer emitted for an extension: every one of those now runs from a managed env that
+    # `_ensure_extension_runtime_project` has already resolved, and resolving again would
+    # undo the joint resolve. That also retires two hazards this used to carry — it failed
+    # outright against a read-only depot install, and against a writable one it wrote a
+    # Manifest.toml into the package dir, permanently changing how that install was classified.
     resolve_line = resolve ?
         """try; import Pkg; Pkg.resolve(io=devnull); catch e; @warn "Pkg.resolve failed" exception=e; end""" : ""
 
@@ -296,18 +328,49 @@ end
 # with `--project=<that dir>` leaves the extension unable to resolve its OWN deps
 # ("Package X is required but does not seem to be installed"), and the boot
 # script's `Pkg.resolve` can't repair a read-only depot ("Permission denied").
-# For such extensions Kaimon maintains its own writable environment that
-# `develop`s the package from its source dir and instantiates its deps, and
-# launches the subprocess against THAT. A dev checkout whose project already
-# carries an instantiated manifest is used as-is (unchanged behavior).
+# Kaimon therefore maintains its own writable environment that `develop`s the
+# package from its source dir and instantiates its deps, and launches the
+# subprocess against THAT.
 #
-# (Kaimon and its own deps still reach the extension via the parent's active
-# environment on JULIA_LOAD_PATH — see `spawn_extension!`; the two are
-# independent: this env resolves the extension package, the load-path entry
-# resolves Kaimon.)
+# EVERY extension gets that environment, a dev checkout included. The subprocess
+# stacks this env ahead of Kaimon's own on LOAD_PATH and `locate_package` takes the
+# first environment that has a package, so a dependency the two share has to resolve
+# to the same version in both; only a resolve that sees Kaimon and the extension at
+# once can guarantee that. A checkout resolved on its own has no reason to respect a
+# ceiling that only Kaimon's side imposes, and picks a version Kaimon's env can never
+# reach — the failure surfaces as the shared dependency failing to precompile, naming
+# neither Kaimon nor the extension. Exempting checkouts sent the one configuration
+# that could resolve jointly off to resolve alone, and re-armed it on every boot.
+#
+# `Pkg.develop` carries a developed package's own path dependencies through, whether
+# declared in `[sources]` or only present in its manifest, so a checkout's local
+# sub-packages keep resolving to the working tree and Revise still tracks them.
 
 _extension_env_dir(namespace::AbstractString) =
     joinpath(first(DEPOT_PATH), "environments", "kaimon-ext", namespace)
+
+"""
+    _reset_extension_env_files!(env) -> Vector{String}
+
+Delete the files that CONSTITUTE the Pkg environment in `env` — `Project.toml` and
+`Manifest.toml` — and return the names that were actually there. Used to retry a build that
+a stale cache made unresolvable.
+
+Named files only, and the directory itself is left in place: `env`'s last path component is a
+namespace rather than a literal, so a recursive delete here would take its parent — every
+extension env — with it on an empty one. Leaving the directory alone also keeps the build
+logs, which is where the failure that prompted the reset is recorded.
+"""
+function _reset_extension_env_files!(env::AbstractString)
+    removed = String[]
+    for f in ("Project.toml", "Manifest.toml")
+        p = joinpath(env, f)
+        isfile(p) || continue
+        rm(p; force = true)
+        push!(removed, f)
+    end
+    return removed
+end
 
 # Serializes builds so a spawn re-entered by the monitor tick can't race a
 # half-built env for the same namespace.
@@ -342,14 +405,12 @@ end
 """
     _ensure_extension_runtime_project(project_path, namespace) -> String
 
-Return the project directory to launch the extension subprocess with. A dev
-checkout (its own instantiated manifest) is returned unchanged. A manifest-less
-registry/app install gets a Kaimon-managed, instantiated environment (built once,
-cached, rebuilt when the source changes) whose path is returned instead.
+Return the project directory to launch the extension subprocess with: a
+Kaimon-managed environment that resolves the extension and Kaimon together, built
+once, cached, and rebuilt when either source changes. A dev checkout gets this too
+— see the note above on why resolving a checkout on its own is what breaks.
 """
 function _ensure_extension_runtime_project(project_path::AbstractString, namespace::AbstractString)
-    _project_has_manifest(project_path) && return project_path
-
     env = _extension_env_dir(namespace)
     stamp_file = joinpath(env, ".kaimon_ext_source")
     fingerprint = _extension_env_fingerprint(project_path)
@@ -396,9 +457,32 @@ function _build_extension_env!(env::AbstractString, project_path::AbstractString
     # extension precompiles what it needs on load regardless.
     build_env = copy(ENV)
     build_env["JULIA_PKG_PRECOMPILE_AUTO"] = "0"
-    open(build_log, "w") do io
+    build!() = open(build_log, "w") do io
         run(pipeline(setenv(`$julia_bin --startup-file=no --project=$env -e $code`, build_env);
                      stdin = devnull, stdout = io, stderr = io))
+    end
+    try
+        build!()
+    catch
+        # A cached env is normally worth keeping: `develop` preserves the versions already
+        # resolved there, so the common rebuild (a Project.toml mtime moved, nothing else) is
+        # cheap. But the cache can also be actively hostile — a manifest pinning a `develop`ed
+        # path that has since moved fails the resolve outright ("expected package X to exist at
+        # path …") rather than being re-resolved around, and retrying in place cannot fix it.
+        #
+        # An environment IS its Project.toml + Manifest.toml, so deleting exactly those two
+        # gives a clean resolve. Named files only, no recursive delete: the path is computed
+        # from a namespace, and build.log has to survive to explain the first failure.
+        _push_log!(:warn, "Extension env build for '$namespace' failed; retrying from a clean manifest")
+        # Move the failed attempt's log aside first: `build!` opens build.log for WRITING, so
+        # the retry would otherwise truncate the only record of what went wrong — and when the
+        # retry succeeds, nothing would be left to say a first attempt ever failed.
+        try
+            mv(build_log, build_log * ".failed"; force = true)
+        catch
+        end
+        _reset_extension_env_files!(env)
+        build!()
     end
     return
 end
@@ -436,14 +520,15 @@ function spawn_extension!(ext::ManagedExtension)
         # active environment and the default LOAD_PATH ["@", "@v#.#", "@stdlib"]
         # is used.  The parent process may have these set (e.g. from the launcher).
         julia_bin = joinpath(Sys.BINDIR, "julia")
-        # Runtime project: a dev checkout is used directly; a manifest-less
-        # registry/app install gets a Kaimon-managed instantiated env so the
-        # extension can resolve its OWN deps (see `_ensure_extension_runtime_project`).
+        # Runtime project: always a Kaimon-managed env that resolves the extension and
+        # Kaimon together (see `_ensure_extension_runtime_project`).
         project = _ensure_extension_runtime_project(
             ext.config.entry.project_path, ext.config.manifest.namespace)
-        # Resolve at boot only in a dev checkout, whose deps the user edits. A managed env was
-        # just built by `_ensure_extension_runtime_project`, and resolving it would reach back
-        # into the read-only depot dir the package is `develop`ed from.
+        # Resolve at boot only when launching a project directly. The managed env was just
+        # resolved by `_ensure_extension_runtime_project`, and resolving it again would reach
+        # back into the depot dir the package is `develop`ed from — read-only for an app
+        # install — and would also undo the joint resolve. The condition holds for every
+        # extension now; it states the rule rather than the current outcome.
         script = _build_extension_script(ext.config; resolve = project == ext.config.entry.project_path)
         env = copy(ENV)
         # LOAD_PATH: extension project (@), Kaimon's environment (for Gate, LoggingExtras, etc.),
@@ -489,7 +574,9 @@ function spawn_extension!(ext::ManagedExtension)
         catch
         end
         log_io = open(ext.log_file, "a")
-        println(log_io, "\n--- Extension $(ext.config.manifest.namespace) starting at $(Dates.now()) ---")
+        # Written through `_EXT_BOOT_BANNER` because `_first_error_line` scans for it: a
+        # literal here could drift from the matcher and silently stop separating boots.
+        println(log_io, "\n$(_EXT_BOOT_BANNER)$(ext.config.manifest.namespace) starting at $(Dates.now()) ---")
         flush(log_io)
 
         # stdin=devnull keeps the extension off the launching terminal: an inherited tty
@@ -508,6 +595,12 @@ function spawn_extension!(ext::ManagedExtension)
                 wait(proc)
             catch
             end
+            # Close the log before reading it back, so the exiting process's last writes
+            # are on disk when `_first_error_line` looks for the cause.
+            try
+                close(log_io)
+            catch
+            end
             # Process exited — update status if we haven't already stopped it
             if ext.status in (:starting, :running)
                 prev = ext.status
@@ -515,14 +608,13 @@ function spawn_extension!(ext::ManagedExtension)
                 uptime_s = round(time() - ext.started_at, digits=1)
                 exit_code = try; proc.exitcode; catch; "unknown"; end
                 _push_error!(ext, "Process exited at $(Dates.now()) (exit=$exit_code)")
+                cause = _first_error_line(ext.log_file)
+                cause === nothing || _push_error!(ext, cause)
                 _push_log!(
                     :warn,
-                    "Extension '$(ext.config.manifest.namespace)' crashed (was $prev, exit=$exit_code, after $(uptime_s)s)",
+                    "Extension '$(ext.config.manifest.namespace)' crashed (was $prev, exit=$exit_code, after $(uptime_s)s)" *
+                    (cause === nothing ? "" : ": $cause"),
                 )
-            end
-            try
-                close(log_io)
-            catch
             end
         end
 

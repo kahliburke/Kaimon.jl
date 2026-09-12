@@ -346,8 +346,20 @@ end
     @test !Kaimon._project_has_manifest(bare)
     @test !Kaimon._project_has_manifest(empty)
 
-    # A sound checkout is launched AS-IS — no managed env is built for it.
-    @test Kaimon._ensure_extension_runtime_project(sound, "ext_sound") == sound
+    # EVERY shape now takes the managed env, a dev checkout included: resolving a checkout
+    # alongside Kaimon is the only way a dependency they share gets one version across the
+    # LOAD_PATH stack, and a checkout used as-is resolves itself into the conflict instead.
+    # Pre-seed an up-to-date env so the routing is exercised without spawning a build.
+    for (label, src) in (("sound", sound), ("bare", bare))
+        ns = "ext_route_$label"
+        env = Kaimon._extension_env_dir(ns)
+        mkpath(env)
+        write(joinpath(env, "Manifest.toml"), "manifest_format = \"2.0\"\n")
+        write(joinpath(env, ".kaimon_ext_source"), Kaimon._extension_env_fingerprint(src))
+        @test Kaimon._ensure_extension_runtime_project(src, ns) == env
+        @test Kaimon._ensure_extension_runtime_project(src, ns) != src
+        rm(env; recursive = true, force = true)
+    end
 
     # The managed env dir is under the depot, namespaced (never inside the read-only pkgdir).
     envdir = Kaimon._extension_env_dir("ext_ns")
@@ -374,6 +386,69 @@ end
     for d in (sound, bare, empty, other)
         rm(d; recursive = true, force = true)
     end
+end
+
+@testset "resetting a managed env removes only the env files" begin
+    # A stale cached env can pin a `develop`ed path that has since moved, which fails the
+    # resolve outright; the build retries from a clean manifest. What must NOT happen is a
+    # recursive delete: `env`'s last component is a namespace, so an empty one would target
+    # the parent and take every extension env with it.
+    env = mktempdir()
+    write(joinpath(env, "Project.toml"), "name = \"X\"\n")
+    write(joinpath(env, "Manifest.toml"), "manifest_format = \"2.0\"\n")
+    write(joinpath(env, "build.log"), "why the first build failed\n")
+    mkpath(joinpath(env, "sub"))
+    write(joinpath(env, "sub", "keep.txt"), "keep me")
+
+    @test sort(Kaimon._reset_extension_env_files!(env)) == ["Manifest.toml", "Project.toml"]
+    @test !isfile(joinpath(env, "Project.toml"))
+    @test !isfile(joinpath(env, "Manifest.toml"))
+    # The diagnostic survives — it is the only record of what went wrong the first time.
+    @test read(joinpath(env, "build.log"), String) == "why the first build failed\n"
+    # The directory and everything else in it are untouched.
+    @test isdir(env)
+    @test read(joinpath(env, "sub", "keep.txt"), String) == "keep me"
+    # Idempotent: resetting an already-clean env reports nothing removed rather than throwing.
+    @test Kaimon._reset_extension_env_files!(env) == String[]
+
+    rm(env; recursive = true, force = true)
+end
+
+@testset "crash cause from the extension log" begin
+    # An exit code alone sends the reader to a log file to find out what happened. The log is
+    # APPENDED across restarts, so the scan has to start at the last boot banner — surfacing a
+    # previous run's error against this run is worse than surfacing nothing.
+    dir = mktempdir()
+    log = joinpath(dir, "ns.log")
+
+    @test Kaimon._first_error_line(joinpath(dir, "absent.log")) === nothing
+
+    write(log, "$(Kaimon._EXT_BOOT_BANNER)ns starting at t1 ---\nloading\nall fine\n")
+    @test Kaimon._first_error_line(log) === nothing          # no error this boot
+
+    # A failed boot: the cause is the first ERROR after the banner.
+    write(log, """
+    $(Kaimon._EXT_BOOT_BANNER)ns starting at t1 ---
+    ERROR: LoadError: UndefVarError: `PosLen` not defined in `WeakRefStrings`
+    ERROR: a later one that is not the cause
+    """)
+    @test Kaimon._first_error_line(log) ==
+          "ERROR: LoadError: UndefVarError: `PosLen` not defined in `WeakRefStrings`"
+
+    # A previous boot's error must NOT be reported for a boot that is fine so far.
+    write(log, """
+    $(Kaimon._EXT_BOOT_BANNER)ns starting at t1 ---
+    ERROR: stale failure from the last run
+    $(Kaimon._EXT_BOOT_BANNER)ns starting at t2 ---
+    still starting
+    """)
+    @test Kaimon._first_error_line(log) === nothing
+
+    # Long lines are truncated so one wall of text can't crowd out the error list.
+    write(log, "$(Kaimon._EXT_BOOT_BANNER)ns starting at t1 ---\nERROR: $(repeat("x", 500))\n")
+    @test length(Kaimon._first_error_line(log; max_len = 80)) == 80
+
+    rm(dir; recursive = true, force = true)
 end
 
 # Manifest `env` — startup environment an extension asks for. It exists for settings a runtime reads
