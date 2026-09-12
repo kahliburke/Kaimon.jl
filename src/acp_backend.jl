@@ -241,9 +241,14 @@ is a Kaimon MCP tool — but not for an ACP agent, whose own built-ins (`write`,
 server-prefix entry matches `write`, and the recursion guard silently disables
 the agent's whole native toolset. So a server prefix here matches only names
 actually qualified with that server.
+
+Case-insensitive, because the two sides are written in different conventions. A deny list names
+the CLI's tools the way the CLI does (`Read`, `Bash`) while an ACP agent reports its own in lower
+case, so an exact compare let every entry in `AGENT_NATIVE_FILE_TOOLS` miss and the deny half of
+a preset enforce nothing.
 """
 function _acp_tool_matches(name::AbstractString, entry::AbstractString)
-    n, e = String(name), String(entry)
+    n, e = lowercase(String(name)), lowercase(String(entry))
     n == e && return true
     nserver, nbare = _acp_split_tool(n)
     # A server-prefix entry ("mcp__kaimon", no tool part) covers every tool from
@@ -518,23 +523,80 @@ function _close_open_tools!(h::ACPHandle, why::AbstractString)
 end
 
 """
+The native tools an ACP `kind` stands for, so a deny list written in CLI names can be applied to a
+call that reports only its category.
+
+ACP gives a tool call a `title` and a `kind` and no name. `title` is whatever the agent chose to
+render, so it is checked first and matched loosely; `kind` is a fixed enum and is what remains when
+the title says nothing useful.
+"""
+const ACP_KIND_TOOLS = Dict(
+    "read"    => ["Read"],
+    "edit"    => ["Edit", "Write"],
+    "delete"  => ["Write"],
+    "move"    => ["Write"],
+    "execute" => ["Bash"],
+    "search"  => ["Grep", "Glob"],
+)
+
+"""
+Is this call one the agent's deny list names? Returns the refusal, or `nothing`.
+
+Only the deny half, and only when there is one, so a preset without it costs nothing here. An
+MCP-qualified call is left alone: those are decided at the MCP door where the real name is known,
+and `notebook` allows `mcp__kaimon` outright, so matching one on `kind` here would refuse the tools
+the preset exists to permit.
+"""
+function _denied_tool(b::ACPClientBackend, tc)
+    deny = b.disallowed_tools
+    isempty(deny) && return nothing
+    title = String(get(tc, "title", ""))
+    # The first word of a title like "Read src/foo.jl" is the part that names a tool.
+    head = isempty(title) ? "" : String(first(split(strip(title), r"[\s(]"; limit = 2)))
+    # A qualified name means an MCP tool or an fs callback, both of which are decided where the real
+    # name is known. Neither the name nor the category is judged here: `notebook` allows
+    # `mcp__kaimon` outright, and its calls carry the same categories the native tools do.
+    (occursin("__", head) || occursin("/", head) || occursin(".", head)) && return nothing
+    if !isempty(head)
+        for e in deny
+            _acp_tool_matches(head, e) && return "denied by policy: $head"
+        end
+    end
+    # Nothing usable in the title. Fall back to the category, which every agent reports the same way.
+    kind = lowercase(String(get(tc, "kind", "")))
+    for nm in get(ACP_KIND_TOOLS, kind, String[])
+        for e in deny
+            _acp_tool_matches(nm, e) && return "denied by policy: $kind"
+        end
+    end
+    return nothing
+end
+
+"""
 Why this tool call should be refused, or `nothing` to let it through.
 
 The workspace boundary, applied to every path the call names. This is where it has to happen: both
 agents we ship through do their own file I/O and ask here, so the `fs/*` callbacks that already
 confine are a door neither of them uses.
 
-Deliberately NOT the tool-name allowlist. A preset's allowance names Kaimon's MCP tools and the
+Deliberately NOT the tool-name ALLOWLIST. A preset's allowance names Kaimon's MCP tools and the
 `fs/*` callbacks, not an agent's native `Read` and `Edit`, so checking the name here would refuse
-an ordinary `lab` agent every file operation it has always been allowed. Naming each agent's own
-tools is guesswork; the path is the part that means the same thing for all of them. Keeping tools
-out of a specialist's hands belongs at the MCP boundary, where identity is already established.
+an ordinary `lab` agent every file operation it has always been allowed. The path is the part that
+means the same thing for every agent.
+
+The DENY half is different, and is checked. It exists to say "not this tool, ever", and the presets
+that carry one (`notebook`, `specialist`) mean it about exactly the tools this door sees. Leaving it
+unchecked here is why those two enforced nothing against a non-opencode agent: the opencode plugin
+is the only other place it was consulted, and `plugin_dir` is `nothing` for everyone else. A preset
+with an empty deny list reaches none of this, so `default`, `lab`, `auto` and `bypass` are untouched.
 
 A call that names no path is allowed — refusing what cannot be parsed would break every tool that
 touches no file.
 """
 function _permission_refusal(h::ACPHandle, tc)
     tc isa AbstractDict || return nothing
+    why = _denied_tool(h.backend, tc)
+    why === nothing || return why
     paths = _tool_call_paths(tc)
     if isempty(paths)
         # The asking message carried no path. Fall back to what the call itself announced: the

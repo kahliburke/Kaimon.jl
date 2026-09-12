@@ -214,6 +214,48 @@ end
     @test !isdir(joinpath(dir2, "opencode", "plugin"))
 end
 
+@testset "ACP: a deny list written in CLI names matches what ACP reports" begin
+    # The two sides use different conventions: a deny list names the CLI's tools the way the CLI
+    # does, and an ACP agent reports its own in lower case. An exact compare made every entry in
+    # AGENT_NATIVE_FILE_TOOLS miss, so the deny half of `notebook` and `specialist` enforced nothing.
+    @test all(t -> Kaimon._acp_tool_matches(lowercase(t), t), Kaimon.AGENT_NATIVE_FILE_TOOLS)
+    @test Kaimon._acp_tool_matches("read", "Read")
+    @test Kaimon._acp_tool_matches("BASH", "Bash")
+    # Case folding must not make different tools equal.
+    @test !Kaimon._acp_tool_matches("read", "Write")
+end
+
+@testset "ACP: _denied_tool" begin
+    function b(p)
+        mode, allow, deny, _ = Kaimon._permission_preset(p)
+        Kaimon.ACPClientBackend(; argv = ["true"], permission = p,
+                                disallowed_tools = deny, preset_tools = allow)
+    end
+    tc(; title = "", kind = "") = Dict{String,Any}("title" => title, "kind" => kind)
+
+    # A preset with no deny list reaches none of this, whatever the call looks like.
+    for p in ("default", "lab", "auto", "bypass")
+        @test isempty(Kaimon._permission_preset(p)[3])
+        @test Kaimon._denied_tool(b(p), tc(title = "Read src/x.jl", kind = "read")) === nothing
+    end
+
+    # `notebook` and `specialist` deny the CLI's own file and shell tools. The title names one.
+    for p in ("notebook", "specialist")
+        @test Kaimon._denied_tool(b(p), tc(title = "Read src/x.jl", kind = "read")) !== nothing
+        @test Kaimon._denied_tool(b(p), tc(title = "Bash", kind = "execute")) !== nothing
+        # No usable title: the category is what every agent reports the same way.
+        @test Kaimon._denied_tool(b(p), tc(kind = "execute")) !== nothing
+        @test Kaimon._denied_tool(b(p), tc(kind = "edit")) !== nothing
+        # A kind no denied tool stands for is not refused by accident.
+        @test Kaimon._denied_tool(b(p), tc(kind = "think")) === nothing
+        @test Kaimon._denied_tool(b(p), tc()) === nothing
+        # An MCP call is decided at the MCP door, where the real name is known. Refusing one here on
+        # its category would deny `notebook` the very tools it allows.
+        @test Kaimon._denied_tool(b(p), tc(title = "mcp__kaimon__slate_read", kind = "read")) === nothing
+        @test Kaimon._denied_tool(b(p), tc(title = "slate.read", kind = "read")) === nothing
+    end
+end
+
 @testset "ACP: _acp_tool_matches" begin
     # A server prefix must not swallow the agent's own tools. This is the case
     # `_tool_name_matches` gets wrong for ACP: it would match every bare name.
