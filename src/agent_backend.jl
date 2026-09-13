@@ -44,11 +44,17 @@ chat (M1).
 # The agent-management tools an owned agent must NOT be able to call — otherwise an
 # agent could recursively spawn/kill agents (fork-bomb). Blocked by default via
 # --disallowedTools; a caller can override `disallowed_tools` to allow nested agents.
+#
+# `Agent` and `Task` are the CLI's OWN subagent spawner, under the two names it has gone by. They
+# belong here for the same reason the rest do, and leaving them out left the guard naming only the
+# route through Kaimon: an agent denied every file tool still listed `Agent` among the four it had,
+# and a subagent is a fresh toolset. Measured on a live session, not inferred.
 const AGENT_SELF_TOOLS = ["mcp__kaimon__agent_open", "mcp__kaimon__agent_send",
     "mcp__kaimon__agent_run",
     "mcp__kaimon__agent_interrupt", "mcp__kaimon__agent_close",
     "mcp__kaimon__agent_status", "mcp__kaimon__agent_list",
-    "mcp__kaimon__agent_set_model"]
+    "mcp__kaimon__agent_set_model",
+    "Agent", "Task"]
 
 Base.@kwdef struct ClaudeBackend <: AgentBackend
     claude_path::String = _find_claude()

@@ -1166,7 +1166,8 @@ function backend_start(b::ACPClientBackend; cwd::String, agent_id::String,
             "terminal" => false)); timeout = 60)
     init isa AbstractDict && merge!(h.caps, Dict{String,Any}(String(k) => v for (k, v) in init))
     sess = _rpc_call!(h, "session/new",
-                      Dict("cwd" => abspath(cwd), "mcpServers" => b.mcp_servers); timeout = 120)
+                      merge(Dict{String,Any}("cwd" => abspath(cwd), "mcpServers" => b.mcp_servers),
+                            _acp_session_meta(b)); timeout = 120)
     sess isa AbstractDict && (h.caps["session"] = Dict{String,Any}(String(k) => v for (k, v) in sess))
     h.session_id[] = String(get(sess, "sessionId", ""))
     # An agent that does not read the generated config never saw `model`, so select it over the
@@ -1180,6 +1181,30 @@ function backend_start(b::ACPClientBackend; cwd::String, agent_id::String,
     # bridge, which can only refuse a call after the model has committed to it.
     lowercase(b.permission_mode) == "plan" && acp_set_mode!(h, "plan")
     h
+end
+
+"""
+The `_meta` for `session/new`: the deny list, handed to the agent to enforce on itself.
+
+A deny list at this end only bites where the agent ASKS, and an agent that does its own file I/O
+does not ask about everything. Measured against claude-agent-acp: writes, shell commands and any
+path outside the session cwd come through `session/request_permission` and are refused there, but
+reading a file inside the cwd never arrives at all. There is no door to hold.
+
+So the list is also given to the agent, which applies it before choosing a tool rather than after.
+`_meta.claudeCode.options` is claude-agent-acp's own extension: it spreads those options into the
+SDK query, and `disallowedTools` is one of them. ACP says a receiver ignores `_meta` it does not
+recognise, so an agent without this extension is unaffected and keeps the ask-time check as its
+only enforcement.
+
+Belt and braces on purpose. This half depends on the agent honouring what it was handed, and the
+ask-time half does not.
+"""
+function _acp_session_meta(b::ACPClientBackend)
+    isempty(b.disallowed_tools) && return Dict{String,Any}()
+    return Dict{String,Any}("_meta" => Dict{String,Any}(
+        "claudeCode" => Dict{String,Any}(
+            "options" => Dict{String,Any}("disallowedTools" => collect(b.disallowed_tools)))))
 end
 
 "How long an agent may say nothing during a turn before we say so."

@@ -256,6 +256,28 @@ end
     end
 end
 
+@testset "ACP: session/new hands the agent its own deny list" begin
+    # The ask-time check cannot see a read the agent never asks about, so the list goes to the
+    # agent as well. claude-agent-acp spreads `_meta.claudeCode.options` into its SDK query.
+    for p in ("notebook", "specialist")
+        b = ACPClientBackend(; argv = ["true"], permission = p,
+                             disallowed_tools = Kaimon._permission_preset(p)[3])
+        m = Kaimon._acp_session_meta(b)
+        deny = m["_meta"]["claudeCode"]["options"]["disallowedTools"]
+        @test "Read" in deny && "Bash" in deny
+        @test Set(deny) == Set(Kaimon.AGENT_NATIVE_FILE_TOOLS)
+    end
+    # Nothing to say, nothing sent: a preset with no deny list must not start naming tools.
+    for p in ("lab", "auto", "bypass")
+        b = ACPClientBackend(; argv = ["true"], permission = p,
+                             disallowed_tools = Kaimon._permission_preset(p)[3])
+        @test isempty(Kaimon._acp_session_meta(b))
+    end
+    # The recursion guard is a deny list too, and it travels the same way.
+    b = ACPClientBackend(; argv = ["true"])
+    @test haskey(Kaimon._acp_session_meta(b), "_meta")
+end
+
 @testset "ACP: the tool-path lookaside evicts its oldest, not all of it" begin
     seen, order = Dict{String,Vector{String}}(), String[]
     for i in 1:6
@@ -300,6 +322,14 @@ end
     @test !Kaimon._acp_tool_matches("kaimon_ping", "mcp__kaimon__agent_open")
     @test all(t -> Kaimon._acp_tool_matches(replace(t, "mcp__kaimon__" => "kaimon_"), t),
               Kaimon.AGENT_SELF_TOOLS)
+
+    # The CLI's own subagent spawner is in the guard under both names it has gone by. Without it
+    # the guard covered only the route through Kaimon, and an agent denied every file tool still
+    # had `Agent` to spawn one that was not.
+    @test "Agent" in Kaimon.AGENT_SELF_TOOLS && "Task" in Kaimon.AGENT_SELF_TOOLS
+    @test Kaimon._acp_tool_matches("Agent", "Agent")
+    @test Kaimon._acp_tool_matches("agent", "Agent")     # whatever case the agent reports it in
+    @test !Kaimon._acp_tool_matches("agent_open", "Agent")
 
     # Native names match natively, and near-misses don't.
     @test Kaimon._acp_tool_matches("write", "write")
