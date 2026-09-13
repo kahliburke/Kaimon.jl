@@ -46,10 +46,14 @@ chat (M1).
 # --disallowedTools; a caller can override `disallowed_tools` to allow nested agents.
 #
 # `Agent` and `Task` are the CLI's OWN subagent spawner, under the two names it has gone by, and
-# `Workflow` orchestrates a script of them. They belong here for the same reason the rest do, and
-# leaving them out left the guard naming only the route through Kaimon: an agent denied every file
-# tool still held `Agent` and `Workflow`, and a subagent is a fresh toolset. Measured on a live
-# session, not inferred.
+# `Workflow` orchestrates a script of them. They are here for the reason this list exists at all:
+# spawning. Without them the guard named only the route through Kaimon, so an agent that could not
+# call `agent_open` could still start subagents by the CLI's own route, and `Workflow` starts many.
+#
+# It is NOT an escape from the toolset, which is what this looked like before it was tried. A
+# specialist told to read a file by any means delegated to a subagent, and the subagent reported
+# the same walls: no native file tools, and every Kaimon tool outside the allowlist refused. The
+# restrictions are inherited. What is not inherited is the count, which is the fork bomb.
 #
 # `Skill` is deliberately NOT here. A skill is a set of instructions, and some run in a subagent,
 # so it is a weaker version of the same route — but it is also how a project packages its own

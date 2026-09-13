@@ -66,12 +66,15 @@ channel `agent:<id>`.
 # to disk — so reaching for these is both a worse answer and how an agent asked to debug one cell
 # ends up reading the whole repository.
 #
-# What this can and cannot reach, measured against claude-agent-acp rather than assumed. A deny
-# list is enforced where the agent ASKS, and an agent that does its own file I/O does not ask about
-# everything. Writes, shell commands and any path outside the session cwd are asked about and are
-# refused. Reading a file INSIDE the cwd is not asked about at all, so it cannot be refused: for
-# `notebook` that costs a habit rather than a boundary, since the agent was handed that directory,
-# but a `specialist` narrowed to a few verbs can still read what sits beside the notebook.
+# Enforced twice, because one of the two cannot cover everything. At ask time these are refused
+# when the agent requests permission, which it does for writes, shell commands and any path outside
+# the session cwd, but not for reading a file inside it. So the list also goes to the agent on
+# `session/new` (see `_acp_session_meta`), which removes the tool rather than refusing the call.
+#
+# Measured under `notebook`: the agent reports having no Read tool at all. It then read the file
+# through `grep_code`, which the preset allows on purpose — this redirects an agent onto Kaimon's
+# tools, it does not blindfold it. Under `specialist`, whose allowlist is a few named verbs, that
+# route is refused too, and so was every other read path tried, including via a subagent.
 const AGENT_NATIVE_FILE_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit"]
 
 """
