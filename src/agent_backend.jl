@@ -45,16 +45,22 @@ chat (M1).
 # agent could recursively spawn/kill agents (fork-bomb). Blocked by default via
 # --disallowedTools; a caller can override `disallowed_tools` to allow nested agents.
 #
-# `Agent` and `Task` are the CLI's OWN subagent spawner, under the two names it has gone by. They
-# belong here for the same reason the rest do, and leaving them out left the guard naming only the
-# route through Kaimon: an agent denied every file tool still listed `Agent` among the four it had,
-# and a subagent is a fresh toolset. Measured on a live session, not inferred.
+# `Agent` and `Task` are the CLI's OWN subagent spawner, under the two names it has gone by, and
+# `Workflow` orchestrates a script of them. They belong here for the same reason the rest do, and
+# leaving them out left the guard naming only the route through Kaimon: an agent denied every file
+# tool still held `Agent` and `Workflow`, and a subagent is a fresh toolset. Measured on a live
+# session, not inferred.
+#
+# `Skill` is deliberately NOT here. A skill is a set of instructions, and some run in a subagent,
+# so it is a weaker version of the same route — but it is also how a project packages its own
+# workflows, and denying it takes away something an owned agent is meant to have. A caller who
+# wants it closed adds it to `disallowed_tools`.
 const AGENT_SELF_TOOLS = ["mcp__kaimon__agent_open", "mcp__kaimon__agent_send",
     "mcp__kaimon__agent_run",
     "mcp__kaimon__agent_interrupt", "mcp__kaimon__agent_close",
     "mcp__kaimon__agent_status", "mcp__kaimon__agent_list",
     "mcp__kaimon__agent_set_model",
-    "Agent", "Task"]
+    "Agent", "Task", "Workflow"]
 
 Base.@kwdef struct ClaudeBackend <: AgentBackend
     claude_path::String = _find_claude()

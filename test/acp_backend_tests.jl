@@ -326,10 +326,13 @@ end
     # The CLI's own subagent spawner is in the guard under both names it has gone by. Without it
     # the guard covered only the route through Kaimon, and an agent denied every file tool still
     # had `Agent` to spawn one that was not.
-    @test "Agent" in Kaimon.AGENT_SELF_TOOLS && "Task" in Kaimon.AGENT_SELF_TOOLS
+    @test all(t -> t in Kaimon.AGENT_SELF_TOOLS, ("Agent", "Task", "Workflow"))
     @test Kaimon._acp_tool_matches("Agent", "Agent")
     @test Kaimon._acp_tool_matches("agent", "Agent")     # whatever case the agent reports it in
     @test !Kaimon._acp_tool_matches("agent_open", "Agent")
+    # Skill is left out on purpose: it is how a project packages its own workflows, and a caller
+    # who wants it closed says so. Asserted so removing it from the list is a decision, not a drift.
+    @test !("Skill" in Kaimon.AGENT_SELF_TOOLS)
 
     # Native names match natively, and near-misses don't.
     @test Kaimon._acp_tool_matches("write", "write")
