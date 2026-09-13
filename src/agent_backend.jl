@@ -230,6 +230,10 @@ arrive on `events(h)`.
 function backend_send(h::ClaudeHandle, text::AbstractString)
     Base.process_running(h.proc) || throw(ArgumentError("agent process is not running"))
     turn = (h.turn[] += 1)
+    # The interrupt flag excuses ONE turn, and only the turn it was raised against. Interrupting an
+    # idle agent raises it with no turn in flight, so no `result` arrives to consume it; left set it
+    # would report this turn cancelled and swallow whatever error it really ended with.
+    h.interrupting[] = false
     msg = Dict("type" => "user",
                "message" => Dict("role" => "user",
                                  "content" => [Dict("type" => "text", "text" => String(text))]))
@@ -248,14 +252,19 @@ the control request isn't accepted.)
 """
 function backend_interrupt(h::ClaudeHandle)
     Base.process_running(h.proc) || return false
-    h.interrupting[] = true
     ctrl = Dict("type" => "control_request",
                 "request_id" => "int-$(h.ctrl_seq[] += 1)",   # unique per interrupt (no collisions)
                 "request" => Dict("subtype" => "interrupt"))
+    # Raised before the write, because the reply can arrive the moment it lands and the flag is what
+    # tells a cancelled turn from a failed one. Lowered again if the write never happened: an
+    # interrupt nobody received excuses nothing, and leaving it set makes the next real error read
+    # as a cancellation.
+    h.interrupting[] = true
     try
         write(h.in, JSON.json(ctrl), "\n"); flush(h.in)
         true
     catch
+        h.interrupting[] = false
         false
     end
 end

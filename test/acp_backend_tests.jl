@@ -256,6 +256,25 @@ end
     end
 end
 
+@testset "ACP: the tool-path lookaside evicts its oldest, not all of it" begin
+    seen, order = Dict{String,Vector{String}}(), String[]
+    for i in 1:6
+        Kaimon._remember_path!(seen, order, "t$i", ["/w/$i.jl"]; cap = 4)
+    end
+    # The cap holds and the NEWEST survive. Emptying at the cap took the paths of calls that had
+    # not been asked about yet, and a permission request that finds no path is allowed — so the
+    # workspace boundary lapsed for everything in flight, once per cap.
+    @test length(seen) == 4 && length(order) == 4
+    @test !haskey(seen, "t1") && !haskey(seen, "t2")
+    @test seen["t6"] == ["/w/6.jl"] && seen["t3"] == ["/w/3.jl"]
+
+    # Re-recording an id updates it in place: a tool_call_update follows its tool_call, and
+    # counting the same call twice would evict a live entry early.
+    Kaimon._remember_path!(seen, order, "t6", ["/w/6b.jl"]; cap = 4)
+    @test length(order) == 4 && seen["t6"] == ["/w/6b.jl"]
+    @test count(==("t6"), order) == 1
+end
+
 @testset "ACP: _acp_tool_matches" begin
     # A server prefix must not swallow the agent's own tools. This is the case
     # `_tool_name_matches` gets wrong for ACP: it would match every bare name.

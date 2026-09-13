@@ -123,6 +123,11 @@ mutable struct ACPHandle <: AgentHandle
     # first update arrive BEFORE the permission request that names the same id, and those do carry
     # the path. So the path is on the wire; it is just not on the message that asks.
     tool_paths::Dict{String,Vector{String}}
+    # Ids in the order they were recorded, so the lookaside can evict its oldest entry instead of
+    # emptying itself. Wiping it drops the paths of calls still waiting to be asked about, and a
+    # call whose paths cannot be found is allowed — so the workspace boundary stopped applying at
+    # the point the cap was reached.
+    tool_order::Vector{String}
     # Tool calls seen started and not yet seen finish. Cancelling a turn stops the agent without
     # it retracting them, so they would otherwise stay spinning in the UI forever.
     open_tools::Vector{String}
@@ -337,6 +342,11 @@ comparison.
 
 Only ACP agents are judged. The claude CLI enforces its own allowlist, and an empty `agent_id`
 means a caller that is not a Kaimon-owned agent at all.
+
+`args` is read for the same reason `acp_bridge_decide` reads it: a tool name says what was called
+and not which file it touches. The bridge hook already confines every path an opencode agent
+passes, so confining here is what makes the two doors agree rather than leaving the backstop the
+weaker of the two.
 """
 function agent_tool_refusal(agent_id::AbstractString, tool::AbstractString, args = nothing)
     isempty(agent_id) && return nothing
@@ -346,8 +356,18 @@ function agent_tool_refusal(agent_id::AbstractString, tool::AbstractString, args
     bare = replace(String(tool), '.' => '_')
     qualified = _acp_qualified(bare) ? bare : "mcp__$(ACP_MCP_SERVER)__$bare"
     d = _acp_decide(s.backend, qualified)
-    get(d, "allow", false) === true && return nothing
-    return String(get(d, "why", "refused by policy"))
+    get(d, "allow", false) === true || return String(get(d, "why", "refused by policy"))
+    h = s.handle
+    if h isa ACPHandle && args isa AbstractDict
+        for p in _tool_call_paths(Dict{String,Any}("rawInput" => args))
+            try
+                _acp_confine(h, p)
+            catch e
+                return sprint(showerror, e)
+            end
+        end
+    end
+    return nothing
 end
 
 # ── JSON-RPC plumbing ─────────────────────────────────────────────────────────
@@ -470,17 +490,32 @@ Record the paths a `tool_call` / `tool_call_update` named, against its id.
 
 The permission request for that call arrives afterwards and may name only the id. Bounded, because
 a long turn is thousands of calls and this is a lookaside, not a record.
+
+Oldest out first, one at a time. Emptying it at the cap took the paths of calls that had not been
+asked about yet, and a call whose paths cannot be found is allowed — so the workspace boundary
+lapsed for every call in flight at that moment, silently, once per 512.
 """
+const ACP_TOOL_PATHS_CAP = 512
+
+"The eviction on its own, so the invariant can be tested without a live agent."
+function _remember_path!(seen::Dict{String,Vector{String}}, order::Vector{String},
+                         key::AbstractString, paths::Vector{String}; cap::Int = ACP_TOOL_PATHS_CAP)
+    k = String(key)
+    haskey(seen, k) || push!(order, k)
+    seen[k] = paths
+    while length(order) > cap
+        delete!(seen, popfirst!(order))
+    end
+    return nothing
+end
+
 function _remember_tool_paths!(h::ACPHandle, upd)
     upd isa AbstractDict || return nothing
     id = get(upd, "toolCallId", nothing)
     id isa AbstractString && !isempty(id) || return nothing
     paths = _tool_call_paths(upd)
     isempty(paths) && return nothing
-    lock(h.lk) do
-        length(h.tool_paths) > 512 && empty!(h.tool_paths)
-        h.tool_paths[String(id)] = paths
-    end
+    lock(h.lk) do; _remember_path!(h.tool_paths, h.tool_order, id, paths); end
     return nothing
 end
 
@@ -1108,7 +1143,7 @@ function backend_start(b::ACPClientBackend; cwd::String, agent_id::String,
                   Ref(0), Ref(""), Ref(0), Dict{Int,Channel{Any}}(),
                   String(cwd), config_dir, log_file, agent_id,
                   Ref{Union{Float64,Nothing}}(nothing), String[], String[],
-                  Dict{String,Any}(), Dict{String,Vector{String}}(), String[],
+                  Dict{String,Any}(), Dict{String,Vector{String}}(), String[], String[],
                   Ref(time()), ReentrantLock())
     h.reader = _start_acp_reader!(h, log_io)
 
@@ -1188,6 +1223,11 @@ function backend_send(h::ACPHandle, text::AbstractString)
     acp_queues_prompts(h) || lock(h.lk) do; empty!(h.msg_buf); empty!(h.think_buf); end
     put!(h.events, ACP.TurnStarted())
     done = Ref(false)
+    # The watchdog measures silence since the last thing the agent said, and only the reader writes
+    # that. Between turns an agent says nothing by definition, so an agent that sat idle longer than
+    # ACP_SILENCE_WARN already looks wedged before this turn has asked it for anything. The clock
+    # starts when the turn does.
+    h.last_rx[] = time()
     _watch_silence!(h, done)
     @async try
         res = _rpc_call!(h, "session/prompt", Dict(
@@ -1215,6 +1255,10 @@ end
 # reaping the agent and losing the conversation. ACP exposes both as session
 # methods, so a picker change can land on the next turn instead.
 
+"How long one attempt at setting a session option waits. Setting one is a round trip to a process
+that is already up, so this is a wedge detector rather than a work budget."
+const ACP_SET_OPTION_TIMEOUT = 15
+
 """
 Try a standard ACP method, then the `session/set_config_option` fallback in both its spellings.
 
@@ -1236,10 +1280,16 @@ function _acp_set_option!(h::ACPHandle, method::AbstractString, key::AbstractStr
     for (m, extra) in attempts
         try
             _rpc_call!(h, m, merge(Dict{String,Any}("sessionId" => h.session_id[]), extra);
-                       timeout = 30)
+                       timeout = ACP_SET_OPTION_TIMEOUT)
             return true
         catch e
             err = e
+            # The attempts exist for agents that name this RPC differently, and one that does not
+            # know a method says so at once. A TIMEOUT is the other thing: the agent is not
+            # answering, and the remaining attempts can only wait the same span again. This runs
+            # inside `agent_open`, so three of them put the caller past a client's tool timeout for
+            # an option that is optional anyway.
+            e isa ACPTimeout && break
         end
     end
     put!(h.events, ACP.AgentError("could not set $key=$value: $(sprint(showerror, err))"))
