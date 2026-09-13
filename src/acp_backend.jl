@@ -564,6 +564,10 @@ call that reports only its category.
 ACP gives a tool call a `title` and a `kind` and no name. `title` is whatever the agent chose to
 render, so it is checked first and matched loosely; `kind` is a fixed enum and is what remains when
 the title says nothing useful.
+
+Both halves earn their place. Measured against claude-agent-acp: `Write` titles itself `Write` and
+the title match catches it, while `Bash` titles itself `Terminal` and only `kind == "execute"`
+does. A deny list checked against titles alone would have let every shell command through.
 """
 const ACP_KIND_TOOLS = Dict(
     "read"    => ["Read"],

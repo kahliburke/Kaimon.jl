@@ -65,6 +65,13 @@ channel `agent:<id>`.
 # one of these — `slate.read` sees the live cell and its output, `grep` sees the text last written
 # to disk — so reaching for these is both a worse answer and how an agent asked to debug one cell
 # ends up reading the whole repository.
+#
+# What this can and cannot reach, measured against claude-agent-acp rather than assumed. A deny
+# list is enforced where the agent ASKS, and an agent that does its own file I/O does not ask about
+# everything. Writes, shell commands and any path outside the session cwd are asked about and are
+# refused. Reading a file INSIDE the cwd is not asked about at all, so it cannot be refused: for
+# `notebook` that costs a habit rather than a boundary, since the agent was handed that directory,
+# but a `specialist` narrowed to a few verbs can still read what sits beside the notebook.
 const AGENT_NATIVE_FILE_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit"]
 
 """
