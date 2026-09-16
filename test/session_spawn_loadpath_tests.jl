@@ -95,3 +95,68 @@ const _GATE_ENV = pkgdir(Kaimon.KaimonGate)
         end
     end
 end
+
+@testset "Session-placed extensions" begin
+    mktempdir() do root
+        provider = joinpath(root, "Provider.jl")
+        target = joinpath(root, "Target.jl")
+        mkpath(provider)
+        mkpath(target)
+        write(joinpath(provider, "kaimon.toml"), """
+        [extension]
+        namespace = "provider"
+        module = "Provider"
+        tools_function = "tools"
+        placement = "session"
+        """)
+        write(joinpath(target, "kaimon.toml"), """
+        [session]
+        extensions = ["provider"]
+        """)
+
+        withenv("XDG_CONFIG_HOME" => joinpath(root, "config")) do
+            Kaimon.save_extensions_config([Kaimon.ExtensionEntry(provider, true, false)])
+            configs = Kaimon.load_session_extension_configs(target)
+            @test only(configs).manifest.namespace == "provider"
+
+            script = Kaimon._build_session_script(target; extensions = configs)
+            @test Meta.parseall(script) isa Expr
+            @test occursin("using Provider", script)
+            @test occursin("Provider.tools(KaimonGate.GateTool)", script)
+            @test occursin("tools=_kaimon_session_tools", script)
+            @test !occursin(r"using Kaimon\b", script)
+
+            env = Kaimon._build_session_env(["/managed/provider"])
+            entries = split(env["JULIA_LOAD_PATH"], Sys.iswindows() ? ';' : ':')
+            @test entries[1:2] == ["@", "/managed/provider"]
+
+            write(joinpath(target, "kaimon.toml"), """
+            [session]
+            extensions = ["missing"]
+            """)
+            @test_throws ErrorException Kaimon.load_session_extension_configs(target)
+
+            write(joinpath(target, "kaimon.toml"), """
+            [session]
+            extensions = ["provider", "provider"]
+            """)
+            @test_throws ErrorException Kaimon.load_session_extension_configs(target)
+
+            write(joinpath(target, "kaimon.toml"), """
+            [session]
+            extensions = ["provider"]
+            """)
+            Kaimon.save_extensions_config([Kaimon.ExtensionEntry(provider, false, false)])
+            @test_throws ErrorException Kaimon.load_session_extension_configs(target)
+
+            write(joinpath(provider, "kaimon.toml"), """
+            [extension]
+            namespace = "provider"
+            module = "Provider"
+            tools_function = "tools"
+            """)
+            Kaimon.save_extensions_config([Kaimon.ExtensionEntry(provider, true, false)])
+            @test_throws ErrorException Kaimon.load_session_extension_configs(target)
+        end
+    end
+end

@@ -197,3 +197,26 @@ function load_extension_configs()
     end
     return configs
 end
+
+"""Return enabled session extensions selected by the target's `kaimon.toml`."""
+function load_session_extension_configs(project_path::AbstractString)
+    path = joinpath(project_path, "kaimon.toml")
+    isfile(path) || return ExtensionConfig[]
+    data = TOML.parsefile(path)
+    names = String[String(x) for x in get(get(data, "session", Dict()), "extensions", String[])]
+    isempty(names) && return ExtensionConfig[]
+    length(unique(names)) == length(names) || error("[session].extensions contains duplicates")
+
+    available = Dict{String,ExtensionConfig}()
+    for config in load_extension_configs()
+        get!(available, config.manifest.namespace, config)
+    end
+    return map(names) do name
+        config = get(available, name, nothing)
+        config === nothing && error("Session extension '$name' is not registered")
+        config.entry.enabled || error("Session extension '$name' is disabled")
+        config.manifest.placement === :session ||
+            error("Extension '$name' uses isolated placement")
+        config
+    end
+end
