@@ -17,6 +17,7 @@ struct ExtensionManifest
     event_topics::Vector{String}  # stream channels to forward (e.g. ["breakpoint_hit"])
     tui_file::String            # optional path to TUI panel file (relative to project root)
     julia_flags::Vector{String} # optional Julia startup flags (e.g. ["-t4,1", "--heap-size-hint=1G"])
+    placement::Symbol           # :isolated process or :session target-process provider
     # Environment defaults for the extension process, applied only where the parent has not already
     # set the variable — so a value exported by the user always wins. For the settings a runtime reads
     # ONCE at startup and that no flag exposes: `JULIA_THREAD_SLEEP_THRESHOLD` is the motivating case,
@@ -31,7 +32,15 @@ ExtensionManifest(
     shutdown_function, event_topics, tui_file, julia_flags,
 ) = ExtensionManifest(
     namespace, module_name, tools_function, description,
-    shutdown_function, event_topics, tui_file, julia_flags, Dict{String,String}(),
+    shutdown_function, event_topics, tui_file, julia_flags, :isolated, Dict{String,String}(),
+)
+
+ExtensionManifest(
+    namespace, module_name, tools_function, description,
+    shutdown_function, event_topics, tui_file, julia_flags, env::Dict{String,String},
+) = ExtensionManifest(
+    namespace, module_name, tools_function, description,
+    shutdown_function, event_topics, tui_file, julia_flags, :isolated, env,
 )
 
 """
@@ -99,6 +108,10 @@ function parse_extension_manifest(project_path::AbstractString)
         String[String(f) for f in raw_flags]
     end
 
+    placement = Symbol(get(ext, "placement", "isolated"))
+    placement in (:isolated, :session) ||
+        error("extension.placement must be \"isolated\" or \"session\" at $toml_path")
+
     raw_env = get(ext, "env", Dict{String,Any}())
     env = Dict{String,String}(String(k) => string(v) for (k, v) in raw_env)
 
@@ -111,6 +124,7 @@ function parse_extension_manifest(project_path::AbstractString)
         event_topics,
         tui_file,
         julia_flags,
+        placement,
         env,
     )
 end

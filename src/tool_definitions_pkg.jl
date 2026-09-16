@@ -434,6 +434,8 @@ With name: detailed view of one extension including per-tool documentation and p
                 end
 
                 line = "$status_icon $ns ($(ext.status))"
+                ext.config.manifest.placement === :session &&
+                    (line *= " — loads in selected sessions")
                 !isempty(desc) && (line *= " — $desc")
                 push!(lines, line)
                 if !isempty(tool_names)
@@ -466,6 +468,7 @@ With name: detailed view of one extension including per-tool documentation and p
 
             lines = String[]
             push!(lines, "$(manifest.namespace) — $(manifest.module_name)")
+            push!(lines, "Placement: $(manifest.placement)")
             push!(lines, "Status: $status_icon $(ext.status) (PID $pid_str, uptime $uptime_str)")
             !isempty(manifest.description) && push!(lines, "Description: $(manifest.description)")
             push!(lines, "Project: $(entry.project_path)")
@@ -570,6 +573,11 @@ Returns the extension's resulting {status, enabled, auto_start}.""",
                 return "Error: No extension '$name' found. Available: $available"
             end
             ext = exts[idx]
+            if ext.config.manifest.placement === :session &&
+               action in ("start", "stop", "restart", "enable_auto_start", "disable_auto_start")
+                return "Extension '$name' follows each target session; " *
+                       "select it in that project's kaimon.toml and restart that session."
+            end
             if action == "start"
                 ext.status == :stopped ||
                     return "Extension '$name' is already $(ext.status) (start only applies when stopped)."
@@ -801,4 +809,3 @@ and `tool_args` directly for a custom gate tool call.
         )
     end
 )
-

@@ -490,7 +490,7 @@ function execute_ext_add!(m::KaimonModel)
         end
 
         # Add to extensions.json
-        new_entry = ExtensionEntry(path, true, true)
+        new_entry = ExtensionEntry(path, true, manifest.placement === :isolated)
         push!(existing, new_entry)
         save_extensions_config(existing)
 
@@ -500,9 +500,11 @@ function execute_ext_add!(m::KaimonModel)
         lock(MANAGED_EXTENSIONS_LOCK) do
             push!(MANAGED_EXTENSIONS, ext)
         end
-        spawn_extension!(ext)
+        manifest.placement === :isolated && spawn_extension!(ext)
 
-        m.ext_flow_message = "Registered '$(manifest.namespace)'\nfrom $(_short_path(path))\n\nExtension is starting..."
+        state = manifest.placement === :isolated ? "Extension is starting..." :
+            "Extension is available to selected target sessions."
+        m.ext_flow_message = "Registered '$(manifest.namespace)'\nfrom $(_short_path(path))\n\n$state"
         m.ext_flow_success = true
         _push_log!(:info, "Extension '$(manifest.namespace)' registered from $path")
     catch e
@@ -697,7 +699,11 @@ function _handle_extensions_key!(m::KaimonModel, evt::KeyEvent)
         'a' => begin_ext_add!(m)
         'd' => begin_ext_remove!(m)
         'e' => _toggle_ext_field!(m, :enabled)
-        't' => _toggle_ext_field!(m, :auto_start)
+        't' => begin
+            ext = _get_selected_ext(m)
+            ext !== nothing && ext.config.manifest.placement === :isolated &&
+                _toggle_ext_field!(m, :auto_start)
+        end
         's' => begin
             ext = _get_selected_ext(m)
             ext !== nothing && ext.status == :stopped && spawn_extension!(ext)
@@ -709,7 +715,7 @@ function _handle_extensions_key!(m::KaimonModel, evt::KeyEvent)
         end
         'r' => begin
             ext = _get_selected_ext(m)
-            ext !== nothing && restart_extension!(ext)
+            ext !== nothing && ext.config.manifest.placement === :isolated && restart_extension!(ext)
         end
         'u' => begin
             ext = _get_selected_ext(m)
