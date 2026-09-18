@@ -278,6 +278,28 @@ end
     @test haskey(Kaimon._acp_session_meta(b), "_meta")
 end
 
+@testset "ACP: the bounded presets load no settings of their own" begin
+    opts(p; deny = Kaimon._permission_preset(p)[3]) =
+        get(get(get(Kaimon._acp_session_meta(
+            ACPClientBackend(; argv = ["true"], permission = p, disallowed_tools = deny)),
+            "_meta", Dict()), "claudeCode", Dict()), "options", Dict())
+
+    # A deny list names tools. The MCP servers the machine's settings declare are not tools we can
+    # name, and calls to them never reach Kaimon — so the two presets that claim to bound the
+    # toolset load no settings at all.
+    for p in ("notebook", "specialist")
+        @test opts(p)["settingSources"] == String[]
+        @test opts(p)["strictMcpConfig"] === true
+    end
+    # Every other preset keeps the agent's own settings, CLAUDE.md included.
+    for p in ("lab", "auto", "bypass", "default")
+        @test !haskey(opts(p; deny = ["mcp__kaimon__agent_open"]), "settingSources")
+        @test !haskey(opts(p; deny = ["mcp__kaimon__agent_open"]), "strictMcpConfig")
+    end
+    # The recursion guard still travels for all of them.
+    @test opts("lab"; deny = ["mcp__kaimon__agent_open"])["disallowedTools"] == ["mcp__kaimon__agent_open"]
+end
+
 @testset "ACP: the tool-path lookaside evicts its oldest, not all of it" begin
     seen, order = Dict{String,Vector{String}}(), String[]
     for i in 1:6

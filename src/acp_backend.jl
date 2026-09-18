@@ -1199,12 +1199,30 @@ only enforcement.
 
 Belt and braces on purpose. This half depends on the agent honouring what it was handed, and the
 ask-time half does not.
+
+`settingSources` goes with it for the two presets that claim to bound the toolset. A deny list can
+only name tools, and the agent also loads whatever MCP servers the machine's own settings declare:
+a notebook agent came up holding a documents server, with mail and file-storage servers a step
+behind it, and neither preset governs any of them — those calls go to another server and Kaimon
+never sees them. Loading no settings at all removes the whole class instead of naming members of
+it. Kaimon's own servers are unaffected: they ride `session/new` and are merged after this.
+
+The cost is that those two presets also lose CLAUDE.md and every other filesystem setting. For a
+specialist that is nothing, since its brief comes from here. For `notebook` it is the project's
+conventions, traded for a toolset that is what it says it is.
 """
 function _acp_session_meta(b::ACPClientBackend)
-    isempty(b.disallowed_tools) && return Dict{String,Any}()
-    return Dict{String,Any}("_meta" => Dict{String,Any}(
-        "claudeCode" => Dict{String,Any}(
-            "options" => Dict{String,Any}("disallowedTools" => collect(b.disallowed_tools)))))
+    opts = Dict{String,Any}()
+    isempty(b.disallowed_tools) || (opts["disallowedTools"] = collect(b.disallowed_tools))
+    if lowercase(b.permission) in ("notebook", "specialist")
+        opts["settingSources"] = String[]
+        # Settings are one source of MCP servers and not the only one: dropping them left an agent
+        # holding servers that come with the account rather than the filesystem. This restricts the
+        # session to the servers passed on the command line, which are the ones sent here.
+        opts["strictMcpConfig"] = true
+    end
+    isempty(opts) && return Dict{String,Any}()
+    return Dict{String,Any}("_meta" => Dict{String,Any}("claudeCode" => Dict{String,Any}("options" => opts)))
 end
 
 "How long an agent may say nothing during a turn before we say so."
