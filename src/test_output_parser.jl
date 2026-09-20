@@ -59,6 +59,11 @@ mutable struct TestRun
     process::Union{Base.Process,Nothing}
     coverage::Bool                # recorded because it dominates runtime, so duration
                                   # estimates must key on it alongside the pattern
+    julia_version::String         # Julia the suite actually ran on — reported, because a run
+                                  # on a different Julia than the developer uses resolves the
+                                  # test environment differently and must never be invisible
+    manifest_name::String         # manifest Julia read (`Manifest-v1.12.toml`, or `temp`)
+    env_error::String             # test environment could not be resolved; the suite never ran
 end
 
 function TestRun(;
@@ -85,6 +90,9 @@ function TestRun(;
         0,
         nothing,
         coverage,
+        "",
+        "",
+        "",
     )
 end
 
@@ -330,6 +338,17 @@ function _parse_runner_line!(run::TestRun, state::_ParserState, line::String)::B
 
     if startswith(payload, "START")
         run.status = RUN_RUNNING
+        return true
+    elseif startswith(payload, "ENV_ERROR")
+        # One marker per line of the resolver's explanation — reassembled whole, since the
+        # constraint that actually failed is on the last line.
+        msg = strip(payload[length("ENV_ERROR")+1:end])
+        run.env_error = isempty(run.env_error) ? String(msg) : run.env_error * "\n" * msg
+        return true
+    elseif startswith(payload, "ENV ")
+        kv = _parse_kv(payload)
+        run.julia_version = get(kv, "julia", "")
+        run.manifest_name = get(kv, "manifest", "")
         return true
     elseif startswith(payload, "TESTSET_START")
         name_idx = findfirst("name=", payload)
@@ -628,6 +647,21 @@ function format_test_summary(run::TestRun)::String
         buf,
         "Pass: $(run.total_pass) | Fail: $(run.total_fail) | Error: $(run.total_error) | Total: $(run.total_tests) | Duration: $duration",
     )
+
+    if !isempty(run.julia_version)
+        line = "Julia: $(run.julia_version)"
+        isempty(run.manifest_name) || (line *= " | Manifest: $(run.manifest_name)")
+        println(buf, line)
+    end
+
+    # Lead with this: the suite never ran, so every count above is zero for a reason that has
+    # nothing to do with the tests.
+    if !isempty(run.env_error)
+        println(buf)
+        println(buf, "Test environment could not be resolved — the suite did not run:")
+        println(buf, "-"^60)
+        println(buf, run.env_error)
+    end
 
     # Testset breakdown — show all failing testsets, summarise passing ones.
     # Never dump every passing testset in a large suite.

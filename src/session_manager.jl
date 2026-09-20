@@ -160,15 +160,28 @@ function _resolve_sysimage(lc::LaunchConfig, project::String)
 end
 
 """
+    _launch_julia_exe(lc::LaunchConfig) -> String
+
+The Julia binary a project should be launched with: its configured `julia_bin`, else the Julia
+running Kaimon. A configured value may also be a wrapper script, so long as it forwards its
+arguments to julia.
+
+Every spawn for a project — a session and a test run alike — resolves the binary here, so they
+cannot disagree about which Julia. That matters beyond tidiness: a project's environment records
+the Julia version it was resolved for, and a dependency whose `[compat]` admits a different
+version per Julia resolves differently under each. Two spawns on two Julias therefore fight over
+one manifest, and the loser is left with a dependency version its Julia cannot precompile.
+"""
+_launch_julia_exe(lc::LaunchConfig) =
+    isempty(lc.julia_bin) ? joinpath(Sys.BINDIR, "julia") : expanduser(lc.julia_bin)
+
+"""
     _build_julia_cmd(lc::LaunchConfig, script::String; project::String="") -> Vector{String}
 
 Build the Julia command array from a LaunchConfig and boot script.
 """
 function _build_julia_cmd(lc::LaunchConfig, script::String; project::String = "")
-    # Default to the Julia running Kaimon; a configured binary may also be a wrapper
-    # script, so long as it forwards its arguments to julia.
-    julia_bin = isempty(lc.julia_bin) ? joinpath(Sys.BINDIR, "julia") : expanduser(lc.julia_bin)
-    cmd = [julia_bin, "-i"]
+    cmd = [_launch_julia_exe(lc), "-i"]
 
     # Custom system image (before the boot script, so `using` in it hits the baked code)
     sysimage = _resolve_sysimage(lc, project)

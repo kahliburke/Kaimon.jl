@@ -19,31 +19,98 @@ const _RUNNER_OUT = stdout
 println(_RUNNER_OUT, "TEST_RUNNER: START project=$(basename(project_path))")
 flush(_RUNNER_OUT)
 
+# Give each Julia version its own manifest in `env_dir`, and return the name Julia will
+# read. One shared `Manifest.toml` cannot serve two Julia versions: a dependency whose
+# `[compat]` admits a different version per Julia resolves differently under each, so
+# alternating Julias fight over the file and the loser is left with a version its Julia
+# cannot precompile. Julia already prefers `Manifest-v<major>.<minor>.toml` over
+# `Manifest.toml`, so the fix is to create that file — seeded from the shared manifest when
+# that was resolved by this same Julia, otherwise empty, which forces one fresh resolve.
+function ensure_versioned_manifest(env_dir)
+    name = "Manifest-v$(VERSION.major).$(VERSION.minor).toml"
+    path = joinpath(env_dir, name)
+    isfile(path) && return name
+    shared = joinpath(env_dir, "Manifest.toml")
+    seeded = false
+    if isfile(shared)
+        resolved_by = try
+            string(get(TOML.parsefile(shared), "julia_version", ""))
+        catch
+            ""
+        end
+        if startswith(resolved_by, "$(VERSION.major).$(VERSION.minor).")
+            cp(shared, path)
+            seeded = true
+        end
+    end
+    seeded || write(path, "")
+    return name
+end
+
 # ── Activate the test environment ─────────────────────────────────────────
 # Prefer the project's OWN test/ env (modern layout). Activating it directly IS
 # `julia --project=test`: [sources]/[compat]/deps are honored, and the resolved
-# test/Manifest + precompiled deps are reused across runs (fast). Fall back to a built temp
+# test manifest + precompiled deps are reused across runs (fast). Fall back to a built temp
 # env (develop + add test-target deps) for legacy [extras]/[targets] suites with no
 # test/Project.toml.
-test_env = joinpath(project_path, "test")
-if isfile(joinpath(test_env, "Project.toml"))
-    Pkg.activate(test_env; io = devnull)
-    try
-        # Resolve first so a stale test/Manifest picks up changes in PATH deps — when the
-        # package-under-test (a `{path=".."}` source) gains a new dependency, a bare
-        # instantiate won't notice and precompile fails ("X does not have Y in its deps").
-        # Cheap when the manifest is already consistent; this is what keeps repeat runs fast
-        # without going stale.
-        Pkg.resolve(; io = devnull)
-        Pkg.instantiate(; io = devnull)
-    catch e
-        println(_RUNNER_OUT, "TEST_RUNNER: WARN resolve/instantiate failed: $(first(sprint(showerror, e), 200))")
+#
+# Returns the reason the environment is unusable, or "" when it is ready. Written as a
+# function that RETURNS the reason rather than assigning a global: `try`/`catch` bodies are
+# their own scope, so a bare `env_error = ...` inside one would create a local and silently
+# discard the failure.
+function setup_test_env(project_path)
+    test_env = joinpath(project_path, "test")
+
+    if isfile(joinpath(test_env, "Project.toml"))
+        manifest_name = ensure_versioned_manifest(test_env)
+        Pkg.activate(test_env; io = devnull)
+        # Which Julia and which manifest, always — a run that silently used a different
+        # Julia than the developer does is the whole reason this line exists.
+        println(_RUNNER_OUT, "TEST_RUNNER: ENV julia=$(VERSION) manifest=$(manifest_name)")
+        flush(_RUNNER_OUT)
+        try
+            # Resolve first so a stale manifest picks up changes in PATH deps — when the
+            # package-under-test (a `{path=".."}` source) gains a new dependency, a bare
+            # instantiate won't notice and precompile fails ("X does not have Y in its deps").
+            # Cheap when the manifest is already consistent; this is what keeps repeat runs
+            # fast without going stale.
+            Pkg.resolve(; io = devnull)
+            Pkg.instantiate(; io = devnull)
+        catch e
+            # `Pkg.resolve` holds every manifest entry at the version already recorded there,
+            # treating it as an explicit requirement. So it cannot repair a manifest the
+            # project has moved past — a raised `[compat]` bound in a path dependency reports
+            # as "unsatisfiable" rather than resolving to the version that now satisfies it.
+            # `Pkg.update` re-resolves with room to move, which is the only way out.
+            println(_RUNNER_OUT, "TEST_RUNNER: WARN resolve failed — re-resolving with Pkg.update")
+            flush(_RUNNER_OUT)
+            try
+                # Re-resolve against the registries as they already are: the usual cause is a
+                # bound that moved onto a version the local registry knows about, and a test
+                # run shouldn't reach the network by surprise. A registry refresh is only
+                # worth its latency if that genuinely can't be satisfied.
+                try
+                    Pkg.update(; io = devnull, update_registry = false)
+                catch
+                    Pkg.update(; io = devnull)
+                end
+                Pkg.instantiate(; io = devnull)
+            catch e2
+                return string(
+                    "resolve failed:\n", sprint(showerror, e),
+                    "\n\nre-resolving with Pkg.update also failed:\n", sprint(showerror, e2),
+                )
+            end
+        end
+        return ""
     end
-else
+
     # Legacy: no test/Project.toml. Build a temp env from [extras]/[targets] (no [sources]
     # to honor there anyway, since sources need a Project.toml).
     main_toml = TOML.parsefile(joinpath(project_path, "Project.toml"))
     Pkg.activate(mktempdir())
+    println(_RUNNER_OUT, "TEST_RUNNER: ENV julia=$(VERSION) manifest=temp")
+    flush(_RUNNER_OUT)
     try
         Pkg.develop(Pkg.PackageSpec(path = project_path); io = devnull)
     catch e
@@ -69,8 +136,25 @@ else
     try
         Pkg.instantiate(; io = devnull)
     catch e
-        println(_RUNNER_OUT, "TEST_RUNNER: WARN instantiate failed: $(first(sprint(showerror, e), 120))")
+        return string("instantiate failed:\n", sprint(showerror, e))
     end
+    return ""
+end
+
+env_error = setup_test_env(project_path)
+
+# An unusable test environment is the result, not a footnote. Reporting it as the run's own
+# error beats continuing into an `include` that can only fail, where the real cause surfaces
+# as a downstream precompile error and reads like a test failure. Every line goes out
+# untruncated: the resolver explains itself as a tree and names the constraint that actually
+# failed on the LAST line, which is exactly what a length cap removes.
+if !isempty(env_error)
+    for line in split(rstrip(env_error), '\n')
+        println(_RUNNER_OUT, "TEST_RUNNER: ENV_ERROR $line")
+    end
+    println(_RUNNER_OUT, "TEST_RUNNER: DONE status=error")
+    flush(_RUNNER_OUT)
+    exit(1)
 end
 
 # Make the package-under-test and its OWN direct deps loadable from runtests.jl even when
