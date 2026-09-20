@@ -379,4 +379,51 @@ using Kaimon:
 
         delete!(_PARSER_STATES, 110)
     end
+
+    @testset "ENV marker records the Julia and manifest the suite ran on" begin
+        run = TestRun(; id = 120, project_path = "/tmp/p")
+
+        @test parse_test_line!(run, "TEST_RUNNER: ENV julia=1.12.7 manifest=Manifest-v1.12.toml")
+        @test run.julia_version == "1.12.7"
+        @test run.manifest_name == "Manifest-v1.12.toml"
+
+        # A run on a Julia other than the developer's resolves the test environment
+        # differently, so the summary always says which one it was.
+        summary = format_test_summary(run)
+        @test occursin("Julia: 1.12.7", summary)
+        @test occursin("Manifest: Manifest-v1.12.toml", summary)
+
+        # The legacy [extras]/[targets] path builds a throwaway env and says so.
+        run2 = TestRun(; id = 121, project_path = "/tmp/p")
+        parse_test_line!(run2, "TEST_RUNNER: ENV julia=1.13.0 manifest=temp")
+        @test run2.manifest_name == "temp"
+
+        delete!(_PARSER_STATES, 120)
+        delete!(_PARSER_STATES, 121)
+    end
+
+    @testset "ENV_ERROR reassembles the resolver's explanation and leads the summary" begin
+        run = TestRun(; id = 122, project_path = "/tmp/p")
+        parse_test_line!(run, "TEST_RUNNER: ENV julia=1.12.7 manifest=Manifest-v1.12.toml")
+
+        # One marker per line, because the resolver explains itself as a tree — and names the
+        # constraint that actually failed on the LAST line, which truncation would remove.
+        parse_test_line!(run, "TEST_RUNNER: ENV_ERROR resolve failed:")
+        parse_test_line!(run, "TEST_RUNNER: ENV_ERROR Unsatisfiable requirements detected for package Tachikoma [468859d6]:")
+        parse_test_line!(run, "TEST_RUNNER: ENV_ERROR  ├─possible versions are: 1.0.0 - 2.7.0 or uninstalled")
+        parse_test_line!(run, "TEST_RUNNER: ENV_ERROR  └─restricted to versions 2.6.1 by an explicit requirement — no versions left")
+        parse_test_line!(run, "TEST_RUNNER: DONE status=error")
+
+        @test run.status == RUN_ERROR
+        @test occursin("Unsatisfiable requirements", run.env_error)
+        @test occursin("2.6.1 by an explicit requirement", run.env_error)
+        @test count(==('\n'), run.env_error) == 3   # four lines, joined
+
+        # Zero tests here means the suite never ran, not that it passed with nothing to do.
+        summary = format_test_summary(run)
+        @test occursin("could not be resolved", summary)
+        @test occursin("2.6.1 by an explicit requirement", summary)
+
+        delete!(_PARSER_STATES, 122)
+    end
 end

@@ -216,11 +216,19 @@ function spawn_test_run(
 
     script_path = _write_test_runner_script()
 
+    # Run the suite under the project's OWN launch recipe, not whichever Julia happens to be
+    # running Kaimon — a project that pins a Julia (or ships a sysimage built against its deps)
+    # means it for its tests too, and testing on a different Julia than the project's sessions
+    # use leaves the two resolving one test environment incompatibly.
+    lc = _resolve_launch_config(project_path)
+    julia_exe = _launch_julia_exe(lc)
+    sysimage = _resolve_sysimage(lc, project_path)
+    sysimage_flag = isempty(sysimage) ? `` : `--sysimage=$sysimage`
+
     # Clean subprocess: no --project (script manages its own env via Pkg.activate),
     # and clear JULIA_LOAD_PATH so the subprocess gets default LOAD_PATH
     # (the Kaimon process sets JULIA_LOAD_PATH which would override everything).
     # setenv replaces the full environment (addenv only merges, so inherited vars leak).
-    julia_exe = joinpath(Sys.BINDIR, "julia")
     env = Dict(k => v for (k, v) in ENV)
     delete!(env, "JULIA_LOAD_PATH")
     delete!(env, "JULIA_PROJECT")
@@ -229,7 +237,10 @@ function spawn_test_run(
     # removes them afterward.
     cov_flag = coverage ? `--code-coverage=user` : ``
     cmd = pipeline(
-        setenv(`$julia_exe --startup-file=no $cov_flag $script_path $project_path $pattern $verbose`, env);
+        setenv(
+            `$julia_exe --startup-file=no $sysimage_flag $cov_flag $script_path $project_path $pattern $verbose`,
+            env,
+        );
         stderr = stdout,
     )
 

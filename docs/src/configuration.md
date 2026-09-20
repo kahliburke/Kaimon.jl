@@ -124,6 +124,8 @@ Manage the projects list through the TUI Config tab or by editing the file direc
 
 How Kaimon starts a managed session for a project — most importantly, which **system image** it boots. A project with a custom sysimage should declare it here, or a spawned session will pay full compilation cost (and diverge from how you start the project by hand).
 
+`sysimage` and `julia_bin` also apply to `run_tests`, so a project that pins a Julia is tested on that Julia. This matters when Kaimon itself runs on a different Julia than you do: an environment records the Julia version it was resolved for, and a dependency whose `[compat]` admits a different version per Julia resolves differently under each — so testing on the wrong Julia can leave the test environment pinned to a version that Julia cannot precompile. `run_tests` reports the Julia and manifest it used in its summary, and keeps one manifest per Julia version (`Manifest-v1.12.toml`) so two Julias never overwrite each other's resolution.
+
 | Field | Description |
 |-------|-------------|
 | `sysimage` | `-J` system image. A relative path resolves against the project root |
