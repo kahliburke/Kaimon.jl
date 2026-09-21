@@ -582,8 +582,13 @@ end
 
 """Issue a JSON-RPC *request* to one agent over its GET SSE receive stream and
 block until the correlated response POSTs back (routed via
-`_route_server_response!`). Returns the parsed `result`, or `nothing` on timeout
-/ no open receive stream. Shared by `request_roots` / `request_elicitation`."""
+`_route_server_response!`). Returns the parsed `result`, `nothing` when the user did not
+answer in time, or `:undeliverable` when there was no channel to ask on at all.
+
+Those last two are deliberately different values. They look identical from here but mean
+opposite things to a user: one is "you did not answer", the other is "you were never asked".
+Collapsing them produces advice nobody can follow, telling someone to approve a prompt that
+was never displayed. Shared by `request_roots` / `request_elicitation`."""
 function _request_from_client(session_id::AbstractString, method::AbstractString,
                               params; timeout::Float64)
     rid = "srv-" * string(UUIDs.uuid4())
@@ -598,7 +603,9 @@ function _request_from_client(session_id::AbstractString, method::AbstractString
         # any open receive stream (clients like Claude Code can split their POST vs
         # GET session ids), else the in-flight tool-call SSE stream as a last resort.
         writer = get(task_local_storage(), :mcp_sse_request, nothing)
-        _deliver_to_client!(session_id, msg, writer) || return nothing
+        # No writer and no open receive stream: the prompt cannot be shown, so report that
+        # rather than waiting out a timeout for an answer nobody was asked for.
+        _deliver_to_client!(session_id, msg, writer) || return :undeliverable
         if Base.timedwait(() -> isready(sink), timeout) !== :ok
             # Timed out waiting for the user. Cancel the request client-side so a
             # lingering prompt (e.g. an elicitation dialog) is dismissed instead of
@@ -1234,23 +1241,40 @@ function start_mcp_server(
                 return nothing
             end
 
-            # ── SSE Progress for gate-mode tool calls ───────────────────
-            # When running in gate mode (TUI server), long-running tool calls
-            # that execute code via the gate can stream progress notifications
-            # back to the MCP client as SSE events, preventing HTTP timeouts.
+            # ── SSE for gate-mode tool calls ────────────────────────────
+            # Two independent reasons a tool call needs an event stream instead of a
+            # single JSON response:
+            #
+            #  1. It may run long. Streaming progress notifications keeps the client's
+            #     HTTP request from timing out.
+            #  2. It may need to ASK the user something mid-call. A server→client request
+            #     (`elicitation/create`) can only be delivered on a stream that is open
+            #     and bound to this caller, and the in-flight tool-call stream always is.
+            #     The client's standalone GET receive stream may not be open yet, or may
+            #     be keyed under a different session id, and then the prompt is never
+            #     shown at all.
+            #
+            # Membership originally covered only (1), so the tools that actually prompt
+            # were the ones left without a dependable way to prompt. Whether the prompt
+            # arrives must not depend on how long the tool happens to take.
             if GATE_MODE[] &&
                parsed_request !== nothing &&
                get(parsed_request, "method", "") == "tools/call"
 
                 tool_name_str = get(get(parsed_request, "params", Dict()), "name", "")
-                # Tools that execute via gate and may run long
+                # (1) Execute via the gate and may run long.
                 gate_exec_tools =
                     Set(["ex", "run_tests", "profile_code", "lint_package", "stress_test"])
+                # (2) May need the user's consent mid-call. Keep in step with every
+                #     `request_elicitation` caller.
+                eliciting_tools = Set(["start_session", "grep_code"])
 
                 # Session tools (namespaced: "prefix.toolname") also use SSE streaming
                 is_session_tool = occursin('.', tool_name_str)
 
-                if tool_name_str in gate_exec_tools || is_session_tool
+                if tool_name_str in gate_exec_tools ||
+                   tool_name_str in eliciting_tools ||
+                   is_session_tool
                     return _handle_gate_tool_sse(
                         http,
                         parsed_request,

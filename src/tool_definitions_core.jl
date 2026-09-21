@@ -757,6 +757,7 @@ function _elicit_session_consent(path::AbstractString)
     # return :timeout (distinct from :unsupported) so the caller tells the agent to
     # retry instead of falling back to the can't-elicit guidance.
     res = request_elicitation(caller, msg, schema; timeout = elicitation_timeout())
+    res === :undeliverable && return :undeliverable
     res isa AbstractDict || return :timeout
     get(res, "action", "") == "accept" || return :denied
     content = get(res, "content", nothing)
@@ -804,6 +805,7 @@ function _elicit_julia_install(version::AbstractString, project_path::AbstractSt
           "contributors, suspect this version mismatch first. You can install it yourself at " *
           "any time with `juliaup add $version`."
     res = request_elicitation(caller, msg, schema; timeout = elicitation_timeout())
+    res === :undeliverable && return :undeliverable
     res isa AbstractDict || return :timeout
     return get(res, "action", "") == "accept" ? :accepted : :declined
 end
@@ -975,9 +977,11 @@ Call with no `project_path` to list allowed projects and their status.""",
             elseif decision == :denied
                 return "Session not started — you declined to allow a Julia session for $path."
             elseif decision == :timeout
-                return "No response to the approval prompt within $(round(Int, elicitation_timeout()))s, so no session was started. Call start_session again when you're ready, and approve the prompt in your client."
+                return "No response to the approval prompt within $(round(Int, elicitation_timeout()))s, so no session was started. Ask the user to approve the prompt in their client, then call start_session again."
+            elseif decision == :undeliverable
+                return "Session not started — $path isn't in the allowed list, and no approval prompt could be delivered to your client, so the user was never asked. This is not a timeout and not a refusal: nothing was displayed to them. Ask the user to allow this project in Kaimon (Config tab [p], or the \"projects\" list in ~/.config/kaimon/projects.json), then call start_session again. Or the user can start a Julia REPL for the project themselves and run KaimonGate.serve(): the allow-list only governs sessions an agent spawns, so that session needs no approval — find it with `ping` and use it directly rather than calling start_session."
             else  # :unsupported
-                return "Error: this project isn't in the allowed list, and your client couldn't show an approval prompt. Ask the user to allow it from the Kaimon TUI Config tab [p] (or to reconnect with a client that can show approval prompts)."
+                return "Error: this project isn't in the allowed list, and your client declared no support for approval prompts. Ask the user to allow it from the Kaimon TUI Config tab [p], or to add it to \"projects\" in ~/.config/kaimon/projects.json (the route that works when Kaimon runs headless), or to reconnect with a client that can show approval prompts."
             end
         end
 

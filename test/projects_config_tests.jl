@@ -338,4 +338,18 @@ end
         # Downloading a Julia is never automatic — an install needs juliaup AND consent.
         @test K.install_julia_version("")[1] == false
     end
+
+    @testset "an undeliverable prompt is not reported as a timeout" begin
+        # A prompt that could not be delivered and a prompt the user ignored are different
+        # facts. Collapsing them tells someone to approve a dialog that was never displayed,
+        # which is advice they cannot act on.
+        schema = Dict{String,Any}("type" => "object", "properties" => Dict{String,Any}())
+        # No MCP caller and no receive stream here, so delivery cannot succeed.
+        @test K.request_elicitation("no-such-session-id", "hi", schema; timeout = 0.1) ===
+              :undeliverable
+
+        # A caller-less call (REPL/self, as here) has nobody to prompt, which is distinct
+        # again from having a caller whose channel is closed.
+        @test K._elicit_julia_install("1.11.4", "/tmp/p") === :unsupported
+    end
 end
