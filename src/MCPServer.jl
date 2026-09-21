@@ -834,6 +834,25 @@ function _handle_gate_tool_sse(
 )
     request_id = get(request, "id", 0)
     tool_name_str = request["params"]["name"]
+
+    # An extension we are restarting keeps its tools listed, so a call can land in the gap. Wait
+    # for it here, before resolving the tool: the respawn replaces the handler, and one resolved
+    # beforehand still points at the session that went away.
+    held_msg = park_for_held_tool(tool_name_str)
+    if !isempty(held_msg)
+        HTTP.setstatus(http, 200)
+        HTTP.setheader(http, "Content-Type" => "application/json")
+        HTTP.startwrite(http)
+        write(http, JSON.json(Dict{String,Any}(
+            "jsonrpc" => "2.0",
+            "id" => request_id,
+            "result" => Dict{String,Any}(
+                "content" => [Dict{String,Any}("type" => "text", "text" => held_msg)],
+            ),
+        )))
+        return nothing
+    end
+
     tool_id = get(name_to_id, tool_name_str, nothing)
     args = get(request["params"], "arguments", Dict())
 

@@ -68,6 +68,207 @@ function _notify_tools_changed()
     ))
 end
 
+# ── Restart holds for an extension's tools ───────────────────────────────────
+# Restarting an extension to pick up a code change is the common move while developing one, and
+# it almost always brings back the same tools. Withdrawing them and re-announcing them makes the
+# tool list look unstable to a client, which may then decline to re-adopt tools it saw disappear.
+# So a restart WE initiated keeps the tools advertised and swaps the handlers underneath.
+#
+# Two durations, because they answer different questions. The hold is how long the tools stay
+# advertised: it has to cover a restart that recompiles, hence tens of seconds. The park is how
+# long a single call waits for the extension before telling the agent to retry, kept shorter so a
+# request isn't held open for the whole compile.
+
+const TOOL_HOLD_DEFAULT = 45.0
+const TOOL_PARK_DEFAULT = 40.0
+
+"""Absolute ceiling on re-arming a restart hold. Reached only when an extension comes up without
+re-registering its tools, or never comes up at all."""
+const _EXT_REREGISTER_CAP = Ref{Float64}(600.0)
+
+"""Positive seconds from env `var`, else `config.json`'s `key`, else `default`. Mirrors
+`elicitation_timeout()`: read on use, so a config edit applies without a restart."""
+function _seconds_setting(var::String, key::String, default::Float64)
+    env = tryparse(Float64, strip(get(ENV, var, "")))
+    (env !== nothing && env > 0) && return env
+    try
+        path = get_global_config_path()
+        if isfile(path)
+            data = JSON.parse(read(path, String); dicttype = Dict{String,Any})
+            v = get(data, key, nothing)
+            (v isa Real && v > 0) && return Float64(v)
+        end
+    catch
+    end
+    return default
+end
+
+"""
+    tool_hold_seconds() -> Float64
+
+How long a restarting extension's tools stay advertised, sized for a restart that recompiles.
+Resolution: env `KAIMON_TOOL_HOLD_SECONDS` > `config.json` `"extension_tool_hold_seconds"` >
+$(TOOL_HOLD_DEFAULT).
+"""
+tool_hold_seconds() =
+    _seconds_setting("KAIMON_TOOL_HOLD_SECONDS", "extension_tool_hold_seconds", TOOL_HOLD_DEFAULT)
+
+"""
+    tool_park_seconds() -> Float64
+
+How long one call to a held tool waits before asking the agent to retry. Kept under
+`tool_hold_seconds()` so a request isn't held open for a whole compile. Resolution: env
+`KAIMON_TOOL_PARK_SECONDS` > `config.json` `"extension_tool_park_seconds"` >
+$(TOOL_PARK_DEFAULT).
+"""
+tool_park_seconds() =
+    _seconds_setting("KAIMON_TOOL_PARK_SECONDS", "extension_tool_park_seconds", TOOL_PARK_DEFAULT)
+
+const _TOOL_HOLD = Dict{String,Float64}()   # tool-name prefix => deadline
+const _TOOL_HOLD_LOCK = ReentrantLock()
+
+"""
+    hold_tools!(prefix; seconds=TOOL_HOLD_SECONDS[])
+
+Keep `prefix`'s tools advertised while its extension restarts, so neither the withdrawal nor the
+re-announcement reaches the client.
+"""
+function hold_tools!(prefix::AbstractString; seconds::Real = tool_hold_seconds())
+    lock(_TOOL_HOLD_LOCK) do
+        _TOOL_HOLD[String(prefix)] = time() + Float64(seconds)
+    end
+    return nothing
+end
+
+"""Whether `prefix` is inside an unexpired hold. Expired entries are dropped as they are seen,
+so a restart that never completes stops masking the tools' absence."""
+function tools_held(prefix::AbstractString)
+    lock(_TOOL_HOLD_LOCK) do
+        deadline = get(_TOOL_HOLD, String(prefix), nothing)
+        deadline === nothing && return false
+        if time() >= deadline
+            delete!(_TOOL_HOLD, String(prefix))
+            return false
+        end
+        return true
+    end
+end
+
+"""Drop `prefix`'s hold, which also wakes anything parked on it."""
+release_tools_hold!(prefix::AbstractString) =
+    lock(_TOOL_HOLD_LOCK) do
+        delete!(_TOOL_HOLD, String(prefix))
+        nothing
+    end
+
+"""The held prefix covering tool `name` (`"slate.open"` → `"slate."`), or `""` when none is."""
+function held_prefix_for(name::AbstractString)
+    s = String(name)
+    i = findfirst('.', s)
+    i === nothing && return ""
+    p = s[1:i]
+    return tools_held(p) ? p : ""
+end
+
+"""
+    await_tools!(prefix) -> Bool
+
+Park until `prefix`'s extension re-registers. `true` when it came back and the call can be
+forwarded, `false` when the caller should ask the agent to retry. Waits at most
+`TOOL_PARK_SECONDS[]`, and never past the hold's own deadline.
+"""
+function await_tools!(prefix::AbstractString)
+    deadline = lock(_TOOL_HOLD_LOCK) do
+        get(_TOOL_HOLD, String(prefix), nothing)
+    end
+    deadline === nothing && return true
+    remaining = min(deadline - time(), tool_park_seconds())
+    remaining <= 0 && return false
+    return timedwait(() -> !tools_held(prefix), remaining; pollint = 0.05) === :ok
+end
+
+"""
+    park_for_held_tool(name) -> String
+
+Park a call to `name` while its extension restarts. Returns `""` when the call may proceed (the
+extension is back, or its tools were never held), otherwise a message to hand the agent.
+
+Re-resolve the tool AFTER this returns: a restart replaces the handler, and one looked up
+beforehand still points at the session that went away.
+"""
+function park_for_held_tool(name::AbstractString)
+    prefix = held_prefix_for(name)
+    isempty(prefix) && return ""
+    await_tools!(prefix) && return ""
+    ns = chop(prefix)   # drop the trailing '.'
+    return "Extension `$ns` is restarting and hasn't finished within " *
+           "$(round(Int, tool_park_seconds()))s, so `$name` can't run yet. Its tools are still " *
+           "listed and will answer once it is up; nothing is wrong with your call or the " *
+           "connection. Retry in a few seconds."
+end
+
+"""
+    supervise_tool_hold!(prefix, status; cap, pollint) -> Symbol
+
+Re-arm `prefix`'s hold until its extension re-registers its tools, which releases the hold.
+Returns `:released` when it came back, or `:withdrawn` after taking the tools out of the registry
+because it did not.
+
+The window is re-armed rather than set once because a restart that recompiles can outlast any
+fixed duration, and a window that lapses mid-restart is worse than either outcome it sits
+between: the previous handlers stay listed and answer from the session that went away. `status`
+is polled so a crashed extension stops the wait early.
+"""
+function supervise_tool_hold!(prefix::AbstractString, status;
+                              cap::Real = _EXT_REREGISTER_CAP[], pollint::Real = 1.0)
+    deadline = time() + Float64(cap)
+    while time() < deadline
+        tools_held(prefix) || return :released
+        status() === :crashed && break
+        hold_tools!(prefix)
+        sleep(pollint)
+    end
+    tools_held(prefix) || return :released
+    release_tools_hold!(prefix)
+    _unregister_dynamic_tools!(prefix)
+    return :withdrawn
+end
+
+"""
+    _replace_dynamic_tools!(prefix::String, tools::Vector{MCPTool}) -> Bool
+
+Swap the tools under `prefix` for `tools` in place, and report whether the advertised SET of
+names changed. Handlers are replaced either way, so a reloaded extension's new code takes
+effect even when its tool names are identical. Only a changed set needs
+`tools/list_changed`, and withholding it in the common case is what keeps the list stable.
+"""
+function _replace_dynamic_tools!(prefix::String, tools::Vector{MCPTool})
+    lock(TOOL_REGISTRY_LOCK) do
+        old_names = Set{String}()
+        if ALL_TOOLS[] !== nothing
+            for t in ALL_TOOLS[]
+                startswith(t.name, prefix) && push!(old_names, t.name)
+            end
+            filter!(t -> !startswith(t.name, prefix), ALL_TOOLS[])
+            append!(ALL_TOOLS[], tools)
+        end
+        server = SERVER[]
+        if server !== nothing
+            for (id, t) in collect(server.tools)
+                if startswith(t.name, prefix)
+                    delete!(server.tools, id)
+                    delete!(server.name_to_id, t.name)
+                end
+            end
+            for t in tools
+                server.tools[t.id] = t
+                server.name_to_id[t.name] = t.id
+            end
+        end
+        return old_names != Set(t.name for t in tools)
+    end
+end
+
 # ── Gate mode globals ──────────────────────────────────────────────────────
 # When running in TUI server mode, tool calls route through the gate client
 # instead of executing in-process.
