@@ -530,9 +530,10 @@ end
 # Launch-config modal rows, in display order. Shared with config_flow.jl so the field list,
 # the key handler's bounds, and the rendered rows can't drift apart.
 const LAUNCH_CONFIG_FIELDS =
-    [:threads, :gcthreads, :heap_size_hint, :sysimage, :julia_bin, :startup_file, :extra_flags]
+    [:threads, :gcthreads, :heap_size_hint, :sysimage, :julia_bin, :julia_version,
+     :startup_file, :extra_flags]
 const LAUNCH_CONFIG_LABELS = ["Threads (-t):", "GC threads:", "Heap size hint:",
-    "Sysimage (-J):", "Julia binary:", "Run startup.jl:", "Extra flags:"]
+    "Sysimage (-J):", "Julia binary:", "Julia version:", "Run startup.jl:", "Extra flags:"]
 
 function _render_launch_config_modal(m::KaimonModel, buf::Buffer, area::Rect)
     idx = m.selected_project

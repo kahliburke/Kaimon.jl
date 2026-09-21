@@ -12,6 +12,11 @@ Empty strings use defaults (threads="auto", others omitted).
 custom system image built against that project's deps, and/or a specific Julia binary
 (or a wrapper script that `exec`s one). `startup_file` opts back into `~/.julia/config/startup.jl`,
 which is suppressed by default so a spawned session boots predictably.
+
+`julia_version` is the portable way to ask for a Julia: a version, resolved against the
+installs juliaup already has, rather than a path that exists on one machine. That makes it
+safe to check into a repo's `kaimon.toml`. `julia_bin` outranks it, as the explicit escape
+hatch for a Julia juliaup doesn't manage.
 """
 struct LaunchConfig
     threads::String           # "-t" value: "auto", "4", "2,1", etc. Empty = "auto"
@@ -21,14 +26,17 @@ struct LaunchConfig
     sysimage::String          # "-J" value; relative paths resolve against the project root
     julia_bin::String         # Julia binary/launcher. Empty = the Julia running Kaimon
     startup_file::Bool        # true = --startup-file=yes. Default false
+    julia_version::String     # "1.12.6" or a "1.12" series; resolved via juliaup. Empty = any
 end
 
-LaunchConfig() = LaunchConfig("", "", "", String[], "", "", false)
+LaunchConfig() = LaunchConfig("", "", "", String[], "", "", false, "")
 
-# Positional constructor for the pre-sysimage field set, so existing callers/tests
-# (and any config written by an older Kaimon) keep working.
+# Positional constructors for earlier field sets, so existing callers/tests (and any config
+# written by an older Kaimon) keep working.
 LaunchConfig(threads, gcthreads, heap_size_hint, extra_flags) =
-    LaunchConfig(threads, gcthreads, heap_size_hint, extra_flags, "", "", false)
+    LaunchConfig(threads, gcthreads, heap_size_hint, extra_flags, "", "", false, "")
+LaunchConfig(threads, gcthreads, heap_size_hint, extra_flags, sysimage, julia_bin, startup_file) =
+    LaunchConfig(threads, gcthreads, heap_size_hint, extra_flags, sysimage, julia_bin, startup_file, "")
 
 """
     ProjectEntry
@@ -115,6 +123,9 @@ function _parse_launch_config(raw)::LaunchConfig
         String(get(raw, "sysimage", "")),
         String(get(raw, "julia_bin", "")),
         Bool(get(raw, "startup_file", false)),
+        # TOML/JSON may hand back a number for `julia_version = 1.12`; string() keeps that
+        # readable rather than throwing, and resolution rejects it if it isn't a version.
+        string(get(raw, "julia_version", "")),
     )
 end
 
@@ -132,6 +143,7 @@ function _project_entry_to_dict(e::ProjectEntry)
     !isempty(lc.extra_flags) && (lcd["extra_flags"] = lc.extra_flags)
     !isempty(lc.sysimage) && (lcd["sysimage"] = lc.sysimage)
     !isempty(lc.julia_bin) && (lcd["julia_bin"] = lc.julia_bin)
+    !isempty(lc.julia_version) && (lcd["julia_version"] = lc.julia_version)
     lc.startup_file && (lcd["startup_file"] = true)
     !isempty(lcd) && (d["launch_config"] = lcd)
     return d
@@ -145,6 +157,9 @@ Return a compact summary of non-default launch config settings.
 function launch_config_summary(lc::LaunchConfig)
     parts = String[]
     !isempty(lc.julia_bin) && push!(parts, basename(lc.julia_bin))
+    # Shown even when julia_bin also set, so a config where one silently outranks the other
+    # is visible rather than confusing.
+    !isempty(lc.julia_version) && push!(parts, "julia $(lc.julia_version)")
     !isempty(lc.sysimage) && push!(parts, "-J $(basename(lc.sysimage))")
     !isempty(lc.threads) && push!(parts, "-t $(lc.threads)")
     !isempty(lc.gcthreads) && push!(parts, "--gcthreads=$(lc.gcthreads)")
@@ -167,6 +182,7 @@ collaborator's Kaimon picks it up with no local setup.
 ```toml
 [launch]
 sysimage = "my-image.so"   # relative → resolved against the project root
+julia_version = "1.12.6"   # portable: resolved against juliaup's installs, not a path
 threads = "auto"
 startup_file = true
 ```
@@ -201,6 +217,7 @@ function merge_launch_config(base::LaunchConfig, override::LaunchConfig)
         pick(override.sysimage, base.sysimage),
         pick(override.julia_bin, base.julia_bin),
         override.startup_file || base.startup_file,
+        pick(override.julia_version, base.julia_version),
     )
 end
 

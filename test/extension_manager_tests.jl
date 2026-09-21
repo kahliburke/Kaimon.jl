@@ -497,3 +497,129 @@ end
     @test parent["FRESH"] == "added"                            # …and unset ones are filled in
     @test parent["OTHER"] == "keep"
 end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Restart holds. Restarting an extension to pick up a code change almost always brings back
+# the same tools, so a managed restart keeps them advertised and swaps the handlers
+# underneath. A client that never sees them leave has nothing to re-adopt.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "Extension tool holds across a managed restart" begin
+    K = Kaimon
+    _mktool(name) = K.MCPTool(Symbol(name), name, name, "d", Dict{String,Any}(), _ -> "ok")
+
+    @testset "a hold covers its own prefix only, and expires" begin
+        K.release_tools_hold!("held.")
+        @test !K.tools_held("held.")
+
+        K.hold_tools!("held."; seconds = 30)
+        @test K.tools_held("held.")
+        @test K.held_prefix_for("held.open") == "held."
+        # A different extension is unaffected, and an unnamespaced tool never matches.
+        @test K.held_prefix_for("other.open") == ""
+        @test K.held_prefix_for("run_tests") == ""
+
+        # An expired hold stops masking the tools' absence, so a restart that never finishes
+        # doesn't advertise them forever.
+        K.hold_tools!("held."; seconds = -1)
+        @test !K.tools_held("held.")
+        @test K.held_prefix_for("held.open") == ""
+    end
+
+    @testset "a parked call resumes when the extension re-registers" begin
+        K.hold_tools!("parked."; seconds = 30)
+        # Released from another task, standing in for the respawn re-registering its tools.
+        @async (sleep(0.2); K.release_tools_hold!("parked."))
+        @test K.await_tools!("parked.")
+        @test K.park_for_held_tool("parked.run") == ""
+        # Nothing held → proceed immediately rather than waiting on a hold that isn't there.
+        @test K.await_tools!("never-held.")
+    end
+
+    @testset "a call gives up when its park budget runs out mid-restart" begin
+        # An expired hold is simply not a hold: the tools are no longer masked, so a call
+        # proceeds rather than being told to wait for a restart that already gave up.
+        K.hold_tools!("gone."; seconds = -1)
+        @test !K.await_tools!("gone.")
+        @test K.park_for_held_tool("gone.thing") == ""
+
+        # The retry message belongs to the other case: the extension is still restarting
+        # (the hold stands), but this call has waited as long as it is allowed to. The hold
+        # outlasting the park is the normal shape, since a restart that recompiles takes
+        # longer than any one request should be held open.
+        withenv("KAIMON_TOOL_PARK_SECONDS" => "0.05") do
+            @test K.tool_park_seconds() == 0.05      # env overrides config and default
+            K.hold_tools!("slow."; seconds = 30)
+            @test !K.await_tools!("slow.")
+            @test K.tools_held("slow.")          # still held, so the tools stay listed
+            msg = K.park_for_held_tool("slow.thing")
+            @test occursin("restarting", msg)
+            @test occursin("slow", msg)
+            # Tells the agent to retry, and that this is not a broken connection.
+            @test occursin("Retry", msg)
+            @test occursin("still", msg)
+            K.release_tools_hold!("slow.")
+        end
+    end
+
+    @testset "the hold outlives a compile, and withdraws tools if none come back" begin
+        saved = K.ALL_TOOLS[]
+        try
+            K.ALL_TOOLS[] = K.MCPTool[_mktool("sup.a"), _mktool("keep.me")]
+
+            # An extension whose restart recompiles for longer than any one hold window: the
+            # window is re-armed, so the tools stay listed and the previous handlers are never
+            # left answering calls from a session that has gone away. Releasing the hold stands
+            # in for the respawn re-registering.
+            K.hold_tools!("sup."; seconds = 0.15)
+            @async (sleep(0.4); K.release_tools_hold!("sup."))
+            @test K.supervise_tool_hold!("sup.", () -> :starting; cap = 5, pollint = 0.05) ===
+                  :released
+            @test any(t -> t.name == "sup.a", K.ALL_TOOLS[])   # survived a window it outlasted
+
+            # An extension that never re-registers must stop being advertised: handlers that
+            # cannot answer are worse than an honestly shorter tool list.
+            K.hold_tools!("sup."; seconds = 30)
+            @test K.supervise_tool_hold!("sup.", () -> :starting; cap = 0.2, pollint = 0.05) ===
+                  :withdrawn
+            @test !K.tools_held("sup.")
+            @test !any(t -> t.name == "sup.a", K.ALL_TOOLS[])
+            @test any(t -> t.name == "keep.me", K.ALL_TOOLS[])
+
+            # A crash stops the wait early rather than burning the whole cap.
+            K.hold_tools!("sup2."; seconds = 30)
+            t0 = time()
+            @test K.supervise_tool_hold!("sup2.", () -> :crashed; cap = 30, pollint = 0.05) ===
+                  :withdrawn
+            @test time() - t0 < 5
+        finally
+            K.release_tools_hold!("sup.")
+            K.release_tools_hold!("sup2.")
+            K.ALL_TOOLS[] = saved
+        end
+    end
+
+    @testset "replacing held tools reports only a changed SET of names" begin
+        saved = K.ALL_TOOLS[]
+        try
+            K.ALL_TOOLS[] = K.MCPTool[_mktool("ns.a"), _mktool("ns.b"), _mktool("keep.me")]
+
+            # Same names, new handlers: the reloaded code takes effect with no announcement,
+            # which is the whole point of holding the tools.
+            @test K._replace_dynamic_tools!("ns.", K.MCPTool[_mktool("ns.a"), _mktool("ns.b")]) ==
+                  false
+            names = Set(t.name for t in K.ALL_TOOLS[])
+            @test names == Set(["ns.a", "ns.b", "keep.me"])
+            # Replaced in place, so holding tools instead of removing them can't duplicate them.
+            @test length(K.ALL_TOOLS[]) == 3
+
+            # A tool gained or lost does need announcing.
+            @test K._replace_dynamic_tools!("ns.", K.MCPTool[_mktool("ns.a"), _mktool("ns.c")])
+            @test Set(t.name for t in K.ALL_TOOLS[]) == Set(["ns.a", "ns.c", "keep.me"])
+            # Another extension's tools are never touched by a prefixed replace.
+            @test any(t -> t.name == "keep.me", K.ALL_TOOLS[])
+        finally
+            K.ALL_TOOLS[] = saved
+        end
+    end
+end

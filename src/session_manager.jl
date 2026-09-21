@@ -162,9 +162,18 @@ end
 """
     _launch_julia_exe(lc::LaunchConfig) -> String
 
-The Julia binary a project should be launched with: its configured `julia_bin`, else the Julia
-running Kaimon. A configured value may also be a wrapper script, so long as it forwards its
-arguments to julia.
+The Julia binary a project should be launched with, in precedence order:
+
+1. `julia_bin`, the explicit escape hatch. May be a wrapper script, so long as it forwards its
+   arguments to julia. Outranks `julia_version`, including a `julia_version` juliaup could
+   satisfy, because a path the user wrote down is not something to second-guess.
+2. `julia_version`, resolved against the Julia running Kaimon and then juliaup's installs.
+3. The Julia running Kaimon.
+
+A requested version that isn't installed logs which Julia is being substituted rather than
+failing the spawn: losing a session over a version preference costs the user more than running
+on the wrong patch, and the warning names the mismatch so it is never silent. Offering to
+install it is a separate, consenting step (`_maybe_offer_julia_install`).
 
 Every spawn for a project — a session and a test run alike — resolves the binary here, so they
 cannot disagree about which Julia. That matters beyond tidiness: a project's environment records
@@ -172,8 +181,19 @@ the Julia version it was resolved for, and a dependency whose `[compat]` admits 
 version per Julia resolves differently under each. Two spawns on two Julias therefore fight over
 one manifest, and the loser is left with a dependency version its Julia cannot precompile.
 """
-_launch_julia_exe(lc::LaunchConfig) =
-    isempty(lc.julia_bin) ? joinpath(Sys.BINDIR, "julia") : expanduser(lc.julia_bin)
+function _launch_julia_exe(lc::LaunchConfig)
+    isempty(lc.julia_bin) || return expanduser(lc.julia_bin)
+    isempty(lc.julia_version) && return joinpath(Sys.BINDIR, "julia")
+    bin = resolve_julia_binary(lc.julia_version)
+    bin === nothing || return bin
+    _push_log!(
+        :warn,
+        "Julia $(lc.julia_version) is requested but not installed; using $(VERSION) instead. " *
+        "Install it with `juliaup add $(lc.julia_version)` if dependency resolution, " *
+        "precompilation or tests misbehave.",
+    )
+    return joinpath(Sys.BINDIR, "julia")
+end
 
 """
     _build_julia_cmd(lc::LaunchConfig, script::String; project::String="") -> Vector{String}

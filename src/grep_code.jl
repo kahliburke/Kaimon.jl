@@ -134,18 +134,21 @@ _grep_path_within(abs::AbstractString, roots::Vector{String}) = any(roots) do r
     a == rr || startswith(a, rr * "/")
 end
 
-_grep_out_of_scope_msg(abs::AbstractString, roots::Vector{String}) =
+# `outcome` states WHY approval is absent, in the caller's own words. Lumping "the user said
+# no" together with "the user was never asked" makes the two indistinguishable from the tool's
+# output, which leaves an agent unable to tell a refusal from a broken prompt channel.
+_grep_out_of_scope_msg(abs::AbstractString, roots::Vector{String}, outcome::AbstractString) =
     "Error: `$abs` is outside this session's allowed scope. grep_code is confined to " *
     (isempty(roots) ? "the bound project (none is bound to this session)" :
      "the project and workspace (" * join(roots, ", ") * ")") *
-    ". Reading elsewhere requires the user's approval, which was not given (no prompt " *
-    "shown, or declined). If you need this path, ask the user to approve it — don't try " *
-    "to grant it yourself."
+    ". Reading elsewhere requires the user's approval. $outcome If you need this path, ask " *
+    "the user to approve it — don't try to grant it yourself."
 
 # Ask the user (via MCP elicitation) to approve grep reading an out-of-scope `path`.
 # Mirrors `_elicit_session_consent`: accept allows this call; the "remember" checkbox
 # adds it to the persisted grep whitelist. Returns :always / :once / :denied /
-# :timeout / :unsupported (no caller, no session, or a client that can't elicit).
+# :timeout (asked, no answer) / :undeliverable (no channel to ask on, so nothing was shown) /
+# :unsupported (no caller, no session, or a client that declared it can't elicit).
 function _elicit_grep_path_consent(path::AbstractString)
     caller = _current_mcp_caller()
     isempty(caller) && return :unsupported
@@ -164,11 +167,16 @@ function _elicit_grep_path_consent(path::AbstractString)
             ),
         ),
     )
+    # Name the client that actually asked, rather than assuming which one it is.
+    who = let n = get(session.client_info, "name", "")
+        isempty(string(n)) ? "An agent" : string(n)
+    end
     msg =
-        "Claude wants grep_code to search files under:\n$path\n\nThis is outside the " *
+        "$who wants grep_code to search files under:\n$path\n\nThis is outside the " *
         "current project and workspace. Accept to allow this search. Check \"Always " *
         "allow\" to add it to your grep allow-list and skip this prompt next time."
     res = request_elicitation(caller, msg, schema; timeout = elicitation_timeout())
+    res === :undeliverable && return :undeliverable
     res isa AbstractDict || return :timeout
     get(res, "action", "") == "accept" || return :denied
     content = get(res, "content", nothing)
@@ -194,10 +202,19 @@ function _grep_enforce_scope(root::AbstractString; consent = _elicit_grep_path_c
         return nothing
     elseif decision === :timeout
         return "Error: no answer to the grep access prompt within " *
-               "$(round(Int, elicitation_timeout()))s. Retry when you're ready to " *
-               "approve reading `$root`."
-    else  # :denied / :unsupported
-        return _grep_out_of_scope_msg(root, roots)
+               "$(round(Int, elicitation_timeout()))s. Ask the user to approve reading " *
+               "`$root` in their client, then retry."
+    elseif decision === :undeliverable
+        return "Error: reading `$root` needs approval, but no prompt could be delivered to " *
+               "your client, so the user was never asked. This is not a timeout and not a " *
+               "refusal: nothing was displayed to them. Ask the user to add the path to " *
+               "\"grep_paths\" in ~/.config/kaimon/projects.json."
+    elseif decision === :denied
+        return _grep_out_of_scope_msg(root, roots,
+            "The user was shown a prompt and declined it.")
+    else  # :unsupported
+        return _grep_out_of_scope_msg(root, roots,
+            "Your client cannot show approval prompts, so the user was never asked.")
     end
 end
 

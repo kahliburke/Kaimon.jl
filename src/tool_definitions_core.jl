@@ -748,7 +748,11 @@ function _elicit_session_consent(path::AbstractString)
             ),
         ),
     )
-    msg = "Claude wants to start a Julia session for the project:\n$path\n\n" *
+    # Name the client that actually asked, rather than assuming which one it is.
+    who = let n = get(session.client_info, "name", "")
+        isempty(string(n)) ? "An agent" : string(n)
+    end
+    msg = "$who wants to start a Julia session for the project:\n$path\n\n" *
           "Accept to allow. Check \"Always allow\" to add it to your allowed-projects " *
           "list and skip this prompt next time."
     # Cap the wait under the client's tool-call timeout (~60s) so we always return
@@ -757,15 +761,127 @@ function _elicit_session_consent(path::AbstractString)
     # return :timeout (distinct from :unsupported) so the caller tells the agent to
     # retry instead of falling back to the can't-elicit guidance.
     res = request_elicitation(caller, msg, schema; timeout = elicitation_timeout())
-    # `:undeliverable` means the prompt never reached the client — there is nothing to approve and
-    # retrying will not help, so it reports as `:unsupported` (allow it from the TUI) rather than
-    # as a timeout that invites the user to answer a dialog they were never shown.
-    res === :undeliverable && return :unsupported
+    res === :undeliverable && return :undeliverable
     res isa AbstractDict || return :timeout
     get(res, "action", "") == "accept" || return :denied
     content = get(res, "content", nothing)
     remember = content isa AbstractDict && get(content, "remember", false) === true
     return remember ? :always : :once
+end
+
+# ── A project's requested Julia version ──────────────────────────────────────
+# `[launch] julia_version` may name a Julia that isn't installed. Downloading one unasked is
+# out of scope, so the install is offered through the same elicitation path as project consent.
+# Two pieces of process-local state stop the offer becoming nagging: a (project, version) the
+# user declined is not raised again while this Kaimon runs, and an install already in flight is
+# never started twice.
+
+const _JULIA_INSTALL_DECLINED = Set{Tuple{String,String}}()
+const _JULIA_INSTALL_RUNNING = Dict{String,String}()   # version → message to hand the agent
+const _JULIA_INSTALL_LOCK = ReentrantLock()
+
+"""
+    _elicit_julia_install(version, project_path) -> Symbol
+
+Ask whether to install the Julia a project requests. Returns `:accepted`, `:declined`,
+`:timeout`, or `:unsupported` (no MCP caller, or a client that cannot prompt).
+"""
+function _elicit_julia_install(version::AbstractString, project_path::AbstractString)
+    caller = _current_mcp_caller()
+    isempty(caller) && return :unsupported
+    session = lock(STANDALONE_SESSIONS_LOCK) do
+        get(STANDALONE_SESSIONS, caller, nothing)
+    end
+    session === nothing && return :unsupported
+    _caps_may_elicit(session.client_capabilities) || return :unsupported
+
+    # No fields: accept/decline is the entire decision, and clients render only those two
+    # buttons reliably.
+    schema = Dict{String,Any}("type" => "object", "properties" => Dict{String,Any}())
+    # Written for a cramped dialog. Clients clip each line and collapse the remainder behind a
+    # "+N more lines" fold, so the decisive facts lead: what is being installed, and that the
+    # user's default Julia survives it. Everything else (why the version was asked for, what
+    # goes wrong on a mismatch) is repeated in the tool result, which is not truncated.
+    msg = "Install Julia $version with juliaup? Your default julia stays unchanged.\n" *
+          "Only this project would use $version.\n" *
+          "Declining runs it on $(VERSION), which can cause false test failures.\n" *
+          "Requested by: $project_path"
+    res = request_elicitation(caller, msg, schema; timeout = elicitation_timeout())
+    res === :undeliverable && return :undeliverable
+    res isa AbstractDict || return :timeout
+    return get(res, "action", "") == "accept" ? :accepted : :declined
+end
+
+"""Start `juliaup add version` in the background; returns the message to hand the agent."""
+function _start_julia_install!(version::AbstractString)
+    want = String(version)
+    msg = "Installing Julia $want with juliaup, which can take a few minutes. Retry when it " *
+          "finishes. Your default julia is unchanged."
+    lock(_JULIA_INSTALL_LOCK) do
+        _JULIA_INSTALL_RUNNING[want] = msg
+    end
+    Threads.@spawn begin
+        ok, out = install_julia_version(want)
+        lock(_JULIA_INSTALL_LOCK) do
+            delete!(_JULIA_INSTALL_RUNNING, want)
+        end
+        if ok
+            _push_log!(:info, "Installed Julia $want with juliaup")
+        else
+            _push_log!(:warn, "Could not install Julia $want: $(first(strip(out), 300))")
+        end
+    end
+    return msg
+end
+
+"""
+    _maybe_offer_julia_install(project_path) -> Union{String,Nothing}
+
+Called before spawning anything for `project_path`. Returns a message to relay when the spawn
+should not proceed yet (an install is running, or one just started), and `nothing` when there
+is nothing to do and the caller should carry on.
+
+The install runs in the background and the tool returns immediately. `juliaup add` routinely
+outlasts an MCP client's per-tool-call timeout, and a client that gave up mid-call would
+abandon the spawn it was waiting on.
+"""
+function _maybe_offer_julia_install(project_path::AbstractString)
+    lc = try
+        _resolve_launch_config(String(project_path))
+    catch e
+        @debug "Could not resolve launch config" project_path exception = e
+        return nothing
+    end
+    # An explicit `julia_bin` outranks the version request, so there is nothing to install for.
+    (isempty(lc.julia_version) || !isempty(lc.julia_bin)) && return nothing
+    want = String(strip(lc.julia_version))
+    resolve_julia_binary(want) === nothing || return nothing
+
+    running = lock(_JULIA_INSTALL_LOCK) do
+        get(_JULIA_INSTALL_RUNNING, want, nothing)
+    end
+    running === nothing || return running
+
+    key = (normalize_path(String(project_path)), want)
+    already_declined = lock(_JULIA_INSTALL_LOCK) do
+        key in _JULIA_INSTALL_DECLINED
+    end
+    already_declined && return nothing
+
+    # Without juliaup there is no install to offer, so don't prompt for one. The spawn logs
+    # which Julia it substituted.
+    juliaup_command() === nothing && return nothing
+
+    decision = _elicit_julia_install(want, project_path)
+    decision == :accepted && return _start_julia_install!(want)
+    if decision == :declined
+        lock(_JULIA_INSTALL_LOCK) do
+            push!(_JULIA_INSTALL_DECLINED, key)
+        end
+    end
+    # Declined, timed out, or a client that cannot prompt: proceed on the Julia we have. The
+    # substitution is logged by `_launch_julia_exe` rather than silently accepted.
+    return nothing
 end
 
 start_session_tool = @mcp_tool(
@@ -863,11 +979,18 @@ Call with no `project_path` to list allowed projects and their status.""",
             elseif decision == :denied
                 return "Session not started — you declined to allow a Julia session for $path."
             elseif decision == :timeout
-                return "No response to the approval prompt within $(round(Int, elicitation_timeout()))s, so no session was started. Call start_session again when you're ready, and approve the prompt in your client."
+                return "No response to the approval prompt within $(round(Int, elicitation_timeout()))s, so no session was started. Ask the user to approve the prompt in their client, then call start_session again."
+            elseif decision == :undeliverable
+                return "Session not started — $path isn't in the allowed list, and no approval prompt could be delivered to your client, so the user was never asked. This is not a timeout and not a refusal: nothing was displayed to them. Ask the user to allow this project in Kaimon (Config tab [p], or the \"projects\" list in ~/.config/kaimon/projects.json), then call start_session again. Or the user can start a Julia REPL for the project themselves and run KaimonGate.serve(): the allow-list only governs sessions an agent spawns, so that session needs no approval — find it with `ping` and use it directly rather than calling start_session."
             else  # :unsupported
-                return "Error: this project isn't in the allowed list, and your client couldn't show an approval prompt. Ask the user to allow it from the Kaimon TUI Config tab [p] (or to reconnect with a client that can show approval prompts)."
+                return "Error: this project isn't in the allowed list, and your client declared no support for approval prompts. Ask the user to allow it from the Kaimon TUI Config tab [p], or to add it to \"projects\" in ~/.config/kaimon/projects.json (the route that works when Kaimon runs headless), or to reconnect with a client that can show approval prompts."
             end
         end
+
+        # The project may request a Julia that isn't installed. Offer to install it before
+        # spawning, so the session isn't created on a Julia the project doesn't support.
+        pending_install = _maybe_offer_julia_install(path)
+        pending_install === nothing || return "Session not started — $pending_install"
 
         # Any MANAGED_SESSIONS entry for this path is stale at this point — a live
         # gate would have been caught by the connection-manager check above — so

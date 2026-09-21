@@ -496,9 +496,26 @@ function _register_session_tools!(conn::REPLConnection)
     session_mcp_tools = _create_session_tools(conn)
     isempty(session_mcp_tools) && return
 
+    prefix = "$(conn.namespace)."
+    if tools_held(prefix)
+        # Coming back from a restart we held the tools across: swap them in place and release
+        # anything parked on them. A client hears about it only if the set of names changed.
+        changed = _replace_dynamic_tools!(prefix, session_mcp_tools)
+        release_tools_hold!(prefix)
+        changed && _notify_tools_changed()
+        _push_log!(
+            :info,
+            "Swapped $(conn.namespace)'s $(length(session_mcp_tools)) tools back in " *
+            (changed ? "(set changed, clients notified)" : "(same set, no notification)"),
+        )
+        return
+    end
+
     _register_dynamic_tools!(session_mcp_tools)
-    @debug "Registered session tools" session = short_key(conn) namespace = conn.namespace count =
-        length(session_mcp_tools)
+    _push_log!(
+        :info,
+        "Registered $(length(session_mcp_tools)) tools under `$prefix` (no hold was in effect)",
+    )
 end
 
 """
@@ -510,6 +527,11 @@ Sends `tools/list_changed` notification.
 function _unregister_session_tools!(conn::REPLConnection)
     isempty(conn.session_tools) && return
     prefix = "$(conn.namespace)."
+    # Held across a restart: leave the tools advertised for the respawn to replace.
+    if tools_held(prefix)
+        _push_log!(:info, "Holding $(conn.namespace)'s tools across its restart (still listed)")
+        return
+    end
     _unregister_dynamic_tools!(prefix)
     @debug "Unregistered session tools" session = short_key(conn) namespace = conn.namespace
 end

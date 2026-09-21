@@ -251,31 +251,6 @@ function _restore_session_caps!(session, entry)
     return nothing
 end
 
-"""Borrow capabilities from the most-recently-seen client when THIS session has none of
-its own. Claude Code presents session ids it believes are connected (after a server
-restart / dropped stream) without re-`initialize`-ing, so the exact id often never stored
-caps — but a client's advertised caps (elicitation, roots) are stable across its sessions.
-Reusing the latest known set keeps capability-gated features working instead of silently
-degrading to "unsupported". No-op if the session already has caps or nothing is known yet.
-Single-client setups (the norm) borrow their own caps; a wrong borrow is self-correcting —
-elicitation to a client that can't receive it just fails fast."""
-function _borrow_recent_caps!(session)
-    isempty(session.client_capabilities) || return nothing
-    best = nothing
-    best_seen = ""
-    for (_, entry) in load_persisted_sessions()
-        caps = get(entry, "client_capabilities", nothing)
-        (caps isa AbstractDict && !isempty(caps)) || continue
-        seen = string(get(entry, "last_seen", ""))
-        if best === nothing || seen > best_seen
-            best = entry
-            best_seen = seen
-        end
-    end
-    best === nothing || _restore_session_caps!(session, best)
-    return nothing
-end
-
 """
     get_or_create_session(session_id::Union{String,Nothing}, is_initialize::Bool) -> (MCPSession, Bool)
 
@@ -331,10 +306,6 @@ function get_or_create_session(session_id::Union{String,Nothing}, is_initialize:
                     # capability-gated features (elicitation, …) still work for a
                     # client that reconnects without re-initializing.
                     _restore_session_caps!(session, persisted_sessions[session_id])
-                    # The stored entry may predate caps-capture (only workspace_root, no
-                    # caps) — a session whose id we've seen but never initialized. Fall back
-                    # to the latest known client caps so elicitation etc. still work.
-                    _borrow_recent_caps!(session)
                     STANDALONE_SESSIONS[session.id] = session
                     register_persisted_session(session.id)  # Update last_seen
                     @info "Restored session from persistence file" session_id = session.id
@@ -348,10 +319,10 @@ function get_or_create_session(session_id::Union{String,Nothing}, is_initialize:
                     session.id = session_id
                     session.state = Session.INITIALIZED
                     session.initialized_at = now()
-                    # An id the client presents as already-connected but that never
-                    # initialized here — reuse the latest known client caps so
-                    # capability-gated features work instead of degrading to "unsupported".
-                    _borrow_recent_caps!(session)
+                    # No capabilities for an id that never initialized here, and none are
+                    # invented: an empty set leaves capability checks permissive, so a prompt
+                    # is attempted anyway and a client that cannot receive one fails fast.
+                    # Copying another session's capabilities would only mis-attribute them.
                     STANDALONE_SESSIONS[session.id] = session
                     register_persisted_session(session.id)
                     @warn "Accepted unknown session ID (client did not re-initialize)" session_id =
@@ -582,8 +553,13 @@ end
 
 """Issue a JSON-RPC *request* to one agent over its GET SSE receive stream and
 block until the correlated response POSTs back (routed via
-`_route_server_response!`). Returns the parsed `result`, or `nothing` on timeout
-/ no open receive stream. Shared by `request_roots` / `request_elicitation`."""
+`_route_server_response!`). Returns the parsed `result`, `nothing` when the user did not
+answer in time, or `:undeliverable` when there was no channel to ask on at all.
+
+Those last two are deliberately different values. They look identical from here but mean
+opposite things to a user: one is "you did not answer", the other is "you were never asked".
+Collapsing them produces advice nobody can follow, telling someone to approve a prompt that
+was never displayed. Shared by `request_roots` / `request_elicitation`."""
 function _request_from_client(session_id::AbstractString, method::AbstractString,
                               params; timeout::Float64)
     rid = "srv-" * string(UUIDs.uuid4())
@@ -598,9 +574,8 @@ function _request_from_client(session_id::AbstractString, method::AbstractString
         # any open receive stream (clients like Claude Code can split their POST vs
         # GET session ids), else the in-flight tool-call SSE stream as a last resort.
         writer = get(task_local_storage(), :mcp_sse_request, nothing)
-        # Undeliverable is not the same as unanswered. Returning `nothing` for both told the
-        # caller "no response within Ns" when in fact nothing was ever shown — so the user was
-        # asked to approve a prompt that had never appeared, and waiting longer could not help.
+        # No writer and no open receive stream: the prompt cannot be shown, so report that
+        # rather than waiting out a timeout for an answer nobody was asked for.
         _deliver_to_client!(session_id, msg, writer) || return :undeliverable
         if Base.timedwait(() -> isready(sink), timeout) !== :ok
             # Timed out waiting for the user. Cancel the request client-side so a
@@ -859,6 +834,25 @@ function _handle_gate_tool_sse(
 )
     request_id = get(request, "id", 0)
     tool_name_str = request["params"]["name"]
+
+    # An extension we are restarting keeps its tools listed, so a call can land in the gap. Wait
+    # for it here, before resolving the tool: the respawn replaces the handler, and one resolved
+    # beforehand still points at the session that went away.
+    held_msg = park_for_held_tool(tool_name_str)
+    if !isempty(held_msg)
+        HTTP.setstatus(http, 200)
+        HTTP.setheader(http, "Content-Type" => "application/json")
+        HTTP.startwrite(http)
+        write(http, JSON.json(Dict{String,Any}(
+            "jsonrpc" => "2.0",
+            "id" => request_id,
+            "result" => Dict{String,Any}(
+                "content" => [Dict{String,Any}("type" => "text", "text" => held_msg)],
+            ),
+        )))
+        return nothing
+    end
+
     tool_id = get(name_to_id, tool_name_str, nothing)
     args = get(request["params"], "arguments", Dict())
 
@@ -1241,10 +1235,22 @@ function start_mcp_server(
                 return nothing
             end
 
-            # ── SSE Progress for gate-mode tool calls ───────────────────
-            # When running in gate mode (TUI server), long-running tool calls
-            # that execute code via the gate can stream progress notifications
-            # back to the MCP client as SSE events, preventing HTTP timeouts.
+            # ── SSE for gate-mode tool calls ────────────────────────────
+            # Two independent reasons a tool call needs an event stream instead of a
+            # single JSON response:
+            #
+            #  1. It may run long. Streaming progress notifications keeps the client's
+            #     HTTP request from timing out.
+            #  2. It may need to ASK the user something mid-call. A server→client request
+            #     (`elicitation/create`) can only be delivered on a stream that is open
+            #     and bound to this caller, and the in-flight tool-call stream always is.
+            #     The client's standalone GET receive stream may not be open yet, or may
+            #     be keyed under a different session id, and then the prompt is never
+            #     shown at all.
+            #
+            # Membership originally covered only (1), so the tools that actually prompt
+            # were the ones left without a dependable way to prompt. Whether the prompt
+            # arrives must not depend on how long the tool happens to take.
             if GATE_MODE[] &&
                parsed_request !== nothing &&
                get(parsed_request, "method", "") == "tools/call"
@@ -1265,20 +1271,19 @@ function start_mcp_server(
                     end
                 end
 
-                # Tools that execute via gate and may run long
+                # (1) Execute via the gate and may run long.
                 gate_exec_tools =
                     Set(["ex", "run_tests", "profile_code", "lint_package", "stress_test"])
-                # Tools that ask the USER something mid-call need this path too, for a different
-                # reason: `elicitation/create` is a server→client REQUEST, and the only writer
-                # guaranteed open for the duration of a call is that call's own SSE stream. On the
-                # plain path there is no writer at all, so the prompt cannot be delivered and the
-                # tool fails without the user ever seeing it.
-                eliciting_tools = Set(["start_session"])
+                # (2) May need the user's consent mid-call. Keep in step with every
+                #     `request_elicitation` caller.
+                eliciting_tools = Set(["start_session", "grep_code"])
 
                 # Session tools (namespaced: "prefix.toolname") also use SSE streaming
                 is_session_tool = occursin('.', tool_name_str)
 
-                if tool_name_str in gate_exec_tools || tool_name_str in eliciting_tools || is_session_tool
+                if tool_name_str in gate_exec_tools ||
+                   tool_name_str in eliciting_tools ||
+                   is_session_tool
                     return _handle_gate_tool_sse(
                         http,
                         parsed_request,

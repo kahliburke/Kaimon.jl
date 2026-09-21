@@ -745,10 +745,27 @@ Stop then re-spawn an extension.
 """
 function restart_extension!(ext::ManagedExtension)
     ns = ext.config.manifest.namespace
+    # We are taking it down and bringing it back, so keep its tools advertised for the gap. Only
+    # a restart routed through here gets that: an extension that exits on its own is not known to
+    # be returning, and advertising tools nothing can answer would be worse than withdrawing them.
+    prefix = "$ns."
+    hold_tools!(prefix)
     stop_extension!(ext)
     ext.restart_count += 1
     _push_log!(:info, "Extension '$ns' restarting (attempt #$(ext.restart_count))")
     spawn_extension!(ext)
+
+    # Keep the hold alive until the extension re-registers, however long it compiles for.
+    Threads.@spawn begin
+        outcome = try
+            supervise_tool_hold!(prefix, () -> ext.status)
+        catch e
+            @debug "Tool-hold supervisor failed" namespace = ns exception = e
+            :released
+        end
+        outcome === :withdrawn &&
+            _push_log!(:warn, "Extension '$ns' never re-registered its tools; they are withdrawn")
+    end
 end
 
 """

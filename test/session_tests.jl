@@ -33,7 +33,7 @@ _session_ts(ago::Period) = format(now() - ago, "yyyy-mm-dd\\THH:MM:SS")
         @test !Kaimon._caps_may_elicit(Dict{String,Any}("roots" => Dict()))
     end
 
-    @testset "capless session borrows the latest known client caps" begin
+    @testset "a reconnect revives its own capabilities, and invents none" begin
         mktempdir() do cache
             withenv("XDG_CACHE_HOME" => cache) do
                 mkpath(joinpath(cache, "kaimon"))
@@ -45,20 +45,32 @@ _session_ts(ago::Period) = format(now() - ago, "yyyy-mm-dd\\THH:MM:SS")
                     "capped" => Dict("created_at" => _session_ts(Hour(4)),
                         "last_seen" => _session_ts(Hour(2)),
                         "client_capabilities" => Dict("elicitation" => Dict(), "roots" => Dict()),
-                        "client_info" => Dict("name" => "claude-code")),
+                        "client_info" => Dict("name" => "claude-code"),
+                        "protocol_version" => "2025-11-25"),
                     "capless" => Dict("created_at" => _session_ts(Hour(3)),
                         "last_seen" => _session_ts(Hour(3)), "workspace_root" => "/x"),
                 ))
-                # A fresh (capless) session inherits the most-recent client's caps.
+                stored = Kaimon.load_persisted_sessions()
+
+                # A client reconnecting under the id it originally handshook with gets its own
+                # advertised capabilities back. That is what persisting them is for, and it is
+                # the only legitimate source for them.
                 s = MCPSession()
-                @test isempty(s.client_capabilities)
-                Kaimon._borrow_recent_caps!(s)
+                Kaimon._restore_session_caps!(s, stored["capped"])
                 @test haskey(s.client_capabilities, "elicitation")
-                # A session that already advertised caps is left untouched.
+                @test s.client_info["name"] == "claude-code"
+                @test s.protocol_version == "2025-11-25"
+
+                # An id that never handshook here keeps EMPTY capabilities, and nothing is
+                # copied from whichever session was seen most recently. An empty set already
+                # leaves capability checks permissive, so the prompt is attempted regardless;
+                # inheriting a stranger's capabilities could only mis-attribute them, and its
+                # identity with them.
                 s2 = MCPSession()
-                s2.client_capabilities = Dict{String,Any}("roots" => Dict())
-                Kaimon._borrow_recent_caps!(s2)
-                @test !haskey(s2.client_capabilities, "elicitation")
+                Kaimon._restore_session_caps!(s2, stored["capless"])
+                @test isempty(s2.client_capabilities)
+                @test Kaimon._caps_may_elicit(s2.client_capabilities)
+                @test isempty(s2.client_info)
             end
         end
     end

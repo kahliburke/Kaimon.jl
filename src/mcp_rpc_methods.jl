@@ -422,6 +422,23 @@ function _rpc_tools_call(request, tools, name_to_id, session = nothing)
                     )
                 end
                 tool_name_str = params["name"]
+
+                # An extension we are restarting keeps its tools listed, so a call can land in
+                # the gap. Wait for it, then resolve the tool: the respawn replaces the handler.
+                held_msg = park_for_held_tool(tool_name_str)
+                if !isempty(held_msg)
+                    return HTTP.Response(
+                        200,
+                        ["Content-Type" => "application/json"],
+                        JSON.json(Dict{String,Any}(
+                            "jsonrpc" => "2.0",
+                            "id" => get(request, "id", nothing),
+                            "result" => Dict{String,Any}(
+                                "content" => [Dict{String,Any}("type" => "text", "text" => held_msg)],
+                            ),
+                        )),
+                    )
+                end
                 tool_id = get(name_to_id, tool_name_str, nothing)
 
                 if tool_id !== nothing && haskey(tools, tool_id)

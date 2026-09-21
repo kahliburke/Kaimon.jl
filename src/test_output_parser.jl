@@ -64,6 +64,9 @@ mutable struct TestRun
                                   # test environment differently and must never be invisible
     manifest_name::String         # manifest Julia read (`Manifest-v1.12.toml`, or `temp`)
     env_error::String             # test environment could not be resolved; the suite never ran
+    julia_requested::String       # `[launch] julia_version` the project asked for, if any.
+                                  # Compared against what actually ran, so a substituted Julia
+                                  # is reported here rather than only in the server log
 end
 
 function TestRun(;
@@ -90,6 +93,7 @@ function TestRun(;
         0,
         nothing,
         coverage,
+        "",
         "",
         "",
         "",
@@ -652,6 +656,20 @@ function format_test_summary(run::TestRun)::String
         line = "Julia: $(run.julia_version)"
         isempty(run.manifest_name) || (line *= " | Manifest: $(run.manifest_name)")
         println(buf, line)
+    end
+
+    # A project that asked for a Julia it did not get must say so HERE. The server log also
+    # records it, but this summary is what the user and the agent actually read, and a version
+    # mismatch makes failures look like real test failures. Reported whether or not the install
+    # prompt could be delivered, so it never depends on elicitation working.
+    ran_on = isempty(run.julia_version) ? nothing : tryparse(VersionNumber, run.julia_version)
+    if !isempty(run.julia_requested) && ran_on !== nothing &&
+       !julia_version_matches(run.julia_requested, ran_on)
+        println(buf)
+        println(buf, "WARNING: version mismatch — this project requests Julia " *
+                     "$(run.julia_requested), but the suite ran on $(run.julia_version).")
+        println(buf, "  Treat failures as suspect until the requested Julia is used. " *
+                     "Install it with: juliaup add $(run.julia_requested)")
     end
 
     # Lead with this: the suite never ran, so every count above is zero for a reason that has
