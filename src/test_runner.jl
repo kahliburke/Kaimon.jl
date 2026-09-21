@@ -240,11 +240,18 @@ function spawn_test_run(
     # code on exit (the suite runs in-process via include); _collect_coverage parses and
     # removes them afterward.
     cov_flag = coverage ? `--code-coverage=user` : ``
+    # `stdin = devnull` is required, not tidiness. Left inherited, the suite gets whatever Kaimon
+    # has on fd 0, which under the TUI is the user's controlling terminal. A suite that reads it,
+    # or puts it in raw mode, is doing so from a background process group, and the kernel answers
+    # with SIGTTIN/SIGTTOU: the whole group STOPS. The run then sits at 0% CPU forever, at the
+    # same test every time, with no output and nothing to say why. A test subprocess has no
+    # business on the user's terminal in any case.
     cmd = pipeline(
         setenv(
             `$julia_exe --startup-file=no $sysimage_flag $cov_flag $script_path $project_path $pattern $verbose`,
             env,
         );
+        stdin = devnull,
         stderr = stdout,
     )
 
@@ -433,17 +440,36 @@ function _collect_coverage(project_path::String)::String
     return String(take!(io))
 end
 
-"""Cancel a running test by killing the subprocess."""
+"""
+    cancel_test_run!(run) -> Bool
+
+Stop a run's subprocess, and report whether the process is actually gone.
+"""
 function cancel_test_run!(run::TestRun)
-    if run.status == RUN_RUNNING && run.process !== nothing
+    p = run.process
+    # Nothing live to signal: already finished, or never had a process. Report it as gone.
+    (run.status == RUN_RUNNING && p !== nothing) || return true
+    gone = false
+    # SIGTERM first so the suite can unwind, then SIGKILL, which cannot be declined. A suite
+    # wedged in a native call or on a stuck socket will sit on SIGTERM indefinitely, and a run
+    # marked cancelled while its process lives keeps the sockets and temporary paths that the
+    # next run needs — so what gets reported is whether the process actually went, not whether
+    # a signal was sent.
+    for sig in (15, 9)
         try
-            kill(run.process)
-        catch
+            kill(p, sig)
+        catch e
+            @debug "Signalling the test subprocess failed" signal = sig exception = e
         end
-        run.status = RUN_CANCELLED
-        run.finished_at = now()
-        _push_test_update!(:done, run)
+        if timedwait(() -> !process_running(p), 3.0) === :ok
+            gone = true
+            break
+        end
     end
+    run.status = RUN_CANCELLED
+    run.finished_at = now()
+    _push_test_update!(:done, run)
+    return gone
 end
 
 """Persist a completed test run to the database (delegates the atomic write to

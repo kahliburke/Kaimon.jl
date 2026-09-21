@@ -364,8 +364,15 @@ have returned, failures included. No arguments lists runs still in flight.""",
         if action == "cancel"
             run.status == RUN_RUNNING || return "Run $run_id already finished " *
                                                 "($(test_status_label(run.status)))."
-            cancel_test_run!(run)
-            return "Cancelled test run $run_id."
+            pid = run.pid
+            cancel_test_run!(run) && return "Cancelled test run $run_id."
+            # Say so plainly. A surviving subprocess still holds the sockets, ports and temp
+            # paths the next run wants, and the failures that causes look nothing like their
+            # cause, so it must not be reported as a clean cancel.
+            return "Test run $run_id is marked cancelled, but its subprocess (PID $pid) did " *
+                   "not exit even after SIGKILL. It may still hold sockets and temporary " *
+                   "paths a new run needs. Ask the user to check PID $pid before starting " *
+                   "another run for this project."
         end
 
         if run.status == RUN_RUNNING

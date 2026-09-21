@@ -185,3 +185,30 @@ using Kaimon
         end
     end
 end
+
+@testset "cancelling a run kills its subprocess and reports the truth" begin
+    # A cancel that marks the run dead while the process lives leaves it holding the sockets
+    # and temporary paths the next run needs, and the resulting failures look nothing like
+    # their cause. So the return value describes the PROCESS, not the intent.
+    run = Kaimon.TestRun(; id = -99, project_path = "/tmp")
+    proc = open(`sleep 120`, "r")     # stands in for a suite that will not finish on its own
+    run.process = proc
+    run.pid = getpid(proc)
+    run.status = Kaimon.RUN_RUNNING
+    try
+        @test Kaimon.cancel_test_run!(run)
+        @test !process_running(proc)
+        @test run.status == Kaimon.RUN_CANCELLED
+        @test run.finished_at !== nothing
+    finally
+        try; kill(proc, 9); catch; end
+    end
+
+    # Nothing live to signal is reported as gone rather than as a failure to kill.
+    done = Kaimon.TestRun(; id = -98, project_path = "/tmp")
+    done.status = Kaimon.RUN_PASSED
+    @test Kaimon.cancel_test_run!(done)
+    noproc = Kaimon.TestRun(; id = -97, project_path = "/tmp")
+    noproc.status = Kaimon.RUN_RUNNING          # running, but no process handle
+    @test Kaimon.cancel_test_run!(noproc)
+end
