@@ -134,13 +134,15 @@ _grep_path_within(abs::AbstractString, roots::Vector{String}) = any(roots) do r
     a == rr || startswith(a, rr * "/")
 end
 
-_grep_out_of_scope_msg(abs::AbstractString, roots::Vector{String}) =
+# `outcome` states WHY approval is absent, in the caller's own words. Lumping "the user said
+# no" together with "the user was never asked" makes the two indistinguishable from the tool's
+# output, which leaves an agent unable to tell a refusal from a broken prompt channel.
+_grep_out_of_scope_msg(abs::AbstractString, roots::Vector{String}, outcome::AbstractString) =
     "Error: `$abs` is outside this session's allowed scope. grep_code is confined to " *
     (isempty(roots) ? "the bound project (none is bound to this session)" :
      "the project and workspace (" * join(roots, ", ") * ")") *
-    ". Reading elsewhere requires the user's approval, which was not given (no prompt " *
-    "shown, or declined). If you need this path, ask the user to approve it — don't try " *
-    "to grant it yourself."
+    ". Reading elsewhere requires the user's approval. $outcome If you need this path, ask " *
+    "the user to approve it — don't try to grant it yourself."
 
 # Ask the user (via MCP elicitation) to approve grep reading an out-of-scope `path`.
 # Mirrors `_elicit_session_consent`: accept allows this call; the "remember" checkbox
@@ -207,8 +209,12 @@ function _grep_enforce_scope(root::AbstractString; consent = _elicit_grep_path_c
                "your client, so the user was never asked. This is not a timeout and not a " *
                "refusal: nothing was displayed to them. Ask the user to add the path to " *
                "\"grep_paths\" in ~/.config/kaimon/projects.json."
-    else  # :denied / :unsupported
-        return _grep_out_of_scope_msg(root, roots)
+    elseif decision === :denied
+        return _grep_out_of_scope_msg(root, roots,
+            "The user was shown a prompt and declined it.")
+    else  # :unsupported
+        return _grep_out_of_scope_msg(root, roots,
+            "Your client cannot show approval prompts, so the user was never asked.")
     end
 end
 
