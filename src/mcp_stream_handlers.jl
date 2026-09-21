@@ -232,7 +232,7 @@ function _stream_agent_bridge(http, req, body)
     verdict = try
         aid = HTTP.header(req, "X-Kaimon-Agent-Id", "")
         tok = HTTP.header(req, "X-Kaimon-Bridge-Token", "")
-        if isempty(aid) || isempty(tok) || tok != K._acp_token(aid)
+        if isempty(aid) || isempty(tok) || !K.secrets_equal(tok, K._acp_token(aid))
             Dict("allow" => false, "why" => "bad bridge credential")
         else
             payload = JSON.parse(body)

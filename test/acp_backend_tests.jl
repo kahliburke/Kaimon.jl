@@ -225,6 +225,61 @@ end
     @test !Kaimon._acp_tool_matches("read", "Write")
 end
 
+@testset "ACP: a refusal is put to the person" begin
+    # The hook is how the owner of an agent supplies a human. Kaimon spawns agents and does not
+    # know where anyone is looking, so without one there is nobody to ask and the answer is no.
+    old = Kaimon._PERMISSION_ASK[]
+    try
+        ask(tool, why = "denied by policy") = Kaimon._permission_answer("a1", tool, why)
+
+        Kaimon.set_permission_ask!(nothing)
+        @test ask("Bash", "denied by policy")[1] === :deny
+
+        Kaimon.set_permission_ask!((aid, tool, why) -> :allow)
+        @test ask("Bash", "denied by policy")[1] === :allow
+
+        Kaimon.set_permission_ask!((aid, tool, why) -> :deny)
+        @test ask("Bash", "denied by policy")[1] === :deny
+
+        # Anything that is not a clear yes is a no: a hook that times out into a default, or
+        # invents an answer, must not be able to widen a policy. `:always` is in here because
+        # remembering is the owner's business — saying it here grants nothing.
+        denied = map((:maybe, :always, :ALLOW, nothing, 1, true)) do bad
+            Kaimon.set_permission_ask!((aid, tool, why) -> bad)
+            ask("Bash", "why")[1]
+        end
+        @test all(==(:deny), denied)
+
+        # Spelling the yes as a string is still a yes; `Symbol` takes both.
+        Kaimon.set_permission_ask!((aid, tool, why) -> "allow")
+        @test ask("Bash", "why")[1] === :allow
+
+        # A hook that throws denies, and says so rather than failing silently.
+        Kaimon.set_permission_ask!((aid, tool, why) -> error("the panel is gone"))
+        d, err = ask("Bash", "why")
+        @test d === :deny && occursin("the panel is gone", err)
+
+        # No memory here. "Always" is a statement about a role or a project, and an agent id is
+        # neither, so the hook is asked every time and decides for itself what to remember.
+        asked = Ref(0)
+        Kaimon.set_permission_ask!((aid, tool, why) -> (asked[] += 1; :allow))
+        @test ask("WebFetch", "why")[1] === :allow
+        @test ask("WebFetch", "why")[1] === :allow
+        @test asked[] == 2
+
+        # What it is asked ABOUT is the tool and the reason, so an owner can key consent on either.
+        seen = Ref(("", "", ""))
+        Kaimon.set_permission_ask!((aid, tool, why) -> (seen[] = (aid, tool, why); :allow))
+        ask("WebFetch", "denied by policy: WebFetch")[1]
+        @test seen[] == ("a1", "WebFetch", "denied by policy: WebFetch")
+
+        # An agent with no id cannot be attributed a decision, so it is not asked for one.
+        @test Kaimon._permission_answer("", "Bash", "w")[1] === :deny
+    finally
+        Kaimon.set_permission_ask!(old)
+    end
+end
+
 @testset "ACP: _denied_tool" begin
     function b(p)
         mode, allow, deny, _ = Kaimon._permission_preset(p)
@@ -543,3 +598,90 @@ end
     end
 end
 end  # _HAVE_NODE
+
+@testset "ACP: workspace containment compares path components" begin
+    # A string-prefix test reads a sibling whose name merely starts with the root as inside it.
+    @test Kaimon._path_within("/ws", "/ws")
+    @test Kaimon._path_within("/ws", "/ws/src/a.jl")
+    @test !Kaimon._path_within("/ws", "/ws-evil/secret")
+    @test !Kaimon._path_within("/ws", "/other")
+    # A shorter path cannot contain the root.
+    @test !Kaimon._path_within("/ws/src", "/ws")
+
+    # Componentwise so the separator is whatever the platform uses. On Windows a check written
+    # against "/" matches nothing, which refuses every in-workspace path rather than admitting a
+    # wrong one — a boundary that denies everything is still a broken boundary.
+    if Sys.iswindows()
+        @test Kaimon._path_within("C:\\ws", "C:\\ws\\src\\a.jl")
+        @test !Kaimon._path_within("C:\\ws", "C:\\ws-evil\\a.jl")
+        @test Kaimon._path_within("C:\\WS", "C:\\ws\\a.jl")   # case-insensitive filenames
+    end
+
+    # End to end through the real resolution, with a workspace on disk.
+    mktempdir() do ws
+        mkpath(joinpath(ws, "sub"))
+        write(joinpath(ws, "sub", "f.jl"), "x")
+        @test Kaimon._confine_to(ws, "sub/f.jl") == realpath(joinpath(ws, "sub", "f.jl"))
+        # A file that does not exist yet still resolves, since writing one is legitimate.
+        @test Kaimon._confine_to(ws, "sub/new.jl") == joinpath(realpath(ws), "sub", "new.jl")
+        @test_throws ArgumentError Kaimon._confine_to(ws, "../outside.jl")
+        @test_throws ArgumentError Kaimon._confine_to(ws, "/etc/passwd")
+        @test_throws ArgumentError Kaimon._confine_to(ws, "")
+        # A symlink inside the workspace pointing out of it is resolved before the check, so it
+        # cannot be used as a step outside.
+        if !Sys.iswindows()
+            link = joinpath(ws, "escape")
+            symlink("/etc", link)
+            @test_throws ArgumentError Kaimon._confine_to(ws, "escape/passwd")
+        end
+    end
+end
+
+@testset "ACP: a working directory is a path" begin
+    # A tool naming a `cwd` outside the workspace would otherwise pass a check that only looks
+    # for keys spelled "path".
+    paths(d) = Kaimon._tool_call_paths(Dict{String,Any}("rawInput" => d))
+    @test paths(Dict("cwd" => "/tmp")) == ["/tmp"]
+    @test paths(Dict("directory" => "/tmp")) == ["/tmp"]
+    @test paths(Dict("dir" => "/tmp")) == ["/tmp"]
+    @test paths(Dict("file_path" => "a.jl")) == ["a.jl"]
+    @test paths(Dict("notebook_path" => "n.jl")) == ["n.jl"]
+    @test sort(paths(Dict("edits" => ["a.jl", "b.jl"], "command" => "ls"))) == String[]
+    @test sort(paths(Dict("paths" => ["a.jl", "b.jl"]))) == ["a.jl", "b.jl"]
+    # A shell command is not a path and is not treated as one; see agent_tool_refusal.
+    @test paths(Dict("command" => "cat /etc/passwd")) == String[]
+end
+
+@testset "ACP: the read cap refuses rather than guessing a size" begin
+    # `filesize` reports 0 for a missing file rather than throwing, so that case surfaces from the
+    # read itself. What matters is that it raises instead of yielding an empty string.
+    @test_throws Exception Kaimon._acp_read_capped(joinpath(mktempdir(), "nope.txt"))
+    mktempdir() do d
+        f = joinpath(d, "small.txt")
+        write(f, "hello")
+        @test Kaimon._acp_read_capped(f) == "hello"
+    end
+    # A size that cannot be determined is a cap that cannot be enforced, so `_acp_read_capped`
+    # refuses. Hard to provoke portably (it needs `filesize` itself to fail), so the contract is
+    # recorded here rather than exercised: what it must not do is treat the failure as 0 bytes and
+    # read on, which admitted exactly the files the cap exists for.
+    @test Kaimon.ACP_READ_CAP == 8 * 1024 * 1024
+end
+
+@testset "credentials come from the OS entropy source and compare in constant time" begin
+    # Seedability is the one property a credential must not have, so these must not come from the
+    # default task-local generator.
+    a, b = Kaimon.secret_bytes(32), Kaimon.secret_bytes(32)
+    @test length(a) == 32 && a != b
+    k1, k2 = Kaimon.generate_api_key(), Kaimon.generate_api_key()
+    @test startswith(k1, "kaimon_") && length(k1) == length("kaimon_") + 40 && k1 != k2
+
+    @test Kaimon.secrets_equal("abc", "abc")
+    @test !Kaimon.secrets_equal("abc", "abd")
+    @test !Kaimon.secrets_equal("abc", "abcd")      # length differs
+    @test !Kaimon.secrets_equal("", "a")
+    @test Kaimon.secrets_equal("", "")
+    # Equal-length mismatches must not short-circuit on the first differing byte; the result is
+    # all that is observable from here, so this pins the contract rather than the timing.
+    @test !Kaimon.secrets_equal("a" * "x"^31, "a" * "y"^31)
+end

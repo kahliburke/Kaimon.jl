@@ -40,17 +40,44 @@ function KaimonConfig(
 end
 
 """
+    secret_bytes(n::Integer) -> Vector{UInt8}
+
+`n` bytes from the operating system's entropy source, for anything used as a credential.
+
+The default `rand` draws from a task-local Xoshiro generator, which is fast and statistically
+sound but reproducible from its state: it is built to be seedable, which is the one property a
+credential must not have. `RandomDevice` reads the OS CSPRNG instead.
+"""
+secret_bytes(n::Integer) = rand(Random.RandomDevice(), UInt8, n)
+
+"""
+    secrets_equal(a, b) -> Bool
+
+Compare two secrets without letting the comparison's duration reveal their common prefix.
+
+`==` on strings returns at the first differing byte, so how long a rejection takes says how much
+of the secret was right. Length is still compared directly, since a length check leaks only the
+length and short-circuiting on it is what keeps the loop well defined.
+"""
+function secrets_equal(a::AbstractString, b::AbstractString)
+    x, y = codeunits(String(a)), codeunits(String(b))
+    length(x) == length(y) || return false
+    acc = UInt8(0)
+    for i in eachindex(x)
+        acc |= x[i] ⊻ y[i]
+    end
+    return acc == 0
+end
+
+"""
     generate_api_key() -> String
 
 Generate a cryptographically secure API key.
 Format: kaimon_<40 hex characters>
 """
 function generate_api_key()
-    # Generate 20 random bytes (160 bits)
-    random_bytes = rand(UInt8, 20)
-    # Convert to hex string
-    hex_string = bytes2hex(random_bytes)
-    return "kaimon_" * hex_string
+    # 20 bytes (160 bits) from the OS CSPRNG — see `secret_bytes`.
+    return "kaimon_" * bytes2hex(secret_bytes(20))
 end
 
 """

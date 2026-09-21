@@ -155,8 +155,11 @@ const ACP_BRIDGE_LOCK = ReentrantLock()
 # Tool names that mutate state, used only when policy can't be resolved.
 const ACP_MUTATING_TOOLS = ("write", "edit", "patch", "bash", "shell", "run", "delete", "move")
 
+# From the OS CSPRNG, not the default generator: this token is the only credential on
+# `/agent/permission`, which answers yes or no to tool execution and so runs ahead of the API-key
+# gate. A token drawn from a seedable generator is one an observer can work back to.
 _acp_register_token!(agent_id::AbstractString) = lock(ACP_BRIDGE_LOCK) do
-    ACP_BRIDGE_TOKENS[String(agent_id)] = string(rand(UInt128); base = 16)
+    ACP_BRIDGE_TOKENS[String(agent_id)] = bytes2hex(secret_bytes(32))
 end
 _acp_forget_token!(agent_id::AbstractString) = lock(ACP_BRIDGE_LOCK) do
     delete!(ACP_BRIDGE_TOKENS, String(agent_id))
@@ -344,9 +347,14 @@ Only ACP agents are judged. The claude CLI enforces its own allowlist, and an em
 means a caller that is not a Kaimon-owned agent at all.
 
 `args` is read for the same reason `acp_bridge_decide` reads it: a tool name says what was called
-and not which file it touches. The bridge hook already confines every path an opencode agent
-passes, so confining here is what makes the two doors agree rather than leaving the backstop the
-weaker of the two.
+and not which file it touches. The bridge hook confines the paths an opencode agent passes, so
+confining here is what keeps the two doors at the same strength.
+
+That reaches path ARGUMENTS only, which is the whole of what a tool call exposes. A shell tool
+carries its target inside a command string, so nothing here confines where `bash` reads or writes,
+and the presets that permit a shell (`default`, `lab`, `bypass`) are granting exactly that. The
+boundary a preset without a shell gets is real; the one it gets with a shell is the agent's own
+good behaviour.
 """
 function agent_tool_refusal(agent_id::AbstractString, tool::AbstractString, args = nothing)
     isempty(agent_id) && return nothing
@@ -455,7 +463,13 @@ ACP applies the same idea to terminal output through `outputByteLimit`.
 const ACP_READ_CAP = 8 * 1024 * 1024
 
 function _acp_read_capped(path::AbstractString)
-    sz = try; filesize(path); catch; 0; end
+    # A size we cannot determine is a cap we cannot enforce, so refuse rather than read. Treating
+    # the failure as 0 bytes let exactly the files the cap exists for through.
+    sz = try
+        filesize(path)
+    catch e
+        throw(ArgumentError("cannot size $path to apply the read limit: $(sprint(showerror, e))"))
+    end
     sz > ACP_READ_CAP && throw(ArgumentError(
         "file is $(sz) bytes, over the $(ACP_READ_CAP) byte read limit; ask for a line range"))
     return read(path, String)
@@ -471,7 +485,9 @@ function _tool_call_paths(tc)
         # carries a list. Take anything that looks like one rather than guessing a single key.
         for (k, v) in ri
             ks = lowercase(String(k))
-            (occursin("path", ks) || ks == "file") || continue
+            # `cwd` and its spellings count: a call that names a working directory outside the
+            # workspace escapes a boundary that only looks for keys saying "path".
+            (occursin("path", ks) || ks in ("file", "cwd", "dir", "directory")) || continue
             v isa AbstractString && push!(out, String(v))
             v isa AbstractVector && for x in v; x isa AbstractString && push!(out, String(x)); end
         end
@@ -689,6 +705,25 @@ function acp_queues_prompts(h::ACPHandle)
 end
 
 """
+    _path_within(root, full) -> Bool
+
+Whether `full` is `root` or sits beneath it, comparing path components rather than string
+prefixes.
+
+A `startswith(full, root * "/")` test is wrong twice over. It reads `/` as the separator, which on
+Windows matches nothing, so every in-workspace path fails containment and the agent can touch no
+file at all. And a prefix compare reads `/ws-evil` as inside `/ws`, which componentwise cannot.
+Windows filenames are case-insensitive, so the comparison follows the platform.
+"""
+function _path_within(root::AbstractString, full::AbstractString)
+    fold(s) = Sys.iswindows() ? lowercase(s) : s
+    rp = fold.(splitpath(String(root)))
+    fp = fold.(splitpath(String(full)))
+    length(fp) >= length(rp) || return false
+    return all(i -> fp[i] == rp[i], eachindex(rp))
+end
+
+"""
 Resolve a path the agent asked for, and refuse it unless it is inside the session's `cwd`.
 
 The fs callbacks are a second door into this process, and they used to open straight onto the
@@ -715,9 +750,12 @@ a hostile one, and two gaps are inherent rather than oversights:
 
 An agent that would exploit either is one that should not have been summoned.
 """
-function _acp_confine(h::ACPHandle, path::AbstractString)
+_acp_confine(h::ACPHandle, path::AbstractString) = _confine_to(h.cwd, path)
+
+"The resolution and the check on their own, so the boundary can be tested without a live agent."
+function _confine_to(cwd::AbstractString, path::AbstractString)
     isempty(path) && throw(ArgumentError("no path given"))
-    root = try; realpath(h.cwd); catch; abspath(h.cwd); end
+    root = try; realpath(cwd); catch; abspath(cwd); end
     p = abspath(isabspath(path) ? String(path) : joinpath(root, String(path)))
     # Resolve as far as the filesystem knows, then re-attach the part that doesn't exist yet.
     probe, rest = p, String[]
@@ -729,7 +767,7 @@ function _acp_confine(h::ACPHandle, path::AbstractString)
     end
     resolved = try; realpath(probe); catch; probe; end
     full = isempty(rest) ? resolved : joinpath(resolved, rest...)
-    (full == root || startswith(full, root * "/")) ||
+    _path_within(root, full) ||
         throw(ArgumentError("path is outside this agent's workspace: $path"))
     return full
 end
@@ -757,6 +795,52 @@ function _announce_request!(h::ACPHandle, id, method::AbstractString, params)
     return nothing
 end
 
+"""
+Ask a human whether to allow a call policy would refuse. `nothing` when nobody can be asked.
+
+Set by whoever owns the agent and knows where its person is looking — Kaimon spawns agents and does
+not. Called as `f(agent_id, tool, why) -> :allow | :always | :deny`, and anything else counts as
+deny, so a hook that errors or invents an answer cannot widen a policy.
+"""
+const _PERMISSION_ASK = Ref{Any}(nothing)
+set_permission_ask!(f) = (_PERMISSION_ASK[] = f; nothing)
+
+"""
+Put a refusal to the human, and answer with what they say.
+
+A policy that can only refuse teaches people to work around it; one that asks is the same policy
+with a door in it. Silence is a refusal, so a headless run behaves exactly as it did before this
+existed — nobody answers, and the call is refused.
+
+Asked EVERY time, with no memory of the answer here. "Always allow" is a statement about a role or
+a project, and an agent id is neither: it belongs to one summoning and the next one has a different
+one, so consent kept against it would be forgotten exactly when someone wanted it and inherited
+exactly when they did not. Whoever owns the agent knows what the durable thing is called, and it is
+also the side that should decide how long consent lasts, so remembering lives there. A hook that
+has an answer already returns it without troubling anyone.
+
+Safe to block: the caller is already on its own task (see `_start_acp_reader!`), so the reader
+keeps draining while this waits.
+"""
+function _permission_answer(aid::AbstractString, tool::AbstractString, why::AbstractString)
+    f = _PERMISSION_ASK[]
+    # No hook is nobody to ask. No agent id is nobody to attribute the decision to.
+    (f === nothing || isempty(aid)) && return (:deny, "")
+    try
+        # Only a clear yes is a yes. A hook that times out into a default or answers something
+        # unexpected must not be able to widen a policy.
+        return (Symbol(f(String(aid), String(tool), String(why))) === :allow ? :allow : :deny, "")
+    catch e
+        return (:deny, "could not ask about $tool: $(sprint(showerror, e))")
+    end
+end
+
+function _ask_permission(h::ACPHandle, tool::AbstractString, why::AbstractString)
+    decision, err = _permission_answer(h.agent_id, tool, why)
+    isempty(err) || put!(h.events, ACP.AgentError(err))
+    return decision
+end
+
 function _handle_request!(h::ACPHandle, id, method::AbstractString, params)
     params = params isa AbstractDict ? params : Dict{String,Any}()
 
@@ -771,6 +855,13 @@ function _handle_request!(h::ACPHandle, id, method::AbstractString, params)
         # name it accepted. Policy and confinement have to be applied here or they apply to nobody.
         opts = get(params, "options", Any[])
         why = _permission_refusal(h, get(params, "toolCall", nothing))
+        # A refusal is put to the person first. Policy still decides what needs asking about; what
+        # it no longer decides alone is the answer.
+        if why !== nothing
+            tc = get(params, "toolCall", nothing)
+            tool = tc isa AbstractDict ? String(get(tc, "title", get(tc, "kind", "a tool"))) : "a tool"
+            why = _ask_permission(h, tool, why) === :allow ? nothing : why
+        end
         if why !== nothing
             rej = _pick_permission(opts; want = ("reject_once", "reject_always"))
             put!(h.events, ACP.AgentError("refused a tool call: $why"))
