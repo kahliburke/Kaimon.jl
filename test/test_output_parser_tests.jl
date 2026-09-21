@@ -402,6 +402,35 @@ using Kaimon:
         delete!(_PARSER_STATES, 121)
     end
 
+    @testset "a substituted Julia is reported in the summary, not just the server log" begin
+        run = TestRun(; id = 123, project_path = "/tmp/p")
+        run.julia_requested = "1.11.4"     # what [launch] julia_version asked for
+        parse_test_line!(run, "TEST_RUNNER: ENV julia=1.12.7 manifest=Manifest-v1.12.toml")
+
+        # Whether or not an install prompt could be delivered, the result says the suite ran on
+        # the wrong Julia — otherwise a version mismatch reads as a real test failure.
+        summary = format_test_summary(run)
+        @test occursin("version mismatch", summary)
+        @test occursin("1.11.4", summary)
+        @test occursin("1.12.7", summary)
+        @test occursin("juliaup add 1.11.4", summary)
+
+        # Honored request → no warning. A series request matches any patch in it.
+        ok = TestRun(; id = 124, project_path = "/tmp/p")
+        ok.julia_requested = "1.12"
+        parse_test_line!(ok, "TEST_RUNNER: ENV julia=1.12.7 manifest=Manifest-v1.12.toml")
+        @test !occursin("version mismatch", format_test_summary(ok))
+
+        # No request → nothing to compare, so no warning.
+        none = TestRun(; id = 125, project_path = "/tmp/p")
+        parse_test_line!(none, "TEST_RUNNER: ENV julia=1.12.7 manifest=Manifest-v1.12.toml")
+        @test !occursin("version mismatch", format_test_summary(none))
+
+        for id in (123, 124, 125)
+            delete!(_PARSER_STATES, id)
+        end
+    end
+
     @testset "ENV_ERROR reassembles the resolver's explanation and leads the summary" begin
         run = TestRun(; id = 122, project_path = "/tmp/p")
         parse_test_line!(run, "TEST_RUNNER: ENV julia=1.12.7 manifest=Manifest-v1.12.toml")

@@ -224,6 +224,10 @@ function spawn_test_run(
     julia_exe = _launch_julia_exe(lc)
     sysimage = _resolve_sysimage(lc, project_path)
     sysimage_flag = isempty(sysimage) ? `` : `--sysimage=$sysimage`
+    # Recorded so the summary can compare what the project asked for against what actually ran.
+    # An explicit julia_bin is the user overriding the version request on purpose, so it is not
+    # reported as a mismatch.
+    run.julia_requested = isempty(lc.julia_bin) ? lc.julia_version : ""
 
     # Clean subprocess: no --project (script manages its own env via Pkg.activate),
     # and clear JULIA_LOAD_PATH so the subprocess gets default LOAD_PATH
