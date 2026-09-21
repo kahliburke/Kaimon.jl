@@ -165,8 +165,12 @@ function _elicit_grep_path_consent(path::AbstractString)
             ),
         ),
     )
+    # Name the client that actually asked, rather than assuming which one it is.
+    who = let n = get(session.client_info, "name", "")
+        isempty(string(n)) ? "An agent" : string(n)
+    end
     msg =
-        "Claude wants grep_code to search files under:\n$path\n\nThis is outside the " *
+        "$who wants grep_code to search files under:\n$path\n\nThis is outside the " *
         "current project and workspace. Accept to allow this search. Check \"Always " *
         "allow\" to add it to your grep allow-list and skip this prompt next time."
     res = request_elicitation(caller, msg, schema; timeout = elicitation_timeout())

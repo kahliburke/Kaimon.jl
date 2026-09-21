@@ -748,7 +748,11 @@ function _elicit_session_consent(path::AbstractString)
             ),
         ),
     )
-    msg = "Claude wants to start a Julia session for the project:\n$path\n\n" *
+    # Name the client that actually asked, rather than assuming which one it is.
+    who = let n = get(session.client_info, "name", "")
+        isempty(string(n)) ? "An agent" : string(n)
+    end
+    msg = "$who wants to start a Julia session for the project:\n$path\n\n" *
           "Accept to allow. Check \"Always allow\" to add it to your allowed-projects " *
           "list and skip this prompt next time."
     # Cap the wait under the client's tool-call timeout (~60s) so we always return
@@ -794,16 +798,14 @@ function _elicit_julia_install(version::AbstractString, project_path::AbstractSt
     # No fields: accept/decline is the entire decision, and clients render only those two
     # buttons reliably.
     schema = Dict{String,Any}("type" => "object", "properties" => Dict{String,Any}())
-    msg = "The project at $project_path requests Julia $version, which is not installed.\n\n" *
-          "Accept and Kaimon will run `juliaup add $version`, downloading that Julia into " *
-          "$(juliaup_dir()). This does NOT change your default julia — `juliaup default` is " *
-          "left exactly as it is, and only this project's Kaimon sessions and test runs will " *
-          "use $version.\n\n" *
-          "Decline and Kaimon will use Julia $(VERSION) instead. The project asked for " *
-          "$version for a reason, so if you then hit unsatisfiable dependency resolution, " *
-          "precompilation failures, or tests that fail for you and not for other " *
-          "contributors, suspect this version mismatch first. You can install it yourself at " *
-          "any time with `juliaup add $version`."
+    # Written for a cramped dialog. Clients clip each line and collapse the remainder behind a
+    # "+N more lines" fold, so the decisive facts lead: what is being installed, and that the
+    # user's default Julia survives it. Everything else (why the version was asked for, what
+    # goes wrong on a mismatch) is repeated in the tool result, which is not truncated.
+    msg = "Install Julia $version with juliaup? Your default julia stays unchanged.\n" *
+          "Only this project would use $version.\n" *
+          "Declining runs it on $(VERSION), which can cause false test failures.\n" *
+          "Requested by: $project_path"
     res = request_elicitation(caller, msg, schema; timeout = elicitation_timeout())
     res === :undeliverable && return :undeliverable
     res isa AbstractDict || return :timeout
