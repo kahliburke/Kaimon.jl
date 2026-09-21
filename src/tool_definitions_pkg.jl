@@ -172,6 +172,12 @@ one session is connected, that session's project is used.""",
             end
         end
 
+        # The project may request a Julia that isn't installed. Offer to install it before
+        # running, so the suite isn't resolved and tested on a Julia the project doesn't
+        # support.
+        pending_install = _maybe_offer_julia_install(project_path)
+        pending_install === nothing || return "🧪 Tests not started — $pending_install"
+
         # Honesty check: a pattern only filters if runtests.jl forwards ARGS (ReTest's
         # retest(ARGS...) convention). Otherwise it's silently ignored and the whole
         # suite runs — warn rather than imply the run was filtered.

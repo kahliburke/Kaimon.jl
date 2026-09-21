@@ -130,11 +130,22 @@ How Kaimon starts a managed session for a project — most importantly, which **
 |-------|-------------|
 | `sysimage` | `-J` system image. A relative path resolves against the project root |
 | `julia_bin` | Julia binary, or a wrapper script that forwards its arguments to one. Default: the Julia running Kaimon |
+| `julia_version` | Julia version to run, e.g. `1.12.6` or the series `1.12`. Resolved against juliaup's installs. Default: the Julia running Kaimon |
 | `threads` | `-t` value. Default `auto` |
 | `gcthreads` | `--gcthreads` value |
 | `heap_size_hint` | `--heap-size-hint` value, e.g. `8G` |
 | `startup_file` | Run `~/.julia/config/startup.jl`. Default `false` |
 | `extra_flags` | Any further Julia flags, passed through verbatim |
+
+#### Requesting a Julia version
+
+`julia_version` is the portable way to say which Julia a project needs. `julia_bin` is a path that exists on one contributor's machine, so it cannot be checked in; a version can. Both a patch (`1.12.6`) and a series (`1.12`, which takes the newest installed patch) work.
+
+Resolution order is the Julia running Kaimon, then juliaup's installed versions, read from juliaup's own `juliaup.json`. `julia_bin` outranks `julia_version` when both are set, as the escape hatch for a Julia that juliaup does not manage.
+
+If the requested version isn't installed and juliaup is available, Kaimon asks whether to install it, stating what will be downloaded and that your default `julia` is left alone. Kaimon never downloads a Julia without being told to. `juliaup add` can take minutes, so an accepted install runs in the background and the tool asks you to retry rather than holding the call open past your client's timeout.
+
+Declining, or having no juliaup, is not fatal: the session or test run proceeds on the Julia Kaimon is running, and logs which version it substituted. If dependency resolution, precompilation, or tests then misbehave, that mismatch is the first thing to suspect.
 
 There are two places to set it. Per user, in `projects.json`:
 

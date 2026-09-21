@@ -145,6 +145,7 @@ include("gate_client_tools.jl")
 include("extensions.jl")
 include("extension_manager.jl")
 include("projects_config.jl")
+include("julia_versions.jl")   # portable [launch] julia_version → a juliaup-installed binary
 include("session_manager.jl")
 include("stress_test.jl")
 include("test_output_parser.jl")

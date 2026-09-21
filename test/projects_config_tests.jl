@@ -152,3 +152,190 @@ end
         @test occursin("--startup-file=yes", s)
     end
 end
+
+@testset "Launch config: portable julia_version (#91)" begin
+    K = Kaimon
+
+    @testset "a version request designates a version" begin
+        # An exact patch matches only itself.
+        @test K.julia_version_matches("1.12.6", v"1.12.6")
+        @test !K.julia_version_matches("1.12.6", v"1.12.7")
+        @test !K.julia_version_matches("1.12.6", v"1.13.6")
+
+        # A series matches any patch in it, so a project can pin the minor it supports
+        # without naming a patch that ages out.
+        @test K.julia_version_matches("1.12", v"1.12.0")
+        @test K.julia_version_matches("1.12", v"1.12.7")
+        @test !K.julia_version_matches("1.12", v"1.13.0")
+
+        # "1.12" must stay a series: `tryparse(VersionNumber, "1.12")` yields 1.12.0, which
+        # would silently turn a series request into an exact-patch one.
+        @test K.julia_version_matches("1.12", v"1.12.7")
+
+        # Junk designates nothing rather than throwing.
+        for bad in ("", "1", "abc", "1.x", "1.12.x", "1.12.6.4")
+            @test !K.julia_version_matches(bad, VERSION)
+        end
+    end
+
+    @testset "installed versions come from juliaup's own state file" begin
+        depot = mktempdir()
+        # juliaup records a BinaryPath per install because the layout is platform-specific
+        # (on macOS the binary sits inside an .app bundle), so honor it rather than guessing.
+        bin126 = joinpath(depot, "julia-1.12.6", "nested", "bin", "julia")
+        bin1130 = joinpath(depot, "julia-1.13.0", "nested", "bin", "julia")
+        for b in (bin126, bin1130)
+            mkpath(dirname(b))
+            write(b, "")
+        end
+        write(joinpath(depot, "juliaup.json"), """
+        {
+          "Default": "release",
+          "InstalledVersions": {
+            "1.12.6+0.x": {"Path": "./julia-1.12.6", "BinaryPath": "./julia-1.12.6/nested/bin/julia"},
+            "1.13.0+0.x": {"Path": "./julia-1.13.0", "BinaryPath": "./julia-1.13.0/nested/bin/julia"},
+            "9.9.9+0.x": {"Path": "./gone", "BinaryPath": "./gone/bin/julia"}
+          }
+        }
+        """)
+
+        old = get(ENV, "JULIAUP_DEPOT_PATH", nothing)
+        try
+            ENV["JULIAUP_DEPOT_PATH"] = depot
+            @test K.juliaup_dir() == depot
+
+            found = K.juliaup_installed_julias()
+            # An install whose recorded binary is gone is not offered as available.
+            @test length(found) == 2
+            # Newest first, so a series request takes the newest patch in it.
+            @test first(found)[1] == v"1.13.0"
+            @test Dict(found)[v"1.12.6"] == bin126
+
+            @test K.resolve_julia_binary("1.12.6") == bin126
+            @test K.resolve_julia_binary("1.13") == bin1130
+            # Not installed → nothing, so the caller can decide whether to offer an install.
+            @test K.resolve_julia_binary("1.11.4") === nothing
+
+            # The running Julia is matched before juliaup, so a project asking for the
+            # version already in use needs no juliaup at all.
+            host = joinpath(Sys.BINDIR, "julia")
+            @test K.resolve_julia_binary(string(VERSION)) == host
+            @test K.resolve_julia_binary("$(VERSION.major).$(VERSION.minor)") == host
+
+            # No state file at all → nothing installed, no error.
+            ENV["JULIAUP_DEPOT_PATH"] = mktempdir()
+            @test isempty(K.juliaup_installed_julias())
+            @test K.resolve_julia_binary("1.12.6") === nothing
+        finally
+            old === nothing ? delete!(ENV, "JULIAUP_DEPOT_PATH") : (ENV["JULIAUP_DEPOT_PATH"] = old)
+        end
+    end
+
+    @testset "binary precedence: julia_bin > julia_version > host Julia" begin
+        depot = mktempdir()
+        bin126 = joinpath(depot, "julia-1.12.6", "bin", "julia")
+        mkpath(dirname(bin126))
+        write(bin126, "")
+        write(joinpath(depot, "juliaup.json"), """
+        {"InstalledVersions": {"1.12.6+0.x": {"Path": "./julia-1.12.6"}}}
+        """)
+
+        old = get(ENV, "JULIAUP_DEPOT_PATH", nothing)
+        try
+            ENV["JULIAUP_DEPOT_PATH"] = depot
+            host = joinpath(Sys.BINDIR, "julia")
+            lc(; bin = "", ver = "") =
+                K.LaunchConfig("", "", "", String[], "", bin, false, ver)
+
+            # With no BinaryPath recorded, the conventional layout is used.
+            @test K.resolve_julia_binary("1.12.6") == bin126
+
+            @test K._launch_julia_exe(lc()) == host
+            @test K._launch_julia_exe(lc(ver = "1.12.6")) == bin126
+            # julia_bin is the escape hatch, so it outranks a julia_version that juliaup
+            # could otherwise satisfy.
+            @test K._launch_julia_exe(lc(bin = "/opt/jl/run", ver = "1.12.6")) == "/opt/jl/run"
+            # A requested version that isn't installed falls back to the host Julia rather
+            # than failing the spawn; the substitution is logged, not silent.
+            @test K._launch_julia_exe(lc(ver = "1.11.4")) == host
+
+            # The resolved binary is what the spawned session actually runs.
+            cmd = K._build_julia_cmd(lc(ver = "1.12.6"), "boot()"; project = mktempdir())
+            @test cmd[1] == bin126
+        finally
+            old === nothing ? delete!(ENV, "JULIAUP_DEPOT_PATH") : (ENV["JULIAUP_DEPOT_PATH"] = old)
+        end
+    end
+
+    @testset "julia_version is portable config: TOML, JSON and overlay" begin
+        # The point of the field: a repo can check this in, where an absolute julia_bin would
+        # only work on its author's machine.
+        proj = mktempdir()
+        write(joinpath(proj, "kaimon.toml"), """
+        [launch]
+        julia_version = "1.12.6"
+        threads = "4"
+        """)
+        toml_lc = K.load_toml_launch_config(proj)
+        @test toml_lc !== nothing
+        @test toml_lc.julia_version == "1.12.6"
+
+        # Round-trips through projects.json.
+        lc = K.LaunchConfig("", "", "", String[], "", "", false, "1.12.6")
+        d = K._project_entry_to_dict(K.ProjectEntry("/p", true, lc))["launch_config"]
+        @test d["julia_version"] == "1.12.6"
+        @test K._parse_launch_config(d).julia_version == "1.12.6"
+
+        # A bare `julia_version = 1.12` in TOML parses as a float; keep it readable instead
+        # of throwing, and let resolution reject it.
+        @test K._parse_launch_config(Dict("julia_version" => 1.12)).julia_version == "1.12"
+
+        # Configs written before the field existed still load.
+        @test K._parse_launch_config(Dict("threads" => "4")).julia_version == ""
+        @test K.LaunchConfig("4", "", "", String[]).julia_version == ""
+        @test K.LaunchConfig("4", "", "", String[], "", "", false).julia_version == ""
+
+        # The user's projects.json entry overrides the repo's checked-in request.
+        merged = K.merge_launch_config(toml_lc, K.LaunchConfig("", "", "", String[], "", "", false, "1.13.0"))
+        @test merged.julia_version == "1.13.0"
+        @test merged.threads == "4"
+        # Left unset, the repo's request stands.
+        @test K.merge_launch_config(toml_lc, K.LaunchConfig()).julia_version == "1.12.6"
+
+        @test occursin("julia 1.12.6", K.launch_config_summary(lc))
+    end
+
+    @testset "the install offer only fires when there is something to install" begin
+        proj = mktempdir()
+        write(joinpath(proj, "Project.toml"), "name = \"P\"\n")
+
+        # No version requested → nothing to offer.
+        @test K._maybe_offer_julia_install(proj) === nothing
+
+        # A version that resolves (the running Julia) → nothing to offer.
+        write(joinpath(proj, "kaimon.toml"), """
+        [launch]
+        julia_version = "$(VERSION.major).$(VERSION.minor)"
+        """)
+        @test K._maybe_offer_julia_install(proj) === nothing
+
+        # An unresolvable version, but julia_bin set → julia_bin wins, so nothing to offer.
+        write(joinpath(proj, "kaimon.toml"), """
+        [launch]
+        julia_version = "1.11.4"
+        julia_bin = "/opt/jl/run"
+        """)
+        @test K._maybe_offer_julia_install(proj) === nothing
+
+        # Unresolvable with no julia_bin: there IS something to offer, but with no MCP caller
+        # to prompt there is no consent to be had, so it proceeds rather than blocking.
+        write(joinpath(proj, "kaimon.toml"), """
+        [launch]
+        julia_version = "1.11.4"
+        """)
+        @test K._maybe_offer_julia_install(proj) === nothing
+
+        # Downloading a Julia is never automatic — an install needs juliaup AND consent.
+        @test K.install_julia_version("")[1] == false
+    end
+end
