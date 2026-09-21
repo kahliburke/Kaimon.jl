@@ -198,6 +198,7 @@ include("service_endpoint.jl")
 include("agent_acp_types.jl")
 include("agent_backend.jl")
 include("ollama_backend.jl")
+include("acp_backend.jl")
 include("agent_session.jl")
 include("agent_tools.jl")
 

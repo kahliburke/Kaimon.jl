@@ -1,5 +1,15 @@
 # ── Update ────────────────────────────────────────────────────────────────────
 
+"""
+Ask to quit, unless quitting is not ours to do.
+
+Embedded in another app's TUI, this process IS that app's backend: the notebook hub runs as its
+extension, so a stray `q` here would take down the thing the user is actually looking at, from a
+pane they opened to glance at logs. The host declines and the parent's own status line says how to
+get back, so the key does nothing rather than something unrecoverable.
+"""
+_request_quit!(m) = (kaimon_embedded() || (m.quit_confirm = true); nothing)
+
 function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
     # Quit confirmation modal captures all mouse input
     if m.quit_confirm && m.quit_confirm_modal !== nothing
@@ -695,12 +705,12 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
             if m.tab_bar.active == TAB_DEBUG && m.debug_state == :paused && get(m.focused_pane, TAB_DEBUG, 1) == 2
                 # Fall through to per-tab dispatch
             else
-                m.quit_confirm = true; return
+                _request_quit!(m); return
             end
         end
 
         # Ctrl-C: quit confirmation
-        (:ctrl_c, _) => (m.quit_confirm = true; return)
+        (:ctrl_c, _) => (_request_quit!(m); return)
 
         # Ctrl-U: Revise reload
         (:ctrl, 'u') => (_revise_reload!(m); return)
@@ -764,7 +774,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
                     if m.debug_input_editing
                         m.debug_input_editing = false
                     else
-                        m.quit_confirm = true
+                        _request_quit!(m)
                     end
                     return
                 end
@@ -778,7 +788,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
                         m.ext_detail_open = false
                         m.ext_detail_pane = nothing
                     else
-                        m.quit_confirm = true
+                        _request_quit!(m)
                     end
                     return
                 end
@@ -788,7 +798,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
                     elseif m.stress_state == STRESS_RUNNING
                         _cancel_stress_test!(m)
                     else
-                        m.quit_confirm = true
+                        _request_quit!(m)
                     end
                     return
                 end
@@ -796,11 +806,11 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
                     if m.search_query_editing
                         m.search_query_editing = false
                     else
-                        m.quit_confirm = true
+                        _request_quit!(m)
                     end
                     return
                 end
-                _ => (m.quit_confirm = true)
+                _ => (_request_quit!(m))
             end
             return
         end

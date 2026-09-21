@@ -61,15 +61,51 @@ _gen_agent_id() = bytes2hex(rand(UInt8, 4))
 Spawn and own a new agent. Returns the agent id. Events stream on the gate bus
 channel `agent:<id>`.
 """
-# High-level permission posture → (permission_mode, extra allowed tools, skip-flag).
-# Lets a consumer pick one word per spawn instead of assembling raw flags. The
-# recursion guard (disallowed agent_* tools) stays on regardless.
+# The CLI's own file and shell tools. An agent working ON a notebook has better versions of every
+# one of these — `slate.read` sees the live cell and its output, `grep` sees the text last written
+# to disk — so reaching for these is both a worse answer and how an agent asked to debug one cell
+# ends up reading the whole repository.
+#
+# Enforced twice, because one of the two cannot cover everything. At ask time these are refused
+# when the agent requests permission, which it does for writes, shell commands and any path outside
+# the session cwd, but not for reading a file inside it. So the list also goes to the agent on
+# `session/new` (see `_acp_session_meta`), which removes the tool rather than refusing the call.
+#
+# Measured under `notebook`: the agent reports having no Read tool at all. It then read the file
+# through `grep_code`, which the preset allows on purpose — this redirects an agent onto Kaimon's
+# tools, it does not blindfold it. Under `specialist`, whose allowlist is a few named verbs, that
+# route is refused too, and so was every other read path tried, including via a subagent.
+const AGENT_NATIVE_FILE_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit"]
+
+"""
+A permission posture as one word → `(permission_mode, allowed, disallowed, dangerous)`, so a
+consumer picks a preset per spawn instead of assembling raw flags. The recursion guard (disallowed
+`agent_*` tools) stays on regardless.
+
+`disallowed` is the newer half and the reason this is a 4-tuple: a mode like `acceptEdits` says
+what to PROMPT for, not what exists, so `lab` auto-approved edits while leaving every native tool
+in place — which read as "Kaimon tools only" and was not.
+"""
 function _permission_preset(p::AbstractString)
     pl = lowercase(p)
-    pl == "lab"    ? ("acceptEdits", ["mcp__kaimon"], false) :      # drive the lab: slate.*/ex/...
-    pl == "auto"   ? ("auto", String[], false) :                   # model classifier self-governs
-    pl == "bypass" ? ("bypassPermissions", String[], true) :       # no checks (sandbox/trusted only)
-                     ("acceptEdits", String[], false)              # "default": edits only
+    # `lab` drives the lab: Kaimon's tools, plus the ACP fs callbacks so an agent can still read
+    # and edit inside its workspace. Those are named explicitly because the fs path now consults
+    # the allowlist — before, it consulted nothing, so a specialist restricted to seven tools
+    # could read any file on the machine through it.
+    # `notebook` is what an agent working on a notebook should be: Kaimon's tools, and not the
+    # CLI's own shell and file tools, which duplicate them badly and lead somewhere else.
+    # The fs callbacks are left OUT of it deliberately: they are a file tool by another route, and
+    # an ACP agent that has them has not been restricted to the slate tools at all.
+    pl == "notebook" ? ("acceptEdits", ["mcp__kaimon"], copy(AGENT_NATIVE_FILE_TOOLS), false) :
+    # `specialist` is `notebook` without the allowance. A specialist is spawned with an allowlist of
+    # a few named tools, and on the CLI path a preset's allowances are UNIONED with it — so allowing
+    # `mcp__kaimon` here would widen a debugger from nine verbs to every tool Kaimon has.
+    pl == "specialist" ? ("acceptEdits", String[], copy(AGENT_NATIVE_FILE_TOOLS), false) :
+    pl == "lab"    ? ("acceptEdits", ["mcp__kaimon", "fs/read_text_file", "fs/write_text_file"],
+                      String[], false) :
+    pl == "auto"   ? ("auto", String[], String[], false) :         # model classifier self-governs
+    pl == "bypass" ? ("bypassPermissions", String[], String[], true) :  # no checks (sandbox only)
+                     ("acceptEdits", String[], String[], false)    # "default": edits only
 end
 
 """Split an optional inline effort suffix off a Claude model string:
@@ -144,14 +180,34 @@ function agent_open(; cwd::String,
         end
     end
 
-    pmode, pallow, dangerous = _permission_preset(permission)
+    pmode, pallow, pdeny, dangerous = _permission_preset(permission)
+    # The preset's denials ride ON TOP of the caller's, never instead: the recursion guard
+    # (AGENT_SELF_TOOLS) is in that default and a preset must not be able to lift it.
+    disallowed_tools = unique(vcat(disallowed_tools, pdeny))
     final_mode = permission_mode === nothing ? pmode : permission_mode  # explicit mode overrides preset
     final_allowed = unique(vcat(allowed_tools, pallow))                  # preset composes with explicit allowlist
     # Backend selection by model string — "ollama:<tag>" and "vmlx:<tag>" drive a
     # local model in-process (no CLI, no MCP subprocess) over the Ollama /api/chat
     # wire protocol; vmlx is Ollama-compatible and defaults to its own port (:8000),
     # so no OLLAMA_HOST env hack. Anything else is the claude CLI.
-    backend = if startswith(model, VMLX_PREFIX)
+    backend = if startswith(model, ACP_PREFIX)
+        # Any ACP-speaking agent. Tool policy can't ride the protocol, so the
+        # preset and the recursion guard are handed to the bridge plugin instead.
+        acp_argv, acp_model = _parse_acp_model(model)
+        ACPClientBackend(; argv = acp_argv, model = acp_model,
+                         permission = permission, permission_mode = final_mode,
+                         disallowed_tools = disallowed_tools,
+                         # Passed apart rather than merged, so an explicit allowlist can exclude
+                         # what the preset would allow. `final_allowed` still governs every
+                         # other backend.
+                         allowed_tools = allowed_tools, preset_tools = pallow,
+                         system_prompt = system_prompt,
+                         mcp_servers = _acp_mcp_servers(aid),
+                         # The bridge plugin is an opencode plugin. Any other agent ignores it,
+                         # so the preset and the recursion guard would enforce nothing; those
+                         # agents are governed at the permission branch instead.
+                         plugin_dir = _acp_plugin_supported(acp_argv) ? _acp_plugin_dir() : nothing)
+    elseif startswith(model, VMLX_PREFIX)
         OllamaBackend(; model = chop(model; head = length(VMLX_PREFIX), tail = 0),
                       host = get(ENV, "VMLX_HOST", "http://127.0.0.1:8000"),
                       label = "vmlx",
@@ -575,7 +631,43 @@ function agent_status(id::String)
         "transcript" => _transcript_path(s),       # claude's own (vendor-specific) transcript
         "event_log" => _event_log_path(s.id),       # Kaimon-owned normalized JSONL
         "usage" => ACP.to_dict(s.usage),
+        # Whether a message sent DURING a turn is queued or destroys the reply in progress. A
+        # caller that wants to steer an agent mid-turn has to know, and only the agent can say.
+        "queues_prompts" => _queues_prompts(s.handle),
     )
+end
+
+# Non-ACP backends have no such capability to report, and answering false for them is correct:
+# the claude CLI and Ollama paths both take one turn at a time.
+_queues_prompts(h) = h isa ACPHandle ? acp_queues_prompts(h) : false
+
+"""
+    agent_set_model(id, model) -> Bool
+
+Repoint a live agent at another model, keeping its conversation.
+
+Only backends whose protocol carries a model method can do this. `ClaudeBackend`
+binds the model to the process at spawn, so it returns `false` and the caller's
+fallback is what it always was: reap the agent and open a new one. Switching
+between two different ACP agents is a respawn too — the model moves, the process
+can't.
+"""
+function agent_set_model(id::AbstractString, model::AbstractString)
+    s = _get_agent(String(id))
+    s === nothing && return false
+    h = s.handle
+    h isa ACPHandle || return false
+    startswith(model, ACP_PREFIX) || return false
+    argv, bare = try
+        _parse_acp_model(model)
+    catch
+        return false
+    end
+    argv == s.backend.argv || return false
+    acp_set_model!(h, bare) || return false
+    lock(s.lock) do; s.model = String(model); end
+    _push_log!(:info, "Agent '$(s.id)' switched to $model")
+    true
 end
 
 function list_agents()

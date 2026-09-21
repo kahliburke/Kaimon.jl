@@ -44,10 +44,27 @@ chat (M1).
 # The agent-management tools an owned agent must NOT be able to call — otherwise an
 # agent could recursively spawn/kill agents (fork-bomb). Blocked by default via
 # --disallowedTools; a caller can override `disallowed_tools` to allow nested agents.
+#
+# `Agent` and `Task` are the CLI's OWN subagent spawner, under the two names it has gone by, and
+# `Workflow` orchestrates a script of them. They are here for the reason this list exists at all:
+# spawning. Without them the guard named only the route through Kaimon, so an agent that could not
+# call `agent_open` could still start subagents by the CLI's own route, and `Workflow` starts many.
+#
+# It is NOT an escape from the toolset, which is what this looked like before it was tried. A
+# specialist told to read a file by any means delegated to a subagent, and the subagent reported
+# the same walls: no native file tools, and every Kaimon tool outside the allowlist refused. The
+# restrictions are inherited. What is not inherited is the count, which is the fork bomb.
+#
+# `Skill` is deliberately NOT here. A skill is a set of instructions, and some run in a subagent,
+# so it is a weaker version of the same route — but it is also how a project packages its own
+# workflows, and denying it takes away something an owned agent is meant to have. A caller who
+# wants it closed adds it to `disallowed_tools`.
 const AGENT_SELF_TOOLS = ["mcp__kaimon__agent_open", "mcp__kaimon__agent_send",
     "mcp__kaimon__agent_run",
     "mcp__kaimon__agent_interrupt", "mcp__kaimon__agent_close",
-    "mcp__kaimon__agent_status", "mcp__kaimon__agent_list"]
+    "mcp__kaimon__agent_status", "mcp__kaimon__agent_list",
+    "mcp__kaimon__agent_set_model",
+    "Agent", "Task", "Workflow"]
 
 Base.@kwdef struct ClaudeBackend <: AgentBackend
     claude_path::String = _find_claude()
@@ -113,6 +130,11 @@ mutable struct ClaudeHandle <: AgentHandle
     cwd::String
     log_file::String
     ctrl_seq::Base.RefValue{Int}           # monotonic id for control requests (interrupts)
+    # An interrupt we asked for is in flight. The CLI reports a cancelled turn as a FAILED one —
+    # `is_error: true`, `subtype: "error_during_execution"` — which is indistinguishable from a
+    # real failure in the event itself. Stopping something on purpose is not an error, and saying
+    # so trains people to ignore the errors that are.
+    interrupting::Base.RefValue{Bool}
 end
 
 backend_status(h::ClaudeHandle) =
@@ -184,7 +206,7 @@ function backend_start(b::ClaudeBackend; cwd::String, agent_id::String,
 
     events = Channel{ACP.AgentEvent}(Inf)
     h = ClaudeHandle(b, proc, proc.in, proc.out, events, Task(() -> nothing),
-                     Ref(0), Ref(""), Dict{Int,String}(), cwd, log_file, Ref(0))
+                     Ref(0), Ref(""), Dict{Int,String}(), cwd, log_file, Ref(0), Ref(false))
     h.reader = _start_reader!(h, log_io)
     h
 end
@@ -201,7 +223,7 @@ function _start_reader!(h::ClaudeHandle, log_io::IO)
                     put!(h.events, ACP.AgentError("stream-json parse error", line))
                     continue
                 end
-                for ev in _map_claude_event(obj, h.session_id, h.tool_blocks)
+                for ev in _map_claude_event(obj, h.session_id, h.tool_blocks, h.interrupting)
                     put!(h.events, ev)
                 end
             end
@@ -224,6 +246,10 @@ arrive on `events(h)`.
 function backend_send(h::ClaudeHandle, text::AbstractString)
     Base.process_running(h.proc) || throw(ArgumentError("agent process is not running"))
     turn = (h.turn[] += 1)
+    # The interrupt flag excuses ONE turn, and only the turn it was raised against. Interrupting an
+    # idle agent raises it with no turn in flight, so no `result` arrives to consume it; left set it
+    # would report this turn cancelled and swallow whatever error it really ended with.
+    h.interrupting[] = false
     msg = Dict("type" => "user",
                "message" => Dict("role" => "user",
                                  "content" => [Dict("type" => "text", "text" => String(text))]))
@@ -245,10 +271,16 @@ function backend_interrupt(h::ClaudeHandle)
     ctrl = Dict("type" => "control_request",
                 "request_id" => "int-$(h.ctrl_seq[] += 1)",   # unique per interrupt (no collisions)
                 "request" => Dict("subtype" => "interrupt"))
+    # Raised before the write, because the reply can arrive the moment it lands and the flag is what
+    # tells a cancelled turn from a failed one. Lowered again if the write never happened: an
+    # interrupt nobody received excuses nothing, and leaving it set makes the next real error read
+    # as a cancellation.
+    h.interrupting[] = true
     try
         write(h.in, JSON.json(ctrl), "\n"); flush(h.in)
         true
     catch
+        h.interrupting[] = false
         false
     end
 end
@@ -291,7 +323,8 @@ _get(d, k, default=nothing) = d isa AbstractDict ? get(d, k, default) : default
 """Map one stream-JSON object to zero or more ACP events. Takes only the
 `session_id` Ref it needs from the handle (so it's unit-testable without a process)."""
 function _map_claude_event(obj, session_id::Base.RefValue{String},
-                           tool_blocks::Dict{Int,String} = Dict{Int,String}())::Vector{ACP.AgentEvent}
+                           tool_blocks::Dict{Int,String} = Dict{Int,String}(),
+                           interrupting::Base.RefValue{Bool} = Ref(false))::Vector{ACP.AgentEvent}
     out = ACP.AgentEvent[]
     t = _get(obj, "type")
     if t == "system"
@@ -377,7 +410,11 @@ function _map_claude_event(obj, session_id::Base.RefValue{String},
         # CLI carries in the `result` event is dropped. Surface it as an AgentError so
         # observers and the rate governor can classify it (e.g. is_rate_limited). The CLI
         # retries transient 429s internally and only emits this once it has given up.
-        if is_err
+        # A turn we interrupted arrives looking exactly like a failed one, so the only thing that
+        # can tell them apart is knowing we asked. Consume the flag either way: it covers one turn.
+        asked_to_stop = interrupting[]
+        interrupting[] = false
+        if is_err && !asked_to_stop
             subtype = _get(obj, "subtype")          # e.g. "error_during_execution", "error_max_turns"
             rtext   = _get(obj, "result")           # error description / final text
             msg = rtext isa AbstractString && !isempty(rtext) ? String(rtext) :
@@ -385,7 +422,8 @@ function _map_claude_event(obj, session_id::Base.RefValue{String},
             push!(out, ACP.AgentError(msg, Dict("subtype" => subtype, "is_error" => true,
                                                 "result" => rtext)))
         end
-        stop = sr isa AbstractString ? ACP.as_enum(sr, ACP.STOP_REASONS, :end_turn) :
+        stop = asked_to_stop ? :cancelled :
+               sr isa AbstractString ? ACP.as_enum(sr, ACP.STOP_REASONS, :end_turn) :
                (is_err ? :refusal : :end_turn)
         push!(out, ACP.TurnEnded(stop, usage))
     elseif t == "control_response"

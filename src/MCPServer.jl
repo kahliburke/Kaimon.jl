@@ -1150,6 +1150,10 @@ function start_mcp_server(
         # canned response, no side effects.
         _stream_hook_nudge(http, req, body) && return nothing
 
+        # Tool-policy questions from an ACP agent's bridge plugin (acp_backend.jl).
+        # Pre-gate like the nudge, but token-authenticated — see _stream_agent_bridge.
+        _stream_agent_bridge(http, req, body) && return nothing
+
         # OAuth is intentionally not implemented — return a clean 404 for OAuth
         # discovery/endpoint paths (before the gate) so a client's OAuth probe
         # concludes "no OAuth here" and falls back to its API-key bearer, rather
@@ -1252,6 +1256,21 @@ function start_mcp_server(
                get(parsed_request, "method", "") == "tools/call"
 
                 tool_name_str = get(get(parsed_request, "params", Dict()), "name", "")
+
+                # Policy before the SSE stream opens, so a refusal is an ordinary JSON reply.
+                # `_rpc_tools_call` checks the same thing for everything that doesn't stream.
+                let aid = _session_agent_id(session === nothing ? "" : session.id),
+                    why = agent_tool_refusal(aid, tool_name_str)
+                    if why !== nothing
+                        resp = _tool_refusal_response(parsed_request, tool_name_str, why)
+                        HTTP.setstatus(http, 200)
+                        HTTP.setheader(http, "Content-Type" => "application/json")
+                        HTTP.startwrite(http)
+                        write(http, String(resp.body))
+                        return nothing
+                    end
+                end
+
                 # (1) Execute via the gate and may run long.
                 gate_exec_tools =
                     Set(["ex", "run_tests", "profile_code", "lint_package", "stress_test"])

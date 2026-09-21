@@ -67,3 +67,6 @@ kaimon.toml
 .netlify/
 .wrangler/
 .qdrant-initialized
+
+# ACP lab: isolated XDG state for dev/acp experiments
+.acplab/

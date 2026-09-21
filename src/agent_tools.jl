@@ -8,7 +8,7 @@ const agent_open_tool = @mcp_tool :agent_open "Spawn a Kaimon-owned AI agent (he
     "properties" => Dict(
         "cwd" => Dict("type" => "string", "description" => "Working directory for the agent (must exist)."),
         "model" => Dict("type" => "string", "description" => "Model alias or id (default 'sonnet' — the family alias, which resolves to the CLI's latest Sonnet; pass a pinned id like 'claude-sonnet-5' for reproducibility). Optional inline effort suffix for Claude models: 'claude-sonnet-5/high' or 'sonnet/low' (an explicit 'effort' arg overrides it). Prefix with 'ollama:<tag>' for a local Ollama model, or 'vmlx:<tag>' for a local MLX model via vmlx (Apple Silicon, default host :8000)."),
-        "permission" => Dict("type" => "string", "enum" => ["default", "lab", "auto", "bypass"], "description" => "Permission preset: default (edits only) | lab (allow Kaimon tools: slate.*/ex/...) | auto (model classifier) | bypass (no checks; sandbox/trusted only). Composes with allowed_tools; recursion guard always on."),
+        "permission" => Dict("type" => "string", "enum" => ["default", "notebook", "specialist", "lab", "auto", "bypass"], "description" => "Permission preset: default (edits only) | notebook (Kaimon tools only; the CLI's own file and shell tools denied) | specialist (notebook, without the allowance, so a spawn's allowed_tools is the whole list) | lab (allow Kaimon tools: slate.*/ex/...) | auto (model classifier) | bypass (no checks; sandbox/trusted only). Composes with allowed_tools; recursion guard always on."),
         "permission_mode" => Dict("type" => "string", "description" => "Override the preset's claude permission-mode: default | acceptEdits | plan | auto | bypassPermissions."),
         "allowed_tools" => Dict("type" => "array", "items" => Dict("type" => "string"), "description" => "Optional allowlist of tool names."),
         "disallowed_tools" => Dict("type" => "array", "items" => Dict("type" => "string"), "description" => "Tools the agent may NOT call. Defaults to the agent_* tools (recursion guard); pass [] to allow nested agents."),
@@ -95,6 +95,22 @@ const agent_status_tool = @mcp_tool :agent_status "Get an agent's status, model,
         st === nothing ? "No such agent: $(get(args, "agent_id", ""))" : JSON.json(st)
     catch e
         "Error getting agent status: $(sprint(showerror, e))"
+    end
+end
+
+const agent_set_model_tool = @mcp_tool :agent_set_model "Repoint a LIVE agent at another model, keeping its conversation. Only works for ACP agents (acp:<agent>:<model>) staying on the same agent — returns {switched:false} otherwise, and the caller should close and reopen instead." Dict(
+    "type" => "object",
+    "properties" => Dict(
+        "agent_id" => Dict("type" => "string", "description" => "Agent id from agent_open."),
+        "model" => Dict("type" => "string", "description" => "Full Kaimon model id, e.g. 'acp:opencode:opencode/glm-5.3-flash'."),
+    ),
+    "required" => ["agent_id", "model"],
+) (args) -> begin
+    try
+        ok = agent_set_model(String(get(args, "agent_id", "")), String(get(args, "model", "")))
+        JSON.json(Dict("switched" => ok))
+    catch e
+        "Error switching model: $(sprint(showerror, e))"
     end
 end
 

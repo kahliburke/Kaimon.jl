@@ -209,6 +209,32 @@ end
         @test env.data["partialJson"] == frags[1]
     end
 
+    @testset "ClaudeBackend: an interrupt excuses one turn, and only if it was sent" begin
+        # A cancelled turn and a failed one look identical on the wire, so this flag is the only
+        # thing that tells them apart — and while it is raised, a genuine error is swallowed.
+        proc = open(`sleep 30`, "r+")
+        h = Kaimon.ClaudeHandle(Kaimon.ClaudeBackend(; claude_path = "true"), proc,
+                                proc.in, proc.out, Channel{Kaimon.ACP.AgentEvent}(Inf),
+                                Task(() -> nothing), Ref(0), Ref(""), Dict{Int,String}(),
+                                pwd(), "", Ref(0), Ref(false))
+        try
+            @test Kaimon.backend_interrupt(h)
+            @test h.interrupting[]
+
+            # Interrupting an idle agent raises it with no turn in flight, so no result arrives to
+            # consume it. Starting a turn lowers it, or that turn reports itself cancelled.
+            Kaimon.backend_send(h, "hello")
+            @test !h.interrupting[]
+
+            # A write that never left excuses nothing.
+            close(proc.in)
+            @test !Kaimon.backend_interrupt(h)
+            @test !h.interrupting[]
+        finally
+            try; kill(proc); catch; end
+        end
+    end
+
     @testset "ClaudeBackend: stream flag toggles --include-partial-messages" begin
         on  = Kaimon._claude_args(Kaimon.ClaudeBackend(; stream = true), ".")
         off = Kaimon._claude_args(Kaimon.ClaudeBackend(; stream = false), ".")

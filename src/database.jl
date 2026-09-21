@@ -13,11 +13,19 @@ ever touch the connection or run raw SQL.
 """
 module Database
 
-using SQLite
 using Dates
 using DBInterface
 using JSON
 using DataFrames
+
+# SQLite is loaded on FIRST USE, not at module load. `using Kaimon` is how an
+# extension reaches the gate client, and that pulled SQLite — and therefore
+# WeakRefStrings, and therefore a hard Parsers 2 bound — into every extension
+# process, for a database none of them touch. Tool calls that do use it are RPCs
+# to the Kaimon host (KaimonGate.call_tool), so they run where SQLite is loaded.
+const _SQLITE = Ref{Union{Nothing,Module}}(nothing)
+_sqlite() = (_SQLITE[] === nothing && (_SQLITE[] = Base.require(@__MODULE__, :SQLite)); _SQLITE[])
+
 
 export init_db!,
     get_default_db_path,
@@ -49,7 +57,7 @@ export init_db!,
 
 # ── Connection (private) + the single guarded access path ─────────────────────
 
-const _DB = Ref{Union{SQLite.DB,Nothing}}(nothing)
+const _DB = Ref{Any}(nothing)
 const _LOCK = ReentrantLock()   # reentrant so guarded ops can nest
 
 # SQLite calls are blocking C with no Julia safepoints, so they must not run on an
@@ -162,10 +170,19 @@ const _SCHEMA = String[
 ]
 
 """Open the connection and create the schema if absent. Idempotent. Returns the DB."""
+# Load SQLite, THEN run the body: `Base.require` creates its methods in a newer
+# world than this frame, so anything touching an SQLite type has to be reached
+# through `invokelatest`. Only the entry points need it — every later call runs
+# in a world that already has them.
 function init_db!(db_path::String = get_default_db_path())
+    _sqlite()
+    return Base.invokelatest(_init_db_impl!, db_path)
+end
+
+function _init_db_impl!(db_path::String)
     mkpath(dirname(db_path))
     return lock(_LOCK) do
-        db = SQLite.DB(db_path)
+        db = _sqlite().DB(db_path)
         _DB[] = db
         for ddl in _SCHEMA
             DBInterface.execute(db, ddl)
@@ -188,7 +205,7 @@ end
 """Close the connection."""
 function close_db!()
     lock(_LOCK) do
-        _DB[] !== nothing && (SQLite.close(_DB[]); _DB[] = nothing)
+        _DB[] !== nothing && (_sqlite().close(_DB[]); _DB[] = nothing)
     end
     return nothing
 end

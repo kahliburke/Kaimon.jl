@@ -389,6 +389,21 @@ end
 
 # ── tools/call (body extracted byte-exact from the original branch) ──────────
 
+"""
+A policy refusal, shaped as a failed tool result rather than a JSON-RPC error.
+
+An agent reads a tool error and can adapt; a protocol error is likelier to be reported as the
+harness malfunctioning. The text names the tool so the refusal is legible in a transcript.
+"""
+function _tool_refusal_response(request, tool_name::AbstractString, why::AbstractString)
+    result = Dict{String,Any}(
+        "content" => [Dict("type" => "text", "text" => "$tool_name refused: $why")],
+        "isError" => true)
+    HTTP.Response(200, ["Content-Type" => "application/json"],
+                  JSON.json(Dict("jsonrpc" => "2.0", "id" => get(request, "id", 0),
+                                 "result" => result)))
+end
+
 function _rpc_tools_call(request, tools, name_to_id, session = nothing)
                 params = get(request, "params", nothing)
                 if params === nothing || !haskey(params, "name")
@@ -429,6 +444,15 @@ function _rpc_tools_call(request, tools, name_to_id, session = nothing)
                 if tool_id !== nothing && haskey(tools, tool_id)
                     tool = tools[tool_id]
                     args = get(request["params"], "arguments", Dict())
+
+                    # Policy first, before anything records the call as started — a refusal that
+                    # returns later leaves an in-flight entry nothing ever completes. The
+                    # streaming path checks the same thing in `start_mcp_server`.
+                    let aid = _session_agent_id(session === nothing ? "" : session.id),
+                        why = agent_tool_refusal(aid, tool.name, args)
+                        why === nothing ||
+                            return _tool_refusal_response(request, tool.name, why)
+                    end
 
                     # Validate parameters - collect all errors first
                     error_messages = String[]

@@ -1,0 +1,7 @@
+name = "ACPLab"
+# Deliberately not Kaimon's environment: the probe is a standalone JSON-RPC peer
+# and instantiating 35 deps to read nd-JSON off a pipe is pure latency.
+
+[deps]
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
