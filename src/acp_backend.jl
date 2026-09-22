@@ -1146,7 +1146,17 @@ function _start_acp_reader!(h::ACPHandle, log_io::IO)
                     end
                 elseif haskey(obj, "id")
                     ch = lock(h.lk) do; get(h.pending, obj["id"], nothing); end
-                    ch === nothing || (isopen(ch) && put!(ch, obj))
+                    # A reply whose caller has already given up has nowhere to go, and finding
+                    # that out is a race: `_rpc_call!` closes this channel on timeout, so it can
+                    # shut between the check and the put. An exception here is not scoped to the
+                    # line that raised it — it leaves the read loop entirely, which retires every
+                    # open tool call and publishes `:dead` for an agent that is still healthy.
+                    if ch !== nothing
+                        try
+                            isopen(ch) && put!(ch, obj)
+                        catch
+                        end
+                    end
                 end
             end
         catch e

@@ -604,6 +604,36 @@ end
     end
 end
 
+@testset "ACP: a reply whose caller gave up does not kill the reader" begin
+    # `_rpc_call!` closes its reply channel when the call times out, and the entry can still be in
+    # `pending` when the reply lands. A `put!` on the closed channel is not scoped to the line that
+    # raised it: it leaves the read loop, so one late reply declared the agent dead while its
+    # process was healthy and released every other call in flight.
+    with_fake_agent(steps = Any[
+            Dict("send" => Dict("jsonrpc" => "2.0", "id" => 99_999, "result" => Dict())),
+            Dict("send" => Dict("jsonrpc" => "2.0", "method" => "session/update",
+                                "params" => Dict("sessionId" => "fake-session",
+                                                 "update" => Dict("sessionUpdate" => "agent_message_chunk",
+                                                                  "content" => Dict("type" => "text",
+                                                                                    "text" => "after"))))),
+        ]) do h
+        stale = Channel{Any}(1)
+        close(stale)
+        lock(h.lk) do; h.pending[99_999] = stale; end
+        drain_events(h; n = 20, timeout = 1.5)          # clear the handshake run of the script
+        Kaimon.backend_send(h, "go")                    # runs the script again, now with the entry in
+        # TurnStarted, the chunk, its authoritative replay, TurnEnded.
+        evs = drain_events(h; n = 4, timeout = 6.0)
+        @test !istaskdone(h.reader)
+        @test Kaimon.backend_status(h) === :alive
+        # The update AFTER the stale reply still arrived, so the reader kept going rather than
+        # merely surviving with the loop broken.
+        @test any(e -> e isa ACP.AgentMessageChunk && e.content isa ACP.TextBlock &&
+                       occursin("after", e.content.text), evs)
+        @test !any(e -> e isa ACP.AgentError && occursin("reader crashed", e.message), evs)
+    end
+end
+
 @testset "ACP: the workspace boundary holds at whichever door the tool uses" begin
     # Both `tools/call` doors ask `_refuse_tool_for_session`. The streaming one used to ask without
     # the arguments, which left the name check running and the path check not — for `ex`,
