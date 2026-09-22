@@ -764,6 +764,45 @@ end
     @test Kaimon.ACP_READ_CAP == 8 * 1024 * 1024
 end
 
+@testset "ACP: a generated config keeps the user's providers and not their MCP servers" begin
+    # The generated file replaces the user's, since XDG_CONFIG_HOME points at it. `provider` says
+    # how to reach a model and grants no tool, and without it `model` can only name something
+    # opencode ships with — a locally served model becomes unselectable. `mcp` is the opposite: an
+    # inherited server is one Kaimon did not attach, so its calls carry no agent id and no preset
+    # reaches them.
+    home = mktempdir()
+    mkpath(joinpath(home, "opencode"))
+    write(joinpath(home, "opencode", "opencode.json"), JSON.json(Dict(
+        "provider" => Dict("ollama" => Dict("npm" => "@ai-sdk/openai-compatible")),
+        "mcp" => Dict("kaimon" => Dict("type" => "remote", "url" => "http://localhost:2828/mcp")),
+        "theme" => "tokyonight")))
+    cfg = withenv("XDG_CONFIG_HOME" => home) do
+        dir = _acp_session_config(ACPClientBackend(; model = "ollama/qwen2.5:14b"), mktempdir())
+        JSON.parse(read(joinpath(dir, "opencode", "opencode.json"), String))
+    end
+    @test haskey(get(cfg, "provider", Dict()), "ollama")
+    @test cfg["model"] == "ollama/qwen2.5:14b"
+    @test !haskey(cfg, "mcp")
+    @test !haskey(cfg, "theme")   # nothing else rides along by accident
+
+    # No user config at all is not an error, it is the common case.
+    empty_home = mktempdir()
+    cfg2 = withenv("XDG_CONFIG_HOME" => empty_home) do
+        dir = _acp_session_config(ACPClientBackend(), mktempdir())
+        JSON.parse(read(joinpath(dir, "opencode", "opencode.json"), String))
+    end
+    @test !haskey(cfg2, "provider")
+end
+
+@testset "ACP: only the agent whose config was generated gets it" begin
+    # `XDG_CONFIG_HOME` points at the generated directory, so generating one for an agent that
+    # reads a different layout replaced its own settings directory with an empty one.
+    dir = _acp_session_config(ACPClientBackend(; argv = ["gemini", "--experimental-acp"],
+                                              model = "gemini-3-flash"), mktempdir())
+    @test !isdir(joinpath(dir, "opencode"))
+    @test isempty(readdir(dir))
+end
+
 @testset "credentials come from the OS entropy source and compare in constant time" begin
     # Seedability is the one property a credential must not have, so these must not come from the
     # default task-local generator.

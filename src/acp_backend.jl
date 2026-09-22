@@ -1228,13 +1228,47 @@ end
 # ── per-session config ────────────────────────────────────────────────────────
 
 """
+The user's own opencode config, read before `XDG_CONFIG_HOME` is redirected away from it.
+"""
+function _opencode_user_config()
+    base = get(ENV, "XDG_CONFIG_HOME", joinpath(homedir(), ".config"))
+    path = joinpath(base, "opencode", "opencode.json")
+    isfile(path) || return Dict{String,Any}()
+    try
+        cfg = JSON.parse(read(path, String))
+        return cfg isa AbstractDict ? cfg : Dict{String,Any}()
+    catch
+        return Dict{String,Any}()
+    end
+end
+
+"""
 Give the agent its own config directory: it is how the model gets pinned (ACP has
 no model parameter), how the bridge plugin gets loaded, and how two sessions can
 run under different tool policies at the same time.
+
+The generated file REPLACES the user's own, because `XDG_CONFIG_HOME` points here. That is what
+isolates two sessions from each other, and it is also what stops a setting on the machine from
+widening a preset. So almost nothing is carried across.
+
+`provider` is the exception. It declares how to reach a model and grants no tool, and without it
+`model` can only name something opencode already knows: a locally served model, which is the
+cheapest way to run an agent, cannot be selected at all. Carrying it makes `acp:opencode:<model>`
+mean what it says.
+
+`mcp` is deliberately NOT carried. An inherited server is one Kaimon did not attach, so its calls
+arrive without the `X-Kaimon-Agent-Id` header and no preset applies to them — the same hole
+`strictMcpConfig` closes on the claude path.
 """
 function _acp_session_config(b::ACPClientBackend, dir::AbstractString)
+    # Nothing to generate for an agent that reads neither the config nor the plugin. Writing it
+    # anyway was harmless; pointing `XDG_CONFIG_HOME` at it was not, since an agent that keeps its
+    # settings there would find an empty directory and silently run without them.
+    _acp_config_supported(b.argv) || return dir
     mkpath(joinpath(dir, "opencode"))
     cfg = Dict{String,Any}("\$schema" => "https://opencode.ai/config.json")
+    user = _opencode_user_config()
+    haskey(user, "provider") && (cfg["provider"] = user["provider"])
     isempty(b.model) || (cfg["model"] = b.model)
     write(joinpath(dir, "opencode", "opencode.json"), JSON.json(cfg, 2))
 
@@ -1268,7 +1302,9 @@ function backend_start(b::ACPClientBackend; cwd::String, agent_id::String,
     log_io = open(log_file, "a")
 
     env = copy(ENV)
-    env["XDG_CONFIG_HOME"] = config_dir
+    # Only for the agent whose config was generated. Redirecting it for the others replaced their
+    # own settings directory with an empty one.
+    _acp_config_supported(b.argv) && (env["XDG_CONFIG_HOME"] = config_dir)
     env[KAIMON_AGENT_MARKER] = agent_id
     env["KAIMON_PARENT_PID"] = string(parent_pid)
     # The bridge plugin asks Kaimon over the MCP server's own HTTP port — no
