@@ -612,7 +612,13 @@ function _denied_tool(b::ACPClientBackend, tc)
     # A qualified name means an MCP tool or an fs callback, both of which are decided where the real
     # name is known. Neither the name nor the category is judged here: `notebook` allows
     # `mcp__kaimon` outright, and its calls carry the same categories the native tools do.
-    (occursin("__", head) || occursin("/", head) || occursin(".", head)) && return nothing
+    #
+    # Both MCP spellings count, which is what `_acp_split_tool` is for: opencode names Kaimon's
+    # tools `kaimon_<tool>`, carrying none of the punctuation a `mcp__kaimon__<tool>` name does.
+    # Sniffing the title sees only the second spelling, and a Kaimon call that slips past here is
+    # judged on `kind` instead — where `read` maps onto `Read`, the tool these presets deny.
+    (occursin("/", head) || occursin(".", head) ||
+     _acp_split_tool(head)[1] !== nothing) && return nothing
     if !isempty(head)
         for e in deny
             _acp_tool_matches(head, e) && return "denied by policy: $head"

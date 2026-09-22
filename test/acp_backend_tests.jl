@@ -764,6 +764,20 @@ end
     @test Kaimon.ACP_READ_CAP == 8 * 1024 * 1024
 end
 
+@testset "ACP: an MCP call is left to the MCP door in both its spellings" begin
+    # `_denied_tool` judges a native call and must not judge an MCP one, whose real name is known
+    # elsewhere. opencode names Kaimon's tools `kaimon_<tool>`, which carries none of the
+    # punctuation a `mcp__kaimon__<tool>` name does — so a `read`-category Kaimon call fell through
+    # to the category check, where `read` maps onto `Read`, which `notebook` denies.
+    deny = copy(Kaimon.AGENT_NATIVE_FILE_TOOLS)
+    b = ACPClientBackend(; permission = "notebook", disallowed_tools = deny)
+    @test Kaimon._denied_tool(b, Dict("title" => "kaimon_grep_code", "kind" => "read")) === nothing
+    @test Kaimon._denied_tool(b, Dict("title" => "mcp__kaimon__grep_code", "kind" => "read")) === nothing
+    # The native tools it exists to refuse still are, by title and by category.
+    @test Kaimon._denied_tool(b, Dict("title" => "Read src/a.jl", "kind" => "read")) !== nothing
+    @test Kaimon._denied_tool(b, Dict("title" => "Terminal", "kind" => "execute")) !== nothing
+end
+
 @testset "ACP: a token figure cannot decide what the turn did" begin
     # `Int(x)` is the strict reading, and this runs while `TurnEnded` is being built — so a
     # fractional or non-numeric count throws into the handler that reports a turn as FAILED, and a
