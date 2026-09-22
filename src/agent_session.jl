@@ -628,7 +628,7 @@ function agent_status(id::String)
         "created_at" => s.created_at,
         "last_activity" => s.last_activity,
         "session_id" => backend_session_id(s.handle),
-        "transcript" => _transcript_path(s),       # claude's own (vendor-specific) transcript
+        "transcript" => _transcript_path(s),       # the backend's own raw record, if it has one
         "event_log" => _event_log_path(s.id),       # Kaimon-owned normalized JSONL
         "usage" => ACP.to_dict(s.usage),
         # Whether a message sent DURING a turn is queued or destroys the reply in progress. A
@@ -765,9 +765,25 @@ function agent_output(id::AbstractString; turn::Union{Int,Nothing} = nothing,
     out
 end
 
+"""
+The raw, backend-specific record of this agent's conversation, or `nothing`.
+
+Per backend, because only the claude CLI keeps the layout this used to assume for everyone: an
+ACP agent's session store is its own business and wherever it puts it is not knowable from here,
+so the raw record Kaimon can point at is the JSON-RPC wire log it writes itself. Naming a
+`~/.claude` path for an opencode agent named a file that does not exist.
+
+`event_log` is the normalized record and is there for every backend; this is the one to read when
+the question is what the agent actually sent.
+"""
+_transcript_path(s::AgentSession) = _backend_transcript(s, s.handle)
+
+_backend_transcript(s::AgentSession, ::AgentHandle) = nothing
+_backend_transcript(s::AgentSession, h::ACPHandle) = h.log_file
+
 # claude writes ~/.claude/projects/<munged-cwd>/<sessionId>.jsonl
-function _transcript_path(s::AgentSession)
-    sid = backend_session_id(s.handle)
+function _backend_transcript(s::AgentSession, h::ClaudeHandle)
+    sid = backend_session_id(h)
     isempty(sid) && return nothing
     # claude munges the *canonical* cwd (symlinks resolved, e.g. /tmp -> /private/tmp)
     canonical = try
