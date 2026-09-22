@@ -1374,9 +1374,13 @@ function backend_start(b::ACPClientBackend; cwd::String, agent_id::String,
             "fs" => Dict("readTextFile" => true, "writeTextFile" => b.allow_writes),
             "terminal" => false)); timeout = 60)
     init isa AbstractDict && merge!(h.caps, Dict{String,Any}(String(k) => v for (k, v) in init))
-    sess = _rpc_call!(h, "session/new",
-                      merge(Dict{String,Any}("cwd" => abspath(cwd), "mcpServers" => b.mcp_servers),
-                            _acp_session_meta(b)); timeout = 120)
+    sess = try
+        _rpc_call!(h, "session/new",
+                   merge(Dict{String,Any}("cwd" => abspath(cwd), "mcpServers" => b.mcp_servers),
+                         _acp_session_meta(b)); timeout = 120)
+    catch e
+        throw(_acp_session_new_error(h, e))
+    end
     sess isa AbstractDict && (h.caps["session"] = Dict{String,Any}(String(k) => v for (k, v) in sess))
     h.session_id[] = String(get(sess, "sessionId", ""))
     # An agent that does not read the generated config never saw `model`, so select it over the
@@ -1438,6 +1442,42 @@ function _acp_session_meta(b::ACPClientBackend)
     end
     isempty(opts) && return Dict{String,Any}()
     return Dict{String,Any}("_meta" => Dict{String,Any}("claudeCode" => Dict{String,Any}("options" => opts)))
+end
+
+"""
+Add the agent's own sign-in methods to a `session/new` failure.
+
+`initialize` succeeds for an agent nobody is logged into, and `session/new` is where that shows
+up, worded by the agent. The wording is the agent's to choose and need not mention logging in at
+all, so the reader is left with a failed spawn and no idea that a credential is what it wants.
+
+Kaimon does not authenticate agents. They use the host's own login, the same rule the claude CLI
+follows, and a credential Kaimon never holds is one it cannot leak or leave behind in a config it
+generated. ACP's `authenticate` method is therefore deliberately not called. Naming the methods
+the agent advertised is the part that helps and costs nothing.
+
+Appended to ANY `session/new` failure, because the protocol gives no reliable way to tell an
+authentication refusal from another kind. A spawn that fails here is rare and is usually about
+credentials or configuration, so the extra sentence is worth more than the occasional miss.
+"""
+_acp_session_new_error(h::ACPHandle, e) = _acp_auth_hint(h.caps, e)
+
+"The hint on its own, so it can be tested without a live agent."
+function _acp_auth_hint(caps::AbstractDict, e)
+    methods = get(caps, "authMethods", nothing)
+    methods isa AbstractVector && !isempty(methods) || return e
+    named = String[]
+    for m in methods
+        m isa AbstractDict || continue
+        id = String(get(m, "id", ""))
+        name = String(get(m, "name", ""))
+        isempty(id) && isempty(name) && continue
+        push!(named, isempty(name) ? id : (isempty(id) ? name : "$id ($name)"))
+    end
+    isempty(named) && return e
+    return ErrorException(sprint(showerror, e) *
+        "\nThis agent advertises these sign-in methods: " * join(named, "; ") *
+        ". Kaimon does not log agents in — authenticate with the agent's own CLI and retry.")
 end
 
 "How long an agent may say nothing during a turn before we say so."

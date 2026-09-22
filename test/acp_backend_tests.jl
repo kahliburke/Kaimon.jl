@@ -764,6 +764,31 @@ end
     @test Kaimon.ACP_READ_CAP == 8 * 1024 * 1024
 end
 
+@testset "ACP: a spawn that fails names the agent's sign-in methods" begin
+    # `initialize` succeeds for an agent nobody is logged into; `session/new` is where it shows up,
+    # worded by the agent, and that wording need not mention logging in at all.
+    boom = ErrorException("ACP session/new failed: tier ineligible")
+
+    # Nothing advertised: the agent's own error is passed through untouched.
+    @test Kaimon._acp_auth_hint(Dict{String,Any}(), boom) === boom
+
+    caps = Dict{String,Any}("authMethods" => Any[
+        Dict("id" => "oauth-personal", "name" => "Log in with Google"),
+        Dict("id" => "gemini-api-key", "name" => "Use Gemini API key"),
+    ])
+    msg = sprint(showerror, Kaimon._acp_auth_hint(caps, boom))
+    @test occursin("tier ineligible", msg)          # the agent's own words are kept
+    @test occursin("oauth-personal (Log in with Google)", msg)
+    @test occursin("gemini-api-key", msg)
+    @test occursin("does not log agents in", msg)
+
+    # A malformed entry must not cost the rest of the list, or the whole hint.
+    mixed = Dict{String,Any}("authMethods" => Any["junk", Dict("id" => "vertex-ai")])
+    @test occursin("vertex-ai", sprint(showerror, Kaimon._acp_auth_hint(mixed, boom)))
+    # Nothing usable in it at all falls back to the agent's error.
+    @test Kaimon._acp_auth_hint(Dict{String,Any}("authMethods" => Any["junk"]), boom) === boom
+end
+
 @testset "ACP: an MCP call is left to the MCP door in both its spellings" begin
     # `_denied_tool` judges a native call and must not judge an MCP one, whose real name is known
     # elsewhere. opencode names Kaimon's tools `kaimon_<tool>`, which carries none of the
