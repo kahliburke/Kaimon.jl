@@ -1044,10 +1044,26 @@ the only frame that has it.
 """
 function _acp_turn_usage(u, cost::Union{Float64,Nothing} = nothing)
     u isa AbstractDict || return cost === nothing ? nothing : ACP.Usage(; cost_usd = cost)
-    ACP.Usage(; input_tokens = Int(get(u, "inputTokens", 0)),
-                output_tokens = Int(get(u, "outputTokens", 0)) + Int(get(u, "thoughtTokens", 0)),
-                cache_read_tokens = Int(get(u, "cachedReadTokens", 0)),
+    ACP.Usage(; input_tokens = _token_count(get(u, "inputTokens", 0)),
+                output_tokens = _token_count(get(u, "outputTokens", 0)) +
+                                _token_count(get(u, "thoughtTokens", 0)),
+                cache_read_tokens = _token_count(get(u, "cachedReadTokens", 0)),
                 cost_usd = cost)
+end
+
+"""
+One token figure off the wire, as an `Int`, with anything unusable reading as zero.
+
+`Int(x)` is the strict reading, and this is called while the turn's `TurnEnded` is being built.
+A figure that is fractional, a string or null throws there, and the only handler around it is the
+one that reports the turn as failed — so a completed turn comes out as a refusal over a number
+nothing depends on. A count is telemetry; it does not get to decide what the turn did.
+"""
+function _token_count(v)
+    v isa Integer && return Int(v)
+    v isa Real && isfinite(v) && return round(Int, v)
+    v isa AbstractString && return something(tryparse(Int, v), 0)
+    return 0
 end
 
 # Updates we knowingly drop: they carry no information an AgentEvent models.

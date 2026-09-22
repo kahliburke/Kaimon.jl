@@ -764,6 +764,25 @@ end
     @test Kaimon.ACP_READ_CAP == 8 * 1024 * 1024
 end
 
+@testset "ACP: a token figure cannot decide what the turn did" begin
+    # `Int(x)` is the strict reading, and this runs while `TurnEnded` is being built — so a
+    # fractional or non-numeric count throws into the handler that reports a turn as FAILED, and a
+    # completed turn comes out as a refusal over a number nothing depends on.
+    @test Kaimon._token_count(12) == 12
+    @test Kaimon._token_count(12.0) == 12
+    @test Kaimon._token_count(12.7) == 13
+    @test Kaimon._token_count("12") == 12
+    @test Kaimon._token_count("lots") == 0
+    @test Kaimon._token_count(nothing) == 0
+    @test Kaimon._token_count(NaN) == 0
+    u = Kaimon._acp_turn_usage(Dict("inputTokens" => 10.0, "outputTokens" => 2,
+                                    "thoughtTokens" => "3", "cachedReadTokens" => nothing), 0.5)
+    @test u.input_tokens == 10
+    @test u.output_tokens == 5          # output + reasoning, which bills like output
+    @test u.cache_read_tokens == 0
+    @test u.cost_usd == 0.5
+end
+
 @testset "ACP: a generated config keeps the user's providers and not their MCP servers" begin
     # The generated file replaces the user's, since XDG_CONFIG_HOME points at it. `provider` says
     # how to reach a model and grants no tool, and without it `model` can only name something
