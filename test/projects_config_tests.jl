@@ -182,9 +182,12 @@ end
         depot = mktempdir()
         # juliaup records a BinaryPath per install because the layout is platform-specific
         # (on macOS the binary sits inside an .app bundle), so honor it rather than guessing.
-        bin126 = joinpath(depot, "julia-1.12.6", "nested", "bin", "julia")
-        bin1130 = joinpath(depot, "julia-1.13.0", "nested", "bin", "julia")
-        for b in (bin126, bin1130)
+        # Versions no host will ever be. `resolve_julia_binary` matches the RUNNING Julia before
+        # juliaup, which is the point of the assertions below — so a fixture using a real series
+        # tests one thing on a host inside that series and another everywhere else.
+        bin986 = joinpath(depot, "julia-1.98.6", "nested", "bin", "julia")
+        bin1990 = joinpath(depot, "julia-1.99.0", "nested", "bin", "julia")
+        for b in (bin986, bin1990)
             mkpath(dirname(b))
             write(b, "")
         end
@@ -192,8 +195,8 @@ end
         {
           "Default": "release",
           "InstalledVersions": {
-            "1.12.6+0.x": {"Path": "./julia-1.12.6", "BinaryPath": "./julia-1.12.6/nested/bin/julia"},
-            "1.13.0+0.x": {"Path": "./julia-1.13.0", "BinaryPath": "./julia-1.13.0/nested/bin/julia"},
+            "1.98.6+0.x": {"Path": "./julia-1.98.6", "BinaryPath": "./julia-1.98.6/nested/bin/julia"},
+            "1.99.0+0.x": {"Path": "./julia-1.99.0", "BinaryPath": "./julia-1.99.0/nested/bin/julia"},
             "9.9.9+0.x": {"Path": "./gone", "BinaryPath": "./gone/bin/julia"}
           }
         }
@@ -208,13 +211,13 @@ end
             # An install whose recorded binary is gone is not offered as available.
             @test length(found) == 2
             # Newest first, so a series request takes the newest patch in it.
-            @test first(found)[1] == v"1.13.0"
-            @test Dict(found)[v"1.12.6"] == bin126
+            @test first(found)[1] == v"1.99.0"
+            @test Dict(found)[v"1.98.6"] == bin986
 
-            @test K.resolve_julia_binary("1.12.6") == bin126
-            @test K.resolve_julia_binary("1.13") == bin1130
+            @test K.resolve_julia_binary("1.98.6") == bin986
+            @test K.resolve_julia_binary("1.99") == bin1990
             # Not installed → nothing, so the caller can decide whether to offer an install.
-            @test K.resolve_julia_binary("1.11.4") === nothing
+            @test K.resolve_julia_binary("1.97.4") === nothing
 
             # The running Julia is matched before juliaup, so a project asking for the
             # version already in use needs no juliaup at all.
@@ -225,7 +228,7 @@ end
             # No state file at all → nothing installed, no error.
             ENV["JULIAUP_DEPOT_PATH"] = mktempdir()
             @test isempty(K.juliaup_installed_julias())
-            @test K.resolve_julia_binary("1.12.6") === nothing
+            @test K.resolve_julia_binary("1.98.6") === nothing
         finally
             old === nothing ? delete!(ENV, "JULIAUP_DEPOT_PATH") : (ENV["JULIAUP_DEPOT_PATH"] = old)
         end
@@ -233,11 +236,13 @@ end
 
     @testset "binary precedence: julia_bin > julia_version > host Julia" begin
         depot = mktempdir()
-        bin126 = joinpath(depot, "julia-1.12.6", "bin", "julia")
-        mkpath(dirname(bin126))
-        write(bin126, "")
+        # A version no host will ever be: the running Julia is matched ahead of juliaup, so a
+        # fixture naming a real version passes or fails depending on which Julia runs the suite.
+        bin986 = joinpath(depot, "julia-1.98.6", "bin", "julia")
+        mkpath(dirname(bin986))
+        write(bin986, "")
         write(joinpath(depot, "juliaup.json"), """
-        {"InstalledVersions": {"1.12.6+0.x": {"Path": "./julia-1.12.6"}}}
+        {"InstalledVersions": {"1.98.6+0.x": {"Path": "./julia-1.98.6"}}}
         """)
 
         old = get(ENV, "JULIAUP_DEPOT_PATH", nothing)
@@ -248,20 +253,20 @@ end
                 K.LaunchConfig("", "", "", String[], "", bin, false, ver)
 
             # With no BinaryPath recorded, the conventional layout is used.
-            @test K.resolve_julia_binary("1.12.6") == bin126
+            @test K.resolve_julia_binary("1.98.6") == bin986
 
             @test K._launch_julia_exe(lc()) == host
-            @test K._launch_julia_exe(lc(ver = "1.12.6")) == bin126
+            @test K._launch_julia_exe(lc(ver = "1.98.6")) == bin986
             # julia_bin is the escape hatch, so it outranks a julia_version that juliaup
             # could otherwise satisfy.
-            @test K._launch_julia_exe(lc(bin = "/opt/jl/run", ver = "1.12.6")) == "/opt/jl/run"
+            @test K._launch_julia_exe(lc(bin = "/opt/jl/run", ver = "1.98.6")) == "/opt/jl/run"
             # A requested version that isn't installed falls back to the host Julia rather
             # than failing the spawn; the substitution is logged, not silent.
-            @test K._launch_julia_exe(lc(ver = "1.11.4")) == host
+            @test K._launch_julia_exe(lc(ver = "1.97.4")) == host
 
             # The resolved binary is what the spawned session actually runs.
-            cmd = K._build_julia_cmd(lc(ver = "1.12.6"), "boot()"; project = mktempdir())
-            @test cmd[1] == bin126
+            cmd = K._build_julia_cmd(lc(ver = "1.98.6"), "boot()"; project = mktempdir())
+            @test cmd[1] == bin986
         finally
             old === nothing ? delete!(ENV, "JULIAUP_DEPOT_PATH") : (ENV["JULIAUP_DEPOT_PATH"] = old)
         end
