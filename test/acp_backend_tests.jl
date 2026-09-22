@@ -529,7 +529,9 @@ else
                                                                   "content" => Dict("type" => "text",
                                                                                     "text" => "still here"))))),
         ]) do h
-        evs = drain_events(h; n = 1, timeout = 8.0)
+        # Two, because this spawn carries an allowlist and the fake agent enforces nothing for
+        # itself, so `_acp_enforcement_gap` puts a notice on the stream before the turn starts.
+        evs = drain_events(h; n = 2, timeout = 8.0)
         # The update must arrive even though the read is still blocked on the FIFO.
         #
         # One assertion is enough, and deliberately so. The read never completes, so a handler on
@@ -660,6 +662,35 @@ end
         finally
             lock(Kaimon.AGENT_SESSIONS_LOCK) do; delete!(Kaimon.AGENT_SESSIONS, aid); end
         end
+    end
+end
+
+@testset "ACP: a preset that cannot reach native tools says so at spawn" begin
+    # The fake agent is neither opencode nor an agent publishing the `claudeCode` extension, so
+    # `notebook` binds its own Read and Bash nowhere. Silence there read as configured.
+    with_fake_agent(permission = "notebook") do h
+        gap = Kaimon._acp_enforcement_gap(h)
+        @test gap !== nothing
+        @test occursin("deny list", gap)
+        # Emitted during the handshake, so it is already on the channel.
+        evs = drain_events(h; n = 1, timeout = 4.0)
+        @test any(e -> e isa ACP.AgentError && occursin("bridge plugin", e.message), evs)
+    end
+    # An agent that publishes the extension read the deny list handed to `session/new`.
+    with_fake_agent(permission = "notebook",
+                    caps = Dict("_meta" => Dict("claudeCode" => Dict()))) do h
+        @test Kaimon._acp_enforcement_gap(h) === nothing
+    end
+    # `default` denies nothing native beyond the stock recursion guard, so there is no claim to
+    # qualify and no notice — otherwise every spawn carries one and it stops being read.
+    with_fake_agent(permission = "default") do h
+        @test Kaimon._acp_enforcement_gap(h) === nothing
+    end
+    # A caller who named a native tool themselves asked for the same thing a preset does.
+    with_fake_agent(permission = "default",
+                    disallowed_tools = vcat(Kaimon.AGENT_SELF_TOOLS, "Bash")) do h
+        gap = Kaimon._acp_enforcement_gap(h)
+        @test gap !== nothing && occursin("Bash", gap)
     end
 end
 end  # _HAVE_NODE

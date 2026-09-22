@@ -1,6 +1,7 @@
 # ── ACPClientBackend ──────────────────────────────────────────────────────────
-# Drives any agent that speaks the Agent Client Protocol over stdio: opencode
-# (`opencode acp`), Gemini CLI, Codex, Copilot CLI. One adapter, N agents.
+# Drives any agent that speaks the Agent Client Protocol over stdio. `ACP_AGENTS` is the
+# registered set, and adding one is its argv plus a measurement of what it enforces for itself
+# (see `_acp_enforcement_gap`). Codex and Copilot speak ACP and are not registered.
 #
 # The shape differs from ClaudeBackend in one way that matters. Claude's
 # stream-JSON is a one-way firehose: we write turns and read events. ACP is
@@ -695,13 +696,62 @@ and holding it back is a limitation borrowed from a different agent. The capabil
 at `initialize`, and answering "no" for everything is what discarding the handshake amounted to.
 """
 function acp_queues_prompts(h::ACPHandle)
-    caps = get(h.caps, "agentCapabilities", nothing)
-    caps isa AbstractDict || return false
-    meta = get(caps, "_meta", nothing)
-    meta isa AbstractDict || return false
-    cc = get(meta, "claudeCode", nothing)
-    cc isa AbstractDict || return false
+    cc = _acp_claude_meta(h)
+    cc === nothing && return false
     return get(cc, "promptQueueing", false) === true
+end
+
+"""
+The `claudeCode` extension block from the `initialize` reply, or `nothing`.
+
+Doubles as the runtime test for whether this agent understood the `_meta.claudeCode.options` sent
+with `session/new`: an agent that publishes the extension is the one that reads it. ACP has no
+capability for "I will ask permission", so this is the only signal on the wire that a deny list
+handed to the agent will be honoured.
+"""
+function _acp_claude_meta(h::ACPHandle)
+    caps = get(h.caps, "agentCapabilities", nothing)
+    caps isa AbstractDict || return nothing
+    meta = get(caps, "_meta", nothing)
+    meta isa AbstractDict || return nothing
+    cc = get(meta, "claudeCode", nothing)
+    return cc isa AbstractDict ? cc : nothing
+end
+
+"""
+What this agent's own tools are NOT bound by, given how it turned out to be configurable.
+
+A deny list reaches an agent's native tools by one of two routes, and both are agent-specific: the
+bridge plugin, which only opencode loads, or the `_meta.claudeCode.options` handed to
+`session/new`, which only an agent publishing that extension reads. An agent with neither keeps
+just the ask-time check, and an agent that does its own file I/O without asking keeps nothing.
+
+Returns the sentence to put on the event stream, or `nothing` when the configuration is enforced.
+Reported rather than refused: the caller asked for this agent, and a preset that covers Kaimon's
+tools and not the agent's own is still worth having — it just has to say so. Kaimon's own door is
+unaffected, so every `mcp__kaimon` entry (the recursion guard included) holds whatever the agent is.
+
+Only for a spawn that ASKED to be bounded: an allowlist, or a deny entry naming a native tool that
+the caller or a preset added. `default` and `lab` deny nothing native, so they have no claim to
+qualify — what is left in the stock deny list there is the CLI's own subagent spawners under
+Claude's names for them, and an agent with no such tool cannot call them anyway.
+"""
+function _acp_enforcement_gap(h::ACPHandle)
+    b = h.backend
+    # Only the entries naming the agent's OWN tools are at stake. A qualified or server-prefixed
+    # entry is decided at Kaimon's `tools/call` door, which no agent can route around.
+    native = [e for e in b.disallowed_tools
+              if _acp_split_tool(lowercase(e))[1] === nothing && !(e in AGENT_SELF_TOOLS)]
+    isempty(native) && isempty(b.allowed_tools) && return nothing
+    _acp_plugin_supported(b.argv) && return nothing
+    _acp_claude_meta(h) === nothing || return nothing
+    what = isempty(native) ? "this agent's allowlist" :
+           "the deny list ($(join(sort(native), ", ")))"
+    return "$(basename(first(b.argv))) loads neither the bridge plugin nor the `_meta.claudeCode` " *
+           "options, so $what binds its own tools only where it asks permission for a call, and " *
+           "an agent doing its own file I/O does not ask about everything. Kaimon's own tools and " *
+           "the workspace boundary are unaffected. Use `acp:opencode` or `acp:claude` for a " *
+           "preset that holds against native tools."
 end
 
 """
@@ -1277,6 +1327,12 @@ function backend_start(b::ACPClientBackend; cwd::String, agent_id::String,
         acp_set_model!(h, b.model) ||
             put!(h.events, ACP.AgentError("could not select model '$(b.model)'; " *
                                           "the agent is running its own default"))
+    end
+    # Same treatment for the tool policy. Which enforcement routes this agent has is only knowable
+    # once its capabilities are in, and a preset that cannot reach its native tools has to say so
+    # here — otherwise it reads as configured for the whole session.
+    let gap = _acp_enforcement_gap(h)
+        gap === nothing || put!(h.events, ACP.AgentError(gap))
     end
     # Plan mode is the agent's own restriction on edit tools; prefer it over the
     # bridge, which can only refuse a call after the model has committed to it.

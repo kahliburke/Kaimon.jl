@@ -67,11 +67,16 @@ talking to a queueing agent without needing one.
 """
 function with_fake_agent(f; steps = Any[], caps = Dict{String,Any}(), cwd = mktempdir(),
                          allow_writes = true, allowed_tools = String[],
-                         permission = "default")
+                         permission = "default", disallowed_tools = nothing)
     prog = joinpath(mktempdir(), "fake_acp.js")
+    # `nothing` means take what the preset would give a real spawn, which is what `agent_open`
+    # composes. A test that cares about the deny list passes its own.
+    deny = disallowed_tools === nothing ?
+           unique(vcat(Kaimon.AGENT_SELF_TOOLS, Kaimon._permission_preset(permission)[3])) :
+           collect(String, disallowed_tools)
     b = ACPClientBackend(; argv = fake_agent_argv(prog), permission = permission,
                          allowed_tools = allowed_tools, allow_writes = allow_writes,
-                         plugin_dir = nothing)
+                         disallowed_tools = deny, plugin_dir = nothing)
     withenv("KAIMON_FAKE_SCRIPT" => JSON.json(steps), "KAIMON_FAKE_CAPS" => JSON.json(caps)) do
         h = Kaimon.backend_start(b; cwd = cwd, agent_id = "fake-" * string(rand(UInt16), base = 16))
         try
