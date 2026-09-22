@@ -1258,9 +1258,10 @@ function start_mcp_server(
                 tool_name_str = get(get(parsed_request, "params", Dict()), "name", "")
 
                 # Policy before the SSE stream opens, so a refusal is an ordinary JSON reply.
-                # `_rpc_tools_call` checks the same thing for everything that doesn't stream.
-                let aid = _session_agent_id(session === nothing ? "" : session.id),
-                    why = agent_tool_refusal(aid, tool_name_str)
+                # `_rpc_tools_call` asks the same question for everything that doesn't stream.
+                let why = _refuse_tool_for_session(session, tool_name_str,
+                                                   get(get(parsed_request, "params", Dict()),
+                                                       "arguments", Dict()))
                     if why !== nothing
                         resp = _tool_refusal_response(parsed_request, tool_name_str, why)
                         HTTP.setstatus(http, 200)

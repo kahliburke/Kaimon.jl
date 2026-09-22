@@ -404,6 +404,18 @@ function _tool_refusal_response(request, tool_name::AbstractString, why::Abstrac
                                  "result" => result)))
 end
 
+"""
+Why this MCP session's agent may not make this call, or `nothing`.
+
+`tools/call` arrives at two doors — the streaming one in `start_mcp_server` and the plain one in
+`_rpc_tools_call` — and both have to ask the same question. They are not going to stay in step by
+inspection: `args` was once left off the streaming side, which quietly exempted every long-running,
+eliciting and extension tool from the workspace boundary while the name check still ran. So the
+question is asked in one place and `args` is not optional here.
+"""
+_refuse_tool_for_session(session, tool_name::AbstractString, args) =
+    agent_tool_refusal(_session_agent_id(session === nothing ? "" : session.id), tool_name, args)
+
 function _rpc_tools_call(request, tools, name_to_id, session = nothing)
                 params = get(request, "params", nothing)
                 if params === nothing || !haskey(params, "name")
@@ -447,9 +459,8 @@ function _rpc_tools_call(request, tools, name_to_id, session = nothing)
 
                     # Policy first, before anything records the call as started — a refusal that
                     # returns later leaves an in-flight entry nothing ever completes. The
-                    # streaming path checks the same thing in `start_mcp_server`.
-                    let aid = _session_agent_id(session === nothing ? "" : session.id),
-                        why = agent_tool_refusal(aid, tool.name, args)
+                    # streaming path asks the same question in `start_mcp_server`.
+                    let why = _refuse_tool_for_session(session, tool.name, args)
                         why === nothing ||
                             return _tool_refusal_response(request, tool.name, why)
                     end

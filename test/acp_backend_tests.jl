@@ -177,6 +177,12 @@ end
                                    "slate_dbg_dbg_frame")
     @test !Kaimon._acp_tool_matches("mcp__kaimon__slate_dbg.dbg_frame", "slate_dbg_dbg_frame")
 
+    # Both doors ask through one function, and it takes the arguments as a required third one:
+    # the streaming door once asked without them, so the path half of the policy applied to only
+    # one of the two. A default here is what let that happen silently.
+    @test Kaimon._refuse_tool_for_session(nothing, "ex", Dict()) === nothing
+    @test !hasmethod(Kaimon._refuse_tool_for_session, Tuple{Nothing,String})
+
     resp = Kaimon._tool_refusal_response(Dict("id" => 7), "ex", "not in this agent's allowlist")
     body = JSON.parse(String(resp.body))
     @test body["id"] == 7
@@ -595,6 +601,35 @@ end
     end
     with_fake_agent(caps = Dict{String,Any}()) do h
         @test !Kaimon.acp_queues_prompts(h)   # absent capability is not queueing
+    end
+end
+
+@testset "ACP: the workspace boundary holds at whichever door the tool uses" begin
+    # Both `tools/call` doors ask `_refuse_tool_for_session`. The streaming one used to ask without
+    # the arguments, which left the name check running and the path check not — for `ex`,
+    # `run_tests`, `grep_code`, `start_session` and every extension tool, since those are exactly
+    # the ones that stream.
+    ws = mktempdir()
+    mkpath(joinpath(ws, "sub"))
+    with_fake_agent(cwd = ws) do h
+        aid = h.agent_id
+        s = Kaimon.AgentSession(aid, h.backend, h, h.cwd, "acp:fake", :alive,
+                                Task(() -> nothing), time(), time(), ACP.Usage(),
+                                Any[], String[], String[], ReentrantLock())
+        lock(Kaimon.AGENT_SESSIONS_LOCK) do; Kaimon.AGENT_SESSIONS[aid] = s; end
+        try
+            @test Kaimon.agent_tool_refusal(aid, "grep_code", Dict("path" => "sub")) === nothing
+            for outside in ("/etc", joinpath(ws, "..", "elsewhere"))
+                why = Kaimon.agent_tool_refusal(aid, "grep_code", Dict("path" => outside))
+                @test why !== nothing && occursin("outside this agent's workspace", why)
+            end
+            # A `cwd` argument is a path too, whatever the tool calls it.
+            @test Kaimon.agent_tool_refusal(aid, "start_session", Dict("cwd" => "/etc")) !== nothing
+            # Without the arguments there is nothing to confine, which is the shape of the bug.
+            @test Kaimon.agent_tool_refusal(aid, "grep_code") === nothing
+        finally
+            lock(Kaimon.AGENT_SESSIONS_LOCK) do; delete!(Kaimon.AGENT_SESSIONS, aid); end
+        end
     end
 end
 end  # _HAVE_NODE
