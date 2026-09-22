@@ -463,6 +463,30 @@ ACP applies the same idea to terminal output through `outputByteLimit`.
 """
 const ACP_READ_CAP = 8 * 1024 * 1024
 
+"""
+Refuse a path that is not a regular file, before anything opens it.
+
+`open` on a FIFO blocks until the other end appears, and it blocks in the syscall, where the thread
+never reaches a GC safepoint. The next collection then waits for a world that cannot stop, so the
+WHOLE host wedges: not the connection, not the turn, the process. Handling these calls off the
+reader task keeps the connection alive through a slow request and cannot help with that.
+
+The check is a `stat`, which does not open anything, so there is nothing to block on. It also rules
+out a directory and a device, neither of which `fs/read_text_file` means. A path on a hung network
+mount can still block in `stat` itself; that is a narrower hole and not one a path check can close.
+"""
+function _acp_require_regular_file(path::AbstractString)
+    st = try
+        stat(path)
+    catch e
+        throw(ArgumentError("cannot inspect $path: $(sprint(showerror, e))"))
+    end
+    ispath(st) || throw(ArgumentError("no such file: $path"))
+    isfile(st) || throw(ArgumentError(
+        "not a regular file, so reading or writing it could block forever: $path"))
+    return String(path)
+end
+
 function _acp_read_capped(path::AbstractString)
     # A size we cannot determine is a cap we cannot enforce, so refuse rather than read. Treating
     # the failure as 0 bytes let exactly the files the cap exists for through.
@@ -938,7 +962,7 @@ function _handle_request!(h::ACPHandle, id, method::AbstractString, params)
             d = _acp_decide(h.backend, "fs/read_text_file")
             get(d, "allow", false) === true ||
                 return _rpc_error!(h, id, -32000, String(get(d, "why", "denied by policy")))
-            path = _acp_confine(h, String(get(params, "path", "")))
+            path = _acp_require_regular_file(_acp_confine(h, String(get(params, "path", ""))))
             content = if haskey(params, "line") || haskey(params, "limit")
                 # Read only as far as the requested window. Slicing AFTER a whole-file read meant
                 # `limit: 10` still pulled a multi-gigabyte file into memory to throw nearly all
@@ -973,6 +997,9 @@ function _handle_request!(h::ACPHandle, id, method::AbstractString, params)
                 # Confined before anything is created: `mkpath` on an unchecked path would build
                 # directories outside the workspace even when the write itself then failed.
                 path = _acp_confine(h, String(get(params, "path", "")))
+                # Same rule as the read: an existing FIFO or device would block the write too. A
+                # path that does not exist yet is fine, and is the common case.
+                ispath(path) && _acp_require_regular_file(path)
                 mkpath(dirname(path))
                 write(path, String(get(params, "content", "")))
                 _rpc_respond!(h, id, nothing)

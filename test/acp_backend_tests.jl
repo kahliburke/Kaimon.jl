@@ -506,49 +506,61 @@ elseif _OS_THREADS < 2
     @info "skipping ACP fake-agent tests: need >1 OS thread, have $_OS_THREADS (try -t 1,1)"
 else
 @testset "ACP: a blocking client request does not stall the stream" begin
-    # The wedge: fs/read on a FIFO never returns. Handled inline, this stopped the reader, so the
-    # update after it never arrived and every call in flight timed out.
-    dir = mktempdir()
-    fifo = joinpath(dir, "pipe")
-    run(`mkfifo $fifo`)
-    # Unwedging the read has to happen even when the assertion below fails, so it goes in a
-    # `finally` rather than after the assertion. A handler still blocked in `open` keeps the
-    # process alive against SIGTERM — Julia catches the signal, tries to shut down, and cannot —
-    # so a failed run leaves a process that only SIGKILL removes, and the `timeout` wrapper the
-    # run came in does not help. Unlinking the FIFO does not release a pending open either; the
-    # only thing that does is giving it the writer it is waiting for.
+    # A slow client request must not stop the reader, or the update after it never arrives and every
+    # call in flight times out.
+    #
+    # The block is a permission hook that sleeps, NOT a read of a FIFO. A FIFO blocks inside the
+    # `open` syscall, where the thread never reaches a GC safepoint, so the next collection waits
+    # for a world that cannot stop and the whole test process wedges past SIGTERM. That is the
+    # hazard `_acp_require_regular_file` now refuses outright (see below); reproducing it here only
+    # ever risked the suite. A sleeping hook blocks the handler just as well and yields.
+    released = Channel{Nothing}(1)
+    Kaimon.set_permission_ask!((aid, tool, why) -> (take!(released); :deny))
     try
-    with_fake_agent(cwd = dir,
-        allowed_tools = ["fs/read_text_file"],
-        steps = Any[
-            Dict("request" => Dict("method" => "fs/read_text_file",
-                                   "params" => Dict("sessionId" => "fake-session", "path" => fifo))),
-            Dict("send" => Dict("jsonrpc" => "2.0", "method" => "session/update",
-                                "params" => Dict("sessionId" => "fake-session",
-                                                 "update" => Dict("sessionUpdate" => "agent_message_chunk",
-                                                                  "content" => Dict("type" => "text",
-                                                                                    "text" => "still here"))))),
-        ]) do h
-        # Two, because this spawn carries an allowlist and the fake agent enforces nothing for
-        # itself, so `_acp_enforcement_gap` puts a notice on the stream before the turn starts.
-        evs = drain_events(h; n = 2, timeout = 8.0)
-        # The update must arrive even though the read is still blocked on the FIFO.
-        #
-        # One assertion is enough, and deliberately so. The read never completes, so a handler on
-        # the reader task would block it forever and this update could not be processed at all —
-        # "it was merely fast" is not an available explanation. Asserting that the read's reply has
-        # NOT arrived would exclude nothing. That assertion belongs with a large-real-file variant,
-        # where the read does finish and fast competes with off-task.
-        @test any(e -> e isa ACP.AgentMessageChunk, evs)
-    end
+        with_fake_agent(cwd = mktempdir(), steps = Any[
+                Dict("request" => Dict("method" => "session/request_permission",
+                                       "params" => Dict("sessionId" => "fake-session",
+                                                        "toolCall" => Dict("toolCallId" => "tc1",
+                                                                           "rawInput" => Dict("path" => "/etc/passwd")),
+                                                        "options" => Any[Dict("optionId" => "n",
+                                                                              "name" => "Reject",
+                                                                              "kind" => "reject_once")]))),
+                Dict("send" => Dict("jsonrpc" => "2.0", "method" => "session/update",
+                                    "params" => Dict("sessionId" => "fake-session",
+                                                     "update" => Dict("sessionUpdate" => "agent_message_chunk",
+                                                                      "content" => Dict("type" => "text",
+                                                                                        "text" => "still here"))))),
+            ]) do h
+            # The update must arrive while the permission handler is still parked in the hook. A
+            # handler on the reader task would block it, so this event could not be processed at
+            # all: "it was merely fast" is not an available explanation.
+            evs = drain_events(h; n = 2, timeout = 8.0)
+            @test any(e -> e isa ACP.AgentMessageChunk, evs)
+        end
     finally
-        # `r+` rather than `w`: opening a FIFO blocks until the opposite end is present, so a
-        # write-only open would hang here in exactly the case this cleanup exists for — a failure
-        # before the read was ever issued, leaving no reader to pair with. O_RDWR is both ends at
-        # once, so it cannot block, and it still releases a reader that is already waiting.
-        # POSIX leaves O_RDWR on a FIFO undefined; Linux and macOS both behave as described, which
-        # is enough for a test helper but is not a portability guarantee.
-        try; open(fifo, "r+") do io; write(io, "done\n"); end; catch; end
+        put!(released, nothing)              # let the parked handler finish
+        Kaimon.set_permission_ask!(nothing)
+    end
+end
+
+@testset "ACP: a path that would block forever is refused, not opened" begin
+    # `open` on a FIFO blocks in the syscall, and a thread parked there never reaches a GC
+    # safepoint — so the next collection waits for a world that cannot stop and the HOST wedges.
+    # Handling the request off the reader task saves the connection and cannot save the process.
+    # The check is a `stat`, so it cannot block on the thing it is inspecting.
+    dir = mktempdir()
+    regular = joinpath(dir, "ok.txt")
+    write(regular, "hello")
+    @test Kaimon._acp_require_regular_file(regular) == regular
+
+    @test_throws ArgumentError Kaimon._acp_require_regular_file(joinpath(dir, "nope.txt"))
+    @test_throws ArgumentError Kaimon._acp_require_regular_file(dir)          # a directory
+    if !Sys.iswindows()
+        fifo = joinpath(dir, "pipe")
+        run(`mkfifo $fifo`)
+        # No `open` anywhere in this assertion, which is the whole point.
+        @test_throws ArgumentError Kaimon._acp_require_regular_file(fifo)
+        @test isfifo(stat(fifo))                                             # still there, untouched
     end
 end
 
