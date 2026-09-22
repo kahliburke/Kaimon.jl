@@ -1,10 +1,14 @@
 # AI Agent Sessions
 
-Kaimon can spawn and own **AI agent sessions** -- a headless `claude` process that
-you talk to programmatically. Kaimon launches the agent, normalizes its output into
+Kaimon can spawn and own **AI agent sessions** -- a headless coding agent that you
+talk to programmatically. Kaimon launches the agent, normalizes its output into
 a vendor-neutral event model, streams those events on the gate event bus, and tracks
 each agent's lifecycle and token usage. The natural sibling of a gate REPL session
 and a managed extension.
+
+The agent can be the `claude` CLI, a local Ollama or MLX model, or anything that
+speaks the [Agent Client Protocol](https://agentclientprotocol.com) -- see
+[ACP agents](@ref) for the last of those, whose tool policy works differently.
 
 An agent session is "an AI you can drive": open one in a directory, send it turns,
 and consume the streamed assistant text, reasoning, and tool calls as it works.
@@ -16,10 +20,11 @@ You drive it with a small set of MCP tools and consume one event channel per age
 flowchart LR
     claude(["claude -p<br/>stream-JSON"])
 
-    subgraph seam["AgentBackend seam — vendor-neutral"]
+    subgraph backends["AgentBackend interface — vendor-neutral"]
         direction TB
         cb["ClaudeBackend<br/>drives claude, maps events"]
-        future["GeminiBackend, ...<br/>future, additive"]
+        acpb["ACPClientBackend<br/>drives any ACP agent"]
+        ob["OllamaBackend<br/>local model, in-process"]
     end
 
     acp["ACP event model<br/>kind / turn / data"]
@@ -40,9 +45,10 @@ flowchart LR
    reading events over a pipe.
 2. The backend maps Claude's native stream-JSON events into the **ACP update model**
    -- Kaimon's vendor-neutral lingua franca (modeled on the
-   [Agent Client Protocol](https://agentclientprotocol.com) update schema). A future
-   `GeminiBackend` / `ACPClientBackend` slots in by implementing the same handful of
-   methods; everything above the seam is written once.
+   [Agent Client Protocol](https://agentclientprotocol.com) update schema).
+   `ACPClientBackend` and `OllamaBackend` implement the same handful of methods, so
+   the registry, the event bus, the MCP tools and the TUI are written once and know
+   nothing about which agent is running.
 3. The **`AgentSessionManager`** owns the process, runs the status FSM, accumulates
    per-session cost, and relays every event onto the gate event bus on channel
    `agent:<id>` as a `{kind, turn, data}` envelope.
@@ -98,7 +104,8 @@ extensions via the service endpoint. Returns are JSON strings.
 | `agent_send` | `agent_id` (req), `text` (req) | `{"turn": <n>}` -- writes a user turn (async); events stream on `agent:<id>` |
 | `agent_run` | `agent_id` (req), `text` (req), `timeout` | `{"text": "…"}` -- sends a turn and **blocks** until it ends, returning the assistant text |
 | `agent_output` | `agent_id` (req), `turn`, `which` ("last_message"/"full_turn"/"all"), `include_tools`, `max_chars` | `{agent_id, turn, status, done, text, truncated, dropped_chars, usage}` -- **non-blocking** read of an agent's output (partial while still working). Pair with `agent_send` to dispatch-then-poll instead of blocking on `agent_run` |
-| `agent_status` | `agent_id` (req) | `{status, model, cwd, turn, created_at, last_activity, session_id, transcript, event_log, usage}` |
+| `agent_status` | `agent_id` (req) | `{status, model, cwd, turn, created_at, last_activity, session_id, transcript, event_log, usage, queues_prompts}` |
+| `agent_set_model` | `agent_id` (req), `model` (req) | `{"switched": bool}` -- repoints a **live** agent at another model, keeping its conversation. ACP agents only, and only within the same agent; `false` everywhere else, where the fallback is to close and reopen |
 | `agent_list` | -- | `{"agents": [ …status… ]}` |
 | `agent_interrupt` | `agent_id` (req) | `{"interrupted": bool}` -- best-effort cancel of the in-flight turn |
 | `agent_close` | `agent_id` (req) | `{"closed": bool}` -- kills the process; the slot is retained as `:dead` for review |
@@ -108,9 +115,9 @@ extensions via the service endpoint. Returns are JSON strings.
 | Option | Default | Description |
 |---|---|---|
 | `cwd` | *(required)* | Working directory for the agent. Must exist. |
-| `model` | `sonnet` | Model alias or id. The `sonnet` alias tracks the latest Sonnet; pin (e.g. `claude-sonnet-5`) for reproducibility. A Claude model may carry an inline effort suffix, e.g. `claude-sonnet-5/high` or `sonnet/low`. |
+| `model` | `sonnet` | Model alias or id. The `sonnet` alias tracks the latest Sonnet; pin (e.g. `claude-sonnet-5`) for reproducibility. A Claude model may carry an inline effort suffix, e.g. `claude-sonnet-5/high` or `sonnet/low`. Prefixes select another backend: `acp:<agent>[:<model>]` ([ACP agents](@ref)), `ollama:<tag>`, `vmlx:<tag>`. |
 | `effort` | *(CLI default)* | Claude thinking/effort level (`low \| medium \| high`) → `claude --effort`. Lower = less thinking, faster turns. Overrides a `model` suffix if both are given. |
-| `permission` | `default` | Permission **preset** (see below): `default \| lab \| auto \| bypass`. |
+| `permission` | `default` | Permission **preset** (see below): `default \| notebook \| specialist \| lab \| auto \| bypass`. |
 | `permission_mode` | *(from preset)* | Override the preset's raw claude permission-mode: `default \| acceptEdits \| plan \| auto \| bypassPermissions`. |
 | `allowed_tools` | `[]` | Extra tool allowlist. Composes with the preset. |
 | `disallowed_tools` | the `agent_*` tools | Tools the agent may **not** call. Defaults to a recursion guard (see below). Pass `[]` to allow nested agents. |
@@ -126,17 +133,83 @@ on regardless.
 | Preset | Posture | Effect |
 |---|---|---|
 | `default` | Edits only | `acceptEdits` permission mode; no extra tools. |
-| `lab` | Drive the lab | Allows the whole Kaimon MCP server (`mcp__kaimon`) so the agent can drive `slate.*` / `ex` / etc. |
+| `notebook` | Kaimon's tools instead of its own | Allows `mcp__kaimon`, and **denies** the agent's native file and shell tools (`Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `NotebookEdit`). For an agent working on a notebook, where `slate_*` sees live cell state and `Read` sees stale disk. |
+| `specialist` | A named few verbs | `notebook` without the allowance, so the spawn's own `allowed_tools` is the entire toolset. A `specialist` with no `allowed_tools` may call nothing. |
+| `lab` | Drive the lab | Allows the whole Kaimon MCP server (`mcp__kaimon`) so the agent can drive `slate.*` / `ex` / etc., plus the ACP `fs/*` callbacks. |
 | `auto` | Self-governing | The model's permission classifier decides per call. |
 | `bypass` | No checks | Adds `--dangerously-skip-permissions`. **Sandboxed / trusted directories only.** |
 
-An explicit `permission_mode` overrides the preset's mode; `allowed_tools` composes
-with the preset's allowlist.
+An explicit `permission_mode` overrides the preset's mode. `allowed_tools` composes
+with the preset's allowlist, except under `specialist`, where it replaces it.
+
+A preset's **deny** half applies at Kaimon's own `tools/call` door for every backend, so
+`mcp__kaimon` entries -- the recursion guard included -- always hold. Its reach into the
+agent's *own* tools depends on the agent; see below.
 
 !!! warning "Recursion guard"
     By default an owned agent is blocked from calling the `agent_*` tools
     (`--disallowedTools`), so it cannot recursively spawn or kill agents (a fork bomb).
-    Pass `disallowed_tools = []` to deliberately allow nested agents.
+    The CLI's own subagent spawners (`Agent`, `Task`, `Workflow`) are in the same list,
+    since the guard is about the count, not the toolset -- a subagent inherits its
+    parent's restrictions but multiplies the processes. Pass `disallowed_tools = []` to
+    deliberately allow nested agents.
+
+## ACP agents
+
+A `model` of `acp:<agent>[:<model>]` drives an agent over the
+[Agent Client Protocol](https://agentclientprotocol.com) on stdio instead of the `claude`
+CLI. The agent's own model ids keep their slashes, which is why the separator is a colon.
+
+| `<agent>` | Command | Model selection |
+|---|---|---|
+| `opencode` | `opencode acp` | Generated per-session config |
+| `claude` | `claude-agent-acp` | Over the wire (`session/set_model`) |
+| `gemini` | `gemini --experimental-acp` | Over the wire |
+
+Each session gets its own generated opencode config, which is what lets two agents run under
+different presets at once. It replaces the user's own, with one thing carried across: the
+`provider` block, so a model served locally stays selectable
+(`acp:opencode:ollama/qwen2.5:14b`). MCP servers are not carried -- a server Kaimon did not
+attach sends calls with no agent id, so no preset would reach them.
+
+```jsonc
+// agent_open
+{ "cwd": "/path/to/project", "model": "acp:opencode:opencode/minimax-m3",
+  "permission": "notebook" }
+```
+
+ACP is a two-way protocol rather than a firehose: the agent calls back mid-turn for
+permission and to read files, so Kaimon answers as a peer. Two things follow that the
+Claude path does not have. The model is a session method rather than a spawn flag, so
+`agent_set_model` repoints a **live** agent without losing its conversation. And
+`agent_status` reports `queues_prompts` -- whether a turn sent while another is running
+is queued or destroys the reply in progress, which the agent declares at `initialize`.
+
+### Where an ACP preset is enforced
+
+Every Kaimon tool an ACP agent calls is checked against the preset at Kaimon's own
+door, and any path argument it carries is confined to the agent's `cwd`. That part holds
+for every agent. What differs is whether the preset reaches the agent's **own** `Read`,
+`Write` and `Bash`, because ACP has no way to express tool policy. There are three
+routes, and none is universal:
+
+- **A bridge plugin** (`opencode` only) refuses the call before it is made.
+- **`_meta.claudeCode.options` on `session/new`** (an agent that publishes the
+  `claudeCode` extension, i.e. `claude-agent-acp`) hands the agent its deny list, so it
+  never offers those tools to the model.
+- **`session/request_permission`** works for any agent that asks -- but an agent doing its
+  own file I/O does not ask about everything, and `opencode` never asks at all.
+
+An agent with neither of the first two keeps only the third. Kaimon says so on the event
+stream at spawn rather than letting the preset read as configured, so a `notebook` agent
+whose native tools are not actually bound reports it in its first `AgentError`. For a
+preset that holds against native tools, use `acp:opencode` or `acp:claude`.
+
+!!! note "A boundary, not a sandbox"
+    Path confinement is a correctness boundary against a cooperative agent. It resolves
+    symlinks before checking, but the check and the open are separate steps, and a shell
+    tool carries its target inside a command string where no path check can see it -- so
+    the presets that permit a shell (`default`, `lab`, `bypass`) are granting exactly that.
 
 ## The Event Stream
 

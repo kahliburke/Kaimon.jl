@@ -52,7 +52,7 @@ cp "$_acpsrc/opencode.json" "$XDG_CONFIG_HOME/opencode/opencode.json"
 # `plugin/`, singular — the docs say `plugins/`, which loads nothing. Measured by
 # counting plugin.loaded records with each directory present on its own.
 mkdir -p "$XDG_CONFIG_HOME/opencode/plugin"
-cp "$_acpsrc/plugin/"*.js "$XDG_CONFIG_HOME/opencode/plugin/"
+cp "$_acpsrc/probe-plugin/"*.js "$XDG_CONFIG_HOME/opencode/plugin/"
 unset _acpsrc
 
 echo "acplab: XDG -> $ACPLAB_ROOT, model $ACPLAB_MODEL"
