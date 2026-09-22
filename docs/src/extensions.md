@@ -93,6 +93,33 @@ Extensions go through these states:
 
 If an extension crashes, Kaimon automatically restarts it with exponential backoff (5s, 10s, 30s, 60s delays).
 
+### Tools Stay Listed Across a Restart
+
+Restarting an extension is routine while you develop one, and an extension's tools
+disappearing and reappearing reads to a connected agent as an unreliable MCP server. So a
+restart Kaimon initiated (the TUI's `r`, or `manage_extension(action="restart")`) **holds**
+the extension's tools in the list instead of unregistering them. No `tools/list_changed`
+is sent, and the agent never sees the toolset change.
+
+A call that arrives while the extension is still coming up **parks** rather than failing,
+and proceeds as soon as the tools re-register. The hold re-arms while the extension is on
+its way back, so a long precompile does not end it early, up to a ceiling of 10 minutes.
+If the extension crashes during the restart, or does not return before that ceiling, the
+tools are unregistered as they always were.
+
+Two settings tune the waits, in `~/.config/kaimon/config.json`:
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `extension_tool_hold_seconds` | `45` | How long the tools stay listed while the extension is down. Raise it if an extension's precompile is slow. |
+| `extension_tool_park_seconds` | `40` | How long an individual tool call waits for the extension to come back before giving up. Keep it under the hold, so a parked call cannot outlive the hold that justifies it. |
+
+`KAIMON_TOOL_HOLD_SECONDS` and `KAIMON_TOOL_PARK_SECONDS` override the config file.
+
+!!! note
+    This applies to a restart Kaimon initiated. An extension that crashes on its own is
+    unregistered as before, because nothing has promised it is coming back.
+
 ### Graceful Shutdown
 
 When an extension is stopped (via the TUI, a restart, or Kaimon exiting), the shutdown sequence is:

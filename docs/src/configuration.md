@@ -22,7 +22,7 @@ Respects `XDG_CONFIG_HOME` on Linux/macOS; uses `APPDATA` on Windows.
 
 | File | Purpose |
 |------|---------|
-| `config.json` | Global settings: security mode, API keys, editor, qdrant prefix |
+| `config.json` | Global settings: security mode, API keys, editor, qdrant prefix, [extension restart waits](extensions.md#Tools-Stay-Listed-Across-a-Restart) |
 | `projects.json` | Allowed projects for managed sessions ([details](@ref projects-config)) |
 | `extensions.json` | Extension registry ([details](extensions.md)) |
 | `tcp_gates.json` | Registered TCP gate connections (host, port, name, token, stream_port) |
@@ -256,6 +256,8 @@ that is nearly always a typo in a tool name.
 | `LOCALAPPDATA` | Windows | Windows equivalent of the cache directory. Kaimon stores data in `$LOCALAPPDATA/Kaimon/`. |
 | `KAIMON_TEST_PROMOTE_AFTER` | all | Seconds a test run may hold the foreground before `run_tests` backgrounds it (default `30`). `0` never backgrounds. |
 | `KAIMON_TEST_CONCURRENCY` | all | Test runs allowed in flight per project (default `1`). Runs are serialised because overlapping suites share fixtures and global state. |
+| `KAIMON_TOOL_HOLD_SECONDS` | all | How long an extension's tools stay listed while it restarts (default `45`). Overrides `extension_tool_hold_seconds`. See [Tools Stay Listed Across a Restart](extensions.md#Tools-Stay-Listed-Across-a-Restart). |
+| `KAIMON_TOOL_PARK_SECONDS` | all | How long a tool call waits for a restarting extension before giving up (default `40`). Overrides `extension_tool_park_seconds`. |
 | `KAIMON_GATE_MODE` | all | Gate transport: `"ipc"` (default) or `"tcp"`. |
 | `KAIMON_GATE_HOST` | all | TCP bind address (default `127.0.0.1`). |
 | `KAIMON_GATE_PORT` | all | TCP REP socket port (default `0` = ephemeral). Setting it implies TCP mode. |
