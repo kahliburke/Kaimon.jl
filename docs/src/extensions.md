@@ -1,6 +1,6 @@
 # Extensions
 
-Extensions add domain-specific MCP tools to Kaimon by running as separate Julia processes that connect back through the Gate. Each extension is a Julia package with a `kaimon.toml` manifest that declares the tools it provides.
+Extensions add domain-specific MCP tools to Kaimon. They run in separate processes by default; tools that require target-process state can instead use session placement. Each extension is a Julia package with a `kaimon.toml` manifest that declares the tools it provides.
 
 ## How Extensions Work
 
@@ -10,7 +10,7 @@ An extension is a Julia project that:
 2. Declares those tools in a `kaimon.toml` manifest at the project root.
 3. Is registered in Kaimon's extension registry (`~/.config/kaimon/extensions.json`).
 
-When Kaimon starts (or when you manually start an extension), it spawns a Julia subprocess that activates the extension project, calls its tools function, and connects back via `KaimonGate.serve()`. The extension's tools appear in the MCP tool list under a namespace prefix (e.g., `smlabnotes.search`).
+When Kaimon starts (or when you manually start an isolated extension), it spawns a Julia subprocess that activates the extension project, calls its tools function, and connects back via `KaimonGate.serve()`. The extension's tools appear in the MCP tool list under a namespace prefix (e.g., `smlabnotes.search`).
 
 ## The `kaimon.toml` Manifest
 
@@ -22,6 +22,7 @@ namespace = "myext"
 module = "MyExtension"
 tools_function = "create_gate_tools"
 description = "What this extension does."
+placement = "isolated"                 # optional: "isolated" or "session"
 shutdown_function = "cleanup"           # optional
 tui_file = "src/tui_panel.jl"          # optional
 julia_flags = ["-t4,1"]               # optional
@@ -37,6 +38,7 @@ JULIA_THREAD_SLEEP_THRESHOLD = "0"
 | `module` | Yes | Julia module name to `using` |
 | `tools_function` | Yes | Exported function that returns `Vector{GateTool}` |
 | `description` | No | Human-readable summary for display in the TUI and `extension_info` |
+| `placement` | No | `isolated` (default) starts a separate process; `session` loads into selected managed target sessions. |
 | `shutdown_function` | No | Exported no-arg function called before the extension process exits (5 s timeout) |
 | `tui_file` | No | Path to a lightweight TUI panel file (relative to project root). Press `[u]` on the extension in the Extensions tab to open it. |
 | `julia_flags` | No | Julia startup flags for the extension process (e.g., `["-t4,1", "--heap-size-hint=1G"]`). Defaults to `-t auto`. |
@@ -76,9 +78,25 @@ The extension registry at `~/.config/kaimon/extensions.json` tracks which extens
 |-------|-------------|
 | `project_path` | Absolute path to the extension project directory |
 | `enabled` | Whether the extension can be started |
-| `auto_start` | If `true` and `enabled`, automatically spawn at Kaimon startup |
+| `auto_start` | For isolated extensions, automatically spawn at Kaimon startup when enabled |
 
 Manage the registry through the TUI Extensions tab or by editing the file directly.
+
+## Session Placement
+
+Session placement is for tools that must inspect state inside a managed target process, such as compiler diagnostics. Register the extension normally, then select its namespace in the target project's `kaimon.toml`:
+
+```toml
+[session]
+extensions = ["compiler"]
+```
+
+Kaimon adds the provider's managed environment after the target project on `LOAD_PATH`, loads its module, calls `tools_function(KaimonGate.GateTool)`, and includes the returned tools in the target's initial Gate. The namespace identifies the registered provider but does not prefix its tools in the target session, so providers should use collision-resistant raw names.
+
+Session providers start and stop with the target. Changes take effect when the target session restarts; dynamic unloading is not supported. This configuration applies only to sessions Kaimon starts, not to Julia processes that call `KaimonGate.serve()` themselves.
+
+!!! warning "Session extensions are trusted code"
+    A session extension executes arbitrary Julia code inside the target process. It can inspect and mutate all target state and has the same operating-system authority as the target. Enable only trusted providers.
 
 ## Lifecycle
 
@@ -86,6 +104,7 @@ Extensions go through these states:
 
 | State | Description |
 |-------|-------------|
+| `:available` | Session provider is registered and can be selected by target projects |
 | `:stopped` | Not running |
 | `:starting` | Subprocess spawned, waiting for Gate connection |
 | `:running` | Connected and serving tools |
@@ -131,7 +150,7 @@ When an extension is stopped (via the TUI, a restart, or Kaimon exiting), the sh
 
 ## Tool Namespacing
 
-Extension tools are namespaced with the extension's `namespace` value to avoid collisions with built-in tools and other extensions:
+Isolated extension tools are namespaced with the extension's `namespace` value to avoid collisions with built-in tools and other extensions:
 
 - Extension with `namespace = "smlabnotes"` exporting tool `"search"` → registered as `smlabnotes.search`
 - If two sessions declare the same namespace, the second gets a suffix: `smlabnotes_2`

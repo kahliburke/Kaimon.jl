@@ -11,7 +11,7 @@ Tracks the lifecycle of a managed extension subprocess.
 mutable struct ManagedExtension
     config::ExtensionConfig
     process::Union{Base.Process,Nothing}
-    status::Symbol          # :stopped, :starting, :running, :crashed, :stopping
+    status::Symbol          # :available (session) or isolated-process lifecycle state
     started_at::Float64     # time() when last started
     last_heartbeat::Float64 # time() of last confirmed alive
     restart_count::Int
@@ -29,7 +29,8 @@ function ManagedExtension(config::ExtensionConfig)
     log_dir = joinpath(kaimon_cache_dir(), "extensions")
     mkpath(log_dir)
     log_file = joinpath(log_dir, "$(config.manifest.namespace).log")
-    ManagedExtension(config, nothing, :stopped, 0.0, 0.0, 0, "", String[], log_file)
+    status = config.manifest.placement === :session ? :available : :stopped
+    ManagedExtension(config, nothing, status, 0.0, 0.0, 0, "", String[], log_file)
 end
 
 # ── Global state ─────────────────────────────────────────────────────────────
@@ -493,6 +494,8 @@ end
 Launch the extension subprocess. Non-blocking.
 """
 function spawn_extension!(ext::ManagedExtension)
+    ext.config.manifest.placement === :isolated ||
+        error("Session extension '$(ext.config.manifest.namespace)' loads in target sessions")
     ext.status == :running && return
 
     # Kill any existing process before spawning a new one.
@@ -639,6 +642,8 @@ end
 Stop an extension subprocess gracefully, then force-kill after timeout.
 """
 function stop_extension!(ext::ManagedExtension; timeout::Float64 = 5.0)
+    ext.config.manifest.placement === :isolated ||
+        error("Session extension '$(ext.config.manifest.namespace)' has no process to stop")
     ext.status == :stopped && return
     ext.status = :stopping
 
@@ -744,6 +749,8 @@ end
 Stop then re-spawn an extension.
 """
 function restart_extension!(ext::ManagedExtension)
+    ext.config.manifest.placement === :isolated ||
+        error("Session extension '$(ext.config.manifest.namespace)' follows its target session")
     ns = ext.config.manifest.namespace
     # We are taking it down and bringing it back, so keep its tools advertised for the gap. Only
     # a restart routed through here gets that: an extension that exits on its own is not known to
@@ -1015,13 +1022,15 @@ function start_extensions!()
         for config in configs
             ext = ManagedExtension(config)
             push!(MANAGED_EXTENSIONS, ext)
-            if config.entry.enabled && config.entry.auto_start
+            if config.manifest.placement === :isolated &&
+               config.entry.enabled && config.entry.auto_start
                 spawn_extension!(ext)
             end
         end
     end
     if !isempty(configs)
-        n_auto = count(c -> c.entry.enabled && c.entry.auto_start, configs)
+        n_auto = count(c -> c.manifest.placement === :isolated &&
+                           c.entry.enabled && c.entry.auto_start, configs)
         names = join([c.manifest.namespace for c in configs], ", ")
         _push_log!(:info, "Loaded $(length(configs)) extension(s): $names ($n_auto auto-starting)")
     end
@@ -1143,7 +1152,8 @@ function rescan_extensions!()
             push!(MANAGED_EXTENSIONS, ext)
             by_ns[ns] = ext
             push!(added, ns)
-            config.entry.enabled && config.entry.auto_start && spawn_extension!(ext)
+            config.manifest.placement === :isolated &&
+                config.entry.enabled && config.entry.auto_start && spawn_extension!(ext)
         end
     end
 

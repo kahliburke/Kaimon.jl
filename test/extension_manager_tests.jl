@@ -11,6 +11,45 @@ using ReTest
 using Kaimon
 using Logging, LoggingExtras
 
+@testset "extension placement" begin
+    mktempdir() do dir
+        write(joinpath(dir, "kaimon.toml"), """
+        [extension]
+        namespace = "provider"
+        module = "Provider"
+        tools_function = "tools"
+        placement = "session"
+        """)
+        manifest = Kaimon.parse_extension_manifest(dir)
+        ext = Kaimon.ManagedExtension(Kaimon.ExtensionConfig(
+            Kaimon.ExtensionEntry(dir, true, false), manifest))
+        @test manifest.placement === :session
+        @test ext.status === :available
+        @test_throws ErrorException Kaimon.spawn_extension!(ext)
+    end
+
+    mktempdir() do dir
+        write(joinpath(dir, "kaimon.toml"), """
+        [extension]
+        namespace = "legacy"
+        module = "Legacy"
+        tools_function = "tools"
+        """)
+        @test Kaimon.parse_extension_manifest(dir).placement === :isolated
+    end
+
+    mktempdir() do dir
+        write(joinpath(dir, "kaimon.toml"), """
+        [extension]
+        namespace = "bad"
+        module = "Bad"
+        tools_function = "tools"
+        placement = "shared"
+        """)
+        @test_throws ErrorException Kaimon.parse_extension_manifest(dir)
+    end
+end
+
 # A value whose show throws, for the log-formatter robustness test below.
 struct _ExplodingShow end
 Base.show(io::IO, ::_ExplodingShow) = error("show blew up")

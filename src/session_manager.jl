@@ -53,7 +53,8 @@ Generate the Julia `-e` script that boots a session subprocess.
 """
 function _build_session_script(project_path::String;
                                name::String = "",
-                               allow_restart::Bool = true)
+                               allow_restart::Bool = true,
+                               extensions::Vector{ExtensionConfig} = ExtensionConfig[])
     # The subprocess is launched with --project=<target>, so the target project
     # and its deps are the active environment. It boots only the lightweight
     # `KaimonGate` (ZMQ + stdlib) — NOT the heavyweight Kaimon — so a session
@@ -61,12 +62,20 @@ function _build_session_script(project_path::String;
     # KaimonGate is made resolvable, and the host's identity (mirror preference,
     # personality, version) conveyed, via `_build_session_env`. The TUI enriches
     # the gate over the wire, so loading Kaimon here buys nothing.
+    providers = join(("""
+    using $(c.manifest.module_name)
+    append!(_kaimon_session_tools, $(c.manifest.module_name).$(c.manifest.tools_function)(KaimonGate.GateTool))
+    """ for c in extensions), "\n")
     return """
     cd($(repr(project_path)))
     try; using Revise; catch; end
     using KaimonGate
     import Pkg; Pkg.instantiate(; io=devnull)
-    @async KaimonGate.serve(force=true, allow_mirror=true, allow_restart=$(allow_restart), spawned_by="agent")
+    _kaimon_session_tools = KaimonGate.GateTool[]
+    $providers
+    length(unique(t.name for t in _kaimon_session_tools)) == length(_kaimon_session_tools) ||
+        error("Session extensions registered duplicate tool names")
+    @async KaimonGate.serve(tools=_kaimon_session_tools, force=true, allow_mirror=true, allow_restart=$(allow_restart), spawned_by="agent")
     """
 end
 
@@ -87,13 +96,15 @@ doesn't load Kaimon): the user's REPL-mirror preference (so a joined session
 console shows agent eval activity by default), personality emoji, and the Kaimon
 version reported in the session's pong. KaimonGate's default providers read these.
 """
-function _build_session_env()
+function _build_session_env(extension_envs::Vector{String} = String[])
     gate_env = pkgdir(KaimonGate)
     # OS-correct separator (`;` on Windows) — a hardcoded `:` breaks Windows drive
     # letters and drops @stdlib, so the spawned session can't find its stdlibs/gate.
-    load_path = gate_env === nothing ?
-        _join_load_path("@", "@v#.#", "@stdlib") :
-        _join_load_path("@", "@v#.#", "@stdlib", gate_env)
+    entries = String["@"]
+    append!(entries, extension_envs)
+    append!(entries, ["@v#.#", "@stdlib"])
+    gate_env === nothing || push!(entries, gate_env)
+    load_path = _join_load_path(entries...)
 
     mirror = try
         get_gate_mirror_repl_preference()
@@ -248,9 +259,15 @@ function spawn_session!(ms::ManagedSession)
         v = resolve_session_pref(sp, ms.project_path, :allow_restart)
         v !== nothing ? v : true  # default: restart allowed
     end
-    script = _build_session_script(ms.project_path; name = ms.name, allow_restart = ar)
-
     try
+        extensions = load_session_extension_configs(ms.project_path)
+        extension_envs = [
+            _ensure_extension_runtime_project(c.entry.project_path, c.manifest.namespace)
+            for c in extensions
+        ]
+        script = _build_session_script(
+            ms.project_path; name = ms.name, allow_restart = ar, extensions,
+        )
         lc = _resolve_launch_config(ms.project_path)
         cmd = _build_julia_cmd(lc, script; project = ms.project_path)
         # Build the env overlay: --project=<target> controls the active
@@ -258,7 +275,7 @@ function spawn_session!(ms::ManagedSession)
         # lightweight gate stays resolvable for a from-source recompile (#47), and
         # KAIMON_GATE_* carry the host's identity to the standalone gate.
         # (pty_spawn merges env into the parent ENV, so we set explicit values.)
-        env = _build_session_env()
+        env = _build_session_env(extension_envs)
         pty = Tachikoma.pty_spawn(cmd; rows = 24, cols = 80, env)
         ms.pty = pty
         ms.process = nothing
