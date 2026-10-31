@@ -81,6 +81,26 @@ Or to track the development branch:
 Pkg.develop(url="https://github.com/kahliburke/Kaimon.jl")
 ```
 
+## Connect Codex CLI or the VS Code extension
+
+In Kaimon's **Config** tab, press `i` and choose **OpenAI Codex**. The installer
+writes a native Streamable HTTP connection to `~/.codex/config.toml` (or
+`$CODEX_HOME/config.toml` when set), including Kaimon's API key when required.
+Codex CLI and its VS Code extension share this configuration; restart Codex or
+the extension after configuring it. The installer does not require `npx`,
+`mcp-remote`, or the Codex CLI to be on Kaimon's `PATH`.
+
+An existing `kaimon` entry is reused regardless of capitalization, and an old
+`mcp-remote` entry is migrated to HTTP. Other servers, global settings, and the
+Codex login are preserved. The file is reserialized as TOML, so comments and
+formatting may change. The installer retains Kaimon's tool policies, timeouts,
+and custom headers, and updates its endpoint and authentication to match the
+running Kaimon server. Removal deletes only that server entry and leaves login
+and shared environment files intact.
+
+This connects Codex to Kaimon's tools. To have Kaimon launch Codex itself through
+ACP, also install `codex-acp` as described in [ACP agents](@ref).
+
 ## Optional Dependencies
 
 ### Qdrant (Semantic Search)

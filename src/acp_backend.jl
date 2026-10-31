@@ -1,7 +1,7 @@
 # ── ACPClientBackend ──────────────────────────────────────────────────────────
 # Drives any agent that speaks the Agent Client Protocol over stdio. `ACP_AGENTS` is the
 # registered set, and adding one is its argv plus a measurement of what it enforces for itself
-# (see `_acp_enforcement_gap`). Codex and Copilot speak ACP and are not registered.
+# (see `_acp_enforcement_gap`). Copilot is not registered.
 #
 # The shape differs from ClaudeBackend in one way that matters. Claude's
 # stream-JSON is a one-way firehose: we write turns and read events. ACP is
@@ -34,6 +34,7 @@ const ACP_AGENTS = Dict{String,Vector{String}}(
     "opencode" => ["opencode", "acp"],
     "gemini"   => ["gemini", "--experimental-acp"],
     "claude"   => ["claude-agent-acp"],
+    "codex"    => ["codex-acp"],
 )
 
 "Split \"acp:opencode:opencode/minimax-m3\" into its argv and model."
@@ -67,6 +68,9 @@ is also how the model gets chosen. An agent that reads neither runs its own defa
 requested one has to be set over the wire instead.
 """
 _acp_config_supported(argv::Vector{String}) = _acp_plugin_supported(argv)
+
+_acp_codex(argv::Vector{String}) = !isempty(argv) &&
+    lowercase(splitext(basename(first(argv)))[1]) == "codex-acp"
 
 
 """
@@ -226,18 +230,119 @@ _acp_qualified(n::AbstractString) = occursin(r"^mcp__[A-Za-z0-9_]+__", n)
 """
 Split a tool name into `(server, bare)`, with `server === nothing` for a native one.
 
-Two spellings reach us. Allow/deny entries are written claude-style
+Three spellings reach us. Allow/deny entries are written claude-style
 (`mcp__kaimon__ex`), but opencode names an MCP tool `<server>_<tool>` — measured:
 it called Kaimon's `ping` as `kaimon_ping`. Without folding both to the same
 `(server, bare)` pair the recursion guard misses entirely, and an agent with
 Kaimon attached can call `kaimon_agent_open` and spawn agents recursively.
+Codex reports `mcp.<server>.<tool>`; split only the server separator so an
+extension tool's own dots survive.
 """
 function _acp_split_tool(n::AbstractString)
     m = match(r"^mcp__([A-Za-z0-9_]+?)__(.+)$", String(n))
-    m === nothing || return (String(m.captures[1]), String(m.captures[2]))
+    m === nothing && (m = match(r"^mcp\.([A-Za-z0-9_-]+)\.(.+)$", String(n)))
+    if m !== nothing
+        server = String(m.captures[1])
+        # Codex gets a fresh name so a configured server cannot shadow our tagged connection.
+        occursin(r"^kaimon_owned_[0-9a-f]{16}$", server) && (server = ACP_MCP_SERVER)
+        return (server, String(m.captures[2]))
+    end
     p = ACP_MCP_SERVER * "_"
     startswith(n, p) && return (ACP_MCP_SERVER, String(n)[length(p)+1:end])
     return (nothing, String(n))
+end
+
+"""
+Ask the adapter's own Codex app-server for MCP names in every configuration layer.
+Use the same cwd trust override as the adapter's session/new. Never inspect or copy credentials,
+and fail closed if discovery fails: starting without these names would reopen the untagged door.
+"""
+function _codex_mcp_names(argv::Vector{String}, cwd::String, env)
+    trust = "projects={$(JSON.json(abspath(cwd)))={trust_level=\"trusted\"}}"
+    args = _spawn_argv(vcat(argv, ["cli", "-C", abspath(cwd), "-c", trust, "app-server"]))
+    input, output = Pipe(), Pipe()
+    proc = run(pipeline(setenv(Cmd(Cmd(args); dir = cwd), env);
+                        stdin = input, stdout = output, stderr = devnull); wait = false)
+    close(input.out); close(output.in)
+    reader = @async begin
+        function request(id, method, params)
+            write(input, JSON.json(Dict("id" => id, "method" => method, "params" => params)), "\n")
+            flush(input)
+            while !eof(output)
+                reply = JSON.parse(readline(output))
+                get(reply, "id", nothing) == id || continue
+                haskey(reply, "error") && error("Codex configuration query failed")
+                return reply["result"]
+            end
+            error("Codex configuration query ended without a response")
+        end
+        request(1, "initialize", Dict("clientInfo" => Dict("name" => "kaimon", "version" => "1"),
+            "capabilities" => Dict("experimentalApi" => true)))
+        write(input, JSON.json(Dict("method" => "initialized")), "\n"); flush(input)
+        response = request(2, "config/read", Dict("includeLayers" => true, "cwd" => abspath(cwd)))
+        configs = Any[response["config"]]
+        append!(configs, [layer["config"] for layer in get(response, "layers", Any[])])
+        names = Set{String}()
+        for config in configs
+            union!(names, String.(keys(get(config, "mcp_servers", Dict()))))
+        end
+        collect(names)
+    end
+    try
+        timedwait(() -> istaskdone(reader), 30.0) === :ok ||
+            error("Codex MCP configuration discovery timed out; refusing to start an unisolated agent")
+        return fetch(reader)
+    finally
+        close(input)
+        process_running(proc) && kill(proc)
+        close(output)
+    end
+end
+
+"""
+Suppress inherited MCP connections in this Codex process only, preserving CODEX_HOME, login,
+and all non-MCP settings. Empty maps merge with inherited maps; each inherited name therefore
+needs an explicit enabled=false override. Dotted overrides survive codex-acp replacing its
+top-level mcp_servers map. Install our connection through a separate dotted override too,
+and send no session/new servers: that bypasses the adapter's collision filter and avoids
+overlapping parent/child overrides whose application order depends on a Rust HashMap.
+A fresh name avoids stale transport fields from a configured name being deep-merged in.
+"""
+function _codex_acp_setup!(env, b::ACPClientBackend, cwd::String;
+                           discover = _codex_mcp_names)
+    cfg = JSON.parse(get(env, "CODEX_CONFIG", "{}"))
+    cfg isa AbstractDict || error("CODEX_CONFIG must be a JSON object")
+    names = Set(discover(b.argv, cwd, env))
+    inherited = pop!(cfg, "mcp_servers", Dict())
+    inherited isa AbstractDict || error("CODEX_CONFIG.mcp_servers must be an object")
+    union!(names, String.(keys(inherited)))
+    for key in collect(keys(cfg))
+        startswith(key, "mcp_servers.") || continue
+        parts = split(key, '.')
+        length(parts) >= 2 && push!(names, String(parts[2]))
+        delete!(cfg, key)
+    end
+    for name in names
+        occursin(r"^[A-Za-z0-9_-]+$", name) ||
+            error("cannot safely override inherited Codex MCP server name; refusing to start")
+        cfg["mcp_servers.$name.enabled"] = false
+    end
+    servers = deepcopy(b.mcp_servers)
+    for server in servers
+        name = "kaimon_owned_" * bytes2hex(secret_bytes(8))
+        while name in names
+            name = "kaimon_owned_" * bytes2hex(secret_bytes(8))
+        end
+        push!(names, name)
+        server["name"] = name
+        get(server, "type", "") == "http" ||
+            error("owned Codex MCP connections must use HTTP")
+        headers = Dict(String(h["name"]) => String(h["value"]) for h in server["headers"])
+        cfg["mcp_servers.$name"] = Dict("url" => server["url"],
+            "http_headers" => headers, "enabled" => true)
+    end
+    env["CODEX_CONFIG"] = JSON.json(cfg)
+    return servers
 end
 
 """
@@ -274,7 +379,7 @@ end
 
 "The policy itself, split out from the session lookup so it can be tested directly."
 function _acp_decide(b::ACPClientBackend, tool::AbstractString)
-    bare = _bare_tool(tool)
+    bare = _acp_split_tool(lowercase(String(tool)))[2]
     for entry in b.disallowed_tools
         _acp_tool_matches(tool, entry) && return Dict("allow" => false, "why" => "denied by policy")
     end
@@ -763,9 +868,10 @@ bridge plugin, which only opencode loads, or the `_meta.claudeCode.options` hand
 just the ask-time check, and an agent that does its own file I/O without asking keeps nothing.
 
 Returns the sentence to put on the event stream, or `nothing` when the configuration is enforced.
-Reported rather than refused: the caller asked for this agent, and a preset that covers Kaimon's
-tools and not the agent's own is still worth having — it just has to say so. Kaimon's own door is
-unaffected, so every `mcp__kaimon` entry (the recursion guard included) holds whatever the agent is.
+Reported rather than refused: the caller asked for this agent, and a preset that covers tagged
+Kaimon calls and not the agent's own tools is still worth having — it just has to say so.
+Owned Codex sessions suppress inherited MCP connections so those calls cannot lose attribution.
+Other adapters must also prevent untagged inherited connections to make that guarantee.
 
 Only for a spawn that ASKED to be bounded: an allowlist, or a deny entry naming a native tool that
 the caller or a preset added. `default` and `lab` deny nothing native, so they have no claim to
@@ -775,7 +881,7 @@ Claude's names for them, and an agent with no such tool cannot call them anyway.
 function _acp_enforcement_gap(h::ACPHandle)
     b = h.backend
     # Only the entries naming the agent's OWN tools are at stake. A qualified or server-prefixed
-    # entry is decided at Kaimon's `tools/call` door, which no agent can route around.
+    # entry is decided at Kaimon's `tools/call` door when the connection identifies its owner.
     native = [e for e in b.disallowed_tools
               if _acp_split_tool(lowercase(e))[1] === nothing && !(e in AGENT_SELF_TOOLS)]
     isempty(native) && isempty(b.allowed_tools) && return nothing
@@ -785,8 +891,10 @@ function _acp_enforcement_gap(h::ACPHandle)
            "the deny list ($(join(sort(native), ", ")))"
     return "$(basename(first(b.argv))) loads neither the bridge plugin nor the `_meta.claudeCode` " *
            "options, so $what binds its own tools only where it asks permission for a call, and " *
-           "an agent doing its own file I/O does not ask about everything. Kaimon's own tools and " *
-           "the workspace boundary are unaffected. Use `acp:opencode` or `acp:claude` for a " *
+           "an agent doing its own file I/O does not ask about everything. Tagged Kaimon MCP calls " *
+           "remain policy-checked, including their path arguments. Owned Codex sessions disable " *
+           "inherited MCP connections; this does not sandbox native file or shell access. " *
+           "Use `acp:opencode` or `acp:claude` for a " *
            "preset that holds against native tools."
 end
 
@@ -1109,7 +1217,9 @@ end
 # `current_mode_update` is NOT ignored: it is how an agent reports it changed its own mode, and
 # `permission_mode` (notably "plan") is enforced by the agent rather than by us. Silently dropping
 # it meant plan mode could lapse with nothing anywhere saying so. Handled below.
-const ACP_IGNORED_UPDATES = ("available_commands_update", "usage_update")
+# Codex sends session_info_update for its title and active/idle thread status.
+# Neither has an AgentEvent counterpart; a normal turn must not report them as errors.
+const ACP_IGNORED_UPDATES = ("available_commands_update", "usage_update", "session_info_update")
 
 function _map_acp_update(upd)::Vector{ACP.AgentEvent}
     upd isa AbstractDict || return ACP.AgentEvent[]
@@ -1349,6 +1459,13 @@ before returning — a handle without a session id can't take a turn.
 function backend_start(b::ACPClientBackend; cwd::String, agent_id::String,
                        parent_pid::Integer = getpid(), bridge_port::Int = 0)
     isdir(cwd) || throw(ArgumentError("agent cwd does not exist: $cwd"))
+    env = copy(ENV)
+    mcp_servers = if _acp_codex(b.argv)
+        _codex_acp_setup!(env, b, cwd)
+        Any[]   # already installed via CODEX_CONFIG, immune to adapter filtering
+    else
+        b.mcp_servers
+    end
     config_dir = _acp_session_config(b, mktempdir(; prefix = "kaimon-acp-"))
 
     log_dir = joinpath(kaimon_cache_dir(), "agents")
@@ -1356,7 +1473,6 @@ function backend_start(b::ACPClientBackend; cwd::String, agent_id::String,
     log_file = joinpath(log_dir, "$(agent_id).log")
     log_io = open(log_file, "a")
 
-    env = copy(ENV)
     # Only for the agent whose config was generated. Redirecting it for the others replaced their
     # own settings directory with an empty one.
     _acp_config_supported(b.argv) && (env["XDG_CONFIG_HOME"] = config_dir)
@@ -1409,7 +1525,7 @@ function backend_start(b::ACPClientBackend; cwd::String, agent_id::String,
     init isa AbstractDict && merge!(h.caps, Dict{String,Any}(String(k) => v for (k, v) in init))
     sess = try
         _rpc_call!(h, "session/new",
-                   merge(Dict{String,Any}("cwd" => abspath(cwd), "mcpServers" => b.mcp_servers),
+                   merge(Dict{String,Any}("cwd" => abspath(cwd), "mcpServers" => mcp_servers),
                          _acp_session_meta(b)); timeout = 120)
     catch e
         throw(_acp_session_new_error(h, e))

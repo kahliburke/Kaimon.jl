@@ -603,7 +603,7 @@ function _refresh_client_status_async!(m::KaimonModel)
 
     # Codex
     spawn_task!(q, :client_status) do
-        "OpenAI Codex" => _detect_in_files(joinpath(homedir(), ".codex", "config.toml"))
+        "OpenAI Codex" => _codex_configured()
     end
 
     # Copilot
