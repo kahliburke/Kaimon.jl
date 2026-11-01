@@ -151,33 +151,17 @@ backend_session_id(h::ACPHandle) = h.session_id[]
 # matcher: allow/deny entries come in three forms (bare `ex`, qualified
 # `mcp__kaimon__ex`, server-prefix `mcp__kaimon`) and an exact-match Set in JS
 # silently fails to block any of them. So the decision lives here and the plugin
-# asks. One token per agent, so a decision is attributable and a stray process
-# on the same box can't vote.
-
-const ACP_BRIDGE_TOKENS = Dict{String,String}()
-const ACP_BRIDGE_LOCK = ReentrantLock()
+# asks, with the agent's own token (`register_agent_token!`), so a decision is attributable and
+# a stray process on the same box can't vote.
 
 # Tool names that mutate state, used only when policy can't be resolved.
 const ACP_MUTATING_TOOLS = ("write", "edit", "patch", "bash", "shell", "run", "delete", "move")
-
-# From the OS CSPRNG, not the default generator: this token is the only credential on
-# `/agent/permission`, which answers yes or no to tool execution and so runs ahead of the API-key
-# gate. A token drawn from a seedable generator is one an observer can work back to.
-_acp_register_token!(agent_id::AbstractString) = lock(ACP_BRIDGE_LOCK) do
-    ACP_BRIDGE_TOKENS[String(agent_id)] = bytes2hex(secret_bytes(32))
-end
-_acp_forget_token!(agent_id::AbstractString) = lock(ACP_BRIDGE_LOCK) do
-    delete!(ACP_BRIDGE_TOKENS, String(agent_id))
-end
-_acp_token(agent_id::AbstractString) = lock(ACP_BRIDGE_LOCK) do
-    get(ACP_BRIDGE_TOKENS, String(agent_id), "")
-end
 
 """
     _acp_mcp_servers(agent_id) -> Vector
 
 The `session/new` equivalent of `_agent_mcp_config`: point the agent at this
-Kaimon over HTTP, tagged with its id so tool calls stay attributable. ACP takes
+Kaimon over HTTP with its own token, which identifies its calls. ACP takes
 headers as a list of `{name, value}` pairs, not the object shape claude's
 `--mcp-config` uses. Empty when the server port isn't up yet — the agent then
 runs with its own tools only, rather than failing to start.
@@ -185,11 +169,10 @@ runs with its own tools only, rather than failing to start.
 function _acp_mcp_servers(agent_id::AbstractString)
     port = MCP_SERVER_PORT[]
     port == 0 && return Any[]
-    headers = Any[Dict("name" => "X-Kaimon-Agent-Id", "value" => String(agent_id))]
-    key = try; _get_api_key(); catch; nothing; end
-    key === nothing || push!(headers, Dict("name" => "Authorization", "value" => "Bearer $key"))
-    Any[Dict("type" => "http", "name" => "kaimon",
-             "url" => "http://localhost:$port/mcp", "headers" => headers)]
+    token = agent_token(agent_id)
+    isempty(token) && error("agent $agent_id has no token; agent_open registers one before the backend")
+    Any[Dict("type" => "http", "name" => "kaimon", "url" => "http://localhost:$port/mcp",
+             "headers" => Any[Dict("name" => "Authorization", "value" => "Bearer $token")])]
 end
 
 """
@@ -1465,7 +1448,7 @@ cheapest way to run an agent, cannot be selected at all. Carrying it makes `acp:
 mean what it says.
 
 `mcp` is deliberately NOT carried. An inherited server is one Kaimon did not attach, so its calls
-arrive without the `X-Kaimon-Agent-Id` header and no preset applies to them — the same hole
+arrive without the agent's token and no preset applies to them — the same hole
 `strictMcpConfig` closes on the claude path.
 """
 function _acp_session_config(b::ACPClientBackend, dir::AbstractString)
@@ -1526,7 +1509,7 @@ function backend_start(b::ACPClientBackend; cwd::String, agent_id::String,
     # env-var copy of the policy keeps a turn moving if the server isn't up yet.
     port = bridge_port > 0 ? bridge_port : MCP_SERVER_PORT[]
     port > 0 && (env["KAIMON_BRIDGE_PORT"] = string(port))
-    env["KAIMON_BRIDGE_TOKEN"] = _acp_register_token!(agent_id)
+    env["KAIMON_BRIDGE_TOKEN"] = agent_token(agent_id)   # the agent's own; grants nothing more
     env["KAIMON_AGENT_ID"] = agent_id
     env["KAIMON_AGENT_PERMISSION"] = b.permission
     env["KAIMON_AGENT_DENY_TOOLS"] = join(b.disallowed_tools, ",")
@@ -1827,7 +1810,6 @@ function backend_close(h::ACPHandle)
         catch
         end
     end
-    _acp_forget_token!(h.agent_id)
     try; rm(h.config_dir; recursive = true, force = true); catch; end
     nothing
 end

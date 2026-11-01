@@ -203,14 +203,14 @@ end
 end
 
 @testset "ACP: bridge tokens" begin
-    tok = Kaimon._acp_register_token!("agent-tok")
-    @test !isempty(tok) && Kaimon._acp_token("agent-tok") == tok
+    tok = Kaimon.register_agent_token!("agent-tok")
+    @test !isempty(tok) && Kaimon.agent_token("agent-tok") == tok
     # Distinct per agent, so one agent's token can't vote for another.
-    @test Kaimon._acp_register_token!("agent-other") != tok
-    Kaimon._acp_forget_token!("agent-tok")
-    @test Kaimon._acp_token("agent-tok") == ""
-    @test Kaimon._acp_token("never-registered") == ""
-    Kaimon._acp_forget_token!("agent-other")
+    @test Kaimon.register_agent_token!("agent-other") != tok
+    Kaimon.revoke_agent_token!("agent-tok")
+    @test Kaimon.agent_token("agent-tok") == ""
+    @test Kaimon.agent_token("never-registered") == ""
+    Kaimon.revoke_agent_token!("agent-other")
 end
 
 @testset "ACP: per-session config" begin
@@ -451,15 +451,15 @@ end
     body = JSON.json(Dict("tool" => "read", "args" => nothing))
     post(hdrs) = JSON.parse(String(HTTP.post(url, hdrs, body; status_exception = false).body))
     try
-        tok = Kaimon._acp_register_token!("http-agent")
+        tok = Kaimon.register_agent_token!("http-agent")
 
         # No credential, wrong credential, and another agent's credential all fail
         # the same way — and fail closed, not open.
-        Kaimon._acp_register_token!("other-agent")
+        Kaimon.register_agent_token!("other-agent")
         bad = [post([]),
                post(["X-Kaimon-Agent-Id" => "http-agent", "X-Kaimon-Bridge-Token" => "nope"]),
                post(["X-Kaimon-Agent-Id" => "http-agent",
-                     "X-Kaimon-Bridge-Token" => Kaimon._acp_token("other-agent")])]
+                     "X-Kaimon-Bridge-Token" => Kaimon.agent_token("other-agent")])]
         @test all(v -> v["allow"] === false && v["why"] == "bad bridge credential", bad)
 
         # Right credential, but the agent has no live session: still no.
@@ -472,8 +472,8 @@ end
             "not json"; status_exception = false).body))
         @test junk["allow"] === false
     finally
-        Kaimon._acp_forget_token!("http-agent")
-        Kaimon._acp_forget_token!("other-agent")
+        Kaimon.revoke_agent_token!("http-agent")
+        Kaimon.revoke_agent_token!("other-agent")
         close(server.server)
     end
 end

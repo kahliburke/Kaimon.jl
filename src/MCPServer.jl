@@ -363,15 +363,6 @@ function extract_mcp_session_id(req)
     return nothing
 end
 
-"""Extract the `X-Kaimon-Agent-Id` header, present on requests from a Kaimon-spawned
-agent (injected into its generated MCP config). Empty string when absent."""
-function extract_agent_id(req)
-    for (name, value) in req.headers
-        lowercase(name) == "x-kaimon-agent-id" && return String(value)
-    end
-    return ""
-end
-
 # Import Prompts module
 include("prompts.jl")
 using .Prompts
@@ -1248,11 +1239,20 @@ function start_mcp_server(
             # Update activity timestamp so the reaper doesn't kill active sessions
             if session !== nothing
                 Session.update_activity!(session)
-                # Record the owning Kaimon agent (from the X-Kaimon-Agent-Id header the
-                # agent's generated MCP config carries), so tool dispatch can tag this
-                # session's extension calls with the agent_id.
-                let aid = try; extract_agent_id(req); catch; ""; end
-                    isempty(aid) || _set_session_agent_id!(session.id, aid)
+                # Record the owning Kaimon agent, so tool dispatch applies its policy and tags its
+                # extension calls. The identity comes from the agent's own token, never from a
+                # header; a session already bound to one agent refuses another agent's token.
+                aid = agent_for_token(something(extract_api_key(req), ""))
+                if !isempty(aid)
+                    bound = _session_agent_id(session.id)
+                    if !isempty(bound) && bound != aid
+                        HTTP.setstatus(http, 403)
+                        HTTP.setheader(http, "Content-Type" => "application/json")
+                        HTTP.startwrite(http)
+                        write(http, JSON.json(Dict("error" => "Forbidden: this session belongs to another agent")))
+                        return nothing
+                    end
+                    _set_session_agent_id!(session.id, aid)
                 end
                 # Restore the agent→gate binding for a session brought back from
                 # persistence after a restart (no re-initialize). Fast no-op once bound.

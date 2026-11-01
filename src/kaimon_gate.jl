@@ -286,7 +286,7 @@ const _SESSION_WORKSPACE_ROOT = Dict{String,String}()
 const _SESSION_WORKSPACE_ROOT_LOCK = ReentrantLock()
 
 # mcp_session_id => the Kaimon-owned agent_id that owns this MCP connection, learned
-# from the `X-Kaimon-Agent-Id` header a spawned agent's generated MCP config carries.
+# from the agent's own token, which a spawned agent's generated MCP config carries.
 # Lets tool dispatch tag extension calls (slate_*, …) with their owning agent so an
 # extension can tell a built-in agent's calls from an external client's.
 const _SESSION_AGENT_ID = Dict{String,String}()
@@ -298,7 +298,7 @@ const MCP_SERVER_PORT = Ref{Int}(0)
 """The MCP caller (agent) id for the in-flight tool dispatch, or "" for REPL/self calls."""
 _current_mcp_caller() = string(get(task_local_storage(), :mcp_caller, ""))
 
-"""Record that MCP session `sid` is owned by Kaimon agent `agent_id` (from the header)."""
+"""Record that MCP session `sid` is owned by Kaimon agent `agent_id` (from its token)."""
 function _set_session_agent_id!(sid::AbstractString, agent_id::AbstractString)
     (isempty(sid) || isempty(agent_id)) && return nothing
     lock(_SESSION_AGENT_ID_LOCK) do

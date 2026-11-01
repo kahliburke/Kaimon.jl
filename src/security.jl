@@ -69,6 +69,47 @@ function secrets_equal(a::AbstractString, b::AbstractString)
     return acc == 0
 end
 
+# ── Per-agent credentials ─────────────────────────────────────────────────────
+# Each Kaimon-owned agent gets its own bearer token, minted at spawn and revoked when the agent
+# ends. It is the agent's credential on the MCP endpoint and on the bridge's permission endpoint,
+# and the only source of its identity there: a request carrying it acts as that agent whatever its
+# headers say. Agents never receive the global API key, so the configs and environments they are
+# started with hold nothing that outlives them.
+#
+# This attributes calls reliably; it does not contain an agent. One with unrestricted native file
+# or shell access runs as the user and can read the user's own client configs, global key included.
+
+const AGENT_TOKENS = Dict{String,String}()   # agent_id => token
+const AGENT_TOKENS_LOCK = ReentrantLock()
+
+"""Mint (or replace) the token of agent `agent_id` and return it."""
+register_agent_token!(agent_id::AbstractString) = lock(AGENT_TOKENS_LOCK) do
+    AGENT_TOKENS[String(agent_id)] = bytes2hex(secret_bytes(32))
+end
+
+"""Revoke agent `agent_id`'s token; requests still carrying it are refused."""
+revoke_agent_token!(agent_id::AbstractString) = lock(AGENT_TOKENS_LOCK) do
+    delete!(AGENT_TOKENS, String(agent_id))
+    nothing
+end
+
+"""The token of agent `agent_id`, or "" if it has none."""
+agent_token(agent_id::AbstractString) = lock(AGENT_TOKENS_LOCK) do
+    get(AGENT_TOKENS, String(agent_id), "")
+end
+
+"""The agent whose token is `token`, or "" if it belongs to no live agent."""
+function agent_for_token(token::AbstractString)
+    isempty(token) && return ""
+    lock(AGENT_TOKENS_LOCK) do
+        found = ""
+        for (aid, t) in AGENT_TOKENS   # every entry compared, so the scan's length says nothing
+            secrets_equal(token, t) && (found = aid)
+        end
+        found
+    end
+end
+
 """
     generate_api_key() -> String
 

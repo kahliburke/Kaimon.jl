@@ -119,8 +119,8 @@ function _split_model_effort(model::AbstractString)
 end
 
 """Generate a temporary MCP config for a spawned agent that points at this Kaimon
-server with an `X-Kaimon-Agent-Id: <agent_id>` header, so the agent's tool calls
-(including extension `slate_*` calls) are attributable to it. The agent is started with
+server with the agent's own token, so its tool calls (including extension `slate_*` calls) are
+attributable to it. The agent is started with
 `--strict-mcp-config` (`ClaudeBackend.strict_mcp`), so this is the only MCP server it sees.
 Returns the file path, or `nothing` if the server port isn't up yet (the agent then uses its
 default config, uncorrelated — except an `only` agent, which gets no MCP servers)."""
@@ -136,9 +136,9 @@ function _agent_mcp_config(agent_id::AbstractString)::Union{String,Nothing}
         end
     end
     port == 0 && return nothing
-    headers = Dict{String,Any}("X-Kaimon-Agent-Id" => String(agent_id))
-    key = try; _get_api_key(); catch; nothing; end
-    key === nothing || (headers["Authorization"] = "Bearer $key")
+    token = agent_token(agent_id)
+    isempty(token) && error("agent $agent_id has no token; agent_open registers one before the backend")
+    headers = Dict{String,Any}("Authorization" => "Bearer $token")
     cfg = Dict(
         "mcpServers" => Dict(
             "kaimon" => Dict(
@@ -195,53 +195,61 @@ function agent_open(; cwd::String,
     # its preset is what restricts it.
     only && startswith(model, ACP_PREFIX) &&
         error("`only` is not for ACP agents: permission \"specialist\" makes their allowlist the whole tool set")
-    backend = if startswith(model, ACP_PREFIX)
-        # Any ACP-speaking agent. Tool policy can't ride the protocol, so the
-        # preset and the recursion guard are handed to the bridge plugin instead.
-        acp_argv, acp_model = _parse_acp_model(model)
-        ACPClientBackend(; argv = acp_argv, model = acp_model,
-                         permission = permission, permission_mode = final_mode,
-                         disallowed_tools = disallowed_tools,
-                         # Passed apart rather than merged, so an explicit allowlist can exclude
-                         # what the preset would allow. `final_allowed` still governs every
-                         # other backend.
-                         allowed_tools = allowed_tools, preset_tools = pallow,
-                         system_prompt = system_prompt,
-                         mcp_servers = _acp_mcp_servers(aid),
-                         # The bridge plugin is an opencode plugin. Any other agent ignores it,
-                         # so the preset and the recursion guard would enforce nothing; those
-                         # agents are governed at the permission branch instead.
-                         plugin_dir = _acp_plugin_supported(acp_argv) ? _acp_plugin_dir() : nothing)
-    elseif startswith(model, VMLX_PREFIX)
-        OllamaBackend(; model = chop(model; head = length(VMLX_PREFIX), tail = 0),
-                      host = get(ENV, "VMLX_HOST", "http://127.0.0.1:8000"),
-                      label = "vmlx",
-                      allowed_tools = final_allowed, disallowed_tools = disallowed_tools,
-                      system_prompt = system_prompt)
-    elseif startswith(model, OLLAMA_PREFIX)
-        OllamaBackend(; model = chop(model; head = length(OLLAMA_PREFIX), tail = 0),
-                      allowed_tools = final_allowed, disallowed_tools = disallowed_tools,
-                      system_prompt = system_prompt)
-    else
-        # Optional inline effort suffix, e.g. "claude-sonnet-5/high" or "sonnet/low".
-        # An explicit `effort=` arg wins over the suffix.
-        base_model, suffix_effort = _split_model_effort(model)
-        # No explicit mcp_config → generate one that points at this Kaimon server with
-        # this agent's id header, so its tool calls are attributable (_agent_mcp_config).
-        # Kaimon can only hold an `only` agent to its list when it can tell the agent's calls
-        # apart, which takes that header — so an `only` agent never runs on a config without it.
-        only && mcp_config !== nothing &&
-            error("`only` needs the MCP config Kaimon generates (it identifies the agent's calls); omit mcp_config")
-        agent_mcp = mcp_config === nothing ? _agent_mcp_config(aid) : mcp_config
-        only && agent_mcp === nothing && any(t -> startswith(t, "mcp__"), final_allowed) &&
-            error("`only` agent names MCP tools, but the Kaimon MCP server's port isn't known yet; retry once it is up")
-        ClaudeBackend(; model = base_model, permission_mode = final_mode,
-                      allowed_tools = final_allowed, disallowed_tools = disallowed_tools,
-                      mcp_config = agent_mcp, system_prompt = system_prompt,
-                      effort = effort !== nothing ? effort : suffix_effort,
-                      dangerously_skip = dangerous, only = only)
+    # The agent's credential, which every backend's config below carries. Revoked if it never starts.
+    register_agent_token!(aid)
+    local backend
+    handle = try
+        backend = if startswith(model, ACP_PREFIX)
+            # Any ACP-speaking agent. Tool policy can't ride the protocol, so the
+            # preset and the recursion guard are handed to the bridge plugin instead.
+            acp_argv, acp_model = _parse_acp_model(model)
+            ACPClientBackend(; argv = acp_argv, model = acp_model,
+                             permission = permission, permission_mode = final_mode,
+                             disallowed_tools = disallowed_tools,
+                             # Passed apart rather than merged, so an explicit allowlist can exclude
+                             # what the preset would allow. `final_allowed` still governs every
+                             # other backend.
+                             allowed_tools = allowed_tools, preset_tools = pallow,
+                             system_prompt = system_prompt,
+                             mcp_servers = _acp_mcp_servers(aid),
+                             # The bridge plugin is an opencode plugin. Any other agent ignores it,
+                             # so the preset and the recursion guard would enforce nothing; those
+                             # agents are governed at the permission branch instead.
+                             plugin_dir = _acp_plugin_supported(acp_argv) ? _acp_plugin_dir() : nothing)
+        elseif startswith(model, VMLX_PREFIX)
+            OllamaBackend(; model = chop(model; head = length(VMLX_PREFIX), tail = 0),
+                          host = get(ENV, "VMLX_HOST", "http://127.0.0.1:8000"),
+                          label = "vmlx",
+                          allowed_tools = final_allowed, disallowed_tools = disallowed_tools,
+                          system_prompt = system_prompt)
+        elseif startswith(model, OLLAMA_PREFIX)
+            OllamaBackend(; model = chop(model; head = length(OLLAMA_PREFIX), tail = 0),
+                          allowed_tools = final_allowed, disallowed_tools = disallowed_tools,
+                          system_prompt = system_prompt)
+        else
+            # Optional inline effort suffix, e.g. "claude-sonnet-5/high" or "sonnet/low".
+            # An explicit `effort=` arg wins over the suffix.
+            base_model, suffix_effort = _split_model_effort(model)
+            # No explicit mcp_config → generate one that points at this Kaimon server with
+            # this agent's token, so its tool calls are attributable (_agent_mcp_config).
+            # Kaimon can only hold an `only` agent to its list when it can tell the agent's calls
+            # apart, which takes that token — so an `only` agent never runs on a config without it.
+            only && mcp_config !== nothing &&
+                error("`only` needs the MCP config Kaimon generates (it identifies the agent's calls); omit mcp_config")
+            agent_mcp = mcp_config === nothing ? _agent_mcp_config(aid) : mcp_config
+            only && agent_mcp === nothing && any(t -> startswith(t, "mcp__"), final_allowed) &&
+                error("`only` agent names MCP tools, but the Kaimon MCP server's port isn't known yet; retry once it is up")
+            ClaudeBackend(; model = base_model, permission_mode = final_mode,
+                          allowed_tools = final_allowed, disallowed_tools = disallowed_tools,
+                          mcp_config = agent_mcp, system_prompt = system_prompt,
+                          effort = effort !== nothing ? effort : suffix_effort,
+                          dangerously_skip = dangerous, only = only)
+        end
+        backend_start(backend; cwd = cwd, agent_id = aid)
+    catch
+        revoke_agent_token!(aid)
+        rethrow()
     end
-    handle = backend_start(backend; cwd = cwd, agent_id = aid)
     apid = backend_pid(handle)                       # nothing for process-less backends
     apid === nothing || _record_agent_pid!(aid, apid)
     # Start a fresh Kaimon-owned event log for this agent instance.
@@ -518,6 +526,7 @@ function _set_status!(s::AgentSession, status::Symbol)
     s.status === status && return
     s.status = status
     s.last_activity = time()
+    status === :dead && revoke_agent_token!(s.id)   # its calls are refused from here on
     # surface the transition on the bus too (consumers may want it without a turn)
     mgr = GATE_CONN_MGR[]
     if mgr !== nothing && status !== :dead   # :dead already arrives via StatusChanged event

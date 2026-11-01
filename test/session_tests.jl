@@ -281,14 +281,9 @@ _session_ts(ago::Period) = format(now() - ago, "yyyy-mm-dd\\THH:MM:SS")
         @test Kaimon._session_agent_id(sid) == "agent-abcd"
         Kaimon._set_session_agent_id!("", "x")
         @test Kaimon._session_agent_id("") == ""
-        # Header extraction is case-insensitive; "" when absent.
-        with = (headers = ["Content-Type" => "application/json", "X-Kaimon-Agent-Id" => "aid-1"],)
-        none = (headers = ["Content-Type" => "application/json"],)
-        @test Kaimon.extract_agent_id(with) == "aid-1"
-        @test Kaimon.extract_agent_id(none) == ""
     end
 
-    @testset "agent-id: generated MCP config carries the header" begin
+    @testset "agent-id: generated MCP config needs the server port" begin
         mktempdir() do cache
             withenv(
                 "XDG_CACHE_HOME" => cache,
@@ -298,13 +293,14 @@ _session_ts(ago::Period) = format(now() - ago, "yyyy-mm-dd\\THH:MM:SS")
                 try
                     Kaimon.MCP_SERVER_PORT[] = 0
                     @test Kaimon._agent_mcp_config("aid-x") === nothing  # no port → no config
+                    Kaimon.register_agent_token!("aid-x")
                     Kaimon.MCP_SERVER_PORT[] = 12345
                     p = Kaimon._agent_mcp_config("aid-x")
                     @test p !== nothing && isfile(p)
                     k = Kaimon.JSON.parse(read(p, String))["mcpServers"]["kaimon"]
                     @test occursin("12345", k["url"])
-                    @test k["headers"]["X-Kaimon-Agent-Id"] == "aid-x"
                 finally
+                    Kaimon.revoke_agent_token!("aid-x")
                     Kaimon.MCP_SERVER_PORT[] = old
                 end
             end

@@ -136,9 +136,11 @@ function _stream_security_gate(http, req, body, security_config)
                     return true
                 end
 
-                # Only a configured API key is accepted — no minted/self-provisioned
-                # tokens (that would bypass strict/relaxed mode).
-                if !validate_api_key(String(something(api_key, "")), security_config)
+                # Only a configured API key is accepted, or the token of a live Kaimon-owned agent
+                # (minted at spawn, never handed to anything else). No self-provisioned tokens:
+                # those would bypass strict/relaxed mode.
+                is_agent = api_key !== nothing && !isempty(agent_for_token(api_key))
+                if !is_agent && !validate_api_key(String(something(api_key, "")), security_config)
                     @warn "Auth denied: invalid API key (401)" client_ip =
                         get_client_ip(req) method = req.method target = req.target
                     HTTP.setstatus(http, 401)
@@ -232,7 +234,7 @@ function _stream_agent_bridge(http, req, body)
     verdict = try
         aid = HTTP.header(req, "X-Kaimon-Agent-Id", "")
         tok = HTTP.header(req, "X-Kaimon-Bridge-Token", "")
-        if isempty(aid) || isempty(tok) || !K.secrets_equal(tok, K._acp_token(aid))
+        if isempty(aid) || isempty(tok) || !K.secrets_equal(tok, K.agent_token(aid))
             Dict("allow" => false, "why" => "bad bridge credential")
         else
             payload = JSON.parse(body)
