@@ -1117,6 +1117,276 @@ function _handle_gate_tool_sse(
     return nothing
 end
 
+# One MCP request over a streaming HTTP connection. Top level, not nested in
+# `start_mcp_server`, so the `invokelatest` there reaches a redefinition and a live
+# reload takes effect without restarting the server.
+function _hybrid_handler_impl(
+    http::HTTP.Stream,
+    tools_dict,
+    name_to_id,
+    security_config,
+    port,
+)
+    req = HTTP.startread(http)
+
+    # Read the full request body before writing any response (must be fully
+    # consumed or HTTP.jl RSTs the connection). On an HTTP 2.0 server Stream
+    # the body read is `read(stream, String)`; `readavailable` is client-only.
+    # IOError on early client disconnect is swallowed to avoid spurious logs.
+    body = try
+        read(http, String)
+    catch e
+        e isa Base.IOError && return nothing   # client disconnected before sending body
+        rethrow()
+    end
+
+    # Anti-shell-grep nudge endpoint (mcp_stream_handlers.jl) — handled before the
+    # security gate so an agent's PreToolUse hook curl needs no credentials. Localhost,
+    # canned response, no side effects.
+    _stream_hook_nudge(http, req, body) && return nothing
+
+    # Tool-policy questions from an ACP agent's bridge plugin (acp_backend.jl).
+    # Pre-gate like the nudge, but token-authenticated — see _stream_agent_bridge.
+    _stream_agent_bridge(http, req, body) && return nothing
+
+    # OAuth is intentionally not implemented — return a clean 404 for OAuth
+    # discovery/endpoint paths (before the gate) so a client's OAuth probe
+    # concludes "no OAuth here" and falls back to its API-key bearer, rather
+    # than crashing. (mcp_stream_handlers.jl / mcp_rpc_methods.jl)
+    _stream_oauth(http, req) && return nothing
+
+    # Origin + API-key/nonce/IP security gate (mcp_stream_handlers.jl).
+    _stream_security_gate(http, req, body, security_config) && return nothing
+
+    try
+        # Static endpoints + protocol/empty-body checks (mcp_stream_handlers.jl).
+        _stream_agents_md(http, req) && return nothing
+        _stream_vscode_response(http, req, body) && return nothing
+        _stream_connect_tcp(http, req, body) && return nothing
+        _stream_get_sse(http, req) && return nothing
+        _stream_delete(http, req) && return nothing
+        _stream_protocol_version(http, req) && return nothing
+        _stream_empty_body(http, body) && return nothing
+
+        # Session lookup/creation for multi-session support
+        session_id = extract_mcp_session_id(req)
+
+        # Parse request to check if it's an initialize
+        parsed_request = try
+            JSON.parse(body; dicttype = Dict{String,Any})
+        catch
+            nothing
+        end
+
+        # A JSON-RPC *response* to a server-issued request (e.g. the client's
+        # reply to our `roots/list`): route it to the waiter and 202-ack. These
+        # carry an id + result/error and no method, so they precede session
+        # lookup (correlation is by request id, not session).
+        if _route_server_response!(parsed_request)
+            HTTP.setstatus(http, 202)
+            HTTP.startwrite(http)
+            return nothing
+        end
+
+        # A request from a client speaking a newer, initialize-less MCP is turned away before a
+        # session is made for it, so it falls back to `initialize`.
+        _stream_modern_request(http, parsed_request) && return nothing
+
+        is_initialize =
+            parsed_request !== nothing &&
+            get(parsed_request, "method", "") == "initialize"
+
+        # Get or create session
+        session, is_new_session = get_or_create_session(session_id, is_initialize)
+
+        # The tools this request's caller may use, named by the service in front (see
+        # `_allowed_tools`). Set on every request, absent or not, before anything can return.
+        _set_request_allowed!(_parse_allowed_tools(HTTP.header(req, "X-Kaimon-Allowed-Tools", nothing)))
+
+        # Update activity timestamp so the reaper doesn't kill active sessions
+        if session !== nothing
+            Session.update_activity!(session)
+            # Record the owning Kaimon agent, so tool dispatch applies its policy and tags its
+            # extension calls. The identity comes from the agent's own token, never from a
+            # header; a session already bound to one agent refuses another agent's token.
+            aid = agent_for_token(something(extract_api_key(req), ""))
+            if !isempty(aid)
+                bound = _session_agent_id(session.id)
+                if !isempty(bound) && bound != aid
+                    record_auth_refusal!(403, "session belongs to another agent", get_client_ip(req))
+                    HTTP.setstatus(http, 403)
+                    HTTP.setheader(http, "Content-Type" => "application/json")
+                    HTTP.startwrite(http)
+                    write(http, JSON.json(Dict("error" => "Forbidden: this session belongs to another agent")))
+                    return nothing
+                end
+                _set_session_agent_id!(session.id, aid)
+                note_agent_call!(aid)
+            end
+            # Restore the agent→gate binding for a session brought back from
+            # persistence after a restart (no re-initialize). Fast no-op once bound.
+            if !is_new_session
+                try; _ensure_session_binding!(session); catch; end
+            end
+        end
+
+        # For non-initialize requests without a valid session, return 404 per
+        # MCP Streamable HTTP spec — signals the client to re-initialize.
+        if !is_initialize && session === nothing
+            HTTP.setstatus(http, 404)
+            HTTP.setheader(http, "Content-Type" => "application/json")
+            HTTP.startwrite(http)
+            error_response = Dict(
+                "jsonrpc" => "2.0",
+                "id" =>
+                    parsed_request !== nothing ? get(parsed_request, "id", 0) : 0,
+                "error" => Dict(
+                    "code" => -32600,
+                    "message" => "Session not found. Send initialize request to start a new session.",
+                ),
+            )
+            write(http, JSON.json(error_response))
+            return nothing
+        end
+
+        # ── SSE for gate-mode tool calls ────────────────────────────
+        # Two independent reasons a tool call needs an event stream instead of a
+        # single JSON response:
+        #
+        #  1. It may run long. Streaming progress notifications keeps the client's
+        #     HTTP request from timing out.
+        #  2. It may need to ASK the user something mid-call. A server→client request
+        #     (`elicitation/create`) can only be delivered on a stream that is open
+        #     and bound to this caller, and the in-flight tool-call stream always is.
+        #     The client's standalone GET receive stream may not be open yet, or may
+        #     be keyed under a different session id, and then the prompt is never
+        #     shown at all.
+        #
+        # Membership originally covered only (1), so the tools that actually prompt
+        # were the ones left without a dependable way to prompt. Whether the prompt
+        # arrives must not depend on how long the tool happens to take.
+        if GATE_MODE[] &&
+           parsed_request !== nothing &&
+           get(parsed_request, "method", "") == "tools/call"
+
+            tool_name_str = get(get(parsed_request, "params", Dict()), "name", "")
+
+            # Policy before the SSE stream opens, so a refusal is an ordinary JSON reply.
+            # `_rpc_tools_call` asks the same question for everything that doesn't stream.
+            let why = _refuse_tool_for_session(session, tool_name_str,
+                                               get(get(parsed_request, "params", Dict()),
+                                                   "arguments", Dict()))
+                if why !== nothing
+                    resp = _tool_refusal_response(parsed_request, tool_name_str, why)
+                    HTTP.setstatus(http, 200)
+                    HTTP.setheader(http, "Content-Type" => "application/json")
+                    HTTP.startwrite(http)
+                    write(http, String(resp.body))
+                    return nothing
+                end
+            end
+
+            # (1) Execute via the gate and may run long.
+            gate_exec_tools =
+                Set(["ex", "run_tests", "profile_code", "lint_package", "stress_test"])
+            # (2) May need the user's consent mid-call. Keep in step with every
+            #     `request_elicitation` caller.
+            eliciting_tools = Set(["start_session", "grep_code"])
+
+            # Session tools (namespaced: "prefix.toolname") also use SSE streaming
+            is_session_tool = occursin('.', tool_name_str)
+
+            if tool_name_str in gate_exec_tools ||
+               tool_name_str in eliciting_tools ||
+               is_session_tool
+                return _handle_gate_tool_sse(
+                    http,
+                    parsed_request,
+                    tools_dict,
+                    name_to_id,
+                    session,
+                )
+            end
+        end
+
+        # All other requests go to create_handler
+        req_with_body = HTTP.Request(req.method, req.target, req.headers, body)
+        handler = create_handler(tools_dict, name_to_id, port, security_config, session)
+        response = handler(req_with_body)
+
+        # Check for pending notifications (e.g. tools/list_changed from extensions).
+        # If any are newer than this session's POST cursor, upgrade this response to
+        # SSE so we can send both the notifications and the JSON-RPC result as
+        # separate events. (The cursor is shared with the session's tool-call
+        # streams but NOT its GET receive stream; see the board's docstring.)
+        pending = _flush_notifications_for_session!(session !== nothing ? session.id : "")
+
+        if !isempty(pending)
+            HTTP.setstatus(http, 200)
+            HTTP.setheader(http, "Content-Type" => "text/event-stream")
+            HTTP.setheader(http, "Cache-Control" => "no-cache")
+            HTTP.setheader(http, "Mcp-Session-Id" => session !== nothing ? session.id : "")
+            HTTP.startwrite(http)
+            for notif in pending
+                notif_json = JSON.json(notif)
+                method = get(notif, "method", "")
+                _push_log!(:info, "SSE notification flush: $method")
+                write(http, "data: $(notif_json)\n\n")
+            end
+            # Send the actual response as the final event
+            response_json = String(response.body)
+            write(http, "data: $(response_json)\n\n")
+            flush(http)
+        else
+            HTTP.setstatus(http, response.status)
+            for (name, value) in response.headers
+                HTTP.setheader(http, name => value)
+            end
+            HTTP.startwrite(http)
+            # HTTP 2.0 Response.body is a BytesBody, not a Vector{UInt8} — the
+            # Stream `write` needs a String. Skip empty bodies: a zero-length
+            # chunked write emits a premature terminator, corrupting the next
+            # response on a kept-alive connection (e.g. 202 notification acks).
+            let body_str = String(response.body)
+                isempty(body_str) || write(http, body_str)
+            end
+        end
+        return nothing
+
+    catch e
+        # Client disconnected — no response possible, no need to log
+        e isa Base.IOError && return nothing
+
+        _push_log!(:error, "MCP handler error: $(sprint(showerror, e))")
+
+        # Attempt a 500 JSON-RPC error response.  Wrap in its own try/catch
+        # because startwrite throws if the response was already started
+        # (e.g. after SSE headers were sent) or if the socket closed.
+        try
+            HTTP.setstatus(http, 500)
+            HTTP.setheader(http, "Content-Type" => "application/json")
+            HTTP.startwrite(http)
+
+            request_id = try
+                parsed = JSON.parse(body; dicttype = Dict{String,Any})
+                get(parsed, :id, 0)
+            catch
+                0
+            end
+
+            error_response = Dict(
+                "jsonrpc" => "2.0",
+                "id" => request_id,
+                "error" => Dict("code" => -32603, "message" => "Internal error: $e"),
+            )
+            write(http, JSON.json(error_response))
+        catch
+            # Response already started or connection closed — nothing to do
+        end
+        return nothing
+    end
+end
+
 function start_mcp_server(
     tools::Vector{MCPTool},
     port::Int = 3000;
@@ -1152,273 +1422,6 @@ function start_mcp_server(
             security_config,
             port,
         )
-    end
-
-    function _hybrid_handler_impl(
-        http::HTTP.Stream,
-        tools_dict,
-        name_to_id,
-        security_config,
-        port,
-    )
-        req = HTTP.startread(http)
-
-        # Read the full request body before writing any response (must be fully
-        # consumed or HTTP.jl RSTs the connection). On an HTTP 2.0 server Stream
-        # the body read is `read(stream, String)`; `readavailable` is client-only.
-        # IOError on early client disconnect is swallowed to avoid spurious logs.
-        body = try
-            read(http, String)
-        catch e
-            e isa Base.IOError && return nothing   # client disconnected before sending body
-            rethrow()
-        end
-
-        # Anti-shell-grep nudge endpoint (mcp_stream_handlers.jl) — handled before the
-        # security gate so an agent's PreToolUse hook curl needs no credentials. Localhost,
-        # canned response, no side effects.
-        _stream_hook_nudge(http, req, body) && return nothing
-
-        # Tool-policy questions from an ACP agent's bridge plugin (acp_backend.jl).
-        # Pre-gate like the nudge, but token-authenticated — see _stream_agent_bridge.
-        _stream_agent_bridge(http, req, body) && return nothing
-
-        # OAuth is intentionally not implemented — return a clean 404 for OAuth
-        # discovery/endpoint paths (before the gate) so a client's OAuth probe
-        # concludes "no OAuth here" and falls back to its API-key bearer, rather
-        # than crashing. (mcp_stream_handlers.jl / mcp_rpc_methods.jl)
-        _stream_oauth(http, req) && return nothing
-
-        # Origin + API-key/nonce/IP security gate (mcp_stream_handlers.jl).
-        _stream_security_gate(http, req, body, security_config) && return nothing
-
-        try
-            # Static endpoints + protocol/empty-body checks (mcp_stream_handlers.jl).
-            _stream_agents_md(http, req) && return nothing
-            _stream_vscode_response(http, req, body) && return nothing
-            _stream_connect_tcp(http, req, body) && return nothing
-            _stream_get_sse(http, req) && return nothing
-            _stream_delete(http, req) && return nothing
-            _stream_protocol_version(http, req) && return nothing
-            _stream_empty_body(http, body) && return nothing
-
-            # Session lookup/creation for multi-session support
-            session_id = extract_mcp_session_id(req)
-
-            # Parse request to check if it's an initialize
-            parsed_request = try
-                JSON.parse(body; dicttype = Dict{String,Any})
-            catch
-                nothing
-            end
-
-            # A JSON-RPC *response* to a server-issued request (e.g. the client's
-            # reply to our `roots/list`): route it to the waiter and 202-ack. These
-            # carry an id + result/error and no method, so they precede session
-            # lookup (correlation is by request id, not session).
-            if _route_server_response!(parsed_request)
-                HTTP.setstatus(http, 202)
-                HTTP.startwrite(http)
-                return nothing
-            end
-
-            # A request from a client speaking a newer, initialize-less MCP is turned away before a
-            # session is made for it, so it falls back to `initialize`.
-            _stream_modern_request(http, parsed_request) && return nothing
-
-            is_initialize =
-                parsed_request !== nothing &&
-                get(parsed_request, "method", "") == "initialize"
-
-            # Get or create session
-            session, is_new_session = get_or_create_session(session_id, is_initialize)
-
-            # The tools this request's caller may use, named by the service in front (see
-            # `_allowed_tools`). Set on every request, absent or not, before anything can return.
-            _set_request_allowed!(_parse_allowed_tools(HTTP.header(req, "X-Kaimon-Allowed-Tools", nothing)))
-
-            # Update activity timestamp so the reaper doesn't kill active sessions
-            if session !== nothing
-                Session.update_activity!(session)
-                # Record the owning Kaimon agent, so tool dispatch applies its policy and tags its
-                # extension calls. The identity comes from the agent's own token, never from a
-                # header; a session already bound to one agent refuses another agent's token.
-                aid = agent_for_token(something(extract_api_key(req), ""))
-                if !isempty(aid)
-                    bound = _session_agent_id(session.id)
-                    if !isempty(bound) && bound != aid
-                        record_auth_refusal!(403, "session belongs to another agent", get_client_ip(req))
-                        HTTP.setstatus(http, 403)
-                        HTTP.setheader(http, "Content-Type" => "application/json")
-                        HTTP.startwrite(http)
-                        write(http, JSON.json(Dict("error" => "Forbidden: this session belongs to another agent")))
-                        return nothing
-                    end
-                    _set_session_agent_id!(session.id, aid)
-                    note_agent_call!(aid)
-                end
-                # Restore the agent→gate binding for a session brought back from
-                # persistence after a restart (no re-initialize). Fast no-op once bound.
-                if !is_new_session
-                    try; _ensure_session_binding!(session); catch; end
-                end
-            end
-
-            # For non-initialize requests without a valid session, return 404 per
-            # MCP Streamable HTTP spec — signals the client to re-initialize.
-            if !is_initialize && session === nothing
-                HTTP.setstatus(http, 404)
-                HTTP.setheader(http, "Content-Type" => "application/json")
-                HTTP.startwrite(http)
-                error_response = Dict(
-                    "jsonrpc" => "2.0",
-                    "id" =>
-                        parsed_request !== nothing ? get(parsed_request, "id", 0) : 0,
-                    "error" => Dict(
-                        "code" => -32600,
-                        "message" => "Session not found. Send initialize request to start a new session.",
-                    ),
-                )
-                write(http, JSON.json(error_response))
-                return nothing
-            end
-
-            # ── SSE for gate-mode tool calls ────────────────────────────
-            # Two independent reasons a tool call needs an event stream instead of a
-            # single JSON response:
-            #
-            #  1. It may run long. Streaming progress notifications keeps the client's
-            #     HTTP request from timing out.
-            #  2. It may need to ASK the user something mid-call. A server→client request
-            #     (`elicitation/create`) can only be delivered on a stream that is open
-            #     and bound to this caller, and the in-flight tool-call stream always is.
-            #     The client's standalone GET receive stream may not be open yet, or may
-            #     be keyed under a different session id, and then the prompt is never
-            #     shown at all.
-            #
-            # Membership originally covered only (1), so the tools that actually prompt
-            # were the ones left without a dependable way to prompt. Whether the prompt
-            # arrives must not depend on how long the tool happens to take.
-            if GATE_MODE[] &&
-               parsed_request !== nothing &&
-               get(parsed_request, "method", "") == "tools/call"
-
-                tool_name_str = get(get(parsed_request, "params", Dict()), "name", "")
-
-                # Policy before the SSE stream opens, so a refusal is an ordinary JSON reply.
-                # `_rpc_tools_call` asks the same question for everything that doesn't stream.
-                let why = _refuse_tool_for_session(session, tool_name_str,
-                                                   get(get(parsed_request, "params", Dict()),
-                                                       "arguments", Dict()))
-                    if why !== nothing
-                        resp = _tool_refusal_response(parsed_request, tool_name_str, why)
-                        HTTP.setstatus(http, 200)
-                        HTTP.setheader(http, "Content-Type" => "application/json")
-                        HTTP.startwrite(http)
-                        write(http, String(resp.body))
-                        return nothing
-                    end
-                end
-
-                # (1) Execute via the gate and may run long.
-                gate_exec_tools =
-                    Set(["ex", "run_tests", "profile_code", "lint_package", "stress_test"])
-                # (2) May need the user's consent mid-call. Keep in step with every
-                #     `request_elicitation` caller.
-                eliciting_tools = Set(["start_session", "grep_code"])
-
-                # Session tools (namespaced: "prefix.toolname") also use SSE streaming
-                is_session_tool = occursin('.', tool_name_str)
-
-                if tool_name_str in gate_exec_tools ||
-                   tool_name_str in eliciting_tools ||
-                   is_session_tool
-                    return _handle_gate_tool_sse(
-                        http,
-                        parsed_request,
-                        tools_dict,
-                        name_to_id,
-                        session,
-                    )
-                end
-            end
-
-            # All other requests go to create_handler
-            req_with_body = HTTP.Request(req.method, req.target, req.headers, body)
-            handler = create_handler(tools_dict, name_to_id, port, security_config, session)
-            response = handler(req_with_body)
-
-            # Check for pending notifications (e.g. tools/list_changed from extensions).
-            # If any are newer than this session's POST cursor, upgrade this response to
-            # SSE so we can send both the notifications and the JSON-RPC result as
-            # separate events. (The cursor is shared with the session's tool-call
-            # streams but NOT its GET receive stream; see the board's docstring.)
-            pending = _flush_notifications_for_session!(session !== nothing ? session.id : "")
-
-            if !isempty(pending)
-                HTTP.setstatus(http, 200)
-                HTTP.setheader(http, "Content-Type" => "text/event-stream")
-                HTTP.setheader(http, "Cache-Control" => "no-cache")
-                HTTP.setheader(http, "Mcp-Session-Id" => session !== nothing ? session.id : "")
-                HTTP.startwrite(http)
-                for notif in pending
-                    notif_json = JSON.json(notif)
-                    method = get(notif, "method", "")
-                    _push_log!(:info, "SSE notification flush: $method")
-                    write(http, "data: $(notif_json)\n\n")
-                end
-                # Send the actual response as the final event
-                response_json = String(response.body)
-                write(http, "data: $(response_json)\n\n")
-                flush(http)
-            else
-                HTTP.setstatus(http, response.status)
-                for (name, value) in response.headers
-                    HTTP.setheader(http, name => value)
-                end
-                HTTP.startwrite(http)
-                # HTTP 2.0 Response.body is a BytesBody, not a Vector{UInt8} — the
-                # Stream `write` needs a String. Skip empty bodies: a zero-length
-                # chunked write emits a premature terminator, corrupting the next
-                # response on a kept-alive connection (e.g. 202 notification acks).
-                let body_str = String(response.body)
-                    isempty(body_str) || write(http, body_str)
-                end
-            end
-            return nothing
-
-        catch e
-            # Client disconnected — no response possible, no need to log
-            e isa Base.IOError && return nothing
-
-            _push_log!(:error, "MCP handler error: $(sprint(showerror, e))")
-
-            # Attempt a 500 JSON-RPC error response.  Wrap in its own try/catch
-            # because startwrite throws if the response was already started
-            # (e.g. after SSE headers were sent) or if the socket closed.
-            try
-                HTTP.setstatus(http, 500)
-                HTTP.setheader(http, "Content-Type" => "application/json")
-                HTTP.startwrite(http)
-
-                request_id = try
-                    parsed = JSON.parse(body; dicttype = Dict{String,Any})
-                    get(parsed, :id, 0)
-                catch
-                    0
-                end
-
-                error_response = Dict(
-                    "jsonrpc" => "2.0",
-                    "id" => request_id,
-                    "error" => Dict("code" => -32603, "message" => "Internal error: $e"),
-                )
-                write(http, JSON.json(error_response))
-            catch
-                # Response already started or connection closed — nothing to do
-            end
-            return nothing
-        end
     end
 
     # HTTP 2.0 drives the Stream handler via `listen!` (`serve!` is now the
