@@ -216,12 +216,17 @@ const _GATE_TTY_PARKED_PGRP = Ref{Union{Int32,Nothing}}(nothing)
 # The outbox and the in-flight counter are session fields (see GateSession), built fresh per
 # session so a same-process restart cannot inherit a half-drained queue.
 #
-# Backstop on concurrent worker tasks so a request storm can't spawn unbounded
-# tasks. At the cap the owner stops accepting new requests; pending requests
-# stay queued in the ROUTER (client DEALER blocks in its own recv) until a slot
-# frees. Env-overridable.
+# Backstop on concurrent default-lane worker tasks so a request storm can't spawn
+# unbounded tasks. At the cap the owner keeps reading, so requests a router sends
+# elsewhere are still served, and holds further default-lane requests in a backlog
+# until a slot frees. Env-overridable.
 const _GATE_MAX_WORKERS = Ref{Int}(
     something(tryparse(Int, get(ENV, "KAIMON_GATE_MAX_WORKERS", "")), 16))
+
+# Bound on that backlog. When it is full the owner stops reading, and the rest
+# stay queued in the ROUTER (client DEALER blocks in its own recv). Env-overridable.
+const _GATE_MAX_DEFERRED = Ref{Int}(
+    something(tryparse(Int, get(ENV, "KAIMON_GATE_MAX_DEFERRED", "")), 256))
 
 # Adaptive owner-loop recv timeout (ms). The owner blocks in recv, so worker
 # replies queued in _gate_outbox() only flush when the recv returns. A flat 200ms

@@ -40,29 +40,38 @@ end
     try
         _drain_outbox!()
         base = KG._gate_inflight()[]
+        dbase = KG._gate_default_inflight()[]
         id, cid = UInt8[1, 2], UInt8[3, 4]
+        take_slot!() = (Threads.atomic_add!(KG._gate_inflight(), 1); Threads.atomic_add!(KG._gate_default_inflight(), 1))
+        released() = KG._gate_inflight()[] == base && KG._gate_default_inflight()[] == dbase
 
         # Normal path: a ping is handled, replied to, and the slot comes back.
-        Threads.atomic_add!(KG._gate_inflight(), 1)
+        take_slot!()
         KG._serve_request(id, cid, (type = :ping,))
-        @test KG._gate_inflight()[] == base
+        @test released()
         (rid, rcid, bytes) = take!(KG._gate_outbox())
         @test rid == id && rcid == cid
         @test deserialize(IOBuffer(bytes)).type === :pong
         @test KG._ping_count() == 1        # counted against this session, not a global
 
         # handle_message cannot dispatch a non-NamedTuple: error reply, slot released.
-        Threads.atomic_add!(KG._gate_inflight(), 1)
+        take_slot!()
         KG._serve_request(id, cid, Dict(:type => :ping))
-        @test KG._gate_inflight()[] == base
+        @test released()
         reply = deserialize(IOBuffer(take!(KG._gate_outbox())[3]))
         @test reply.type === :error
 
         # An unknown request type is still a reply, not a leaked slot.
-        Threads.atomic_add!(KG._gate_inflight(), 1)
+        take_slot!()
         KG._serve_request(id, cid, (type = :no_such_message,))
-        @test KG._gate_inflight()[] == base
+        @test released()
         @test isready(KG._gate_outbox())
+        _drain_outbox!()
+
+        # A routed request holds only the overall count, never a default-lane slot.
+        Threads.atomic_add!(KG._gate_inflight(), 1)
+        KG._serve_request(id, cid, (type = :ping,), false)
+        @test released()
         _drain_outbox!()
     finally
         KG._SESSION[] = saved

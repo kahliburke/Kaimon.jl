@@ -666,11 +666,58 @@ function _drain_gate_outbox!(socket::ZMQ.Socket)
     end
 end
 
+# Where request tasks start. By default every request runs on a `:default`-pool task (the default
+# lane), and at most `_GATE_MAX_WORKERS` of those run at once. A host process can install a router
+# that sends some requests to threads of its own, e.g. a notebook worker serving status and UI
+# requests from dedicated pools so they still answer while user code saturates `:default`.
+const _REQUEST_ROUTER = Ref{Any}(nothing)
+
+"""
+    set_request_router!(router)
+
+Install `router(request)` to choose where each incoming request runs. It returns `nothing` for the
+default lane (a `:default`-pool task, counted against the in-flight cap `KAIMON_GATE_MAX_WORKERS`),
+or a function `spawn(run)` that starts `run()` on a task of its choosing and returns without
+waiting. Routed requests are not counted against the cap, so they are still read and served while
+default-lane requests are backed up. `nothing` removes the router.
+"""
+set_request_router!(router) = (_REQUEST_ROUTER[] = router; nothing)
+
+# The router's spawner for `request`, or `nothing` for the default lane.
+function _request_spawner(request)
+    router = _REQUEST_ROUTER[]
+    router === nothing && return nothing
+    try
+        # Latest world: a router installed after the loop started is newer than the loop's world.
+        return Base.invokelatest(router, request)
+    catch e
+        @warn "Kaimon gate request router failed; using the default lane" exception = e maxlog = 5
+        return nothing
+    end
+end
+
+function _start_request(identity::Vector{UInt8}, corr_id::Vector{UInt8}, request, spawner)
+    Threads.atomic_add!(_gate_inflight(), 1)
+    if spawner !== nothing
+        try
+            Base.invokelatest(spawner, () -> _serve_request(identity, corr_id, request, false))
+            return nothing
+        catch e
+            # A broken spawner must not drop the request.
+            @warn "Kaimon gate request spawner failed; using the default lane" exception = e maxlog = 5
+        end
+    end
+    Threads.atomic_add!(_gate_default_inflight(), 1)
+    Threads.@spawn _serve_request(identity, corr_id, request, true)
+    return nothing
+end
+
 # Run one request to completion on its own task and hand the reply to the outbox.
 # Never touches the socket. invokelatest so handle_message (and the session tools
 # it calls) runs in the latest world age — required for tools whose types were
 # defined after the gate loop started.
-function _serve_request(identity::Vector{UInt8}, corr_id::Vector{UInt8}, request)
+function _serve_request(identity::Vector{UInt8}, corr_id::Vector{UInt8}, request,
+                        default_lane::Bool = true)
     # Release the slot in a `finally`: a throw after handle_message used to leak
     # it for the life of the process, and _GATE_MAX_WORKERS leaked slots stop
     # intake entirely.
@@ -691,6 +738,7 @@ function _serve_request(identity::Vector{UInt8}, corr_id::Vector{UInt8}, request
         end
         put!(_gate_outbox(), (identity, corr_id, take!(io)))
     finally
+        default_lane && Threads.atomic_sub!(_gate_default_inflight(), 1)
         Threads.atomic_sub!(_gate_inflight(), 1)
     end
     return nothing
@@ -724,22 +772,32 @@ function message_loop(socket::ZMQ.Socket)
     # Tracked so we only call setsockopt on an actual transition. -1 forces the
     # first apply. See _GATE_RCVTIMEO_BUSY/_IDLE for why (the 200ms drag-lag fix).
     cur_rcvtimeo = -1
+    # Default-lane requests received while that lane was at the cap, oldest first.
+    deferred = Tuple{Vector{UInt8},Vector{UInt8},Any}[]
     while _running()
         try
             # 1. flush any ready worker replies first (owner-only socket access)
             _drain_gate_outbox!(socket)
 
-            # 2. backpressure: at the worker cap, let the outbox drain before
-            #    accepting more. Pending requests stay queued in the ROUTER.
-            if _gate_inflight()[] >= _GATE_MAX_WORKERS[]
+            # 2. start deferred default-lane requests as slots free up
+            while !isempty(deferred) && _gate_default_inflight()[] < _GATE_MAX_WORKERS[]
+                (d_identity, d_corr_id, d_request) = popfirst!(deferred)
+                _start_request(d_identity, d_corr_id, d_request, nothing)
+            end
+
+            # 2a. backpressure: with a full backlog of deferred requests, stop reading and
+            #     let the ROUTER queue the rest. Short of that, keep reading even while the
+            #     default lane is at the cap, so routed requests (status, cancel) get through.
+            if length(deferred) >= _GATE_MAX_DEFERRED[]
                 sleep(0.005)
                 continue
             end
 
             # 2b. pick recv timeout: poll fast while a reply may be in flight (a
-            #     worker running, or one already queued between drain and now),
-            #     else wait long. Owner-only socket access, so setsockopt is safe.
-            want_rcvtimeo = (_gate_inflight()[] > 0 || isready(_gate_outbox())) ?
+            #     worker running, or one already queued between drain and now) or a
+            #     deferred request is waiting for a slot, else wait long. Owner-only
+            #     socket access, so setsockopt is safe.
+            want_rcvtimeo = (_gate_inflight()[] > 0 || !isempty(deferred) || isready(_gate_outbox())) ?
                             _GATE_RCVTIMEO_BUSY[] : _GATE_RCVTIMEO_IDLE[]
             if want_rcvtimeo != cur_rcvtimeo
                 socket.rcvtimeo = want_rcvtimeo
@@ -764,8 +822,12 @@ function message_loop(socket::ZMQ.Socket)
 
             # 4. hand off to a worker — DO NOT run inline (a slow sync eval or a
             #    blocked debug_eval must not stall intake / pings).
-            Threads.atomic_add!(_gate_inflight(), 1)
-            Threads.@spawn _serve_request(identity, corr_id, request)
+            spawner = _request_spawner(request)
+            if spawner === nothing && _gate_default_inflight()[] >= _GATE_MAX_WORKERS[]
+                push!(deferred, (identity, corr_id, request))
+            else
+                _start_request(identity, corr_id, request, spawner)
+            end
         catch e
             _running() || break   # clean shutdown
             # Timeout is expected — just loop to check _running() and drain outbox.

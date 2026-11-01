@@ -245,4 +245,105 @@ end
     end
 end
 
+# ── Request router ────────────────────────────────────────────────────────────
+
+@testset "Request router routes requests" begin
+    if Sys.iswindows()
+        @test_skip true
+    else
+        tool = KaimonGate.GateTool("where_am_i", () -> string(Threads.threadpool()))
+        session_id = "test-route-$(bytes2hex(rand(UInt8, 4)))"
+        seen = Channel{Any}(Inf)
+        KaimonGate.set_request_router!() do request
+            put!(seen, (get(request, :type, nothing), get(request, :name, nothing)))
+            run -> Threads.@spawn :interactive run()
+        end
+        KaimonGate._serve(name="test", session_id=session_id, force=true, tools=[tool])
+        sleep(0.15)
+
+        ctx = ZMQ.Context()
+        req = ZMQ.Socket(ctx, ZMQ.REQ)
+        req.rcvtimeo = 5_000
+        req.linger   = 0
+        ZMQ.connect(req, "ipc://" * joinpath(KaimonGate.sock_dir(), "$session_id.sock"))
+        try
+            @test zmq_req(req, (type=:ping,)).type == :pong
+            resp = zmq_req(req, (type=:tool_call, name="where_am_i", arguments=Dict{String,Any}()))
+            expected = Threads.nthreads(:interactive) > 0 ? "interactive" : "default"
+            @test resp.value == expected
+            @test take!(seen) == (:ping, nothing)
+            @test take!(seen) == (:tool_call, "where_am_i")
+
+            # A failing router or spawner falls back to the default lane instead of dropping the request.
+            KaimonGate.set_request_router!(request -> error("router broke"))
+            @test zmq_req(req, (type=:ping,)).type == :pong
+            KaimonGate.set_request_router!(request -> (run -> error("spawner broke")))
+            @test zmq_req(req, (type=:ping,)).type == :pong
+
+            KaimonGate.set_request_router!(nothing)
+            resp = zmq_req(req, (type=:tool_call, name="where_am_i", arguments=Dict{String,Any}()))
+            @test resp.value == "default"
+        finally
+            KaimonGate.set_request_router!(nothing)
+            ZMQ.close(req)
+            ZMQ.close(ctx)
+            KaimonGate.stop()
+            sleep(0.1)
+        end
+    end
+end
+
+@testset "Routed requests are served while the default lane is at its cap" begin
+    if Sys.iswindows()
+        @test_skip true
+    else
+        gate = Base.Event()
+        block = KaimonGate.GateTool("block", () -> (wait(gate); "released"))
+        echo  = KaimonGate.GateTool("echo", () -> "echoed")
+        session_id = "test-cap-$(bytes2hex(rand(UInt8, 4)))"
+        saved_cap = KaimonGate._GATE_MAX_WORKERS[]
+        KaimonGate._GATE_MAX_WORKERS[] = 1
+        # Pings are routed off the default lane; tool calls stay on it.
+        KaimonGate.set_request_router!(request -> request.type === :ping ? (run -> Threads.@spawn run()) : nothing)
+        KaimonGate._serve(name="test", session_id=session_id, force=true, tools=[block, echo])
+        sleep(0.15)
+
+        ctx = ZMQ.Context()
+        endpoint = "ipc://" * joinpath(KaimonGate.sock_dir(), "$session_id.sock")
+        socks = map(1:3) do _
+            s = ZMQ.Socket(ctx, ZMQ.REQ); s.rcvtimeo = 5_000; s.linger = 0; ZMQ.connect(s, endpoint); s
+        end
+        call(name) = (type=:tool_call, name=name, arguments=Dict{String,Any}())
+        try
+            # Occupy the only default-lane slot.
+            blocked = Threads.@spawn zmq_req(socks[1], call("block"))
+            sleep(0.2)
+            @test KaimonGate._gate_default_inflight()[] == 1
+
+            # A second default-lane request waits for the slot instead of being refused...
+            waiting = Threads.@spawn zmq_req(socks[2], call("echo"))
+            sleep(0.2)
+            @test !istaskdone(waiting)
+
+            # ...while a routed request is still read and answered.
+            t0 = time()
+            @test zmq_req(socks[3], (type=:ping,)).type == :pong
+            @test time() - t0 < 1.0
+
+            notify(gate)
+            @test fetch(blocked).value == "released"
+            @test fetch(waiting).value == "echoed"
+            @test KaimonGate._gate_default_inflight()[] == 0
+        finally
+            notify(gate)
+            KaimonGate._GATE_MAX_WORKERS[] = saved_cap
+            KaimonGate.set_request_router!(nothing)
+            foreach(ZMQ.close, socks)
+            ZMQ.close(ctx)
+            KaimonGate.stop()
+            sleep(0.1)
+        end
+    end
+end
+
 end  # if !_running()

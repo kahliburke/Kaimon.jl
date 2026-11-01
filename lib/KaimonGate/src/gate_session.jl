@@ -90,7 +90,8 @@ mutable struct GateSession
     # half-drained outbox or a non-zero in-flight count.
     tools::Vector{GateTool}
     outbox::Channel{Tuple{Vector{UInt8},Vector{UInt8},Vector{UInt8}}}
-    inflight::Threads.Atomic{Int}
+    inflight::Threads.Atomic{Int}           # every request being served
+    default_inflight::Threads.Atomic{Int}   # those on the default lane, which `_GATE_MAX_WORKERS` caps
     stream_outbox::Channel{Vector{Vector{UInt8}}}
 end
 
@@ -141,6 +142,7 @@ function GateSession(;
         Int(ping_count), Int(msg_count), Float64(last_ping_time),
         tools,
         Channel{Tuple{Vector{UInt8},Vector{UInt8},Vector{UInt8}}}(Inf),
+        Threads.Atomic{Int}(0),
         Threads.Atomic{Int}(0),
         Channel{Vector{Vector{UInt8}}}(Inf),
     )
@@ -274,4 +276,5 @@ _session_tools!(v)  = (_session().tools = v)
 # instead; note `_gate_inflight()[]` is still the atomic load.
 _gate_outbox()           = _session().outbox
 _gate_inflight()         = _session().inflight
+_gate_default_inflight() = _session().default_inflight
 _stream_outbox()         = _session().stream_outbox
