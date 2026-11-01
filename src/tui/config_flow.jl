@@ -615,12 +615,17 @@ function _remove_antigravity(m::KaimonModel)
 end
 
 function _remove_codex(m::KaimonModel)
-    try
-        read(pipeline(Utils.launch_cmd(`codex mcp remove kaimon`); stderr = devnull), String)
-    catch
+    path = _codex_config_path()
+    if isfile(path)
+        config = TOML.parsefile(path)
+        servers = get(config, "mcp_servers", Dict{String,Any}())
+        name = _codex_kaimon_name(servers)
+        if haskey(servers, name)
+            delete!(servers, name)
+            _write_codex_config(path, config; server = name)
+        end
     end
-    _codex_env_remove!("MCPREPL_API_KEY")
-    m.flow_message = "Removed kaimon from Codex CLI"
+    m.flow_message = "Removed Kaimon from Codex CLI / VS Code\n$(_short_path(path))\nRestart Codex to apply."
     m.flow_success = true
 end
 
@@ -738,19 +743,6 @@ function _remove_server_from_json!(path::String, servers_key::String)
     write(path, _to_json(data))
 end
 
-"""Remove `key` from `~/.codex/.env`, preserving other lines."""
-function _codex_env_remove!(key::String)
-    env_file = joinpath(homedir(), ".codex", ".env")
-    isfile(env_file) || return
-    lines = readlines(env_file)
-    filter!(l -> !startswith(l, "$key="), lines)
-    if isempty(lines)
-        rm(env_file)
-    else
-        write(env_file, join(lines, "\n") * "\n")
-    end
-end
-
 # ── Install helpers ───────────────────────────────────────────────────────────
 
 function _install_claude(m::KaimonModel, port::Int, api_key)
@@ -863,24 +855,154 @@ function _install_kilo(m::KaimonModel, port::Int, api_key)
     m.flow_success = true
 end
 
-function _install_codex(m::KaimonModel, port::Int, api_key)
-    url = "http://localhost:$port/mcp"
+"Codex CLI and its IDE extension share this configuration, including a custom CODEX_HOME."
+function _codex_config_path()
+    home = get(ENV, "CODEX_HOME", "")
+    joinpath(isempty(home) ? joinpath(homedir(), ".codex") : abspath(expanduser(home)), "config.toml")
+end
+
+function _codex_configured()
+    path = _codex_config_path()
+    isfile(path) || return false
     try
-        read(pipeline(Utils.launch_cmd(`codex mcp remove kaimon`); stderr = devnull), String)
+        servers = get(TOML.parsefile(path), "mcp_servers", nothing)
+        servers isa AbstractDict || return false
+        return any(name -> lowercase(String(name)) == "kaimon", keys(servers))
     catch
+        return false
     end
-    # Current Codex CLI expects `codex mcp add <NAME> [COMMAND]...`, not
-    # `--url`. Kaimon's HTTP MCP endpoint is bridged to Codex via the mcp-remote
-    # stdio command; the API key is passed through as an env var the header
-    # interpolates. (#38)
-    header = "Authorization:Bearer \${MCPREPL_API_KEY}"
-    args = if api_key !== nothing
-        `codex mcp add --env MCPREPL_API_KEY=$api_key kaimon npx -y mcp-remote $url --allow-http --header $header --silent`
-    else
-        `codex mcp add kaimon npx -y mcp-remote $url --allow-http --silent`
+end
+
+"Reuse the user's capitalization; ambiguous entries must not be silently overwritten."
+function _codex_kaimon_name(servers::AbstractDict)
+    names = sort!([String(name) for name in keys(servers) if lowercase(String(name)) == "kaimon"])
+    length(names) > 1 && error("Multiple Kaimon entries in Codex config: $(join(names, ", ")). Consolidate them before configuring Kaimon.")
+    isempty(names) ? "kaimon" : only(names)
+end
+
+"The key path of a TOML table header (`a.\"b\".c` → `[\"a\", \"b\", \"c\"]`), or `nothing`."
+function _toml_header_path(inner::AbstractString)
+    d = TOML.tryparse("[" * inner * "]")
+    d isa AbstractDict || return nothing
+    path = String[]
+    while d isa AbstractDict && length(d) == 1
+        k, d = only(d)
+        push!(path, String(k))
     end
-    read(pipeline(Utils.launch_cmd(args); stderr = devnull), String)
-    m.flow_message = "Added kaimon to Codex CLI\n(~/.codex/config.toml)"
+    return path
+end
+
+"""
+Rewrite only the `[mcp_servers.<name>]` tables (and their sub-tables) of a Codex config: `entry`
+replaces them, or they are removed when it is `nothing`. Every other line is kept as it was. The
+caller checks the result parses to the intended config, and rewrites the whole file otherwise.
+"""
+function _codex_splice_server(text::AbstractString, name::AbstractString, entry)
+    lines = split(text, '\n')
+    starts, paths = Int[], Any[]
+    for (i, l) in enumerate(lines)
+        s = strip(l)
+        if startswith(s, "[[")
+            push!(starts, i); push!(paths, nothing)
+        elseif (m = match(r"^\[\s*(.+?)\s*\]\s*(#.*)?$", s)) !== nothing
+            push!(starts, i); push!(paths, _toml_header_path(m.captures[1]))
+        end
+    end
+    own = [k for k in eachindex(starts) if paths[k] isa Vector && length(paths[k]) >= 2 &&
+           paths[k][1] == "mcp_servers" && paths[k][2] == name]
+    keep = trues(length(lines))
+    for k in own
+        keep[starts[k]:(k < length(starts) ? starts[k+1] - 1 : length(lines))] .= false
+    end
+    block = String[]
+    if entry !== nothing
+        t = sprint(io -> TOML.print(io, Dict("mcp_servers" => Dict(String(name) => entry)); sorted = true))
+        # TOML.print indents sub-tables; written flush left like a hand-edited config.
+        block = [String(lstrip(l)) for l in split(strip(t, '\n'), '\n') if strip(l) != "[mcp_servers]"]
+        while !isempty(block) && isempty(strip(first(block)))
+            popfirst!(block)
+        end
+        push!(block, "")
+    end
+    out = String[]
+    at = isempty(own) ? 0 : starts[first(own)]
+    for (i, l) in enumerate(lines)
+        i == at && append!(out, block)
+        keep[i] && push!(out, String(l))
+    end
+    if at == 0 && !isempty(block)   # a new entry goes at the end, after one blank line
+        while !isempty(out) && isempty(strip(last(out)))
+            pop!(out)
+        end
+        isempty(out) || push!(out, "")
+        append!(out, block)
+    end
+    return join(out, "\n")
+end
+
+_codex_without_empty_servers(d) =
+    isempty(get(d, "mcp_servers", ())) ? filter(p -> p.first != "mcp_servers", d) : d
+
+"""
+Write the Codex config atomically; it may contain an API key. With `server`, only that server's
+tables are rewritten, keeping the rest of the file (comments, order, formatting) as it was. The
+whole file is reserialized only when that edit would not parse to exactly `config`, e.g. when the
+server is written inline.
+"""
+function _write_codex_config(path::String, config::AbstractDict; server = nothing)
+    content = lstrip(sprint(io -> TOML.print(io, config; sorted = true)), '\n')
+    flat = join(lstrip.(split(content, '\n')), '\n')   # TOML.print indents sub-tables
+    TOML.tryparse(flat) == TOML.parse(content) && (content = flat)
+    if server !== nothing && isfile(path)
+        entry = get(get(config, "mcp_servers", Dict{String,Any}()), server, nothing)
+        spliced = _codex_splice_server(read(path, String), server, entry)
+        parsed = TOML.tryparse(spliced)
+        parsed isa AbstractDict &&
+            _codex_without_empty_servers(parsed) == _codex_without_empty_servers(config) &&
+            (content = spliced)
+    end
+    TOML.parse(content)
+    # Keep an existing config symlink intact (e.g. a shared/dotfiles configuration).
+    target = islink(path) ? realpath(path) : path
+    mkpath(dirname(target))
+    temporary, io = mktemp(dirname(target))
+    try
+        write(io, content)
+        close(io)
+        chmod(temporary, 0o600)
+        Base.Filesystem.rename(temporary, target)
+    finally
+        isopen(io) && close(io)
+        isfile(temporary) && rm(temporary)
+    end
+    nothing
+end
+
+function _install_codex(m::KaimonModel, port::Int, api_key)
+    path = _codex_config_path()
+    # Parse before changing anything: a broken config must never become an empty one.
+    config = isfile(path) ? TOML.parsefile(path) : Dict{String,Any}()
+    servers = get!(config, "mcp_servers", Dict{String,Any}())
+    name = _codex_kaimon_name(servers)
+    entry = get!(servers, name, Dict{String,Any}())
+    # Replace only connection settings; retain tool policies, timeouts and custom headers.
+    # No subprocess environment or bridge is needed for native streamable HTTP.
+    for key in ("command", "args", "env", "env_vars", "cwd", "experimental_environment",
+                "type", "bearer_token_env_var", "http_headers_helper")
+        delete!(entry, key)
+    end
+    headers = get!(entry, "http_headers", Dict{String,Any}())
+    filter!(p -> lowercase(p.first) != "authorization", headers)
+    api_key === nothing || (headers["Authorization"] = "Bearer $api_key")
+    isempty(headers) && delete!(entry, "http_headers")
+    if haskey(entry, "env_http_headers")
+        filter!(p -> lowercase(p.first) != "authorization", entry["env_http_headers"])
+        isempty(entry["env_http_headers"]) && delete!(entry, "env_http_headers")
+    end
+    entry["url"] = "http://localhost:$port/mcp"
+    entry["enabled"] = true
+    _write_codex_config(path, config; server = name)
+    m.flow_message = "Configured Kaimon for Codex CLI / VS Code\n$(_short_path(path))\nRestart Codex to apply."
     m.flow_success = true
 end
 
