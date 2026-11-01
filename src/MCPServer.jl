@@ -1125,6 +1125,7 @@ function start_mcp_server(
     session_uuid::Union{String,Nothing} = nothing,
 )
     MCP_SERVER_PORT[] = port   # publish the live port for agent MCP-config generation
+    ACTIVE_SECURITY_MODE[] = security_config === nothing ? :off : security_config.mode
     # Use provided UUID or generate a new one (persists across reconnections)
     session_uuid = session_uuid !== nothing ? session_uuid : string(UUIDs.uuid4())
 
@@ -1246,6 +1247,7 @@ function start_mcp_server(
                 if !isempty(aid)
                     bound = _session_agent_id(session.id)
                     if !isempty(bound) && bound != aid
+                        record_auth_refusal!(403, "session belongs to another agent", get_client_ip(req))
                         HTTP.setstatus(http, 403)
                         HTTP.setheader(http, "Content-Type" => "application/json")
                         HTTP.startwrite(http)
@@ -1253,6 +1255,7 @@ function start_mcp_server(
                         return nothing
                     end
                     _set_session_agent_id!(session.id, aid)
+                    note_agent_call!(aid)
                 end
                 # Restore the agent→gate binding for a session brought back from
                 # persistence after a restart (no re-initialize). Fast no-op once bound.

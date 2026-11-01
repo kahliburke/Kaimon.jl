@@ -313,6 +313,12 @@ _session_agent_id(sid::AbstractString) =
         get(_SESSION_AGENT_ID, String(sid), "")
     end
 
+"""The MCP sessions bound to Kaimon agent `agent_id`, sorted."""
+_agent_session_ids(agent_id::AbstractString) =
+    lock(_SESSION_AGENT_ID_LOCK) do
+        sort!([sid for (sid, a) in _SESSION_AGENT_ID if a == agent_id])
+    end
+
 # ── Tools allowed per request ────────────────────────────────────────────────────────────────────
 # A service that puts Kaimon behind it (offering a few of its tools to its own users, say) names,
 # on each request, the tools that request's caller may use: `X-Kaimon-Allowed-Tools`,

@@ -20,6 +20,7 @@ function _stream_security_gate(http, req, body, security_config)
             if !isempty(origin)
                 if !is_trusted_origin(origin)
                     @warn "Auth denied: untrusted Origin (403)" origin target = req.target
+                    record_auth_refusal!(403, "untrusted Origin", get_client_ip(req))
                     HTTP.setstatus(http, 403)
                     HTTP.setheader(http, "Content-Type" => "application/json")
                     HTTP.startwrite(http)
@@ -54,6 +55,7 @@ function _stream_security_gate(http, req, body, security_config)
                         nonce_validated = true
                     else
                         # Nonce validation failed
+                        record_auth_refusal!(401, "invalid or expired VS Code nonce", get_client_ip(req))
                         HTTP.setstatus(http, 401)
                         HTTP.setheader(http, "Content-Type" => "application/json")
                         HTTP.startwrite(http)
@@ -68,6 +70,7 @@ function _stream_security_gate(http, req, body, security_config)
                 elseif security_config.mode != :lax
                     # No valid nonce, fall back to API key validation for vscode-response
                     if nonce === nothing
+                        record_auth_refusal!(401, "missing API key", get_client_ip(req))
                         HTTP.setstatus(http, 401)
                         HTTP.setheader(http, "Content-Type" => "application/json")
                         HTTP.startwrite(http)
@@ -83,6 +86,7 @@ function _stream_security_gate(http, req, body, security_config)
                     end
 
                     if !validate_api_key(String(nonce), security_config)
+                        record_auth_refusal!(401, "invalid API key", get_client_ip(req))
                         HTTP.setstatus(http, 401)
                         HTTP.setheader(http, "Content-Type" => "application/json")
                         HTTP.startwrite(http)
@@ -96,6 +100,7 @@ function _stream_security_gate(http, req, body, security_config)
                     # If using API key (not nonce), still need to validate IP
                     client_ip = get_client_ip(req)
                     if !validate_ip(client_ip, security_config)
+                        record_auth_refusal!(403, "IP not allowed", get_client_ip(req))
                         HTTP.setstatus(http, 403)
                         HTTP.setheader(http, "Content-Type" => "application/json")
                         HTTP.startwrite(http)
@@ -120,6 +125,7 @@ function _stream_security_gate(http, req, body, security_config)
                     # server, so no resource_metadata pointer — the credential is
                     # the API key), and a string-typed `error` a strict OAuth
                     # client can parse instead of a JSON-RPC error object.
+                    record_auth_refusal!(401, "missing API key", get_client_ip(req))
                     HTTP.setstatus(http, 401)
                     HTTP.setheader(http, "Content-Type" => "application/json")
                     HTTP.setheader(http, "WWW-Authenticate" => "Bearer realm=\"kaimon\"")
@@ -143,6 +149,7 @@ function _stream_security_gate(http, req, body, security_config)
                 if !is_agent && !validate_api_key(String(something(api_key, "")), security_config)
                     @warn "Auth denied: invalid API key (401)" client_ip =
                         get_client_ip(req) method = req.method target = req.target
+                    record_auth_refusal!(401, "invalid API key or agent token", get_client_ip(req))
                     HTTP.setstatus(http, 401)
                     HTTP.setheader(http, "Content-Type" => "application/json")
                     HTTP.setheader(http, "WWW-Authenticate" => "Bearer realm=\"kaimon\"")
@@ -159,6 +166,7 @@ function _stream_security_gate(http, req, body, security_config)
                 if !validate_ip(client_ip, security_config)
                     @warn "Auth denied: IP not allowed (403)" client_ip method =
                         req.method target = req.target
+                    record_auth_refusal!(403, "IP not allowed", get_client_ip(req))
                     HTTP.setstatus(http, 403)
                     HTTP.setheader(http, "Content-Type" => "application/json")
                     HTTP.startwrite(http)

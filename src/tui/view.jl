@@ -474,11 +474,19 @@ function view_server(m::KaimonModel, area::Rect, f::Frame)
         ])
         y += 1
 
-        # Row 2: gate + tools
+        # Row 2: gate + tools + security mode + refused requests
+        refused = recent_auth_refusals()
+        refused_txt = refused.total == 0 ? "0" : let r = last(refused.refusals)
+            "$(refused.total) (last: $(r.reason), $(_ago(r.time)) ago)"
+        end
         _write_spans!(buf, x, y, [
             ("Gate: ", dim), ("$n_conns sessions", txt),
             (sep, dim),
             ("Tool Calls: ", dim), (string(m.total_tool_calls), txt),
+            (sep, dim),
+            ("Security: ", dim), (string(security_mode_for_display()), txt),
+            (sep, dim),
+            ("Refused: ", dim), (refused_txt, txt),
         ])
     end
 

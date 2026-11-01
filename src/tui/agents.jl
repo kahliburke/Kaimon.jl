@@ -160,6 +160,14 @@ function _view_agents_detail(m::KaimonModel, area::Rect, buf::Buffer, ags)
     toks = "$(get(usage, "inputTokens", 0))in / $(get(usage, "outputTokens", 0))out"
     _row!("Tokens", toks)
     _row!("Active", _ago(get(a, "last_activity", time())) * " ago")
+    # The agent's credential: a fingerprint only, never the token, since an agent can read this
+    # pane back through tui_screenshot. "revoked" once the agent has ended.
+    fp = agent_token_fingerprint(id)
+    _row!("Auth", isempty(fp) ? "revoked" : "own token $fp", tstyle(:text_dim))
+    sids = _agent_session_ids(id)
+    _row!("Session", isempty(sids) ? "—" : join((first(s, 8) for s in sids), ", "), tstyle(:text_dim))
+    last_call = agent_last_call(id)
+    _row!("Called", last_call === nothing ? "—" : _ago(last_call) * " ago", tstyle(:text_dim))
 
     # ── Event feed (scrollable; newest at top) ──
     y <= bottom(inner) && (set_string!(buf, inner.x + 1, y,

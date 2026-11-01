@@ -20,6 +20,20 @@ using JSON
         @test Kaimon.agent_token("tok-reg-a") == "" && Kaimon.agent_for_token(b) == ""
     end
 
+    @testset "display state: fingerprint, last call" begin
+        tok = Kaimon.register_agent_token!("tok-disp")
+        fp = Kaimon.agent_token_fingerprint("tok-disp")
+        @test occursin(r"^[0-9a-f]{6}$", fp) && !occursin(fp, tok)   # identifies, reveals nothing
+        @test Kaimon.agent_last_call("tok-disp") === nothing
+        Kaimon.note_agent_call!("tok-disp")
+        @test Kaimon.agent_last_call("tok-disp") isa Float64
+        Kaimon.revoke_agent_token!("tok-disp")
+        @test Kaimon.agent_token_fingerprint("tok-disp") == ""
+        @test Kaimon.agent_last_call("tok-disp") === nothing
+        Kaimon.note_agent_call!("tok-disp")   # a revoked agent is not brought back
+        @test Kaimon.agent_last_call("tok-disp") === nothing
+    end
+
     @testset "agent configs carry the agent's token, not the global key or an id header" begin
         mktempdir() do cache
             withenv("XDG_CACHE_HOME" => cache, "XDG_CONFIG_HOME" => joinpath(cache, "config")) do
@@ -70,10 +84,13 @@ using JSON
         a = Kaimon.register_agent_token!("tok-srv-a")
         b = Kaimon.register_agent_token!("tok-srv-b")
         try
+            @test Kaimon.ACTIVE_SECURITY_MODE[] === :strict
             r = post(init, a)
             @test r.status == 200
             sid = HTTP.header(r, "Mcp-Session-Id")
             @test Kaimon._session_agent_id(sid) == "tok-srv-a"
+            @test sid in Kaimon._agent_session_ids("tok-srv-a")
+            @test Kaimon.agent_last_call("tok-srv-a") isa Float64
 
             # The global key with an agent-id header binds nothing: identity needs the token.
             r = post(init, api_key; extra = ["X-Kaimon-Agent-Id" => "tok-srv-b"])
@@ -81,13 +98,19 @@ using JSON
             @test Kaimon._session_agent_id(HTTP.header(r, "Mcp-Session-Id")) == ""
 
             # Another agent's token cannot take over a session that belongs to an agent.
+            before = Kaimon.recent_auth_refusals().total
             @test post(list, b; sid).status == 403
+            refused = Kaimon.recent_auth_refusals()
+            @test refused.total == before + 1
+            @test last(refused.refusals).reason == "session belongs to another agent"
+            @test last(refused.refusals).status == 403
             @test Kaimon._session_agent_id(sid) == "tok-srv-a"
 
             # A revoked token, or one Kaimon never minted, is refused at the gate.
             Kaimon.revoke_agent_token!("tok-srv-a")
             @test post(list, a; sid).status == 401
             @test post(init, "0123456789abcdef"^4).status == 401
+            @test last(Kaimon.recent_auth_refusals().refusals).reason == "invalid API key or agent token"
         finally
             Kaimon.revoke_agent_token!("tok-srv-a")
             Kaimon.revoke_agent_token!("tok-srv-b")

@@ -76,6 +76,11 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
             "$(h)h $(mins)m"
         end
         set_string!(buf, x + 14, y, uptime_str, tstyle(:text); max_x=srx)
+        y += 1
+        if y <= bottom(srv)
+            set_string!(buf, x, y, rpad("Security", 14), tstyle(:text_dim); max_x=srx)
+            set_string!(buf, x + 14, y, string(security_mode_for_display()), tstyle(:text); max_x=srx)
+        end
     end
 
     # Actions

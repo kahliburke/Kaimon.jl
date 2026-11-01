@@ -90,12 +90,72 @@ end
 """Revoke agent `agent_id`'s token; requests still carrying it are refused."""
 revoke_agent_token!(agent_id::AbstractString) = lock(AGENT_TOKENS_LOCK) do
     delete!(AGENT_TOKENS, String(agent_id))
+    delete!(AGENT_TOKEN_SEEN, String(agent_id))
     nothing
 end
+
+const AGENT_TOKEN_SEEN = Dict{String,Float64}()   # agent_id => time() of its last request
+
+"""Note that agent `agent_id` just made a request with its token."""
+note_agent_call!(agent_id::AbstractString) = lock(AGENT_TOKENS_LOCK) do
+    haskey(AGENT_TOKENS, String(agent_id)) && (AGENT_TOKEN_SEEN[String(agent_id)] = time())
+    nothing
+end
+
+"""`time()` of agent `agent_id`'s last request with its token, or `nothing`."""
+agent_last_call(agent_id::AbstractString) = lock(AGENT_TOKENS_LOCK) do
+    get(AGENT_TOKEN_SEEN, String(agent_id), nothing)
+end
+
+"""
+A short fingerprint of agent `agent_id`'s token (the start of its SHA-256), or "" if it has none.
+For display: it tells tokens apart without revealing one, since anything shown in the TUI can be
+read back by an agent through `tui_screenshot`.
+"""
+agent_token_fingerprint(agent_id::AbstractString) =
+    let t = agent_token(agent_id)
+        isempty(t) ? "" : bytes2hex(sha256(t))[1:6]
+    end
 
 """The token of agent `agent_id`, or "" if it has none."""
 agent_token(agent_id::AbstractString) = lock(AGENT_TOKENS_LOCK) do
     get(AGENT_TOKENS, String(agent_id), "")
+end
+
+# ── Live security state, for display ──────────────────────────────────────────
+
+"""The security mode the running MCP server enforces (`:off` without a config), set when it starts."""
+const ACTIVE_SECURITY_MODE = Ref{Symbol}(:unknown)
+
+"""
+The security mode to display: the one the server recorded at start, or else the saved config's
+(a server started before this code was loaded, as after a live reload, recorded none).
+"""
+function security_mode_for_display()
+    ACTIVE_SECURITY_MODE[] === :unknown || return ACTIVE_SECURITY_MODE[]
+    cfg = try; load_global_config(); catch; nothing; end
+    return cfg === nothing ? :unknown : cfg.mode
+end
+
+const AUTH_REFUSALS = NamedTuple{(:time, :status, :reason, :client_ip),Tuple{Float64,Int,String,String}}[]
+const AUTH_REFUSALS_LOCK = ReentrantLock()
+const AUTH_REFUSALS_MAX = 50
+const AUTH_REFUSALS_TOTAL = Ref{Int}(0)
+
+"""Record a request the server refused (401/403), keeping the most recent `AUTH_REFUSALS_MAX`."""
+function record_auth_refusal!(status::Integer, reason::AbstractString, client_ip::AbstractString = "")
+    lock(AUTH_REFUSALS_LOCK) do
+        push!(AUTH_REFUSALS, (time = time(), status = Int(status), reason = String(reason),
+                              client_ip = String(client_ip)))
+        length(AUTH_REFUSALS) > AUTH_REFUSALS_MAX && popfirst!(AUTH_REFUSALS)
+        AUTH_REFUSALS_TOTAL[] += 1
+    end
+    nothing
+end
+
+"""The recorded refusals, oldest first, and how many there have been since the server started."""
+recent_auth_refusals() = lock(AUTH_REFUSALS_LOCK) do
+    (refusals = copy(AUTH_REFUSALS), total = AUTH_REFUSALS_TOTAL[])
 end
 
 """The agent whose token is `token`, or "" if it belongs to no live agent."""
