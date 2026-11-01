@@ -4,32 +4,27 @@ Kaimon executes arbitrary Julia code on your machine, so controlling access is i
 
 ## Security Modes
 
-Kaimon operates in one of three security modes:
+Kaimon's MCP endpoint runs in one of three modes. The mode decides what a request must carry and where it may come from:
+
+| Mode | API key | Client IP |
+|---|---|---|
+| `strict` | Required | Must be in the IP allowlist |
+| `relaxed` | Required | Any |
+| `lax` | Not checked | Localhost only |
 
 ### Strict
 
-API key is **required** for all requests. Any request without a valid key is rejected.
-
-Best for:
-- Production or shared servers.
-- Environments where multiple users or agents may connect.
-- Any situation where you want explicit access control.
+Every request needs a valid API key and must come from an allowlisted IP. The default allowlist is `127.0.0.1` and `::1`, so a local-only setup works without changes. Use it on shared machines, or whenever you want explicit access control.
 
 ### Relaxed
 
-API key is **optional** but honored. Requests without a key are allowed, but if a key is provided, it must be valid.
-
-Best for:
-- Local development with some protection.
-- Environments where you want the option to authenticate without enforcing it globally.
+Every request needs a valid API key, from any IP. Use it when clients on other machines connect directly.
 
 ### Lax
 
-**No authentication**. All requests are accepted regardless of whether a key is provided.
+No credential is checked, and only requests from localhost are accepted. Any process on the machine can call every tool, including `ex`, which runs arbitrary Julia code as you. Use it on a single-user machine where you trust everything that runs.
 
-Best for:
-- Fully trusted local environments.
-- Quick experimentation where security overhead is unnecessary.
+Change the mode with `Kaimon.set_security_mode(:strict)` (or `:relaxed`, `:lax`), then restart Kaimon.
 
 ## API Key Management
 
@@ -37,34 +32,45 @@ Kaimon provides functions to manage API keys:
 
 | Function | Description |
 |---|---|
-| `Kaimon.generate_key()` | Generate a new API key and register it with the server. |
-| `Kaimon.revoke_key()` | Revoke an existing API key so it can no longer be used. |
+| `Kaimon.generate_key()` | Generate a new API key and add it to the configuration. It is printed once. |
+| `Kaimon.revoke_key(key)` | Revoke an existing API key so it can no longer be used. |
+| `Kaimon.set_security_mode(mode)` | Set the mode: `:strict`, `:relaxed` or `:lax`. |
 | `Kaimon.security_status()` | Display the current security mode, active keys, and IP allowlist. |
 
 ### Using API Keys with MCP Clients
 
-MCP clients authenticate by including the API key in the `X-API-Key` HTTP header. In your MCP client configuration, set the header:
+MCP clients send the key in the `Authorization` header:
 
 ```json
 {
   "headers": {
-    "X-API-Key": "your-api-key-here"
+    "Authorization": "Bearer your-api-key-here"
   }
 }
 ```
 
-The server validates this header on each request (in Strict and Relaxed modes).
+The client installers in the TUI's Config tab write this header for you when a key is configured. After generating a key or changing the mode, re-run the installer for each client you use.
+
+## Agents Kaimon Starts
+
+An agent Kaimon spawns (with `agent_open`, or from a Slate notebook) never receives the API key. It gets its own token instead, minted when it starts and revoked when it ends. The token is the agent's credential in every mode, and the only way Kaimon identifies the agent: its permission preset, allowlist and the guard against agents spawning agents apply to the calls that carry it. A token left behind in a config file stops working once its agent is gone.
+
+The token makes an agent's calls attributable; it does not contain the agent. An agent with unrestricted native file or shell access runs as you, so it can read your own MCP client configs, API key included, and call Kaimon without its token. In `lax` mode it needs no credential at all. To hold an agent to its preset, deny it native file and shell tools (the `notebook` preset does this for Claude and opencode agents) or run it in an OS-level sandbox.
+
+## Seeing the Security State
+
+The TUI's Server tab shows the active mode and how many requests the server has refused, with the reason for the most recent one: a missing or invalid API key, an IP outside the allowlist, a revoked agent token, or a session that belongs to another agent. In the Agents tab, each agent shows a short fingerprint of its token (never the token itself), the MCP session bound to it, and when it last made a call.
 
 ## IP Allowlists
 
-You can restrict which IP addresses are permitted to connect:
+The allowlist applies in `strict` mode:
 
 | Function | Description |
 |---|---|
-| `allow_ip(ip)` | Add an IP address to the allowlist. Only allowlisted IPs can connect. |
+| `allow_ip(ip)` | Add an IP address to the allowlist. |
 | `deny_ip(ip)` | Remove an IP address from the allowlist. |
 
-When the allowlist is empty, all IPs are permitted (subject to API key requirements based on the security mode). Once at least one IP is added to the allowlist, only those IPs are accepted.
+Only allowlisted IPs are accepted, so an empty allowlist refuses every request. `relaxed` mode does not check the client IP, and `lax` mode accepts localhost only.
 
 ## Gate (TCP) Authentication
 

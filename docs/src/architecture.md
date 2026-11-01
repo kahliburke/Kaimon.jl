@@ -252,12 +252,13 @@ Security is configured in `~/.config/kaimon/config.json`. The configuration defi
 |------|------------------|-----------------------|----------|
 | `strict` | Yes | Yes | Production, shared machines |
 | `relaxed` | Yes | No | Local development with auth |
-| `lax` | No | No | Trusted local-only setups |
+| `lax` | No | Localhost only | Trusted local-only setups |
 
 ### Authentication Flow
 
 1. Extract `Authorization: Bearer <key>` from the request header.
-2. Validate the key against the configured `api_keys` list.
+2. Validate the key against the configured `api_keys` list, or as the token of a live agent
+   Kaimon started; a token also identifies its agent (see [Security](security.md)).
 3. In `strict` mode, also validate the client IP against `allowed_ips`
    (defaults to `127.0.0.1` and `::1`).
 4. For VS Code bidirectional communication, single-use cryptographic nonces
