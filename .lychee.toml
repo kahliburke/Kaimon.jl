@@ -2,6 +2,9 @@ exclude = [
   "@ref",
   "@cite",
   "^https://github.com/.*/releases/tag/v.*$",
+  # CHANGELOG.md diff links between tags. A release's entry is written before its tag
+  # exists, so its own link is a 404 until TagBot creates the tag.
+  "^https://github\\.com/kahliburke/Kaimon\\.jl/compare/",
   "^https://doi.org/FIXME$",
   "zenodo.org/badge/DOI/FIXME$",
   # docs/src/*.md references like ./assets/kaimon_*.gif are rewritten by the
