@@ -110,6 +110,28 @@ end
     @test occursin("⋯", out)
 end
 
+@testset "extension logger honors maxlog" begin
+    # The full stack the boot script installs (`Kaimon._extension_logger`).
+    buf = IOBuffer()
+    with_logger(Kaimon._extension_logger(buf)) do
+        for _ in 1:5
+            @warn "capped" maxlog = 2
+        end
+        for _ in 1:3
+            @warn "uncapped"
+        end
+        @debug "below the floor"
+    end
+    out = String(take!(buf))
+    @test count("Warn] capped", out) == 2          # each call site at most maxlog times
+    @test count("Warn] uncapped", out) == 3        # no maxlog: every call
+    @test !occursin("maxlog", out)                 # a directive, not a field to print
+    @test !occursin("below the floor", out)        # still Info and above only
+    @test occursin("Kaimon._extension_logger(stderr)", Kaimon._build_extension_script(
+        Kaimon.ExtensionConfig(Kaimon.ExtensionEntry("/x", true, true),
+                               Kaimon.ExtensionManifest("x", "X", "tools", "", "", String[], "", String[]))))
+end
+
 @testset "rescan_extensions! reconciles the registry without bouncing the rest" begin
     # Isolate config so we write a THROWAWAY extensions.json, never the real one.
     withenv("XDG_CONFIG_HOME" => mktempdir()) do

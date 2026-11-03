@@ -223,6 +223,37 @@ end
 const _EXT_LOG_TIME_FORMAT = Dates.DateFormat("HH:MM:SS")
 
 """
+    _maxlog_filter() -> Function
+
+An `ActiveFilteredLogger` predicate that honors `maxlog = N`: a call site (the record's `id`)
+logs at most N times. Julia leaves that count to each logger; `ConsoleLogger` keeps one and
+`FormatLogger` does not.
+"""
+function _maxlog_filter()
+    counts = Dict{Any,Int}()
+    lk = ReentrantLock()
+    return function (args)
+        n = get(args.kwargs, :maxlog, nothing)
+        n isa Integer || return true
+        lock(lk) do
+            c = get(counts, args.id, 0) + 1
+            counts[args.id] = c
+            c <= n
+        end
+    end
+end
+
+"""
+    _extension_logger(io) -> AbstractLogger
+
+The global logger of an extension subprocess: Info and above, `maxlog` honored, each record
+formatted by [`_format_extension_log`](@ref) and flushed at once so the log file is live.
+"""
+_extension_logger(io::IO) = MinLevelLogger(
+    ActiveFilteredLogger(_maxlog_filter(), FormatLogger(_format_extension_log, io; always_flush = true)),
+    Logging.Info)
+
+"""
     _format_extension_log(io, args)
 
 `FormatLogger` sink for extension subprocess logs: one `[HH:MM:SS Level] message`
@@ -234,6 +265,7 @@ function _format_extension_log(io, args)
     println(io, "[", Dates.format(Dates.now(), _EXT_LOG_TIME_FORMAT), " ", args.level, "] ",
         args.message)
     for (k, v) in args.kwargs
+        k === :maxlog && continue   # a logging directive, consumed by `_maxlog_filter`
         str = try
             _render_extension_log_value(k, v)
         catch e
@@ -323,13 +355,9 @@ function _build_extension_script(config::ExtensionConfig; resolve::Bool = true)
     catch; end
     $resolve_line
     using Kaimon
-    # Auto-flushing logger so extension output is visible immediately in the log file
-    # (formatter lives in Kaimon so it's testable and keeps structured kwargs).
-    using LoggingExtras, Logging
-    global_logger(MinLevelLogger(
-        FormatLogger(Kaimon._format_extension_log, stderr; always_flush=true),
-        Logging.Info,
-    ))
+    # Built in Kaimon so it's testable (see `_extension_logger`).
+    using Logging
+    global_logger(Kaimon._extension_logger(stderr))
     using $(m.module_name)
     tools = $(m.module_name).$(m.tools_function)(Kaimon.KaimonGate.GateTool)
     Kaimon.KaimonGate.serve(tools=tools, namespace=$(repr(m.namespace)), force=true, allow_mirror=false, allow_restart=false, spawned_by="extension"$on_shutdown_kwarg)
