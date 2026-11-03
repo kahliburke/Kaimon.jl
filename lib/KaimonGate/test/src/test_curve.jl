@@ -37,16 +37,16 @@ end
 
 @testset "Key persistence" begin
     mktempdir() do dir
-        withenv("XDG_CACHE_HOME" => dir) do
+        withenv("KAIMON_CACHE_DIR" => dir) do
             pub1, sec1 = KG._load_or_create_server_keypair()
             @test length(pub1) == 40
             # second call returns the SAME persisted keypair
             pub2, sec2 = KG._load_or_create_server_keypair()
             @test (pub1, sec1) == (pub2, sec2)
-            # the key file exists and is owner-only. _gate_cache_dir appends
-            # "kaimon" under XDG_CACHE_HOME (consistent with the Kaimon server),
-            # so the curve store lives at $XDG/kaimon/curve. (#42/#45)
-            keyfile = joinpath(dir, "kaimon", "curve", "server.key")
+            # the key file exists and is owner-only. KAIMON_CACHE_DIR names the cache
+            # directory itself on every platform (XDG_CACHE_HOME is not read on
+            # Windows), so the curve store lives at $KAIMON_CACHE_DIR/curve.
+            keyfile = joinpath(dir, "curve", "server.key")
             @test isfile(keyfile)
             if !Sys.iswindows()
                 @test (stat(keyfile).mode & 0o777) == 0o600
@@ -60,7 +60,7 @@ end
 
 @testset "TOFU server pinning" begin
     mktempdir() do dir
-        withenv("XDG_CACHE_HOME" => dir) do
+        withenv("KAIMON_CACHE_DIR" => dir) do
             pub, _ = KG.curve_keypair()
             @test KG._pinned_server("h", 9000) === nothing
             @test KG.pin_server!("h", 9000, pub) == :pinned
@@ -85,7 +85,7 @@ end
 
 @testset "verify_server_key_via_ssh (reconcile via stub fetch)" begin
     mktempdir() do dir
-        withenv("XDG_CACHE_HOME" => dir) do
+        withenv("KAIMON_CACHE_DIR" => dir) do
             good, _ = KG.curve_keypair()
             other, _ = KG.curve_keypair()
             getgood(_t, _p) = good
@@ -128,7 +128,7 @@ end
 
 @testset "Client allow-list" begin
     mktempdir() do dir
-        withenv("XDG_CACHE_HOME" => dir) do
+        withenv("KAIMON_CACHE_DIR" => dir) do
             pub, _ = KG.curve_keypair()
             @test isempty(KG._authorized_clients())
             @test KG.authorize_client!(pub) == :added
@@ -211,7 +211,7 @@ end
     other_pub, other_sec = KG.curve_keypair()
 
     mktempdir() do dir
-        withenv("XDG_CACHE_HOME" => dir) do
+        withenv("KAIMON_CACHE_DIR" => dir) do
             KG.authorize_client!(good_pub)             # only this client is allowed
             ctx = ZMQ.Context()
             zap, _ = KG._start_zap_handler!(ctx; allow_any = false)
@@ -255,7 +255,7 @@ end
 # socket it owns is retired, so the flag's timing cannot reach it.
 @testset "ZAP handler outlives a start with no session" begin
     mktempdir() do dir
-        withenv("XDG_CACHE_HOME" => dir) do
+        withenv("KAIMON_CACHE_DIR" => dir) do
             ctx = ZMQ.Context()
             zap = nothing
             try
@@ -282,7 +282,7 @@ end
     cpub, csec = KG.curve_keypair()
 
     mktempdir() do dir
-        withenv("XDG_CACHE_HOME" => dir) do
+        withenv("KAIMON_CACHE_DIR" => dir) do
             ctx = ZMQ.Context()
             zap, _ = KG._start_zap_handler!(ctx; allow_any = false)  # empty allow-list at start
             rep = ZMQ.Socket(ctx, ZMQ.REP); rep.rcvtimeo = 1000; rep.linger = 0
@@ -328,7 +328,7 @@ end
 @testset "serve(curve=true) + publish/subscribe (allow_any)" begin
     Sys.iswindows() && (@test_skip true; return)
     mktempdir() do dir
-        withenv("XDG_CACHE_HOME" => dir) do
+        withenv("KAIMON_CACHE_DIR" => dir) do
             sid = "test-curve-$(bytes2hex(rand(UInt8, 4)))"
             KG._serve(name = "curve", session_id = sid, force = true, mode = :tcp,
                       host = "127.0.0.1", port = 0, curve = true, allow_any = true)
@@ -374,7 +374,7 @@ end
 @testset "serve(curve=true) allow-list (fail-closed + enroll)" begin
     Sys.iswindows() && (@test_skip true; return)
     mktempdir() do dir
-        withenv("XDG_CACHE_HOME" => dir) do
+        withenv("KAIMON_CACHE_DIR" => dir) do
             cpub, csec = KG.curve_keypair()
 
             # fail-closed: client not enrolled → ZAP denies → no pong
