@@ -41,6 +41,9 @@ to override the TTY check.
   the Kaimon TUI / MCP server won't list it or import its tools — for embedded/private gates
   that clients reach via explicit endpoints (e.g. TachiRei atoms, reached on demand by id).
   IPC only; TCP gates are never file-discovered (they're connected via `connect_tcp!`).
+- `owner_wake::Bool`: Event-driven request loop (default `false`). The loop parks until a
+  request arrives or a reply is queued and sends each reply at once, instead of noticing
+  queued replies on a short receive timeout. Lowers the latency of sequential requests.
 
 # Example
 ```julia
@@ -61,6 +64,7 @@ These override the keyword defaults when set:
 - `KAIMON_GATE_PORT`: Port for TCP (default: `"0"` = ephemeral)
 - `KAIMON_GATE_STREAM_PORT`: PUB stream port for TCP (default: `"0"` = ephemeral).
   Use a fixed port when tunneling so the client can connect to a known port.
+- `KAIMON_GATE_OWNER_WAKE`: `"1"` or `"0"` for `owner_wake`.
 """
 function serve(;
     session_id::Union{String,Nothing} = nothing,
@@ -81,6 +85,7 @@ function serve(;
     allow_any::Union{Bool,Nothing} = nothing,
     allowed_clients::Union{Vector{String},Nothing} = nothing,
     discoverable::Bool = true,
+    owner_wake::Union{Bool,Nothing} = nothing,
 )
     # Resolve defaults: explicit kwargs > env vars > kaimon.toml [gate] > defaults
     toml = _load_gate_config()
@@ -134,6 +139,11 @@ function serve(;
         allowed_clients = isempty(env_allow) ? String[] :
             String[String(strip(x)) for x in split(env_allow, ",") if !isempty(strip(x))]
     end
+    if owner_wake === nothing
+        env_ow = get(ENV, "KAIMON_GATE_OWNER_WAKE", "")
+        owner_wake = !isempty(env_ow) ? _truthy(env_ow) : Bool(get(toml, "owner_wake", false))
+    end
+    _OWNER_WAKE_ON[] = owner_wake
 
     mode in (:ipc, :tcp) || throw(ArgumentError("mode must be :ipc or :tcp, got :$mode"))
     _serve(;

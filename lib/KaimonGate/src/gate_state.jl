@@ -46,6 +46,72 @@ _zmq_fd_watcher(sock::ZMQ.Socket) = FileWatching.FDWatcher(Base.fd(sock), true, 
 "True when `sock` has a message to read now. Reading EVENTS also re-arms its edge-triggered fd."
 _zmq_readable(sock::ZMQ.Socket) = (sock.events & ZMQ.POLLIN) != 0
 
+"""
+    OwnerWake(sock; tick = 0.25)
+
+Parks the task that owns `sock` until the socket may be readable, another task calls `wake!`
+(it queued work for the owner), or `tick` seconds pass (so the owner still rechecks its run flag).
+
+A watcher task waits on the socket's own watcher and forwards each signal. ZMQ's descriptor is
+edge-triggered and resets when the owner reads `sock.events`, so the watcher then waits for the
+owner to re-arm it (`park!`) before waiting again; waiting straight away would spin on a signal
+the owner has not consumed. The watcher is an `@async` child, so it shares the owner's thread,
+which is free whenever the owner is parked.
+
+`close` takes no I/O lock and touches no libuv handle, because the owner may be closing it while
+the process exits from inside libuv's own loop, which holds that lock. The tick timer closes
+itself on its next firing, and the watcher ends at the socket's next event or its close.
+"""
+mutable struct OwnerWake
+    sock::ZMQ.Socket
+    wake::Base.Event
+    rearm::Base.Event
+    tick::Timer
+    open::Threads.Atomic{Bool}
+end
+
+function OwnerWake(sock::ZMQ.Socket; tick::Real = 0.25)
+    wake = Base.Event(true)
+    open = Threads.Atomic{Bool}(true)
+    timer = Timer(t -> open[] ? notify(wake) : close(t), tick; interval = tick)
+    w = OwnerWake(sock, wake, Base.Event(true), timer, open)
+    @async try
+        while w.open[]
+            try
+                wait(sock)
+            catch
+                break            # socket closed
+            end
+            w.open[] || break
+            notify(w.wake)
+            wait(w.rearm)
+        end
+    finally
+        notify(w.wake)
+    end
+    return w
+end
+
+"Wake the owner: work is waiting for it (a reply to send, a slot that freed). Any thread."
+wake!(w::OwnerWake) = notify(w.wake)
+
+"Park until the socket may be readable, `wake!`, or a tick. Call after `sock.events` showed nothing to read."
+function park!(w::OwnerWake)
+    notify(w.rearm)
+    wait(w.wake)
+    return nothing
+end
+
+"Wait for `wake!` or a tick without re-arming the socket watcher: for an owner that is not reading."
+await_work!(w::OwnerWake) = (wait(w.wake); nothing)
+
+function Base.close(w::OwnerWake)
+    w.open[] = false
+    notify(w.rearm)
+    notify(w.wake)
+    return nothing
+end
+
 # Wake the tasks waiting on `sock`'s own watcher, as libuv would for an event. ZMQ.jl's
 # `notify(sock)` runs FileWatching's poll callback, which may stop the poll when nobody is
 # waiting; libuv runs that callback under the I/O lock, so this takes it too (the same
@@ -302,6 +368,16 @@ const _GATE_RCVTIMEO_BUSY = Ref{Int}(
     something(tryparse(Int, get(ENV, "KAIMON_GATE_RCVTIMEO_BUSY", "")), 5))
 const _GATE_RCVTIMEO_IDLE = Ref{Int}(
     something(tryparse(Int, get(ENV, "KAIMON_GATE_RCVTIMEO_IDLE", "")), 200))
+
+# Whether `message_loop` parks on an `OwnerWake` instead of polling with the timeouts above:
+# `serve(; owner_wake)`, resolved there (keyword > KAIMON_GATE_OWNER_WAKE > kaimon.toml > off).
+const _OWNER_WAKE_ON = Ref{Bool}(false)
+_owner_wake_enabled() = _OWNER_WAKE_ON[]
+
+# The running `message_loop`'s wake, for request tasks to signal a queued reply; `nothing` when
+# no loop runs or it polls instead.
+const _GATE_WAKE = Ref{Union{OwnerWake,Nothing}}(nothing)
+_gate_wake!() = (w = _GATE_WAKE[]; w === nothing || wake!(w); nothing)
 
 # ── Stream broadcaster (XPUB) + subscriber presence ──────────────────────────
 # The stream socket is an XPUB (drop-in for SUB clients) owned by ONE task: the

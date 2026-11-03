@@ -740,6 +740,7 @@ function _serve_request(identity::Vector{UInt8}, corr_id::Vector{UInt8}, request
     finally
         default_lane && Threads.atomic_sub!(_gate_default_inflight(), 1)
         Threads.atomic_sub!(_gate_inflight(), 1)
+        _gate_wake!()   # an OwnerWake loop sends the reply now (no-op when it polls)
     end
     return nothing
 end
@@ -770,8 +771,13 @@ function message_loop(socket::ZMQ.Socket)
     # Adaptive recv timeout: short while a worker reply may be pending (so it
     # flushes within a few ms), long when idle (so the gate doesn't busy-poll).
     # See _GATE_RCVTIMEO_BUSY/_IDLE for why (the 200ms drag-lag fix).
+    # With `serve(; owner_wake = true)` it parks on an `OwnerWake` instead and a request task
+    # wakes it once its reply is queued (`_gate_wake!`).
+    wake = _owner_wake_enabled() ? OwnerWake(socket) : nothing
+    _GATE_WAKE[] = wake
     # Default-lane requests received while that lane was at the cap, oldest first.
     deferred = Tuple{Vector{UInt8},Vector{UInt8},Any}[]
+    try
     while _running()
         try
             # 1. flush any ready worker replies first (owner-only socket access)
@@ -787,18 +793,28 @@ function message_loop(socket::ZMQ.Socket)
             #     let the ROUTER queue the rest. Short of that, keep reading even while the
             #     default lane is at the cap, so routed requests (status, cancel) get through.
             if length(deferred) >= _GATE_MAX_DEFERRED[]
-                sleep(0.005)
+                wake === nothing ? sleep(0.005) : await_work!(wake)
                 continue
             end
 
-            # 2b. pick recv timeout: poll fast while a reply may be in flight (a
-            #     worker running, or one already queued between drain and now) or a
-            #     deferred request is waiting for a slot, else wait long.
-            timeout_ms = (_gate_inflight()[] > 0 || !isempty(deferred) || isready(_gate_outbox())) ?
-                         _GATE_RCVTIMEO_BUSY[] : _GATE_RCVTIMEO_IDLE[]
+            parts = if wake === nothing
+                # 2b. pick recv timeout: poll fast while a reply may be in flight (a
+                #     worker running, or one already queued between drain and now) or a
+                #     deferred request is waiting for a slot, else wait long.
+                timeout_ms = (_gate_inflight()[] > 0 || !isempty(deferred) || isready(_gate_outbox())) ?
+                             _GATE_RCVTIMEO_BUSY[] : _GATE_RCVTIMEO_IDLE[]
 
-            # 3. recv one request — [identity, corr_id, payload] — within that timeout
-            parts = _recv_multipart(socket, timeout_ms / 1000)
+                # 3. recv one request — [identity, corr_id, payload] — within that timeout
+                _recv_multipart(socket, timeout_ms / 1000)
+            else
+                # 2b/3. nothing to read: park until a request arrives or a reply is queued;
+                #       readable, so the recv returns at once
+                if !_zmq_readable(socket)
+                    park!(wake)
+                    continue
+                end
+                _recv_multipart(socket, 1.0)
+            end
             length(parts) >= 3 || continue
             identity = parts[1]
             corr_id = parts[2]
@@ -843,6 +859,12 @@ function message_loop(socket::ZMQ.Socket)
                 rethrow()
             end
             @warn "Kaimon gate message loop error (continuing)" exception = (e, catch_backtrace()) maxlog = 20
+        end
+    end
+    finally
+        if wake !== nothing
+            _GATE_WAKE[] === wake && (_GATE_WAKE[] = nothing)
+            close(wake)
         end
     end
 

@@ -56,6 +56,49 @@ _close(ctx, socks...) = (foreach(s -> try close(s) catch end, socks); try close(
     end
 end
 
+@testset "OwnerWake" begin
+    ctx, push, pull = _pair()
+    try
+        # A 10 s tick, so any park that returns within 5 s was released by the event under test.
+        w = KG.OwnerWake(pull; tick = 10.0)
+        try
+            # wake! releases a park.
+            @async (sleep(0.05); KG.wake!(w))
+            t0 = time()
+            KG._zmq_readable(pull); KG.park!(w)
+            @test time() - t0 < 5.0
+
+            # A message arriving releases a park, through the socket's own watcher.
+            @async (sleep(0.05); ZMQ.send(push, "m"))
+            t0 = time()
+            while !KG._zmq_readable(pull) && time() - t0 < 5.0
+                KG.park!(w)
+            end
+            @test KG._zmq_readable(pull)
+            @test time() - t0 < 5.0
+            @test String(KG._recv_within(pull, 1.0)) == "m"
+        finally
+            close(w)
+        end
+
+        # The tick alone bounds a park when nothing happens.
+        w2 = KG.OwnerWake(pull; tick = 0.05)
+        try
+            t0 = time()
+            KG._zmq_readable(pull); KG.park!(w2)
+            @test time() - t0 < 2.0
+        finally
+            close(w2)
+        end
+
+        # The socket still works after its watchers are closed.
+        ZMQ.send(push, "after")
+        @test String(KG._recv_within(pull, 2.0)) == "after"
+    finally
+        _close(ctx, push, pull)
+    end
+end
+
 @testset "_zmq_fd_watcher fires on a readable socket" begin
     ctx, push, pull = _pair()
     try

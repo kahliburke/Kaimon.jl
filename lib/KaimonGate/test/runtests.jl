@@ -12,6 +12,13 @@ end
 
 using SafeTestsets
 
+# KAIMON_GATE_OWNER_WAKE=1 runs the whole suite with the event-driven message loop, including the
+# tests that start a loop without `serve` (which is where the setting is otherwise resolved).
+import KaimonGate
+let ow = tryparse(Bool, get(ENV, "KAIMON_GATE_OWNER_WAKE", ""))
+    ow === nothing || (KaimonGate._OWNER_WAKE_ON[] = ow)
+end
+
 @safetestset "Aqua" include("src/test_aqua.jl")
 @safetestset "Precompile directives" include("src/test_precompile.jl")
 @safetestset "Socket path length" include("src/test_sock_path.jl")

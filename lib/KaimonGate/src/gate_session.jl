@@ -251,7 +251,9 @@ _zap_task!(v)           = (_session().zap_task = v)
 
 # lifecycle
 _running()          = (s = _SESSION[]; s === nothing ? false : s.running)
-_running!(v)        = (_session().running = v)
+# Stopping wakes a parked `message_loop` so it sees the flag. The wake is a plain Event: at exit
+# this runs inside libuv's own loop, where a timer or socket event can never fire.
+_running!(v)        = (_session().running = v; v || _gate_wake!(); v)
 _restarting()       = (s = _SESSION[]; s === nothing ? false : s.restarting)
 _restarting!(v)     = (_session().restarting = v)
 _shutting_down()    = (s = _SESSION[]; s === nothing ? false : s.shutting_down)
