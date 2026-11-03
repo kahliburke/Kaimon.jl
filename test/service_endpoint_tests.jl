@@ -16,14 +16,14 @@ const ZMQt = Kaimon.ZMQ
         dir = mktempdir()
         path = joinpath(dir, "svc-test.sock")
         ctx = ZMQt.Context()
-        router = ZMQt.Socket(ctx, ZMQt.ROUTER); router.rcvtimeo = 2000; router.linger = 0
+        router = ZMQt.Socket(ctx, ZMQt.ROUTER); router.linger = 0
         ZMQt.bind(router, "ipc://$path")
         req = ZMQt.Socket(ctx, ZMQt.REQ); req.rcvtimeo = 2000; req.linger = 0
         ZMQt.connect(req, "ipc://$path")
         try
             # REQ → ROUTER: arrives as [identity, empty-delimiter, payload]
             ZMQt.send(req, Vector{UInt8}("ping"))
-            parts = Kaimon._recv_multipart(router)
+            parts = Kaimon._recv_multipart(router, 2.0)
             @test length(parts) == 3
             @test isempty(parts[2])                       # the REQ empty delimiter
             @test String(parts[end]) == "ping"
@@ -65,7 +65,7 @@ const ZMQt = Kaimon.ZMQ
         dir = mktempdir()
         path = joinpath(dir, "svc-multi.sock")
         ctx = ZMQt.Context()
-        router = ZMQt.Socket(ctx, ZMQt.ROUTER); router.rcvtimeo = 2000; router.linger = 0
+        router = ZMQt.Socket(ctx, ZMQt.ROUTER); router.linger = 0
         ZMQt.bind(router, "ipc://$path")
         a = ZMQt.Socket(ctx, ZMQt.REQ); a.rcvtimeo = 2000; a.linger = 0; ZMQt.connect(a, "ipc://$path")
         b = ZMQt.Socket(ctx, ZMQt.REQ); b.rcvtimeo = 2000; b.linger = 0; ZMQt.connect(b, "ipc://$path")
@@ -75,7 +75,7 @@ const ZMQt = Kaimon.ZMQ
             # Receive both (order not guaranteed), reply each to its own identity.
             replies = Dict{String,Vector{UInt8}}()
             for _ in 1:2
-                p = Kaimon._recv_multipart(router)
+                p = Kaimon._recv_multipart(router, 2.0)
                 tag = String(p[end])                      # "A" or "B"
                 replies[tag] = p[1]
                 Kaimon._send_multipart(router, Vector{UInt8}[p[1], UInt8[], Vector{UInt8}("re:" * tag)])

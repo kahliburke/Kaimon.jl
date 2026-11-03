@@ -687,15 +687,14 @@ end
     _configure_router_socket!(socket; curve, allow_any)
 
 Per-socket options for the request ROUTER, applied by `serve` and replayed by
-`_ensure_router!` on a rebind. The receive timeout makes the owner loop cycle
-back to drain `_gate_outbox()` and re-check `_running()` (`message_loop` then adapts
-it per iteration, see `_GATE_RCVTIMEO_BUSY`/`_IDLE`); `linger = 0` so `close()`
-does not block; the CURVE server role reuses the context-wide keypair and ZAP
-handler `serve` set up.
+`_ensure_router!` on a rebind. No `rcvtimeo`: `message_loop` bounds each receive
+itself (`_recv_within`, see `_GATE_RCVTIMEO_BUSY`/`_IDLE`) so it cycles back to
+drain `_gate_outbox()` and re-check `_running()`; `linger = 0` so `close()` does
+not block; the CURVE server role reuses the context-wide keypair and ZAP handler
+`serve` set up.
 """
 function _configure_router_socket!(socket::ZMQ.Socket; curve::Bool, allow_any::Bool,
                                    server_secret::AbstractString)
-    socket.rcvtimeo = _GATE_RCVTIMEO_IDLE[]
     socket.linger = 0
     if curve
         make_curve_server!(socket, server_secret)

@@ -21,6 +21,7 @@ using SafeTestsets
 @safetestset "Source docstring" include("src/test_source_docstring.jl")
 @safetestset "Message handler" include("src/test_handle_message.jl")
 @safetestset "Loop supervision" include("src/test_loop_supervision.jl")
+@safetestset "Socket wait" include("src/test_socket_wait.jl")
 @safetestset "Capture race" include("src/test_capture_race.jl")
 @safetestset "Stream guard" include("src/test_stream_guard.jl")
 @safetestset "Concurrent eval" include("src/test_eval_concurrency.jl")

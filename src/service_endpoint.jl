@@ -46,10 +46,10 @@ const _RCVTIMEO_IDLE = Ref{Int}(
 
 # ── Multipart framing (ZMQ.jl 1.5 has no multipart helper) ────────────────────
 # A REQ→ROUTER message arrives as [identity, empty-delimiter, payload]; the reply
-# must be sent with the same envelope. recv the first frame (bounded by rcvtimeo),
-# then the rest atomically while `rcvmore`.
-function _recv_multipart(sock::ZMQ.Socket)
-    parts = Vector{UInt8}[KaimonGate._zmq_recv(sock)]   # may throw ZMQ.TimeoutError
+# must be sent with the same envelope. recv the first frame within `timeout_s` (see
+# `KaimonGate._recv_within`), then the rest atomically while `rcvmore`.
+function _recv_multipart(sock::ZMQ.Socket, timeout_s::Real)
+    parts = Vector{UInt8}[KaimonGate._recv_within(sock, timeout_s)]   # may throw ZMQ.TimeoutError
     while sock.rcvmore
         push!(parts, KaimonGate._zmq_recv(sock))
     end
@@ -120,8 +120,7 @@ function start_service_endpoint!()
     RateGovernor.init!()   # admission control for agent turns
 
     ctx = ZMQ.Context()
-    sock = _zmq_socket(ctx, ROUTER)
-    sock.rcvtimeo = _RCVTIMEO_IDLE[]   # initial; the owner loop adapts it per iteration
+    sock = _zmq_socket(ctx, ROUTER)   # no rcvtimeo: the owner loop bounds each recv itself
     sock.sndtimeo = 5000
     sock.linger = 0
     bind(sock, endpoint)
@@ -132,7 +131,6 @@ function start_service_endpoint!()
     _SERVICE_RUNNING[] = true
 
     _SERVICE_TASK[] = @async begin
-        cur_rcvtimeo = -1   # tracked so setsockopt only fires on a transition
         while _SERVICE_RUNNING[]
             # 0. Self-heal: this is a critical service. If our ipc socket FILE is
             #    removed out from under us (a crash/kill leaving a stale path, an
@@ -154,7 +152,6 @@ function start_service_endpoint!()
                         sock.linger = 0
                         bind(sock, _SERVICE_ENDPOINT[])
                         _SERVICE_SOCKET[] = sock
-                        cur_rcvtimeo = -1   # force rcvtimeo re-apply at step 2b
                         @info "Service endpoint rebound (self-heal)" endpoint = _SERVICE_ENDPOINT[]
                     catch e
                         @error "Service-endpoint self-heal rebind failed" exception = e
@@ -182,16 +179,11 @@ function start_service_endpoint!()
             end
             # 2b. adaptive recv timeout: poll fast while a reply may be in flight (a
             #     worker running, or one already queued) so it flushes within a few
-            #     ms; wait long when idle. Owner-only socket access → setsockopt safe.
-            want_rcvtimeo = (_INFLIGHT[] > 0 || isready(_OUTBOX)) ?
-                            _RCVTIMEO_BUSY[] : _RCVTIMEO_IDLE[]
-            if want_rcvtimeo != cur_rcvtimeo
-                sock.rcvtimeo = want_rcvtimeo
-                cur_rcvtimeo = want_rcvtimeo
-            end
-            # 3. try to receive one request (bounded by rcvtimeo)
+            #     ms; wait long when idle.
+            timeout_ms = (_INFLIGHT[] > 0 || isready(_OUTBOX)) ? _RCVTIMEO_BUSY[] : _RCVTIMEO_IDLE[]
+            # 3. try to receive one request within that timeout
             parts = try
-                _recv_multipart(sock)
+                _recv_multipart(sock, timeout_ms / 1000)
             catch e
                 e isa ZMQ.TimeoutError && continue
                 _SERVICE_RUNNING[] || break

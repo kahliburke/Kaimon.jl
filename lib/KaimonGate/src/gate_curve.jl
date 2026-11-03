@@ -425,7 +425,6 @@ global and is stopped by closing the socket it was handed.
 function _start_zap_handler!(ctx::ZMQ.Context; allow_any::Bool=false)
     zap = _zmq_socket(ctx, ZMQ.REP)
     ZMQ.bind(zap, _ZAP_ENDPOINT)
-    zap.rcvtimeo = 250
     zap.linger = 0
     task = Threads.@spawn :interactive begin
         try
@@ -436,7 +435,11 @@ function _start_zap_handler!(ctx::ZMQ.Context; allow_any::Bool=false)
             # just bound, leaving the gate to bind its CURVE sockets with no authenticator.
             while true
                 frames = try
-                    ZMQ.recv_multipart(zap, Vector{UInt8})
+                    fs = Vector{UInt8}[_recv_within(zap, 0.25)]   # a 250 ms idle tick
+                    while zap.rcvmore
+                        push!(fs, _zmq_recv(zap))
+                    end
+                    fs
                 catch e
                     isopen(zap) || break                 # closed by teardown
                     e isa ZMQ.TimeoutError && continue   # idle tick

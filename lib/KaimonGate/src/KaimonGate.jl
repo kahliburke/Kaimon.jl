@@ -6,6 +6,7 @@ using Serialization
 using Dates
 using TOML
 using Base64
+import FileWatching
 
 """Return `(version, dir)` for this KaimonGate build — its package version
 string and on-disk source directory, so you can tell which copy is running.

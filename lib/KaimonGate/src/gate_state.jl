@@ -27,6 +27,67 @@ function _zmq_recv(sock::ZMQ.Socket)::Vector{UInt8}
     return recv(sock, Vector{UInt8})
 end
 
+# ── Waiting on a ZMQ socket ───────────────────────────────────────────────────
+# ZMQ.jl serves a recv with `rcvtimeo` set by calling `poll_fd`, i.e. a new libuv poll handle on
+# the socket for each wait. Unix shares one handle per fd, so that is cheap there. Windows gives
+# every watcher its own handle, and libuv does not support several on one socket: replies arrive
+# hundreds of milliseconds to tens of seconds late, and the event loop can stall with them. So a
+# timed receive goes through `_recv_within`, which waits on the socket's own watcher.
+
+"""
+    _zmq_fd_watcher(sock) -> FDWatcher
+
+A readability watcher on `sock`'s own descriptor. Built from `Base.fd(sock)`, which is a `RawFD` on
+Unix and a SOCKET handle on Windows; wrapping `sock.fd` in a `RawFD` is wrong on Windows, where a
+socket is not a C runtime file descriptor.
+"""
+_zmq_fd_watcher(sock::ZMQ.Socket) = FileWatching.FDWatcher(Base.fd(sock), true, false)
+
+"True when `sock` has a message to read now. Reading EVENTS also re-arms its edge-triggered fd."
+_zmq_readable(sock::ZMQ.Socket) = (sock.events & ZMQ.POLLIN) != 0
+
+# Wake the tasks waiting on `sock`'s own watcher, as libuv would for an event. ZMQ.jl's
+# `notify(sock)` runs FileWatching's poll callback, which may stop the poll when nobody is
+# waiting; libuv runs that callback under the I/O lock, so this takes it too (the same
+# lock order as FileWatching's `_wait`: I/O lock, then the watcher's condition).
+function _wake_socket_waiters(sock::ZMQ.Socket)
+    try
+        Base.iolock_begin()
+        try
+            isopen(sock) && notify(sock)
+        finally
+            Base.iolock_end()
+        end
+    catch
+    end
+    return nothing
+end
+
+"""
+    _recv_within(sock, timeout_s) -> Vector{UInt8}
+
+Receive one frame within `timeout_s` seconds, else throw `ZMQ.TimeoutError`. The bounded form of
+what ZMQ.jl does for an untimed recv: wait on the socket's own watcher until EVENTS reports a
+message. A `Timer` bounds the wait, so no poll handle is created per call, which is what
+`rcvtimeo` does. Leave `rcvtimeo` unset on sockets read this way.
+"""
+function _recv_within(sock::ZMQ.Socket, timeout_s::Real)::Vector{UInt8}
+    if !_zmq_readable(sock)
+        deadline = time() + timeout_s
+        while !_zmq_readable(sock)
+            remaining = deadline - time()
+            remaining <= 0 && throw(ZMQ.TimeoutError(repr(sock), Float64(timeout_s)))
+            t = Timer(_ -> _wake_socket_waiters(sock), remaining)
+            try
+                wait(sock)
+            finally
+                close(t)
+            end
+        end
+    end
+    return _zmq_recv(sock)
+end
+
 # Thread-safe socket *construction*. ZMQ.jl appends every new Socket to its
 # Context's `sockets::Vector{WeakRef}` with an UNLOCKED `push!`. The gate creates
 # an ephemeral REQ per `_service_request`, so concurrent extension tool calls

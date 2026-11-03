@@ -636,9 +636,9 @@ end
 # ── Multipart framing (ZMQ.jl 1.5 has no multipart helper) ────────────────────
 # A DEALER→ROUTER message arrives as [identity, corr_id, payload]; the reply is
 # sent with the same identity envelope and corr_id echoed back. recv the first
-# frame (bounded by rcvtimeo), then the rest atomically while `rcvmore`.
-function _recv_multipart(sock::ZMQ.Socket)
-    parts = Vector{UInt8}[_zmq_recv(sock)]   # may throw ZMQ.TimeoutError
+# frame within `timeout_s`, then the rest atomically while `rcvmore`.
+function _recv_multipart(sock::ZMQ.Socket, timeout_s::Real)
+    parts = Vector{UInt8}[_recv_within(sock, timeout_s)]   # may throw ZMQ.TimeoutError
     while sock.rcvmore
         push!(parts, _zmq_recv(sock))
     end
@@ -769,9 +769,7 @@ end
 function message_loop(socket::ZMQ.Socket)
     # Adaptive recv timeout: short while a worker reply may be pending (so it
     # flushes within a few ms), long when idle (so the gate doesn't busy-poll).
-    # Tracked so we only call setsockopt on an actual transition. -1 forces the
-    # first apply. See _GATE_RCVTIMEO_BUSY/_IDLE for why (the 200ms drag-lag fix).
-    cur_rcvtimeo = -1
+    # See _GATE_RCVTIMEO_BUSY/_IDLE for why (the 200ms drag-lag fix).
     # Default-lane requests received while that lane was at the cap, oldest first.
     deferred = Tuple{Vector{UInt8},Vector{UInt8},Any}[]
     while _running()
@@ -795,17 +793,12 @@ function message_loop(socket::ZMQ.Socket)
 
             # 2b. pick recv timeout: poll fast while a reply may be in flight (a
             #     worker running, or one already queued between drain and now) or a
-            #     deferred request is waiting for a slot, else wait long. Owner-only
-            #     socket access, so setsockopt is safe.
-            want_rcvtimeo = (_gate_inflight()[] > 0 || !isempty(deferred) || isready(_gate_outbox())) ?
-                            _GATE_RCVTIMEO_BUSY[] : _GATE_RCVTIMEO_IDLE[]
-            if want_rcvtimeo != cur_rcvtimeo
-                socket.rcvtimeo = want_rcvtimeo
-                cur_rcvtimeo = want_rcvtimeo
-            end
+            #     deferred request is waiting for a slot, else wait long.
+            timeout_ms = (_gate_inflight()[] > 0 || !isempty(deferred) || isready(_gate_outbox())) ?
+                         _GATE_RCVTIMEO_BUSY[] : _GATE_RCVTIMEO_IDLE[]
 
-            # 3. recv one request — [identity, corr_id, payload] (bounded by rcvtimeo)
-            parts = _recv_multipart(socket)
+            # 3. recv one request — [identity, corr_id, payload] — within that timeout
+            parts = _recv_multipart(socket, timeout_ms / 1000)
             length(parts) >= 3 || continue
             identity = parts[1]
             corr_id = parts[2]

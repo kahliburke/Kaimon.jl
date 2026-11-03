@@ -276,10 +276,13 @@ function wait_stream_messages!(mgr::ConnectionManager; idle_timeout::Real = 0.25
     watchers = FileWatching.FDWatcher[]
     for conn in conns
         sub = conn.sub_socket
-        sub === nothing && continue
-        fd = try; Cint(sub.fd); catch; Cint(-1); end
-        fd < 0 && continue
-        w = try; FileWatching.FDWatcher(RawFD(fd), true, false); catch; nothing; end
+        (sub === nothing || !isopen(sub)) && continue
+        w = try
+            KaimonGate._zmq_fd_watcher(sub)
+        catch e
+            @warn "Stream socket has no fd watcher; stream frames will be polled" exception = e maxlog = 1
+            nothing
+        end
         w === nothing || push!(watchers, w)
     end
     if isempty(watchers)                       # all SUBs mid-recreation — fall back to a plain sleep
@@ -323,22 +326,26 @@ makes the parked `wait` throw, and the loop rebuilds the watcher on the new fd.
 """
 function _sub_reader(mgr::ConnectionManager, conn::REPLConnection)
     fdw = nothing
-    watched_fd = Cint(-1)
+    watched = nothing   # the socket `fdw` watches; a recreated SUB is a new object
     try
         while mgr.running && conn.status !== :disconnected
             sub = conn.sub_socket
-            fd = sub === nothing ? Cint(-1) : (try Cint(sub.fd) catch; Cint(-1) end)
-            if fd < 0
+            if sub === nothing || !isopen(sub)
                 # SUB not connected yet / mid-recreation — brief settle, retry.
                 fdw === nothing || (try; close(fdw); catch; end)
                 fdw = nothing
                 sleep(0.1)
                 continue
             end
-            if fdw === nothing || watched_fd != fd
+            if fdw === nothing || watched !== sub
                 fdw === nothing || (try; close(fdw); catch; end)
-                fdw = try FileWatching.FDWatcher(RawFD(fd), true, false) catch; nothing end
-                watched_fd = fd
+                fdw = try
+                    KaimonGate._zmq_fd_watcher(sub)
+                catch e
+                    @warn "Stream reader has no fd watcher; retrying" exception = e maxlog = 1
+                    nothing
+                end
+                watched = sub
                 fdw === nothing && (sleep(0.1); continue)
                 # Buffered data may already be present — drain before parking
                 # (also re-arms the ZMQ_FD edge so the watcher fires on the next).

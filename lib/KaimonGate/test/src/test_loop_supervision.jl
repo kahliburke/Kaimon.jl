@@ -158,13 +158,13 @@ end
 
             # …and the respawned loop actually serves on the same endpoint: a DEALER sends
             # [corr_id, payload] and gets its correlation id back with a :pong.
-            d = ZMQ.Socket(ctx, ZMQ.DEALER); d.linger = 0; d.rcvtimeo = 5000
+            d = ZMQ.Socket(ctx, ZMQ.DEALER); d.linger = 0
             ZMQ.connect(d, "ipc://$path")
             corr = UInt8[0x11, 0x22]
             io = IOBuffer(); serialize(io, (type = :ping,))
             ZMQ.send(d, corr; more = true)
             ZMQ.send(d, take!(io))
-            parts = KG._recv_multipart(d)
+            parts = KG._recv_multipart(d, 5.0)
             @test parts[1] == corr           # answered our request, not someone else's
             @test deserialize(IOBuffer(parts[end])).type === :pong
             close(d)
@@ -213,7 +213,6 @@ end
             @test isopen(s2)
             @test KG._gate_socket() === s2
             @test ispath(path)
-            @test s2.rcvtimeo == KG._GATE_RCVTIMEO_IDLE[]
             @test s2.linger == 0
 
             # A client reaches the rebound endpoint.
@@ -221,8 +220,7 @@ end
             d.linger = 0
             ZMQ.connect(d, "ipc://$path")
             ZMQ.send(d, "hello")
-            s2.rcvtimeo = 2000
-            parts = KG._recv_multipart(s2)
+            parts = KG._recv_multipart(s2, 2.0)
             @test String(parts[end]) == "hello"
             close(d)
             close(s2)

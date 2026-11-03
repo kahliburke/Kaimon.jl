@@ -271,7 +271,6 @@ end
 # out from under an in-flight recv (the classic ZMQ use-after-free).
 function _rc_reader(rc::RequestChannel)
     sock = rc.dealer
-    fd = try Cint(sock.fd) catch; Cint(-1) end  # stable for the socket's lifetime
     # ONE persistent FDWatcher for the socket's whole life. `poll_fd` constructed
     # AND closed a fresh _FDWatcher on every wake — at N connected gates × 5Hz that
     # was continuous watcher create/close churn + the scheduler load it generated
@@ -279,12 +278,15 @@ function _rc_reader(rc::RequestChannel)
     # watcher task blocks on it (`_rc_fd_watch`); disconnect closes it (see
     # _close_request_channel!), which wakes the wait immediately so teardown no
     # longer waits out a poll timeout. The reader is the sole owner/closer of the
-    # socket, so watching its own fd is safe (#51).
-    fdw = nothing
-    if fd >= 0
-        fdw = try FileWatching.FDWatcher(RawFD(fd), true, false) catch; nothing end
-        rc.reader_fdw = fdw
+    # socket, so watching its own fd is safe (#51). Without a watcher every pass is a
+    # timed recv, which on Windows delays replies by seconds (see `KaimonGate._recv_within`).
+    fdw = try
+        KaimonGate._zmq_fd_watcher(sock)
+    catch e
+        @warn "Request channel has no fd watcher; replies will be polled" endpoint = rc.endpoint exception = e
+        nothing
     end
+    rc.reader_fdw = fdw
     fdw === nothing || Threads.@spawn _rc_fd_watch(rc, fdw)
     try
         while rc.alive[]

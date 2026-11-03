@@ -52,7 +52,6 @@ function _service_request(request)
     end
 
     sock = _zmq_socket(ctx, REQ)
-    sock.rcvtimeo = _SERVICE_RCV_TIMEOUT_MS[]
     sock.sndtimeo = 5000   # 5s send timeout
     sock.linger = 0
     connect(sock, endpoint)
@@ -60,7 +59,7 @@ function _service_request(request)
         io = IOBuffer()
         serialize(io, request)
         send(sock, take!(io))
-        raw = _zmq_recv(sock)
+        raw = _recv_within(sock, _SERVICE_RCV_TIMEOUT_MS[] / 1000)
         response = deserialize(IOBuffer(raw))
 
         status = if hasproperty(response, :status)

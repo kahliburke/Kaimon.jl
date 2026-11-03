@@ -280,7 +280,6 @@ function _build_extension_script(config::ExtensionConfig; resolve::Bool = true)
     using Serialization
     let sock_dir = Kaimon.KaimonGate.sock_dir()
         sub = Kaimon.ZMQ.Socket(Kaimon.KaimonGate.gate_context(), Kaimon.ZMQ.SUB)
-        sub.rcvtimeo = 1000  # 1s timeout so loop can check for shutdown
         if Sys.iswindows()
             Kaimon.ZMQ.connect(sub, "tcp://127.0.0.1:\$(Kaimon._EVENT_PUB_TCP_PORT[])")
         else
@@ -290,7 +289,8 @@ function _build_extension_script(config::ExtensionConfig; resolve::Bool = true)
         @async begin
             while true
                 try
-                    topic = Kaimon.ZMQ.recv(sub, String)       # frame 1: channel name
+                    # frame 1: channel name, within 1 s so the loop still ticks
+                    topic = String(Kaimon.KaimonGate._recv_within(sub, 1.0))
                     payload = Kaimon.ZMQ.recv(sub, Vector{UInt8})  # frame 2: serialized data
                     msg = Kaimon._safe_deserialize(payload; label = "ext_event")
                     $(m.module_name).on_event(msg.channel, msg.data, msg.session_name)
