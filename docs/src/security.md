@@ -55,7 +55,24 @@ The client installers in the TUI's Config tab write this header for you when a k
 
 An agent Kaimon spawns (with `agent_open`, or from a Slate notebook) never receives the API key. It gets its own token instead, minted when it starts and revoked when it ends. The token is the agent's credential in every mode, and the only way Kaimon identifies the agent: its permission preset, allowlist and the guard against agents spawning agents apply to the calls that carry it. A token left behind in a config file stops working once its agent is gone.
 
-The token makes an agent's calls attributable; it does not contain the agent. An agent with unrestricted native file or shell access runs as you, so it can read your own MCP client configs, API key included, and call Kaimon without its token. In `lax` mode it needs no credential at all. To hold an agent to its preset, deny it native file and shell tools (the `notebook` preset does this for Claude and opencode agents) or run it in an OS-level sandbox.
+The token makes an agent's calls attributable; it does not contain the agent. An agent with unrestricted native file or shell access runs as you, so it can read your own MCP client configs, API key included, and call Kaimon without its token. In `lax` mode it needs no credential at all. To hold an agent to its preset, deny it native file and shell tools (the `notebook` preset does this for Claude and opencode agents) or run it in an OS-level sandbox, which Kaimon can set up on Linux (below).
+
+## Confining Agents (Linux)
+
+On Linux, Kaimon can confine the processes of the agents it starts with the kernel's Landlock (Linux 5.13 or later). Set `KAIMON_CONFINE_POLICY` to a policy file before starting Kaimon:
+
+```text
+# what agents may not read
+deny /home/me/.ssh
+deny /home/me/.config
+deny /srv/app/secrets
+```
+
+A confined agent, and everything it runs, can read all but the `deny` paths and write only its working directory, its own temporary directory and its CLI's state folder (`~/.claude`, `~/.codex`, and so on). The kernel enforces this, so it holds for the agent's own file and shell tools, which a check of tool-call arguments cannot. A policy file may also hold `allow` lines (paths inside denied folders that stay readable), `write` lines (more folders every agent may write) and `unset` lines (environment variables removed before the agent starts).
+
+`agent_open` takes `confine_write`, more folders this agent may write, and `confine_allow`, paths outside its working directory it is to read even where the policy denies them. A Claude agent also gets the folders in `confine_allow` as working folders.
+
+Confinement covers the agent's process only. Kaimon tools the agent calls, such as `ex`, run in the session they target, which is not confined, so its permission preset still decides what those tools may do. Agents that run inside Kaimon (Ollama, vmlx) have no process of their own and are not confined. On other platforms the policy is not applied.
 
 ## Seeing the Security State
 
