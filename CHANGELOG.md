@@ -2,6 +2,22 @@
 
 Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each entry is also published on the GitHub release for its tag.
 
+## Kaimon 2.12.0 (unreleased)
+
+[Diff since v2.11.1](https://github.com/kahliburke/Kaimon.jl/compare/v2.11.1...v2.12.0)
+
+**Fixes:**
+- On Windows, replies from a gate are read as soon as they arrive. The request reader, the stream readers and the service endpoint wait on each socket's own watcher instead of opening a libuv poll handle per receive, which Windows does not support on a socket that already has one: replies arrived hundreds of milliseconds to seconds late, and a notebook's local worker showed as unresponsive. Requires KaimonGate 1.6.
+- Extension processes honor `maxlog`, and leave it out of the logged fields.
+
+## KaimonGate 1.6.0 (unreleased)
+
+[Diff since KaimonGate-v1.5.2](https://github.com/kahliburke/Kaimon.jl/compare/KaimonGate-v1.5.2...KaimonGate-v1.6.0)
+
+- `serve(; owner_wake = true)` runs the request loop event-driven: it parks until a request arrives or a reply is queued, and sends each reply at once instead of noticing it on the next receive timeout. A sequence of requests then takes a fraction of a millisecond per request instead of several. Also set by `KAIMON_GATE_OWNER_WAKE` or `owner_wake` in `kaimon.toml` `[gate]`; off by default.
+- Timed receives wait on the socket's own watcher (`_recv_within`) rather than setting `rcvtimeo`, which made every wait open a libuv poll handle. On Windows that delayed replies by up to seconds.
+- A TCP gate exits promptly on SIGTERM. Its exit cleanup runs inside libuv's loop, so it now closes the sockets without terminating the ZMQ context or printing, both of which could wait there forever.
+
 ## Kaimon 2.11.1 (2026-11-01)
 
 [Diff since v2.11.0](https://github.com/kahliburke/Kaimon.jl/compare/v2.11.0...v2.11.1)
