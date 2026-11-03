@@ -2,7 +2,7 @@
 
 Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each entry is also published on the GitHub release for its tag.
 
-## Kaimon 2.12.0 (unreleased)
+## Kaimon 2.12.0 (2026-11-03)
 
 [Diff since v2.11.1](https://github.com/kahliburke/Kaimon.jl/compare/v2.11.1...v2.12.0)
 
@@ -13,7 +13,7 @@ Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each e
 - On Windows, replies from a gate are read as soon as they arrive. The request reader, the stream readers and the service endpoint wait on each socket's own watcher instead of opening a libuv poll handle per receive, which Windows does not support on a socket that already has one: replies arrived hundreds of milliseconds to seconds late, and a notebook's local worker showed as unresponsive. Requires KaimonGate 1.6.
 - Extension processes honor `maxlog`, and leave it out of the logged fields.
 
-## KaimonGate 1.6.0 (unreleased)
+## KaimonGate 1.6.0 (2026-11-03)
 
 [Diff since KaimonGate-v1.5.2](https://github.com/kahliburke/Kaimon.jl/compare/KaimonGate-v1.5.2...KaimonGate-v1.6.0)
 
