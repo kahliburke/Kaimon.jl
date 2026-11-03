@@ -13,8 +13,9 @@ using Kaimon
     end
 
     Sys.iswindows() && return
-    launcher = try Kaimon.confine_launcher() catch; nothing end
-    launcher === nothing && return                     # no C compiler here
+    launcher = withenv(Kaimon.confine_launcher, "KAIMON_CONFINE" => nothing)
+    @test occursin(Kaimon.CONFINE_SCRIPT, read(launcher, String)) && Sys.isexecutable(launcher)
+    @test withenv(Kaimon.confine_launcher, "KAIMON_CONFINE" => nothing) == launcher     # made once
 
     @testset "everything is readable but the denied paths" begin
         root = realpath(mktempdir())

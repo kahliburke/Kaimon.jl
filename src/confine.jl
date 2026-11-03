@@ -2,11 +2,12 @@
 # Under a policy (`KAIMON_CONFINE_POLICY`, a file of `deny`/`allow`/`write`/`unset` lines), an agent's
 # process and everything it starts can read all but the denied paths and write only its own: its
 # working directory, the CLI's state and a temporary directory. Enforced by the kernel (Landlock,
-# through deps/confine/kaimon-confine.c), so it holds for every backend's own file and shell tools
-# alike, which a tool-call check cannot. Linux only; elsewhere a policy is not applied. An agent run
-# in-process (Ollama, vmlx) is not a process of its own and is not confined.
+# through the launcher in confine_launcher.jl), so it holds for every backend's own file and shell
+# tools alike, which a tool-call check cannot. Linux only; elsewhere a policy is not applied. An agent
+# run in-process (Ollama, vmlx) is not a process of its own and is not confined.
 
-const CONFINE_SOURCE = normpath(joinpath(@__DIR__, "..", "deps", "confine", "kaimon-confine.c"))
+include("confine_launcher.jl")
+const CONFINE_SCRIPT = joinpath(@__DIR__, "confine_launcher.jl")
 
 """
     Confinement(; write = String[], allow = String[])
@@ -28,19 +29,23 @@ end
 """
     confine_launcher() -> String
 
-The `kaimon-confine` launcher: `KAIMON_CONFINE` when set, else built from its source with the C
-compiler on first use, into Kaimon's cache under the source's hash.
+The `kaimon-confine` launcher: `KAIMON_CONFINE` when set, else a script in Kaimon's cache that runs
+confine_launcher.jl with this Julia, on one thread (Landlock restricts the thread that asks) and
+compiling nothing, so it starts quickly. Named by its contents, so another Julia or Kaimon gets its own.
 """
 function confine_launcher()
     exe = get(ENV, "KAIMON_CONFINE", "")
     isempty(exe) || return exe
-    exe = joinpath(kaimon_cache_dir(), "confine", bytes2hex(sha256(read(CONFINE_SOURCE)))[1:16], "kaimon-confine")
+    q(s) = "'" * replace(s, "'" => "'\\''") * "'"
+    julia = joinpath(Sys.BINDIR, Base.julia_exename())
+    script = "#!/bin/sh\n# Runs a command confined by Landlock: see Kaimon's confine_launcher.jl.\n" *
+             "exec $(q(julia)) -t1 --startup-file=no --history-file=no -O0 --compile=min $(q(CONFINE_SCRIPT)) \"\$@\"\n"
+    exe = joinpath(kaimon_cache_dir(), "confine", bytes2hex(sha256(script))[1:16], "kaimon-confine")
     isfile(exe) && return exe
-    compilers = filter(!isnothing, Sys.which.(["cc", "gcc", "clang"]))
-    isempty(compilers) && error("Confining agents needs a C compiler to build $(basename(CONFINE_SOURCE)) (or KAIMON_CONFINE set to a built one)")
     mkpath(dirname(exe))
     tmp = "$exe.$(getpid())"
-    run(`$(first(compilers)) -O2 -o $tmp $CONFINE_SOURCE`)
+    write(tmp, script)
+    chmod(tmp, 0o755)
     mv(tmp, exe; force = true)
     return exe
 end
