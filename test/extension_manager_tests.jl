@@ -336,6 +336,33 @@ end
     end
 end
 
+@testset "TUI extension actions run off the update loop, one at a time" begin
+    manifest = Kaimon.ExtensionManifest("busy_x", "M", "t", "", "", String[], "", String[])
+    ext = Kaimon.ManagedExtension(
+        Kaimon.ExtensionConfig(Kaimon.ExtensionEntry(mktempdir(), true, false), manifest))
+    m = Kaimon.KaimonModel()
+    q = m._task_queue.channel
+    next_event() = (t = time(); while !isready(q) && time() - t < 10; yield(); end; take!(q))
+
+    release = Base.Event()
+    runs = Threads.Atomic{Int}(0)
+    Kaimon._ext_action!(() -> (wait(release); runs[] += 1), m, ext)   # returns before the action ends
+    @test "busy_x" in Kaimon._EXT_BUSY
+    Kaimon._ext_action!(() -> (runs[] += 100), m, ext)                # refused while one runs
+    notify(release)
+    evt = next_event()
+    @test evt.id == :ext_action && evt.value.error === nothing
+    Kaimon.Tachikoma.update!(m, evt)
+    @test runs[] == 1 && !("busy_x" in Kaimon._EXT_BUSY)
+
+    Kaimon._ext_action!(() -> error("spawn failed"), m, ext)
+    evt = next_event()
+    @test occursin("spawn failed", evt.value.error)
+    Kaimon.Tachikoma.update!(m, evt)
+    @test !("busy_x" in Kaimon._EXT_BUSY)
+    @test !isready(q)                                                  # the refused action never ran
+end
+
 @testset "extension gate advertise probe (timeout diagnostic)" begin
     dir = mktempdir()
     @test !Kaimon._extension_gate_advertised(dir)              # empty → nothing advertised

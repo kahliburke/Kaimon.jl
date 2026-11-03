@@ -472,6 +472,43 @@ function begin_ext_remove!(m::KaimonModel)
     m.ext_flow = :remove_confirm
 end
 
+# Namespaces with a lifecycle action in flight. Touched only on the update loop: added when an
+# action starts, removed by its `:ext_action` TaskEvent.
+const _EXT_BUSY = Set{String}()
+
+"""
+    _ext_action!(f, m, ext)
+
+Run a lifecycle action for `ext` (start, stop, restart, enable) as a background task, reporting
+back through an `:ext_action` TaskEvent. Stopping waits for the process to exit, and starting
+reaps orphans and prepares the runtime environment, so either can take seconds. One action per
+extension at a time: a key pressed while one runs is ignored.
+"""
+function _ext_action!(f, m::KaimonModel, ext::ManagedExtension)
+    ns = ext.config.manifest.namespace
+    if ns in _EXT_BUSY
+        _push_log!(:info, "Extension '$ns' is busy ($(ext.status)); try again when it finishes")
+        return
+    end
+    push!(_EXT_BUSY, ns)
+    spawn_task!(m._task_queue, :ext_action) do
+        err = try
+            f()
+            nothing
+        catch e
+            sprint(showerror, e)
+        end
+        (ns = ns, error = err)
+    end
+    return
+end
+
+"""The `:ext_action` TaskEvent: the extension is free for its next action."""
+function _ext_action_done!(r::NamedTuple)
+    delete!(_EXT_BUSY, r.ns)
+    r.error === nothing || _push_log!(:error, "Extension '$(r.ns)': $(first(r.error, 300))")
+end
+
 function execute_ext_add!(m::KaimonModel)
     try
         path = normalize_path(Tachikoma.text(m.ext_path_input))
@@ -500,7 +537,7 @@ function execute_ext_add!(m::KaimonModel)
         lock(MANAGED_EXTENSIONS_LOCK) do
             push!(MANAGED_EXTENSIONS, ext)
         end
-        spawn_extension!(ext)
+        _ext_action!(() -> spawn_extension!(ext), m, ext)
 
         m.ext_flow_message = "Registered '$(manifest.namespace)'\nfrom $(_short_path(path))\n\nExtension is starting..."
         m.ext_flow_success = true
@@ -517,13 +554,20 @@ function execute_ext_remove!(m::KaimonModel)
     ext = _get_selected_ext(m)
     ext === nothing && return
 
+    ns = ext.config.manifest.namespace
+    if ns in _EXT_BUSY
+        m.ext_flow_message = "'$ns' is busy ($(ext.status)); remove it when that finishes"
+        m.ext_flow_success = false
+        m.ext_flow = :remove_result
+        return
+    end
+
     try
-        ns = ext.config.manifest.namespace
         project_path = ext.config.entry.project_path
 
-        # Stop the extension
+        # Stop it in the background, once it is out of the list
         if ext.status in (:running, :starting, :crashed)
-            stop_extension!(ext)
+            _ext_action!(() -> stop_extension!(ext), m, ext)
         end
 
         # Remove from MANAGED_EXTENSIONS
@@ -668,7 +712,8 @@ function _toggle_ext_field!(m::KaimonModel, field::Symbol)
     ext = _get_selected_ext(m)
     ext === nothing && return
     if field == :enabled
-        set_extension_config!(ext; enabled = !ext.config.entry.enabled)
+        enabled = !ext.config.entry.enabled     # read now: the task runs after this returns
+        _ext_action!(() -> set_extension_config!(ext; enabled), m, ext)
     else
         set_extension_config!(ext; auto_start = !ext.config.entry.auto_start)
     end
@@ -700,16 +745,17 @@ function _handle_extensions_key!(m::KaimonModel, evt::KeyEvent)
         't' => _toggle_ext_field!(m, :auto_start)
         's' => begin
             ext = _get_selected_ext(m)
-            ext !== nothing && ext.status == :stopped && spawn_extension!(ext)
+            ext !== nothing && ext.status == :stopped &&
+                _ext_action!(() -> spawn_extension!(ext), m, ext)
         end
         'x' => begin
             ext = _get_selected_ext(m)
             ext !== nothing && ext.status in (:running, :starting, :crashed) &&
-                stop_extension!(ext)
+                _ext_action!(() -> stop_extension!(ext), m, ext)
         end
         'r' => begin
             ext = _get_selected_ext(m)
-            ext !== nothing && restart_extension!(ext)
+            ext !== nothing && _ext_action!(() -> restart_extension!(ext), m, ext)
         end
         'u' => begin
             ext = _get_selected_ext(m)

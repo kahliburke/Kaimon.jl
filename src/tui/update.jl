@@ -251,6 +251,8 @@ function Tachikoma.update!(m::KaimonModel, evt::TaskEvent)
         else
             push!(m.client_statuses, name => detected)
         end
+    elseif evt.id == :ext_action
+        _ext_action_done!(evt.value::NamedTuple)
     elseif evt.id == :search_health
         # Only clear if we're showing "Refreshing..." (not another op's status)
         first(_SEARCH_STATUS[]) == "Refreshing..." && _set_search_status!("")
