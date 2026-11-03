@@ -451,7 +451,7 @@ function _serve(;
     end
 
     # Register cleanup
-    atexit(() -> stop())
+    atexit(() -> _stop(; exiting = true))
 
     # Start message loop on an interactive thread so it stays scheduled even
     # when the main thread is busy executing REPL code.
@@ -739,7 +739,12 @@ end
 
 Stop the eval gate, clean up socket and metadata files.
 """
-function stop()
+stop() = _stop()
+
+# `exiting`: called from the process's `atexit`. That runs inside libuv's own loop, so nothing
+# here may wait on libuv: the context is left to the OS (see `_cleanup`) and nothing is printed,
+# since a write to a pipe waits for libuv to complete it.
+function _stop(; exiting::Bool = false)
     if !_running()
         return
     end
@@ -755,13 +760,14 @@ function stop()
         end
     end
 
-    _cleanup()
+    _cleanup(; exiting)
     # Restore Infiltrator's normal prompt so @infiltrate works locally after
     # stop() instead of routing to the now-dead gate and hanging (#34).
     try
         uninstall_infiltrator_hook!()
     catch
     end
+    exiting && return
     printstyled("  Kaimon gate "; color = :yellow, bold = true)
     printstyled("disconnected\n"; color = :yellow)
 end
@@ -812,7 +818,7 @@ function restart()
     _exec_restart(name, sid, proj, snap)
 end
 
-function _cleanup()
+function _cleanup(; exiting::Bool = false)
     # Restore the original stdout/stderr (uninstall the capture mux) so a stopped
     # gate leaves the process's streams as it found them.
     _restore_capture!()
@@ -853,8 +859,10 @@ function _cleanup()
         for s in (_gate_socket(), _stream_socket(), _zap_socket())
             s === nothing || (try; close(s); catch; end)
         end
+        # Not at process exit: there `zmq_ctx_term` can block for good (it runs inside libuv's
+        # own loop and waits on libzmq's reaper), and the process releases the context anyway.
         ctx = _gate_context()
-        if ctx !== nothing
+        if ctx !== nothing && !exiting
             try; close(ctx); catch; end
         end
     end

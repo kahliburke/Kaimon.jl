@@ -849,6 +849,7 @@ function message_loop(socket::ZMQ.Socket)
     # Final bounded drain so in-flight replies (notably the :shutdown / :restart
     # :ok that the client is still waiting on) get flushed before teardown. The
     # :restart handler then sleeps 0.3s before execvp, so the reply lands.
+    # `yield`, not `sleep`: at exit this runs inside libuv's loop, where a timer never fires.
     deadline = time() + 1.0
     while (isready(_gate_outbox()) || _gate_inflight()[] > 0) && time() < deadline
         try
@@ -856,7 +857,7 @@ function message_loop(socket::ZMQ.Socket)
         catch
             break
         end
-        sleep(0.005)
+        yield()
     end
 end
 
