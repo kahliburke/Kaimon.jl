@@ -242,7 +242,9 @@ function backend_start(b::ClaudeBackend; cwd::String, agent_id::String,
         state = [get!(env, "CLAUDE_CONFIG_DIR", joinpath(homedir(), ".claude")), env["TMPDIR"]]
     end
     cmd = setenv(Cmd(_spawn_argv(args)), env; dir = cwd)   # wrap a Windows .cmd/.ps1 shim in its interpreter
-    cmd = confine(cmd, Confinement(; write = [cwd; confinement.write], allow = confinement.allow); state)
+    # Its MCP config is in Kaimon's cache, which a policy may deny.
+    allow = b.mcp_config === nothing ? confinement.allow : [confinement.allow; b.mcp_config]
+    cmd = confine(cmd, Confinement(; write = [cwd; confinement.write], allow); state)
     proc = try
         open(pipeline(cmd; stderr = log_io), "r+")   # proc.in = write, proc.out = read
     catch e
