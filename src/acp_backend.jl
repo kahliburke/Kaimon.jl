@@ -72,6 +72,29 @@ _acp_config_supported(argv::Vector{String}) = _acp_plugin_supported(argv)
 _acp_codex(argv::Vector{String}) = !isempty(argv) &&
     lowercase(splitext(basename(first(argv)))[1]) == "codex-acp"
 
+"""
+    _acp_state_dirs(argv, env) -> Vector{String}
+
+Where a confined ACP agent keeps its own state, which it must be able to write (see `confine`):
+measured for codex and opencode, whose `XDG_CONFIG_HOME` is the session's config by then. An agent
+not listed gets only its working and temporary directories; a policy's `write` lines can add more.
+"""
+function _acp_state_dirs(argv::Vector{String}, env)
+    isempty(argv) && return String[]
+    name = lowercase(splitext(basename(first(argv)))[1])
+    home = homedir()
+    xdg(var, default) = get(env, var, joinpath(home, default))
+    name == "codex-acp" && return [get(env, "CODEX_HOME", joinpath(home, ".codex"))]
+    name == "opencode" && return [joinpath(xdg("XDG_CACHE_HOME", ".cache"), "opencode"),
+                                  joinpath(xdg("XDG_DATA_HOME", ".local/share"), "opencode"),
+                                  joinpath(xdg("XDG_STATE_HOME", ".local/state"), "opencode"),
+                                  joinpath(xdg("XDG_CONFIG_HOME", ".config"), "opencode"),
+                                  joinpath(home, ".npm")]          # its plugins, installed as it starts
+    name in ("claude-agent-acp", "claude-code-acp") && return [get!(env, "CLAUDE_CONFIG_DIR", joinpath(home, ".claude"))]
+    name == "gemini" && return [joinpath(home, ".gemini")]
+    return String[]
+end
+
 
 """
     ACPClientBackend(; argv, model, system_prompt, permission, mcp_servers, config_dir)
@@ -1483,7 +1506,8 @@ Spawn the ACP agent, then complete the `initialize` + `session/new` handshake
 before returning — a handle without a session id can't take a turn.
 """
 function backend_start(b::ACPClientBackend; cwd::String, agent_id::String,
-                       parent_pid::Integer = getpid(), bridge_port::Int = 0)
+                       parent_pid::Integer = getpid(), bridge_port::Int = 0,
+                       confinement::Confinement = Confinement())
     isdir(cwd) || throw(ArgumentError("agent cwd does not exist: $cwd"))
     env = copy(ENV)
     mcp_servers = if _acp_codex(b.argv)
@@ -1516,11 +1540,17 @@ function backend_start(b::ACPClientBackend; cwd::String, agent_id::String,
     isempty(b.allowed_tools) || (env["KAIMON_AGENT_ALLOW_TOOLS"] = join(b.allowed_tools, ","))
     b.system_prompt === nothing || (env["KAIMON_AGENT_SYSTEM_PROMPT"] = b.system_prompt)
 
+    state = String[]
+    if confine_policy() !== nothing
+        env["TMPDIR"] = confine_tmp(agent_id)
+        state = [env["TMPDIR"]; config_dir; _acp_state_dirs(b.argv, env)]
+    end
     args = _spawn_argv(b.argv)
+    cmd = confine(setenv(Cmd(Cmd(args); dir = cwd), env),
+                  Confinement(; write = [cwd; confinement.write], allow = confinement.allow); state)
     inp, outp = Pipe(), Pipe()
     proc = try
-        run(pipeline(setenv(Cmd(Cmd(args); dir = cwd), env);
-                     stdin = inp, stdout = outp, stderr = log_io); wait = false)
+        run(pipeline(cmd; stdin = inp, stdout = outp, stderr = log_io); wait = false)
     catch e
         try; close(log_io); catch; end
         throw(_agent_spawn_error(e, args))

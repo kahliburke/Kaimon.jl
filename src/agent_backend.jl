@@ -178,14 +178,16 @@ backend_session_id(h::ClaudeHandle) = h.session_id[]
 const KAIMON_AGENT_MARKER = "KAIMON_AGENT_SESSION"
 
 "Build the `claude` argv for a backend + cwd (pure; unit-testable without spawning)."
-function _claude_args(b::ClaudeBackend, cwd::AbstractString)
+# `dirs`: more folders the agent may read in, as its cwd. The CLI refuses a read outside them
+# whatever its rules say, following a link in the cwd to its target too.
+function _claude_args(b::ClaudeBackend, cwd::AbstractString; dirs::AbstractVector{<:AbstractString} = String[])
     args = String[b.claude_path, "-p",
         "--input-format", "stream-json",
         "--output-format", "stream-json",
         "--verbose",
         "--model", b.model,
         "--permission-mode", b.permission_mode,
-        "--add-dir", cwd]
+        "--add-dir", cwd, dirs...]
     b.stream && push!(args, "--include-partial-messages")   # token-by-token deltas
     if b.effort !== nothing && !isempty(b.effort)
         push!(args, "--effort", b.effort)                   # less thinking → faster round-trips
@@ -217,10 +219,11 @@ end
 Spawn `claude -p` in stream-JSON mode and start the stdout reader task.
 """
 function backend_start(b::ClaudeBackend; cwd::String, agent_id::String,
-                       parent_pid::Integer = getpid())
+                       parent_pid::Integer = getpid(), confinement::Confinement = Confinement())
     isdir(cwd) || throw(ArgumentError("agent cwd does not exist: $cwd"))
 
-    args = _claude_args(b, cwd)
+    # What the agent is to read outside its cwd, which a confinement policy would also allow it.
+    args = _claude_args(b, cwd; dirs = unique([isdir(a) ? a : dirname(a) for a in confinement.allow]))
 
     env = copy(ENV)
     env[KAIMON_AGENT_MARKER] = agent_id            # marks the process as Kaimon-owned
@@ -231,7 +234,15 @@ function backend_start(b::ClaudeBackend; cwd::String, agent_id::String,
     log_file = joinpath(log_dir, "$(agent_id).log")
     log_io = open(log_file, "a")
 
+    # Confined, the CLI keeps all its state in its config folder: by default it also rewrites
+    # ~/.claude.json, by renaming files beside it, which would take the whole home folder to allow.
+    state = String[]
+    if confine_policy() !== nothing
+        env["TMPDIR"] = confine_tmp(agent_id)
+        state = [get!(env, "CLAUDE_CONFIG_DIR", joinpath(homedir(), ".claude")), env["TMPDIR"]]
+    end
     cmd = setenv(Cmd(_spawn_argv(args)), env; dir = cwd)   # wrap a Windows .cmd/.ps1 shim in its interpreter
+    cmd = confine(cmd, Confinement(; write = [cwd; confinement.write], allow = confinement.allow); state)
     proc = try
         open(pipeline(cmd; stderr = log_io), "r+")   # proc.in = write, proc.out = read
     catch e

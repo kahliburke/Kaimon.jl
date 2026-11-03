@@ -17,6 +17,8 @@ const agent_open_tool = @mcp_tool :agent_open "Spawn a Kaimon-owned AI agent in 
         "effort" => Dict("type" => "string", "description" => "Optional claude --effort level (e.g. low|medium|high). Lower = less thinking = faster turns."),
         "only" => Dict("type" => "boolean", "description" => "Make allowed_tools the agent's whole tool set (claude CLI agents): the CLI loads only the built-in tools it names (plus ToolSearch when it names MCP tools), and Kaimon hides and refuses every Kaimon tool it does not name. Without it, allowed_tools only spares the agent permission prompts, and every other tool stays available."),
         "id" => Dict("type" => "string", "description" => "Optional caller-supplied agent id (e.g. to key to a notebook)."),
+        "confine_write" => Dict("type" => "array", "items" => Dict("type" => "string"), "description" => "Under a confinement policy (KAIMON_CONFINE_POLICY, Linux): folders the agent's process may write besides its cwd, temporary directory and CLI state. Ignored without a policy."),
+        "confine_allow" => Dict("type" => "array", "items" => Dict("type" => "string"), "description" => "Paths outside its cwd the agent is to read (a document, a codebase): a claude CLI agent gets their folders as working folders, and under a confinement policy they are readable although the policy denies them."),
     ),
     "required" => ["cwd"],
 ) (args) -> begin
@@ -32,6 +34,8 @@ const agent_open_tool = @mcp_tool :agent_open "Spawn a Kaimon-owned AI agent in 
             system_prompt = get(args, "system_prompt", nothing),
             effort = get(args, "effort", nothing),
             only = get(args, "only", false) === true,
+            confine_write = String.(get(args, "confine_write", String[])),
+            confine_allow = String.(get(args, "confine_allow", String[])),
             id = get(args, "id", nothing))
         JSON.json(Dict("agent_id" => aid))
     catch e

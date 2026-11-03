@@ -199,7 +199,7 @@ end
 # ── Backend interface ─────────────────────────────────────────────────────────
 
 function backend_start(b::OllamaBackend; cwd::String, agent_id::String,
-                       parent_pid::Integer = getpid())
+                       parent_pid::Integer = getpid(), confinement::Confinement = Confinement())
     isdir(cwd) || throw(ArgumentError("agent cwd does not exist: $cwd"))
     log_dir = joinpath(kaimon_cache_dir(), "agents")
     mkpath(log_dir)

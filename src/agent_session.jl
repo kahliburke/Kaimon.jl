@@ -169,6 +169,8 @@ function agent_open(; cwd::String,
                     system_prompt::Union{String,Nothing} = nothing,
                     effort::Union{String,Nothing} = nothing,
                     only::Bool = false,
+                    confine_write::Vector{String} = String[],
+                    confine_allow::Vector{String} = String[],
                     id::Union{String,Nothing} = nothing)
     aid = id === nothing ? _gen_agent_id() : id
     lock(AGENT_SESSIONS_LOCK) do
@@ -245,7 +247,8 @@ function agent_open(; cwd::String,
                           effort = effort !== nothing ? effort : suffix_effort,
                           dangerously_skip = dangerous, only = only)
         end
-        backend_start(backend; cwd = cwd, agent_id = aid)
+        backend_start(backend; cwd = cwd, agent_id = aid,
+                      confinement = Confinement(; write = confine_write, allow = confine_allow))
     catch
         revoke_agent_token!(aid)
         rethrow()
@@ -605,6 +608,7 @@ function agent_close(id::String)
     # already-dead one shouldn't claim a clean shutdown). Status still goes :dead.
     s.status === :dead || _emit_agent_event!(s, ACP.StatusChanged(:closed))
     backend_close(s.handle)
+    rm(confine_tmp(id); force = true, recursive = true)
     _set_status!(s, :dead)
     _forget_agent_pid!(id)
     _prune_dead_agents!()
