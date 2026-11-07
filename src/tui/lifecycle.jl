@@ -282,7 +282,7 @@ function Tachikoma.init!(m::KaimonModel, _t::Tachikoma.Terminal)
 
     # Load allowed projects config
     m.project_entries = load_projects_config()
-    m.tcp_gate_entries = load_tcp_gates_config()
+    _sync_tcp_gate_entries!(m)
 
     # Auto-index approved projects in the background.  Each enabled project
     # gets an incremental sync (or a fresh index if its collection doesn't

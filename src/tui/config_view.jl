@@ -265,6 +265,7 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
     end
 
     # ── TCP Gates ──
+    _sync_tcp_gate_entries!(m)
     n_tcp = length(m.tcp_gate_entries)
     tcp_block = Block(
         title = "TCP Gates ($n_tcp)",

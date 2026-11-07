@@ -46,6 +46,25 @@ function begin_project_edit_launch!(m::KaimonModel)
     m.config_flow = FLOW_PROJECT_EDIT_LAUNCH
 end
 
+# Modification time of tcp_gates.json when `m.tcp_gate_entries` was last read from it.
+const _TCP_GATES_MTIME = Ref(-1.0)
+
+"""
+    _sync_tcp_gate_entries!(m)
+
+Re-read the registered TCP gates when tcp_gates.json has changed since the last read: the gate
+poller connects whatever the file lists, so the panel shows the same. Cheap enough to call on
+every frame (one `stat`).
+"""
+function _sync_tcp_gate_entries!(m::KaimonModel)
+    t = mtime(get_tcp_gates_config_path())   # 0.0 when there is no file
+    t == _TCP_GATES_MTIME[] && return
+    _TCP_GATES_MTIME[] = t
+    m.tcp_gate_entries = load_tcp_gates_config()
+    m.selected_tcp_gate = clamp(m.selected_tcp_gate, 1, max(1, length(m.tcp_gate_entries)))
+    return
+end
+
 function begin_tcp_gate_add!(m::KaimonModel)
     m.tcp_gate_input = TextInput(text = "127.0.0.1:9876", label = "Host:Port: ", tick = m.tick)
     m.tcp_gate_name_input = TextInput(text = "", label = "Name: ", tick = m.tick)
@@ -70,7 +89,8 @@ function _execute_tcp_gate_add!(m::KaimonModel)
         return
     end
 
-    # Check for duplicates
+    # Check for duplicates, against the file as it is now
+    _sync_tcp_gate_entries!(m)
     for e in m.tcp_gate_entries
         if e.host == host && e.port == port
             m.flow_message = "Already registered: $host:$port"
