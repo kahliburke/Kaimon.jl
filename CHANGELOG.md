@@ -2,7 +2,7 @@
 
 Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each entry is also published on the GitHub release for its tag.
 
-## Kaimon 2.13.0 (unreleased)
+## Kaimon 2.13.0 (2026-11-07)
 
 [Diff since v2.12.0](https://github.com/kahliburke/Kaimon.jl/compare/v2.12.0...v2.13.0)
 
@@ -17,7 +17,7 @@ Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each e
 - The Config tab's TCP Gates panel shows gates added to `tcp_gates.json` while Kaimon runs.
 - Start, stop, restart, enable and remove in the Extensions tab no longer freeze the TUI while the extension's process starts or exits.
 
-## KaimonGate 1.7.0 (unreleased)
+## KaimonGate 1.7.0 (2026-11-07)
 
 [Diff since KaimonGate-v1.6.0](https://github.com/kahliburke/Kaimon.jl/compare/KaimonGate-v1.6.0...KaimonGate-v1.7.0)
 
