@@ -433,6 +433,7 @@ function handle_message(request::NamedTuple)
         return (
             type = :pong,
             pid = getpid(),
+            machine = machine_id(),   # whether `pid` is one the client can look up
             uptime = time() - _start_time(),
             julia_version = string(VERSION),
             protocol_version = PROTOCOL_VERSION,

@@ -158,6 +158,7 @@ set_restart_code_builder!(f)  = (_RESTART_CODE_BUILDER[] = f)
 # gate_state.jl (constants/state) must load first; the rest are functions that
 # forward-reference freely. gate_curve.jl (CURVE/ZAP) loads last, as before.
 include("gate_state.jl")
+include("gate_machine.jl")
 include("gate_debug.jl")
 include("gate_tools.jl")
 include("gate_session.jl")   # after gate_tools.jl: GateSession has a Vector{GateTool} field
@@ -197,7 +198,7 @@ public serve, stop, restart, status, connect!, gate_context
 public GateTool, call_tool, list_tools, image_result, MCP_CONTENT_SENTINEL
 public is_cancelled, stash, progress, push_panel, current_caller, current_agent_id
 public tty_path, tty_size, uninstall_infiltrator_hook!, infiltrator_routing
-public PROTOCOL_VERSION
+public PROTOCOL_VERSION, machine_id
 public set_version_provider!, set_mirror_pref_provider!, set_personality_provider!
 public set_tachikoma!, set_restart_code_builder!, set_auth_token_provider!
 public disable_wedge_guard!

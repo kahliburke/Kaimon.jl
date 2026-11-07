@@ -45,7 +45,17 @@ end
         @test haskey(resp, :julia_version)
         @test haskey(resp, :stream_endpoint)
         @test resp.stream_endpoint == "ipc:///tmp/test-stream.sock"
+        @test resp.machine == KaimonGate.machine_id()
     end
+end
+
+@testset "machine_id names the kernel and is stable" begin
+    id = KaimonGate.machine_id()
+    @test startswith(id, string(Sys.KERNEL, ":")) && length(id) > length(string(Sys.KERNEL)) + 1
+    @test KaimonGate.machine_id() == id
+    # Computed afresh, it is the same: a client compares it with its own.
+    KaimonGate._MACHINE_ID[] = ""
+    @test KaimonGate.machine_id() == id
 end
 
 # ── :list_tools ───────────────────────────────────────────────────────────────
