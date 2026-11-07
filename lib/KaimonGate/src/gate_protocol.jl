@@ -27,6 +27,7 @@ function write_metadata(
         "session_id" => session_id,
         "name" => name,
         "pid" => getpid(),
+        "machine" => machine_id(),
         "julia_version" => string(VERSION),
         "project_path" => dirname(Base.active_project()),
         "endpoint" => endpoint,

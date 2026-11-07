@@ -888,3 +888,34 @@ end
         @test isempty(m.tcp_gate_entries)
     end
 end
+
+@testset "Gates on the Windows side of WSL are discovered, never judged by PID" begin
+    # Under WSL1, Windows gates write their session files to the Windows user's directory and
+    # listen on the loopback Linux shares. Their PIDs cannot be looked up from Linux.
+    sock, win = mktempdir(), mktempdir()
+    dpid = _dead_pid()
+    meta(id, mode) = """{"session_id": "$id", "name": "julia", "mode": "$mode", "pid": $dpid,
+        "endpoint": "tcp://127.0.0.1:9601", "stream_endpoint": "", "project_path": "/c/demo",
+        "julia_version": "1.13.0", "spawned_by": "user"}"""
+    write(joinpath(win, "win-gate.json"), meta("win-gate", "tcp"))
+    write(joinpath(win, "win-ipc.json"), meta("win-ipc", "ipc"))   # a Windows socket is no use here
+    withenv("KAIMON_WINDOWS_SOCK_DIR" => win, "XDG_CONFIG_HOME" => mktempdir()) do
+        Kaimon._WINDOWS_SOCK_DIR[] = nothing
+        try
+            found = Kaimon.discover_sessions(Kaimon.ConnectionManager(sock_dir = sock))
+            @test [c.session_id for c in found] == ["win-gate"]
+            c = only(found)
+            @test !Kaimon._is_local_tcp(c) && !Kaimon._process_gone(c)
+            @test isfile(joinpath(win, "win-gate.json"))           # read, never cleaned up from here
+            rm(joinpath(win, "win-gate.json"))                      # what the gate does as it exits
+            @test Kaimon._process_gone(c)
+        finally
+            Kaimon._WINDOWS_SOCK_DIR[] = nothing
+        end
+    end
+    withenv("KAIMON_WINDOWS_SOCK_DIR" => "off") do
+        Kaimon._WINDOWS_SOCK_DIR[] = nothing
+        @test Kaimon._windows_sock_dir() == ""
+        Kaimon._WINDOWS_SOCK_DIR[] = nothing
+    end
+end

@@ -62,6 +62,65 @@ machine's gate there. A gate too old to report one is judged by its address.
 _same_machine(machine::AbstractString, endpoint::AbstractString) =
     isempty(machine) ? _is_local_host(_endpoint_host(endpoint)) : machine == KaimonGate.machine_id()
 
+# ── Gates on the Windows side of WSL ──────────────────────────────────────────
+
+const _WINDOWS_SOCK_DIR = Ref{Union{String,Nothing}}(nothing)
+
+"""
+    _windows_sock_dir() -> String
+
+Where gates on the Windows side of this WSL machine write their session files, or `""`. Only when
+Linux and Windows share one loopback (WSL1, or WSL2 with mirrored networking): under NAT, a
+Windows gate's 127.0.0.1 is not this machine's. `KAIMON_WINDOWS_SOCK_DIR` names the directory
+instead, or turns this off with `off`. Worked out once per process.
+"""
+function _windows_sock_dir()
+    d = _WINDOWS_SOCK_DIR[]
+    d === nothing || return d
+    return _WINDOWS_SOCK_DIR[] = try
+        _find_windows_sock_dir()
+    catch e
+        @debug "No Windows session directory" exception = e
+        ""
+    end
+end
+
+function _find_windows_sock_dir()
+    explicit = get(ENV, "KAIMON_WINDOWS_SOCK_DIR", nothing)
+    explicit === nothing || return explicit == "off" ? "" : explicit
+    _wsl_shares_loopback() || return ""
+    # From a Windows directory, so cmd.exe does not warn about a UNC working directory.
+    out = read(pipeline(Cmd(`cmd.exe /c echo %LOCALAPPDATA%`; dir = "/mnt/c"); stderr = devnull), String)
+    appdata = strip(out)
+    (isempty(appdata) || startswith(appdata, "%")) && return ""
+    return joinpath(readchomp(pipeline(`wslpath -u $appdata`; stderr = devnull)), "Kaimon", "sock")
+end
+
+"Whether this is WSL with Windows on the same loopback: WSL1, or WSL2 with mirrored networking."
+function _wsl_shares_loopback()
+    Sys.islinux() || return false
+    release = lowercase(try read("/proc/sys/kernel/osrelease", String) catch; "" end)
+    occursin("microsoft", release) || return false
+    occursin("wsl2", release) || return true
+    mode = try readchomp(pipeline(`wslinfo --networking-mode`; stderr = devnull)) catch; "" end
+    return strip(mode) == "mirrored"
+end
+
+# Session id → session file of each gate found in the Windows directory. Its PID cannot be looked
+# up from here, but a gate that exits removes its file.
+const _WINDOWS_SESSION_FILES = Dict{String,String}()
+const _WINDOWS_SESSION_FILES_LOCK = ReentrantLock()
+
+"Whether `conn` is a gate found in the Windows directory whose session file is gone."
+function _windows_session_ended(conn)
+    path = lock(() -> get(_WINDOWS_SESSION_FILES, conn.session_id, nothing), _WINDOWS_SESSION_FILES_LOCK)
+    return path !== nothing && !isfile(path)
+end
+
+# The identity of a gate found in the Windows directory: its own, or, from a gate too old to
+# report one, a stand-in that is never this machine's.
+_windows_machine(meta) = (m = string(get(meta, "machine", "")); isempty(m) ? "WINNT:wsl-host" : m)
+
 """
     _is_local_tcp(conn::REPLConnection) -> Bool
 
@@ -262,12 +321,20 @@ function discover_sessions(mgr::ConnectionManager)
         Set{String}()
     end
 
-    for f in readdir(mgr.sock_dir)
+    # The session files: this machine's, then those of gates on the Windows side of WSL. Those are
+    # another machine's, read but never cleaned up from here.
+    files = [(mgr.sock_dir, f, false) for f in readdir(mgr.sock_dir)]
+    wdir = _windows_sock_dir()
+    if !isempty(wdir) && isdir(wdir)
+        append!(files, [(wdir, f, true) for f in (try readdir(wdir) catch; String[] end)])
+    end
+
+    for (dir, f, windows) in files
         endswith(f, ".json") || continue
         session_id = replace(f, ".json" => "")
 
         meta = try
-            JSON.parsefile(joinpath(mgr.sock_dir, f))
+            JSON.parsefile(joinpath(dir, f))
         catch
             continue
         end
@@ -282,6 +349,7 @@ function discover_sessions(mgr::ConnectionManager)
         # nothing changed.  If the PID is different the process restarted:
         # don't skip so the watcher can replace the stale connection.
         session_mode = Symbol(get(meta, "mode", "ipc"))
+        windows && session_mode != :tcp && continue    # a Windows socket is no use here
         # TCP markers for REGISTERED or REMOTE gates are owned by _poll_tcp_gates! (it
         # holds the auth token from tcp_gates.json). The watcher has no token, so a
         # tokenless connect there is rejected ("Authentication required") — and a
@@ -314,9 +382,11 @@ function discover_sessions(mgr::ConnectionManager)
         # Skip and clean up sessions whose PID is no longer alive. IPC always;
         # localhost TCP gates with a known (>0), dead PID too. Remote TCP gates
         # run elsewhere, so their PID is unverifiable here and never reaped.
+        machine = windows ? _windows_machine(meta) : string(get(meta, "machine", ""))
         local_reapable = session_mode != :tcp ||
-            (_same_machine(string(get(meta, "machine", "")), get(meta, "endpoint", "")) && pid > 0)
+            (_same_machine(machine, get(meta, "endpoint", "")) && pid > 0)
         if local_reapable && !_is_pid_alive(pid)
+            @debug "Removing the files of a session whose process has gone" session_id pid
             _remove_session_files(mgr.sock_dir, session_id)
             continue
         end
@@ -358,6 +428,7 @@ function discover_sessions(mgr::ConnectionManager)
             project_path = get(meta, "project_path", ""),
             julia_version = get(meta, "julia_version", ""),
             pid = pid,
+            machine = machine,
             spawned_by = get(meta, "spawned_by", "user"),
             server_pubkey = server_pubkey,
             # A local coerced-TCP gate (Windows IPC substitute) enforces the config's
@@ -390,6 +461,7 @@ function discover_sessions(mgr::ConnectionManager)
                 _derive_display_name(conn.project_path, conn.julia_version, existing)
         end
 
+        windows && lock(() -> _WINDOWS_SESSION_FILES[session_id] = joinpath(dir, f), _WINDOWS_SESSION_FILES_LOCK)
         push!(known_name_pids, (name, pid))
         push!(new_connections, conn)
     end
@@ -529,7 +601,8 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
     !isempty(new_path) && (conn.project_path = new_path)
     conn.julia_version = string(get(pong, :julia_version, ""))
     conn.pid = Int(get(pong, :pid, 0))
-    conn.machine = string(get(pong, :machine, ""))
+    pong_machine = string(get(pong, :machine, ""))
+    isempty(pong_machine) || (conn.machine = pong_machine)
 
     # Now that the gate answered and project_path is known, apply the mirror pref (deferred
     # from connect! for TCP — see there). A dead gate already bailed at the ping above.

@@ -322,6 +322,12 @@ ssh -L 10006:localhost:10005 -L 10008:localhost:10007 remote-host
 
 Then configure in Kaimon's Config tab with host `127.0.0.1`, port `10006`, stream port `10008`.
 
+A gate reached through a tunnel, a container's port-forward or any other loopback address that leads to another machine is still treated as remote: each gate reports a machine identity, and Kaimon checks a gate's process ID only when that identity is its own. Gates older than KaimonGate 1.7 report none, and are judged by their address.
+
+### Windows Gates from WSL
+
+Kaimon running in WSL also finds the TCP gates of Julia sessions on the Windows side, with no `tcp_gates.json` entry, when Linux and Windows share one loopback: WSL1, or WSL2 with mirrored networking. Under WSL2's default NAT networking, `127.0.0.1` in Linux is not the Windows host, so register those gates by address instead. Kaimon reads the Windows sessions' files from `%LOCALAPPDATA%\Kaimon\sock` and leaves them in place; set `KAIMON_WINDOWS_SOCK_DIR` to name another directory, or to `off` to stop looking. A gate that requires a token must be registered with it, as for any TCP gate.
+
 ### Environment Variables
 
 TCP mode can be configured via environment variables:
