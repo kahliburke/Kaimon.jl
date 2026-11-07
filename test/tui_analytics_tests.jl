@@ -2,6 +2,7 @@ using ReTest
 using Kaimon
 using Kaimon.Database
 using Dates
+using Logging
 using Tachikoma
 using SQLite
 using DBInterface
@@ -833,5 +834,13 @@ end
     # Every outcome has a mark and a label.
     for o in (:completed, :failed, :cancelled, :running)
         @test haskey(Kaimon._OUTCOME_MARKS, o) && haskey(Kaimon._OUTCOME_LABELS, o)
+    end
+end
+
+@testset "debug records are logged as debug" begin
+    # They reach the TUI logger only for modules JULIA_DEBUG names, and must say what they are.
+    for (level, want) in ((Logging.Debug, :debug), (Logging.Info, :info), (Logging.Warn, :warn))
+        Logging.handle_message(Kaimon.TUILogger(), level, "probe $want", Kaimon, nothing, :probe, "f.jl", 1)
+        @test last(Kaimon._TUI_LOG_RING).level == want
     end
 end

@@ -93,12 +93,16 @@ function Logging.handle_message(
     line;
     kwargs...,
 )
+    # Debug records arrive only for modules `JULIA_DEBUG` names (Logging lets them past
+    # `min_enabled_level` for those).
     lvl = if level >= Logging.Error
         :error
     elseif level >= Logging.Warn
         :warn
-    else
+    elseif level >= Logging.Info
         :info
+    else
+        :debug
     end
     msg = string(message)
     if !isempty(kwargs)

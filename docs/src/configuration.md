@@ -63,6 +63,8 @@ Respects `XDG_CACHE_HOME` on Linux/macOS; uses `LOCALAPPDATA` on Windows.
 | `qdrant_projects.json` | Qdrant index tracking (which projects are indexed) |
 | `*.sock` | Unix sockets for REPL-to-MCP communication |
 
+`server.log` records Info and above. To also record debug messages, start Kaimon with `JULIA_DEBUG` naming the modules: `JULIA_DEBUG=Kaimon kaimon`, or `JULIA_DEBUG=Kaimon,KaimonGate` to include KaimonGate's own. They appear as `[DEBUG]` lines.
+
 ### Per-project — `.kaimon/`
 
 Located in the project root directory.

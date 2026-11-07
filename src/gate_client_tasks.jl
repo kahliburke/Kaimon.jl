@@ -261,7 +261,9 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
             conn.pid = pong_pid
             _fire_sessions_changed(mgr)
         end
-        conn.machine = string(get(result, :machine, ""))   # where that PID can be looked up
+        # Where that PID can be looked up. A gate too old to say keeps what discovery knew.
+        pong_machine = string(get(result, :machine, ""))
+        isempty(pong_machine) || (conn.machine = pong_machine)
 
         # Record the gate's reported package version for display only. The gate
         # (KaimonGate) and this client (Kaimon) are now separate packages with
@@ -402,6 +404,7 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
             end
         end
     else
+        @debug "Ping failed" session = short_key(conn) pid = conn.pid machine = conn.machine process_gone = _process_gone(conn)
         # Ping failed — increment failed count in metadata
         meta_path = joinpath(mgr.sock_dir, "$(conn.session_id).json")
         prev_fails = 0
