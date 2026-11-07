@@ -779,7 +779,7 @@ end
     # An SSH tunnel, a container's port-forward and WSL1's loopback shared with Windows all put
     # another machine's gate at 127.0.0.1. Its PID names a process this machine cannot see.
     here = Kaimon.KaimonGate.machine_id()
-    elsewhere = "WINNT:another-host"
+    elsewhere = "NT:another-host"
     dpid = _dead_pid()
     tcp(port, machine; ns = "") = (c = Kaimon.REPLConnection(session_id = "tcp-127.0.0.1-$port",
             endpoint = "tcp://127.0.0.1:$port", spawned_by = "user", pid = dpid, machine = machine);

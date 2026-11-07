@@ -119,7 +119,7 @@ end
 
 # The identity of a gate found in the Windows directory: its own, or, from a gate too old to
 # report one, a stand-in that is never this machine's.
-_windows_machine(meta) = (m = string(get(meta, "machine", "")); isempty(m) ? "WINNT:wsl-host" : m)
+_windows_machine(meta) = (m = string(get(meta, "machine", "")); isempty(m) ? "NT:unreported" : m)   # Sys.KERNEL is :NT on Windows
 
 """
     _is_local_tcp(conn::REPLConnection) -> Bool

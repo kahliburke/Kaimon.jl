@@ -420,7 +420,8 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
         # conn.pid being the gate's own getpid() (refreshed above) so port-reuse
         # reaps correctly.
         if _process_gone(conn)
-            _push_log!(:info, "$(conn.display_name) ($(short_key(conn))): process $(conn.pid) has exited, removing the session")
+            why = _windows_session_ended(conn) ? "its gate's session file is gone" : "process $(conn.pid) has exited"
+            _push_log!(:info, "$(conn.display_name) ($(short_key(conn))): $why, removing the session")
             disconnect!(conn)
             push!(to_remove, conn)
         else
