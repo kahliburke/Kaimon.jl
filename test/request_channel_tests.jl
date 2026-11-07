@@ -143,12 +143,16 @@ using Kaimon
     # -t4 forces real concurrency for the correlation check.
     cmd = pipeline(`$(Base.julia_cmd()) --project=$proj -t4 $path`; stdout = out, stderr = out)
     proc = run(cmd; wait = false)
-    wait(proc)
+    # A hang anywhere in the subprocess would otherwise hold the suite until CI gives up, with
+    # nothing to show where. The steps take well under a minute.
+    finished = timedwait(() -> process_exited(proc), 300.0) === :ok
+    finished || (kill(proc, Base.SIGKILL); wait(proc))
     output = String(take!(out))
 
-    if !success(proc) || !occursin("RC_OK", output)
-        @info "request channel subprocess output" output
+    if !finished || !success(proc) || !occursin("RC_OK", output)
+        @info "request channel subprocess output$(finished ? "" : " (killed after 300 s)")" output
     end
+    @test finished
     @test success(proc)
     @test occursin("RC_OK", output)
     rm(path; force = true)
