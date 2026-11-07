@@ -2,6 +2,27 @@
 
 Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each entry is also published on the GitHub release for its tag.
 
+## Kaimon 2.13.0 (unreleased)
+
+[Diff since v2.12.0](https://github.com/kahliburke/Kaimon.jl/compare/v2.12.0...v2.13.0)
+
+**New:**
+- Kaimon in WSL finds the TCP gates of Julia sessions on the Windows side without a `tcp_gates.json` entry, when Linux and Windows share one loopback (WSL1, or WSL2 with mirrored networking). It reads their session files from `%LOCALAPPDATA%\Kaimon\sock` and never cleans them up; `KAIMON_WINDOWS_SOCK_DIR` names another directory, or `off` stops it.
+- With `JULIA_DEBUG=Kaimon`, debug messages appear in `server.log` as `[DEBUG]` (they were labelled `[INFO]`), including a failed ping and a session file removed by discovery.
+
+**Fixes:**
+- A TCP gate on another machine reached at a loopback address (an SSH tunnel, a container's port-forward, WSL1's loopback shared with Windows) is no longer judged by its process ID. Kaimon used to look that ID up in its own process table, found it dead, and dropped the session, replaced it by a newer one of its namespace, or deleted its session file. Kaimon now compares the machine identity the gate reports with its own (requires KaimonGate 1.7; older gates are judged by their address).
+- A session dropped and reconnected under the same id is no longer charged with the ping that failed for the dropped connection, which could remove it again on every health check.
+- A TCP session's file holds the gate's own process ID, project and Julia version from the start, not Kaimon's.
+- The Config tab's TCP Gates panel shows gates added to `tcp_gates.json` while Kaimon runs.
+- Start, stop, restart, enable and remove in the Extensions tab no longer freeze the TUI while the extension's process starts or exits.
+
+## KaimonGate 1.7.0 (unreleased)
+
+[Diff since KaimonGate-v1.6.0](https://github.com/kahliburke/Kaimon.jl/compare/KaimonGate-v1.6.0...KaimonGate-v1.7.0)
+
+- `machine_id()` names the machine and process namespace a gate runs in: the kernel, then the host UUID on macOS, the machine id and PID namespace on Linux, or the host name on Windows. The gate reports it in its pong and its session file, so a client checks the gate's process ID only when it can see that process.
+
 ## Kaimon 2.12.0 (2026-11-03)
 
 [Diff since v2.11.1](https://github.com/kahliburke/Kaimon.jl/compare/v2.11.1...v2.12.0)
