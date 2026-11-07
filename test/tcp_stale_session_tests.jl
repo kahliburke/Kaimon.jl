@@ -775,6 +775,74 @@ end
     @test Kaimon._resolve_namespace!(another, mgr) == "kb_2" && new in mgr.connections
 end
 
+@testset "A loopback gate on another machine is not judged by PID" begin
+    # An SSH tunnel, a container's port-forward and WSL1's loopback shared with Windows all put
+    # another machine's gate at 127.0.0.1. Its PID names a process this machine cannot see.
+    here = Kaimon.KaimonGate.machine_id()
+    elsewhere = "WINNT:another-host"
+    dpid = _dead_pid()
+    tcp(port, machine; ns = "") = (c = Kaimon.REPLConnection(session_id = "tcp-127.0.0.1-$port",
+            endpoint = "tcp://127.0.0.1:$port", spawned_by = "user", pid = dpid, machine = machine);
+        c.namespace = ns; c.status = :connected; c)
+
+    other, same, unreported = tcp(9401, elsewhere), tcp(9402, here), tcp(9403, "")
+    @test !Kaimon._is_local_tcp(other) && !Kaimon._process_gone(other)
+    @test Kaimon._is_local_tcp(same) && Kaimon._process_gone(same)
+    @test Kaimon._is_local_tcp(unreported)          # a gate too old to say: judged by its address
+    @test Kaimon.trigger_backtrace(other) === nothing
+
+    # A missed pong leaves it stalled; the same machine's dead PID is reaped.
+    mgr = Kaimon.ConnectionManager(sock_dir = mktempdir())
+    to_remove = Kaimon.REPLConnection[]
+    Kaimon._process_health_result!(mgr, other, nothing, to_remove)
+    Kaimon._process_health_result!(mgr, same, nothing, to_remove)
+    @test to_remove == [same] && other.status == :stalled
+
+    # A newcomer of the namespace does not take it from a session it cannot see die.
+    mgr = Kaimon.ConnectionManager(sock_dir = mktempdir())
+    old, new = tcp(9411, elsewhere; ns = "demo"), tcp(9412, elsewhere; ns = "demo")
+    lock(mgr.lock) do; append!(mgr.connections, [old, new]); end
+    @test Kaimon._resolve_namespace!(new, mgr) == "demo_2" && old in mgr.connections
+
+    # The pong supplies the identity, and the session file keeps it for the stale-session sweep.
+    sock_dir = mktempdir()
+    mgr = Kaimon.ConnectionManager(sock_dir = sock_dir)
+    c = tcp(9421, "")
+    write(joinpath(sock_dir, "$(c.session_id).json"),
+          """{"session_id": "$(c.session_id)", "mode": "tcp", "endpoint": "$(c.endpoint)", "pid": $dpid}""")
+    pong = (type = :pong, pid = dpid, machine = elsewhere, uptime = 1.0, julia_version = string(VERSION),
+            kaimon_version = "test", project_path = "", tools = [], namespace = "", stream_endpoint = "",
+            allow_restart = false, allow_mirror = false, mirror_repl = false)
+    Kaimon._process_health_result!(mgr, c, pong, Kaimon.REPLConnection[])
+    @test c.machine == elsewhere
+    @test Kaimon.JSON.parsefile(joinpath(sock_dir, "$(c.session_id).json"))["machine"] == elsewhere
+    Kaimon.cleanup_stale_sessions!(sock_dir)
+    @test isfile(joinpath(sock_dir, "$(c.session_id).json"))   # kept: its PID is not this machine's
+end
+
+@testset "A reconnected session is not charged with its predecessor's failed ping" begin
+    # Dropped and reconnected, a session keeps its id. The ping still out for the dropped object
+    # fails, and must not reach the new one: with a PID this machine cannot see alive, that one
+    # failure removes it, and every reconnect after it the same way.
+    mgr = Kaimon.ConnectionManager(sock_dir = mktempdir())
+    tcp() = (c = Kaimon.REPLConnection(session_id = "tcp-127.0.0.1-9431", endpoint = "tcp://127.0.0.1:9431",
+                                       spawned_by = "user", pid = _dead_pid()); c.status = :connected; c)
+    dropped, reconnected = tcp(), tcp()
+    lock(mgr.lock) do; push!(mgr.connections, reconnected); end
+    failed = Threads.@spawn nothing
+    wait(failed)
+    pending = IdDict{Kaimon.REPLConnection,Task}(dropped => failed)
+
+    @test isempty(Kaimon._health_sweep!(mgr, pending))
+    @test reconnected in mgr.connections && reconnected.status == :connected
+    @test !haskey(pending, dropped) && haskey(pending, reconnected)   # pinged in its own right
+
+    # Its own failed ping still removes it: its PID is dead, on this machine by its address.
+    wait(pending[reconnected])
+    @test Kaimon._health_sweep!(mgr, pending) == [reconnected]
+    @test !(reconnected in mgr.connections) && !haskey(pending, reconnected)
+end
+
 @testset "Tool calls wait for a gate that is connecting" begin
     c = Kaimon.REPLConnection(session_id = "slow-gate", endpoint = "ipc:///tmp/slow-gate.sock", spawned_by = "user")
     c.status = :connecting
@@ -795,4 +863,28 @@ end
     @test Kaimon._gate_callable(c; wait_s = 0)
     c.pid = _dead_pid()
     @test !Kaimon._gate_callable(c; wait_s = 0)
+end
+
+@testset "The TCP Gates panel follows tcp_gates.json" begin
+    # The gate poller connects whatever the file lists, so the panel must show what it lists,
+    # including entries written by another process while the TUI runs.
+    withenv("XDG_CONFIG_HOME" => mktempdir()) do
+        entry(port) = Kaimon.TCPGateEntry("127.0.0.1", port, "g$port", true, "", 0)
+        Kaimon.save_tcp_gates_config([entry(9501)])
+        Kaimon._TCP_GATES_MTIME[] = -1.0
+        m = Kaimon.KaimonModel()
+        Kaimon._sync_tcp_gate_entries!(m)
+        @test [e.port for e in m.tcp_gate_entries] == [9501]
+
+        Kaimon.save_tcp_gates_config([entry(9501), entry(9502)])
+        path = Kaimon.get_tcp_gates_config_path()
+        later = Int64(floor(mtime(path))) + 5          # a later mtime, whatever the file system's grain
+        ccall(:utime, Cint, (Cstring, Ptr{Int64}), path, Int64[later, later])
+        Kaimon._sync_tcp_gate_entries!(m)
+        @test [e.port for e in m.tcp_gate_entries] == [9501, 9502]
+
+        rm(path)
+        Kaimon._sync_tcp_gate_entries!(m)
+        @test isempty(m.tcp_gate_entries)
+    end
 end

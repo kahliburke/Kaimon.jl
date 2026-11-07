@@ -70,75 +70,11 @@ function start!(mgr::ConnectionManager)
     # then send new pings to sessions that need them. A stalled session never
     # blocks health checks for others.
     mgr.health_task = Threads.@spawn begin
-        # Outstanding ping tasks keyed by session_id
-        pending_pings = Dict{String, Task}()
-
+        pending_pings = IdDict{REPLConnection,Task}()
         while mgr.running
             try
-                conns = lock(mgr.lock) do
-                    copy(mgr.connections)
-                end
-
                 _reap_parked_contexts!()   # terminate dead TCP contexts past grace (#51)
-
-                to_remove = REPLConnection[]
-
-                for conn in conns
-                    sid = conn.session_id
-
-                    if conn.status in (:connected, :evaluating, :stalled)
-                        # Collect result from previous ping if ready
-                        if haskey(pending_pings, sid)
-                            task = pending_pings[sid]
-                            if istaskdone(task)
-                                delete!(pending_pings, sid)
-                                result = try; fetch(task); catch; nothing; end
-                                _process_health_result!(mgr, conn, result, to_remove)
-                            else
-                                # Still waiting — check if it's been too long
-                                # (the task has its own timeout via _req_send_recv)
-                            end
-                        end
-
-                        # Send a new ping if we don't have one outstanding
-                        if !haskey(pending_pings, sid)
-                            pending_pings[sid] = Threads.@spawn ping(conn)
-                        end
-
-                    elseif conn.status == :disconnected
-                        delete!(pending_pings, sid)
-                        if isempty(conn.socket_path) || ispath(conn.socket_path)
-                            connect!(mgr, conn)
-                        else
-                            push!(to_remove, conn)
-                        end
-                    end
-                end
-
-                # Clean up pending pings for sessions that no longer exist
-                active_sids = Set(c.session_id for c in conns)
-                for sid in collect(keys(pending_pings))
-                    if sid ∉ active_sids
-                        delete!(pending_pings, sid)
-                    end
-                end
-
-                # Remove dead sessions under the lock
-                if !isempty(to_remove)
-                    lock(mgr.lock) do
-                        for conn in to_remove
-                            idx = findfirst(c -> c === conn, mgr.connections)
-                            if idx !== nothing
-                                _unregister_session_tools!(conn)
-                                disconnect!(conn)
-                                _remove_session_files(mgr.sock_dir, conn.session_id)
-                                _clear_gate_error!(conn)   # drop its error-throttle entry
-                                deleteat!(mgr.connections, idx)
-                            end
-                        end
-                    end
-                    _fire_sessions_changed(mgr)
-                end
+                _health_sweep!(mgr, pending_pings)
             catch e
                 @debug "Health check error" exception = e
             end
@@ -183,6 +119,67 @@ function start!(mgr::ConnectionManager)
     end
 
     return mgr
+end
+
+"""
+    _health_sweep!(mgr, pending_pings)
+
+One health-check cycle: apply each finished ping to its connection, ping again, reconnect
+disconnected sessions and remove dead ones. Pings are keyed by connection object, not session
+id: a session that is dropped and reconnected keeps its id, and the old object's failed ping
+must not count against the new one.
+"""
+function _health_sweep!(mgr::ConnectionManager, pending_pings::IdDict{REPLConnection,Task})
+    conns = lock(mgr.lock) do
+        copy(mgr.connections)
+    end
+    to_remove = REPLConnection[]
+
+    for conn in conns
+        if conn.status in (:connected, :evaluating, :stalled)
+            # Collect the previous ping's result once it is in (it has its own timeout)
+            task = get(pending_pings, conn, nothing)
+            if task !== nothing && istaskdone(task)
+                delete!(pending_pings, conn)
+                result = try; fetch(task); catch; nothing; end
+                _process_health_result!(mgr, conn, result, to_remove)
+            end
+            # Ping again, unless that result removed it
+            if !haskey(pending_pings, conn) && !any(c -> c === conn, to_remove)
+                pending_pings[conn] = Threads.@spawn ping(conn)
+            end
+        elseif conn.status == :disconnected
+            delete!(pending_pings, conn)
+            if isempty(conn.socket_path) || ispath(conn.socket_path)
+                connect!(mgr, conn)
+            else
+                push!(to_remove, conn)
+            end
+        end
+    end
+
+    # Forget pings of connections that are gone
+    for c in collect(keys(pending_pings))
+        any(x -> x === c, conns) || delete!(pending_pings, c)
+    end
+
+    # Remove dead sessions under the lock
+    if !isempty(to_remove)
+        lock(mgr.lock) do
+            for conn in to_remove
+                idx = findfirst(c -> c === conn, mgr.connections)
+                if idx !== nothing
+                    _unregister_session_tools!(conn)
+                    disconnect!(conn)
+                    _remove_session_files(mgr.sock_dir, conn.session_id)
+                    _clear_gate_error!(conn)   # drop its error-throttle entry
+                    deleteat!(mgr.connections, idx)
+                end
+            end
+        end
+        _fire_sessions_changed(mgr)
+    end
+    return to_remove
 end
 
 # Track which sessions we've already warned about to avoid spamming
@@ -264,6 +261,7 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
             conn.pid = pong_pid
             _fire_sessions_changed(mgr)
         end
+        conn.machine = string(get(result, :machine, ""))   # where that PID can be looked up
 
         # Record the gate's reported package version for display only. The gate
         # (KaimonGate) and this client (Kaimon) are now separate packages with
@@ -286,6 +284,7 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
             failed_pongs = 0,
             project_path = conn.project_path,
             pid = conn.pid,
+            machine = conn.machine,
             name = conn.display_name,
             julia_version = conn.julia_version)
 
@@ -412,13 +411,13 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
         _update_session_metadata!(mgr.sock_dir, conn.session_id;
             failed_pongs = prev_fails + 1,
             last_failed_pong = Dates.format(now(), Dates.ISODateTimeFormat))
-        # Reap a session whose own process is provably dead: IPC, or a localhost
-        # TCP gate (getpid() checkable here). Remote TCP, a live local PID, or an
-        # unknown PID (≤0, not yet ponged) stays :stalled. Relies on conn.pid being
-        # the gate's own getpid() (refreshed above) so port-reuse reaps correctly.
-        local_pid_dead =
-            (!_is_tcp(conn) || _is_local_tcp(conn)) && conn.pid > 0 && !_is_pid_alive(conn.pid)
-        if local_pid_dead
+        # Reap a session whose own process is provably dead: IPC, or a TCP gate on
+        # this machine (getpid() checkable here). Another machine's gate, a live
+        # PID, or an unknown PID (≤0, not yet ponged) stays :stalled. Relies on
+        # conn.pid being the gate's own getpid() (refreshed above) so port-reuse
+        # reaps correctly.
+        if _process_gone(conn)
+            _push_log!(:info, "$(conn.display_name) ($(short_key(conn))): process $(conn.pid) has exited, removing the session")
             disconnect!(conn)
             push!(to_remove, conn)
         else

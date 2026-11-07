@@ -52,13 +52,23 @@ function _endpoint_host(endpoint::AbstractString)
 end
 
 """
+    _same_machine(machine, endpoint) -> Bool
+
+Whether a TCP gate runs where this process can look up its PID. Decided by the identity the gate
+reports in its pong (`KaimonGate.machine_id()`), since a loopback address does not settle it: an
+SSH tunnel, a container's port-forward and WSL1's loopback shared with Windows all put another
+machine's gate there. A gate too old to report one is judged by its address.
+"""
+_same_machine(machine::AbstractString, endpoint::AbstractString) =
+    isempty(machine) ? _is_local_host(_endpoint_host(endpoint)) : machine == KaimonGate.machine_id()
+
+"""
     _is_local_tcp(conn::REPLConnection) -> Bool
 
-True for a TCP gate whose endpoint resolves to the local machine. Localhost TCP
-gates are subject to PID-liveness reaping just like IPC sessions; remote ones
-are not (their PID is meaningless here).
+True for a TCP gate on this machine (see `_same_machine`). Its PID is subject to liveness
+reaping just like an IPC session's; any other TCP gate's PID names a process elsewhere.
 """
-_is_local_tcp(conn::REPLConnection) = _is_tcp(conn) && _is_local_host(_endpoint_host(conn.endpoint))
+_is_local_tcp(conn::REPLConnection) = _is_tcp(conn) && _same_machine(conn.machine, conn.endpoint)
 
 """
     _local_gate_token() -> String
@@ -188,7 +198,7 @@ function cleanup_stale_sessions!(sock_dir::String)
         # TCP meta `pid` is the gate's own getpid() once a pong has landed.
         session_mode = Symbol(get(meta, "mode", "ipc"))
         local_reapable = session_mode != :tcp ||
-            (_is_local_host(_endpoint_host(get(meta, "endpoint", ""))) && pid > 0)
+            (_same_machine(string(get(meta, "machine", "")), get(meta, "endpoint", "")) && pid > 0)
         if local_reapable && !_is_pid_alive(pid)
             @debug "Cleaning stale session" session_id pid
             _remove_session_files(sock_dir, session_id)
@@ -305,7 +315,7 @@ function discover_sessions(mgr::ConnectionManager)
         # localhost TCP gates with a known (>0), dead PID too. Remote TCP gates
         # run elsewhere, so their PID is unverifiable here and never reaped.
         local_reapable = session_mode != :tcp ||
-            (_is_local_host(_endpoint_host(get(meta, "endpoint", ""))) && pid > 0)
+            (_same_machine(string(get(meta, "machine", "")), get(meta, "endpoint", "")) && pid > 0)
         if local_reapable && !_is_pid_alive(pid)
             _remove_session_files(mgr.sock_dir, session_id)
             continue
@@ -519,6 +529,7 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
     !isempty(new_path) && (conn.project_path = new_path)
     conn.julia_version = string(get(pong, :julia_version, ""))
     conn.pid = Int(get(pong, :pid, 0))
+    conn.machine = string(get(pong, :machine, ""))
 
     # Now that the gate answered and project_path is known, apply the mirror pref (deferred
     # from connect! for TCP — see there). A dead gate already bailed at the ping above.
@@ -531,6 +542,9 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
 
     # Write a local metadata file so reconnect works after TUI restart
     KaimonGate.write_metadata(sid, conn.name, endpoint, conn.stream_endpoint; spawned_by = "user", mode = :tcp)
+    # `write_metadata` records the process calling it, here Kaimon: give the file the gate's own.
+    _update_session_metadata!(mgr.sock_dir, sid; pid = conn.pid, machine = conn.machine,
+        project_path = conn.project_path, julia_version = conn.julia_version)
 
     return conn
 end

@@ -46,6 +46,7 @@ mutable struct REPLConnection
     julia_version::String
     kaimon_version::String
     pid::Int
+    machine::String              # the gate's `KaimonGate.machine_id()` from its pong ("" until reported)
     connected_at::DateTime
     last_seen::DateTime
     last_ping::DateTime
@@ -78,6 +79,7 @@ function REPLConnection(;
     julia_version::String = "",
     kaimon_version::String = "",
     pid::Int = 0,
+    machine::String = "",
     session_tools::Vector{Dict{String,Any}} = Dict{String,Any}[],
     namespace::String = "",
     tools_hash::UInt64 = UInt64(0),
@@ -106,6 +108,7 @@ function REPLConnection(;
         julia_version,
         kaimon_version,
         pid,
+        machine,
         t,
         t,
         t,
