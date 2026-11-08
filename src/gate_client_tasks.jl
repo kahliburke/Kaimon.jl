@@ -404,7 +404,8 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
             end
         end
     else
-        @debug "Ping failed" session = short_key(conn) pid = conn.pid machine = conn.machine process_gone = _process_gone(conn)
+        gone = _process_gone(conn)
+        @debug "Ping failed" session = short_key(conn) pid = conn.pid machine = conn.machine process_gone = gone
         # Ping failed — increment failed count in metadata
         meta_path = joinpath(mgr.sock_dir, "$(conn.session_id).json")
         prev_fails = 0
@@ -419,7 +420,7 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
         # PID, or an unknown PID (≤0, not yet ponged) stays :stalled. Relies on
         # conn.pid being the gate's own getpid() (refreshed above) so port-reuse
         # reaps correctly.
-        if _process_gone(conn)
+        if gone
             why = _windows_session_ended(conn) ? "its gate's session file is gone" : "process $(conn.pid) has exited"
             _push_log!(:info, "$(conn.display_name) ($(short_key(conn))): $why, removing the session")
             disconnect!(conn)

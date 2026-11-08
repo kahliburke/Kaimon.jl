@@ -2,6 +2,13 @@
 
 Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each entry is also published on the GitHub release for its tag.
 
+## Kaimon 2.13.1 (unreleased)
+
+[Diff since v2.13.0](https://github.com/kahliburke/Kaimon.jl/compare/v2.13.0...v2.13.1)
+
+**Fixes:**
+- Kaimon in WSL drops a Windows session whose gate died without removing its session file, such as one lost when Windows restarted, and removes that file. It used to ping the gate every 10 seconds indefinitely. It checks the gate's process ID against `tasklist.exe`.
+
 ## Kaimon 2.13.0 (2026-11-07)
 
 [Diff since v2.12.0](https://github.com/kahliburke/Kaimon.jl/compare/v2.12.0...v2.13.0)

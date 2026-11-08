@@ -889,30 +889,53 @@ end
     end
 end
 
-@testset "Gates on the Windows side of WSL are discovered, never judged by PID" begin
+@testset "Gates on the Windows side of WSL are judged by Windows' process list" begin
     # Under WSL1, Windows gates write their session files to the Windows user's directory and
-    # listen on the loopback Linux shares. Their PIDs cannot be looked up from Linux.
+    # listen on the loopback Linux shares. Their PIDs mean nothing to Linux's process table.
     sock, win = mktempdir(), mktempdir()
-    dpid = _dead_pid()
-    meta(id, mode) = """{"session_id": "$id", "name": "julia", "mode": "$mode", "pid": $dpid,
+    wpid = _dead_pid()   # dead here, which must not matter
+    meta(id, mode) = """{"session_id": "$id", "name": "julia", "mode": "$mode", "pid": $wpid,
         "endpoint": "tcp://127.0.0.1:9601", "stream_endpoint": "", "project_path": "/c/demo",
         "julia_version": "1.13.0", "spawned_by": "user"}"""
-    write(joinpath(win, "win-gate.json"), meta("win-gate", "tcp"))
+    gate_file = joinpath(win, "win-gate.json")
+    write(gate_file, meta("win-gate", "tcp"))
     write(joinpath(win, "win-ipc.json"), meta("win-ipc", "ipc"))   # a Windows socket is no use here
+    discover() = Kaimon.discover_sessions(Kaimon.ConnectionManager(sock_dir = sock))
+    windows_lists(pids) = (Kaimon._WINDOWS_JULIA_PIDS[] = () -> pids)
     withenv("KAIMON_WINDOWS_SOCK_DIR" => win, "XDG_CONFIG_HOME" => mktempdir()) do
         Kaimon._WINDOWS_SOCK_DIR[] = nothing
         try
-            found = Kaimon.discover_sessions(Kaimon.ConnectionManager(sock_dir = sock))
-            @test [c.session_id for c in found] == ["win-gate"]
-            c = only(found)
+            # Without a readable process list (no Windows interop), nothing is judged by PID.
+            windows_lists(nothing)
+            c = only(discover())
+            @test c.session_id == "win-gate"
             @test !Kaimon._is_local_tcp(c) && !Kaimon._process_gone(c)
-            @test isfile(joinpath(win, "win-gate.json"))           # read, never cleaned up from here
-            rm(joinpath(win, "win-gate.json"))                      # what the gate does as it exits
+
+            windows_lists(Set([wpid]))
+            c = only(discover())
+            @test !Kaimon._process_gone(c) && isfile(gate_file)
+
+            # The gate died without removing its file.
+            windows_lists(Set{Int}())
+            @test Kaimon._process_gone(c)
+            @test isempty(discover())
+            @test !isfile(gate_file)
+
+            write(gate_file, meta("win-gate", "tcp"))
+            windows_lists(nothing)
+            c = only(discover())
+            rm(gate_file)                                           # what the gate does as it exits
             @test Kaimon._process_gone(c)
         finally
             Kaimon._WINDOWS_SOCK_DIR[] = nothing
+            Kaimon._WINDOWS_JULIA_PIDS[] = Kaimon._tasklist_julia_pids
         end
     end
+    listing = "\"System Idle Process\",\"0\",\"Services\",\"0\",\"8 K\"\r\n" *
+              "\"julia.exe\",\"9868\",\"Console\",\"1\",\"250,112 K\"\r\n" *
+              "\"notepad.exe\",\"4410\",\"Console\",\"1\",\"9,020 K\"\r\n"
+    @test Kaimon._julia_pids_in_tasklist(listing) == Set([9868])
+    @test Kaimon._julia_pids_in_tasklist("INFO: No tasks are running.\r\n") === nothing
     withenv("KAIMON_WINDOWS_SOCK_DIR" => "off") do
         Kaimon._WINDOWS_SOCK_DIR[] = nothing
         @test Kaimon._windows_sock_dir() == ""

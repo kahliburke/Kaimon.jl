@@ -141,11 +141,12 @@ end
 
 """
 Whether `conn`'s gate process is known to have exited: a local one (IPC, or TCP on this machine)
-with a PID that is not alive, or a gate found on the Windows side of WSL whose session file is gone.
+with a PID that is not alive, or a gate found on the Windows side of WSL whose session file is gone
+or whose PID Windows no longer lists.
 """
 _process_gone(conn::REPLConnection) =
     ((!_is_tcp(conn) || _is_local_tcp(conn)) && conn.pid > 0 && !_is_pid_alive(conn.pid)) ||
-    _windows_session_ended(conn)
+    _windows_session_ended(conn) || _windows_process_gone(conn)
 
 """
     _gate_callable(conn; wait_s = 10.0) -> Bool

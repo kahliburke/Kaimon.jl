@@ -326,7 +326,7 @@ A gate reached through a tunnel, a container's port-forward or any other loopbac
 
 ### Windows Gates from WSL
 
-Kaimon running in WSL also finds the TCP gates of Julia sessions on the Windows side, with no `tcp_gates.json` entry, when Linux and Windows share one loopback: WSL1, or WSL2 with mirrored networking. Under WSL2's default NAT networking, `127.0.0.1` in Linux is not the Windows host, so register those gates by address instead. Kaimon reads the Windows sessions' files from `%LOCALAPPDATA%\Kaimon\sock` and leaves them in place; set `KAIMON_WINDOWS_SOCK_DIR` to name another directory, or to `off` to stop looking. A gate that requires a token must be registered with it, as for any TCP gate.
+Kaimon running in WSL also finds the TCP gates of Julia sessions on the Windows side, with no `tcp_gates.json` entry, when Linux and Windows share one loopback: WSL1, or WSL2 with mirrored networking. Under WSL2's default NAT networking, `127.0.0.1` in Linux is not the Windows host, so register those gates by address instead. Kaimon reads the Windows sessions' files from `%LOCALAPPDATA%\Kaimon\sock`, and removes one only when `tasklist.exe` shows its gate's process has gone (a gate that crashed, or one lost when Windows restarted); set `KAIMON_WINDOWS_SOCK_DIR` to name another directory, or to `off` to stop looking. A gate that requires a token must be registered with it, as for any TCP gate.
 
 ### Environment Variables
 

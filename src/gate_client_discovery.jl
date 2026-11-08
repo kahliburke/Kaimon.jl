@@ -106,8 +106,8 @@ function _wsl_shares_loopback()
     return strip(mode) == "mirrored"
 end
 
-# Session id → session file of each gate found in the Windows directory. Its PID cannot be looked
-# up from here, but a gate that exits removes its file.
+# Session id → session file of each gate found in the Windows directory. A gate that exits removes
+# its file; one that dies without doing so is found by its PID in Windows' process list.
 const _WINDOWS_SESSION_FILES = Dict{String,String}()
 const _WINDOWS_SESSION_FILES_LOCK = ReentrantLock()
 
@@ -115,6 +115,42 @@ const _WINDOWS_SESSION_FILES_LOCK = ReentrantLock()
 function _windows_session_ended(conn)
     path = lock(() -> get(_WINDOWS_SESSION_FILES, conn.session_id, nothing), _WINDOWS_SESSION_FILES_LOCK)
     return path !== nothing && !isfile(path)
+end
+
+"""
+    _tasklist_julia_pids() -> Union{Set{Int},Nothing}
+
+The PIDs of the Julia processes running on the Windows side of WSL, read from `tasklist.exe`, or
+`nothing` when the list can't be read. A PID that now names another program counts as gone.
+"""
+function _tasklist_julia_pids()
+    out = try
+        read(pipeline(Cmd(`tasklist.exe /FO CSV /NH`; dir = "/mnt/c"); stderr = devnull), String)
+    catch
+        return nothing
+    end
+    return _julia_pids_in_tasklist(out)
+end
+
+# Rows of `tasklist /FO CSV /NH` start with the quoted image name and PID.
+function _julia_pids_in_tasklist(out::AbstractString)
+    rows = collect(eachmatch(r"^\"([^\"]*)\",\"(\d+)\""m, out))
+    isempty(rows) && return nothing   # Windows always runs some process: the output was not understood
+    return Set(parse(Int, m.captures[2]) for m in rows if startswith(lowercase(m.captures[1]), "julia"))
+end
+
+# How the Windows process list is read; tests replace it.
+const _WINDOWS_JULIA_PIDS = Ref{Function}(_tasklist_julia_pids)
+
+"Whether `pid`, of a gate found in the Windows directory, is missing from Windows' process list."
+function _windows_pid_gone(pid::Integer, pids = _WINDOWS_JULIA_PIDS[]())
+    return pid > 0 && pids !== nothing && !(pid in pids)
+end
+
+"Whether `conn` is a gate found in the Windows directory whose process Windows no longer lists."
+function _windows_process_gone(conn)
+    lock(() -> haskey(_WINDOWS_SESSION_FILES, conn.session_id), _WINDOWS_SESSION_FILES_LOCK) || return false
+    return conn.pid > 0 && _windows_pid_gone(conn.pid)
 end
 
 # The identity of a gate found in the Windows directory: its own, or, from a gate too old to
@@ -322,12 +358,13 @@ function discover_sessions(mgr::ConnectionManager)
     end
 
     # The session files: this machine's, then those of gates on the Windows side of WSL. Those are
-    # another machine's, read but never cleaned up from here.
+    # cleaned up from here only when Windows' process list shows the gate has died.
     files = [(mgr.sock_dir, f, false) for f in readdir(mgr.sock_dir)]
     wdir = _windows_sock_dir()
     if !isempty(wdir) && isdir(wdir)
         append!(files, [(wdir, f, true) for f in (try readdir(wdir) catch; String[] end)])
     end
+    windows_pids = missing   # Windows' process list, read once per sweep and only if needed
 
     for (dir, f, windows) in files
         endswith(f, ".json") || continue
@@ -389,6 +426,14 @@ function discover_sessions(mgr::ConnectionManager)
             @debug "Removing the files of a session whose process has gone" session_id pid
             _remove_session_files(mgr.sock_dir, session_id)
             continue
+        end
+        if windows && pid > 0
+            windows_pids === missing && (windows_pids = _WINDOWS_JULIA_PIDS[]())
+            if _windows_pid_gone(pid, windows_pids)
+                @debug "Removing the file of a Windows session whose process has gone" session_id pid
+                _remove_session_files(dir, session_id)
+                continue
+            end
         end
 
         name = get(meta, "name", "julia")
