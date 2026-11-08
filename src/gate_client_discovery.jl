@@ -51,6 +51,10 @@ function _endpoint_host(endpoint::AbstractString)
     return strip(m.captures[1], ['[', ']'])
 end
 
+"`host:port` of a TCP gate, with every loopback spelling of the host (`localhost`, `127.0.0.1`, …) written alike."
+_gate_address_key(host::AbstractString, port) =
+    string(_is_local_host(host) ? "loopback" : lowercase(strip(host)), ":", port)
+
 """
     _same_machine(machine, endpoint) -> Bool
 
@@ -352,7 +356,7 @@ function discover_sessions(mgr::ConnectionManager)
     # Everything else that's TCP + localhost is a locally-spawned, tokenless session (the
     # only kind possible on Windows, which has no ZMQ IPC) and IS the watcher's job.
     registered_tcp = try
-        Set(string(e.host, ":", e.port) for e in load_tcp_gates_config())
+        Set(_gate_address_key(e.host, e.port) for e in load_tcp_gates_config())
     catch
         Set{String}()
     end
@@ -398,7 +402,7 @@ function discover_sessions(mgr::ConnectionManager)
         if session_mode == :tcp
             _tcp_host = _endpoint_host(get(meta, "endpoint", ""))
             _tcp_m = match(r"tcp://(?:\[[^\]]+\]|[^:/]+):(\d+)", get(meta, "endpoint", ""))
-            _tcp_key = string(_tcp_host, ":", _tcp_m === nothing ? "" : _tcp_m.captures[1])
+            _tcp_key = _gate_address_key(_tcp_host, _tcp_m === nothing ? "" : _tcp_m.captures[1])
             # Skip registered/remote TCP (owned by _poll_tcp_gates!), AND any local TCP session
             # we ALREADY track: its `tcp-*.json` is the reconnection cache `connect_tcp!` wrote,
             # not a new gate. Re-discovering it makes the watcher reconnect + replace the live

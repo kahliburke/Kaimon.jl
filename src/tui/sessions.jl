@@ -10,13 +10,17 @@ _key_fingerprint(k::AbstractString) =
 """Terse tag for a stall reason, shown after the session name (empty for :none)."""
 _stall_tag(r::Symbol) =
     r === :offline ? "offline" :
+    r === :no_answer ? "no answer" :
     r === :key_changed ? "key?" :
+    r === :never_answered ? "never answered" :
     r === :unresponsive ? "no pong" : ""
 
 """Full explanation of a stall reason, shown on the Details Status line."""
 _stall_detail(r::Symbol) =
     r === :offline ? "gate offline (TCP refused)" :
+    r === :no_answer ? "TCP connections get no answer; a firewall or VPN may be dropping the traffic" :
     r === :key_changed ? "reachable — CURVE handshake failing; server key may have changed (verify & re-pin)" :
+    r === :never_answered ? "reachable, but the gate has never replied; a VPN, proxy or security agent may be intercepting the traffic" :
     r === :unresponsive ? "reachable — no pong; if CURVE, pin/verify its key" : ""
 
 function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)

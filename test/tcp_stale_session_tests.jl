@@ -942,3 +942,85 @@ end
         Kaimon._WINDOWS_SOCK_DIR[] = nothing
     end
 end
+
+@testset "A registered gate is not connected again by discovery under another loopback name" begin
+    # tcp_gates.json may say `localhost` where the gate's session file says `127.0.0.1`.
+    sock = mktempdir()
+    write(joinpath(sock, "loop-gate.json"), """{"session_id": "loop-gate", "name": "julia",
+        "mode": "tcp", "pid": $(getpid()), "endpoint": "tcp://127.0.0.1:9711",
+        "stream_endpoint": "", "project_path": "/tmp/demo", "julia_version": "1.13.0",
+        "spawned_by": "user"}""")
+    withenv("XDG_CONFIG_HOME" => mktempdir(), "KAIMON_WINDOWS_SOCK_DIR" => "off") do
+        Kaimon._WINDOWS_SOCK_DIR[] = nothing
+        try
+            discover() = Kaimon.discover_sessions(Kaimon.ConnectionManager(sock_dir = sock))
+            @test [c.session_id for c in discover()] == ["loop-gate"]
+            Kaimon.save_tcp_gates_config([Kaimon.TCPGateEntry("localhost", 9711, "g", true, "", 0)])
+            @test isempty(discover())
+            @test Kaimon._gate_address_key("LocalHost", 9711) == Kaimon._gate_address_key("127.0.0.1", 9711)
+            @test Kaimon._gate_address_key("example.org", 9711) != Kaimon._gate_address_key("127.0.0.1", 9711)
+        finally
+            Kaimon._WINDOWS_SOCK_DIR[] = nothing
+        end
+    end
+end
+
+@testset "A stall says whether the gate refused, never answered, or stopped answering" begin
+    srv = Kaimon.Sockets.listen(Kaimon.Sockets.localhost, 0)
+    port = Int(Kaimon.Sockets.getsockname(srv)[2])
+    @test Kaimon._tcp_probe("127.0.0.1", port) === :open
+    close(srv)
+    @test Kaimon._tcp_probe("127.0.0.1", port) === :refused
+    @test Kaimon._tcp_probe("192.0.2.1", 9; timeout = 0.3) === :no_answer   # TEST-NET-1, never routed
+
+    srv = Kaimon.Sockets.listen(Kaimon.Sockets.localhost, 0)
+    port = Int(Kaimon.Sockets.getsockname(srv)[2])
+    @async while isopen(srv); try close(Kaimon.Sockets.accept(srv)) catch; break end; end
+    c = Kaimon.REPLConnection(session_id = "stall", name = "g", socket_path = "",
+                              endpoint = "tcp://127.0.0.1:$port")
+    @test Kaimon._classify_stall(c) === :never_answered
+    c.last_ping = c.connected_at + Dates.Second(1)
+    @test Kaimon._classify_stall(c) === :unresponsive
+    close(srv)
+    @test Kaimon._classify_stall(c) === :offline
+    @test !isempty(Kaimon._stall_detail(:never_answered)) && !isempty(Kaimon._stall_tag(:no_answer))
+end
+
+@testset "Settings from the environment are read again when Kaimon loads" begin
+    withenv("KAIMON_SERVICE_MAX_WORKERS" => "3", "KAIMON_EVENT_PUB_TCP_PORT" => "19878") do
+        Kaimon.KaimonGate._load_env_settings!(Kaimon._ENV_SETTINGS)
+        @test Kaimon._MAX_WORKERS[] == 3
+        @test Kaimon._EVENT_PUB_TCP_PORT[] == 19878
+    end
+    Kaimon.KaimonGate._load_env_settings!(Kaimon._ENV_SETTINGS)
+    @test Kaimon._MAX_WORKERS[] == 16
+end
+
+@testset "Under WSL the service endpoint also listens where Windows gates look" begin
+    srv = Kaimon.Sockets.listen(Kaimon.Sockets.localhost, 0)
+    port = Int(Kaimon.Sockets.getsockname(srv)[2]); close(srv)
+    KG = Kaimon.KaimonGate
+    saved = KG._SERVICE_TCP_PORT[]
+    KG._SERVICE_TCP_PORT[] = port
+    try
+        withenv("KAIMON_WINDOWS_SOCK_DIR" => "off") do
+            Kaimon._WINDOWS_SOCK_DIR[] = nothing
+            @test Kaimon._windows_service_endpoint() === nothing
+        end
+        withenv("KAIMON_WINDOWS_SOCK_DIR" => mktempdir()) do
+            Kaimon._WINDOWS_SOCK_DIR[] = nothing
+            @test Kaimon._windows_service_endpoint() == "tcp://127.0.0.1:$port"
+            ctx = ZMQ.Context()
+            dir = mktempdir(Sys.iswindows() ? tempdir() : "/tmp")
+            router = Kaimon._bind_service_socket(ctx, Sys.iswindows() ? "tcp://127.0.0.1:0" : "ipc://$dir/svc.sock")
+            try
+                @test Kaimon._tcp_probe("127.0.0.1", port) === :open
+            finally
+                close(router); close(ctx)
+            end
+        end
+    finally
+        KG._SERVICE_TCP_PORT[] = saved
+        Kaimon._WINDOWS_SOCK_DIR[] = nothing
+    end
+end

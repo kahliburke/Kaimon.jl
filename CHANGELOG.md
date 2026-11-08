@@ -8,6 +8,19 @@ Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each e
 
 **Fixes:**
 - Kaimon in WSL drops a Windows session whose gate died without removing its session file, such as one lost when Windows restarted, and removes that file. It used to ping the gate every 10 seconds indefinitely. It checks the gate's process ID against `tasklist.exe`.
+- `KaimonGate.call_tool` and `list_tools` from a Julia session on Windows reach a Kaimon running in WSL (WSL1, or WSL2 with mirrored networking): Kaimon there also listens on the TCP port where Windows gates look for it, `127.0.0.1:9877`. Such calls used to wait 11 minutes and fail. Like a Kaimon on Windows, that port takes no token.
+- Discovery no longer connects a second time to a gate registered in `tcp_gates.json` under a different loopback name (`localhost` for the `127.0.0.1` in its session file).
+- Settings given as environment variables (`KAIMON_SERVICE_MAX_WORKERS`, `KAIMON_SERVICE_RCVTIMEO_BUSY`/`_IDLE`, `KAIMON_EVENT_PUB_TCP_PORT`, `KAIMON_MAX_DESERIALIZE_BYTES`) take effect. They were read when the package was precompiled, not when it was loaded.
+- A stalled TCP session says whether its gate refused the connection, got no answer at all (a firewall or VPN may drop the traffic), never replied on an open connection (something between may intercept it), or stopped replying.
+- The gate documentation describes registering Windows gates from WSL2 with NAT networking, and the effect of corporate VPNs on WSL2.
+
+## KaimonGate 1.7.1 (unreleased)
+
+[Diff since KaimonGate-v1.7.0](https://github.com/kahliburke/Kaimon.jl/compare/KaimonGate-v1.7.0...KaimonGate-v1.7.1)
+
+- `call_tool` and `list_tools` fail after 5 seconds with a message saying no Kaimon service endpoint answers, when none does (`KAIMON_SERVICE_CONNECT_TIMEOUT_S`). They used to wait for the full reply timeout, 11 minutes.
+- Settings given as environment variables (`KAIMON_SERVICE_TCP_PORT`, `KAIMON_SERVICE_RCV_TIMEOUT_MS`, `KAIMON_GATE_MAX_WORKERS`, `KAIMON_GATE_MAX_DEFERRED`, `KAIMON_GATE_RCVTIMEO_BUSY`/`_IDLE`, `KAIMON_GATE_STREAM_SUBPOLL`) take effect. They were read when the package was precompiled, not when it was loaded.
+- A gate announces itself as `listening` when it starts, and `stopped` when it stops. It said `connected` before anything had connected to it.
 
 ## Kaimon 2.13.0 (2026-11-07)
 

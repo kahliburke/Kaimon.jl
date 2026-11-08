@@ -307,7 +307,7 @@ KaimonGate.serve(mode=:tcp, port=10005, stream_port=10007, force=true)
 This binds the REP socket on `port` and the PUB socket on `stream_port`. Both ports are printed on startup:
 
 ```
-⚡ Kaimon gate connected (myproject)
+⚡ Kaimon gate listening (myproject)
   TCP mode: tcp://127.0.0.1:10005 (PUB: tcp://127.0.0.1:10007)
   Auth: none (lax mode)
 ```
@@ -326,7 +326,20 @@ A gate reached through a tunnel, a container's port-forward or any other loopbac
 
 ### Windows Gates from WSL
 
-Kaimon running in WSL also finds the TCP gates of Julia sessions on the Windows side, with no `tcp_gates.json` entry, when Linux and Windows share one loopback: WSL1, or WSL2 with mirrored networking. Under WSL2's default NAT networking, `127.0.0.1` in Linux is not the Windows host, so register those gates by address instead. Kaimon reads the Windows sessions' files from `%LOCALAPPDATA%\Kaimon\sock`, and removes one only when `tasklist.exe` shows its gate's process has gone (a gate that crashed, or one lost when Windows restarted); set `KAIMON_WINDOWS_SOCK_DIR` to name another directory, or to `off` to stop looking. A gate that requires a token must be registered with it, as for any TCP gate.
+Kaimon running in WSL also finds the TCP gates of Julia sessions on the Windows side, with no `tcp_gates.json` entry, when Linux and Windows share one loopback: WSL1, or WSL2 with mirrored networking. Kaimon reads the Windows sessions' files from `%LOCALAPPDATA%\Kaimon\sock`, and removes one only when `tasklist.exe` shows its gate's process has gone (a gate that crashed, or one lost when Windows restarted); set `KAIMON_WINDOWS_SOCK_DIR` to name another directory, or to `off` to stop looking. A gate that requires a token must be registered with it, as for any TCP gate.
+
+Windows gates call back into Kaimon (`KaimonGate.call_tool`, `list_tools`) on `127.0.0.1:9877`, so Kaimon in WSL listens there too, beside its usual socket. Like a Kaimon running on Windows, that port asks for no token, so any local program can call Kaimon's tools through it. `KAIMON_SERVICE_TCP_PORT` moves it; set the same value for Kaimon and the gates. A call that finds no Kaimon there fails after 5 seconds (`KAIMON_SERVICE_CONNECT_TIMEOUT_S`).
+
+**WSL2 with NAT networking** (the default). `127.0.0.1` in Linux is the WSL2 virtual machine's own, so Kaimon does not look for Windows gates and they must be registered by address:
+
+1. Start the gate listening on an address the virtual machine can reach: `KAIMON_GATE_HOST=0.0.0.0`, or the IP of the `vEthernet (WSL)` adapter.
+2. Give it a token (`KAIMON_GATE_TOKEN`), since it now accepts connections from beyond the machine's loopback.
+3. Allow inbound connections to its ports from the WSL network in Windows Firewall.
+4. Register it in Kaimon with the Windows host's IP as seen from Linux (the default gateway, `ip route show default`), its ports and the token.
+
+Gates calling back into Kaimon are not reachable this way.
+
+**VPNs.** A corporate VPN, or the security software that comes with one, can block loopback traffic between WSL2 and Windows even with mirrored networking. The session shows as stalled in Kaimon, while the gate's `KaimonGate.status()` reports `Messages: 0`. If disconnecting the VPN makes it work, keep Kaimon and Julia on the same side (both in WSL, or both on Windows), use WSL1, or ask for the VPN's policy to allow that traffic.
 
 ### Environment Variables
 
@@ -387,7 +400,7 @@ The server's public key is printed on startup — share it (or fetch it over SSH
 see soy-free mode) so clients can pin it:
 
 ```
-⚡ Kaimon gate connected (myproject)
+⚡ Kaimon gate listening (myproject)
   TCP mode: tcp://127.0.0.1:10005 (PUB: tcp://127.0.0.1:10007)
   Auth: none (lax mode)
   🔒 CURVE: on (allow-list)

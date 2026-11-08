@@ -64,7 +64,7 @@ mutable struct REPLConnection
     spawned_by::String           # provenance: "user" | "agent" | "extension" (see is_extension/is_agent_spawned)
     auth_token::String           # TCP auth token (empty = no auth)
     server_pubkey::String        # CURVE server public key to pin (empty = plain TCP/IPC)
-    stall_reason::Symbol         # why stalled (TCP): :none|:offline|:key_changed|:unresponsive
+    stall_reason::Symbol         # why stalled (TCP): see `_classify_stall`
     label::String                # client-provided display label (e.g. a notebook filename) — wins over the project basename
 end
 
@@ -165,7 +165,17 @@ end
 gate (connection refused) from one that's up but failing our ZMQ/CURVE handshake
 — a distinction that is invisible in-band (a wrong CURVE key just goes silent).
 Returns false on refusal, unreachability, or timeout."""
-function _tcp_port_open(host::AbstractString, port::Integer; timeout::Float64 = 1.5)
+_tcp_port_open(host::AbstractString, port::Integer; timeout::Float64 = 1.5) =
+    _tcp_probe(host, port; timeout) === :open
+
+"""
+    _tcp_probe(host, port; timeout = 1.5) -> Symbol
+
+`:open` when `host:port` accepts a TCP connection, `:refused` when it is refused (nothing
+listens), or `:no_answer` when the attempt times out or fails otherwise, as when a firewall or
+VPN drops the traffic.
+"""
+function _tcp_probe(host::AbstractString, port::Integer; timeout::Float64 = 1.5)
     # Resolve to ALL address families and succeed if ANY accepts. A name like "localhost" resolves
     # to ::1 first on macOS, but a gate bound to 0.0.0.0 is IPv4-only — probing just ::1 would
     # false-negative a live gate (and bail connect_tcp! before the real ZMQ dial). Fall back to the
@@ -176,44 +186,51 @@ function _tcp_port_open(host::AbstractString, port::Integer; timeout::Float64 = 
     catch
         Any[String(host)]
     end
+    result = :no_answer
     for tgt in targets
+        outcome = Ref(:no_answer)
         done = Ref(false)
-        ok = Ref(false)
         @async begin
             try
                 s = Sockets.connect(tgt, port)
                 close(s)
-                ok[] = true
-            catch
-                ok[] = false
+                outcome[] = :open
+            catch e
+                refused = e isa Base.IOError && e.code == Base.UV_ECONNREFUSED
+                outcome[] = refused ? :refused : :no_answer
             finally
                 done[] = true
             end
         end
         Base.timedwait(() -> done[], timeout; pollint = 0.05)
-        ok[] && return true
+        outcome[] === :open && return :open
+        outcome[] === :refused && (result = :refused)
     end
-    return false
+    return result
 end
 
+"Whether the gate behind `conn` has ever replied on this connection."
+_ever_answered(conn::REPLConnection) = max(conn.last_seen, conn.last_ping) > conn.connected_at
+
 """Classify why a session just went stalled. TCP only (IPC stays `:none`):
-- `:offline`      — TCP refused/unreachable: the gate process is down.
-- `:key_changed`  — reachable, no pong, and we hold a pinned CURVE key: the
-                    encrypted handshake is failing (key rotated, or MITM).
-- `:unresponsive` — reachable, no pong, no pinned key: gate hung, or a CURVE
-                    gate we connected to plain (needs a pin)."""
+- `:offline`        — TCP refused: the gate process is down.
+- `:no_answer`      — TCP attempts get no answer: a firewall or VPN may drop the traffic.
+- `:key_changed`    — reachable, no pong, and we hold a pinned CURVE key: the
+                      encrypted handshake is failing (key rotated, or MITM).
+- `:never_answered` — reachable, but the gate has not replied once on this connection:
+                      something between may accept the connection without passing it on.
+- `:unresponsive`   — reachable, answered before, no pong now: gate hung, or a CURVE
+                      gate we connected to plain (needs a pin)."""
 function _classify_stall(conn::REPLConnection)
     _is_tcp(conn) || return :none
     hp = _endpoint_host_port(conn.endpoint)
     hp === nothing && return :none
     host, port = hp
-    if !_tcp_port_open(host, port)
-        return :offline
-    elseif !isempty(conn.server_pubkey)
-        return :key_changed
-    else
-        return :unresponsive
-    end
+    probe = _tcp_probe(host, port)
+    probe === :refused && return :offline
+    probe === :no_answer && return :no_answer
+    !isempty(conn.server_pubkey) && return :key_changed
+    return _ever_answered(conn) ? :unresponsive : :never_answered
 end
 
 # ── Display Name Derivation ───────────────────────────────────────────────────
