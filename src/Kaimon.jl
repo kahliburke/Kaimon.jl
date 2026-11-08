@@ -159,6 +159,10 @@ function normalize_path(path::String)
     end
 end
 
+# Settings taken from environment variables, read again by `__init__` (see KaimonGate._env_setting).
+const _ENV_SETTINGS = Function[]
+_env_setting(name::String, default) = KaimonGate._env_setting(name, default, _ENV_SETTINGS)
+
 include("utils.jl")
 include("database.jl")
 include("fts_index.jl")   # lexical (SQLite/FTS5) half of hybrid code search
@@ -254,6 +258,7 @@ function __init__()
     # Stamp the real process start for uptime reporting (the const is a
     # precompile-baked placeholder; see tui/io.jl).
     _SERVER_START_TIME[] = Dates.now()
+    KaimonGate._load_env_settings!(_ENV_SETTINGS)
 
     # The Qdrant client asks Kaimon where Qdrant is and which key it takes (search settings, then
     # the managed instance's record). Installed at runtime: a function in a precompiled Ref would

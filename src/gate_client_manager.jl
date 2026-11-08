@@ -88,8 +88,7 @@ end
 # singleton) uses a fixed TCP loopback port there — the analog of the single fixed
 # `kaimon-events.sock` path on Unix. Extension SUB sockets connect to this same port
 # (see `_build_extension_script`). (#41)
-const _EVENT_PUB_TCP_PORT = Ref{Int}(
-    something(tryparse(Int, get(ENV, "KAIMON_EVENT_PUB_TCP_PORT", "")), 9878))
+const _EVENT_PUB_TCP_PORT = _env_setting("KAIMON_EVENT_PUB_TCP_PORT", 9878)
 
 """Start the global event PUB socket. Extensions SUB to this."""
 function _start_event_pub!(mgr::ConnectionManager)

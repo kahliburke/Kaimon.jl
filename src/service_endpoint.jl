@@ -29,8 +29,7 @@ const _OUTBOX = Channel{Tuple{Vector{UInt8},Vector{UInt8}}}(Inf)
 # concurrent tasks so the scheduler doesn't thrash. This is a backstop above the
 # governor's agent-turn cap; it also bounds non-agent calls. Env-overridable.
 const _INFLIGHT = Threads.Atomic{Int}(0)
-const _MAX_WORKERS = Ref{Int}(
-    something(tryparse(Int, get(ENV, "KAIMON_SERVICE_MAX_WORKERS", "")), 16))
+const _MAX_WORKERS = _env_setting("KAIMON_SERVICE_MAX_WORKERS", 16)
 
 # Adaptive owner-loop recv timeout (ms) — same rationale as KaimonGate's gate
 # message loop: the owner blocks in recv, so a worker reply queued in _OUTBOX
@@ -39,10 +38,8 @@ const _MAX_WORKERS = Ref{Int}(
 # its reply. Poll fast (BUSY) while a reply may be pending, wait long (IDLE) when
 # there's nothing outstanding. Intake is unaffected (recv returns on a new
 # request); only reply latency is bounded, now to ~BUSY ms. Env-overridable.
-const _RCVTIMEO_BUSY = Ref{Int}(
-    something(tryparse(Int, get(ENV, "KAIMON_SERVICE_RCVTIMEO_BUSY", "")), 5))
-const _RCVTIMEO_IDLE = Ref{Int}(
-    something(tryparse(Int, get(ENV, "KAIMON_SERVICE_RCVTIMEO_IDLE", "")), 200))
+const _RCVTIMEO_BUSY = _env_setting("KAIMON_SERVICE_RCVTIMEO_BUSY", 5)
+const _RCVTIMEO_IDLE = _env_setting("KAIMON_SERVICE_RCVTIMEO_IDLE", 200)
 
 # ── Multipart framing (ZMQ.jl 1.5 has no multipart helper) ────────────────────
 # A REQ→ROUTER message arrives as [identity, empty-delimiter, payload]; the reply
@@ -92,6 +89,34 @@ function _serve_one(identity::Vector{UInt8}, request)
 end
 
 """
+    _bind_service_socket(ctx, endpoint) -> ZMQ.Socket
+
+The service ROUTER, bound to `endpoint`. Under WSL with a loopback shared with Windows, it also
+listens on the TCP port where gates on the Windows side look for it. That port takes no token,
+as on Windows itself; a port already taken (say, by a Kaimon running on Windows) is skipped.
+"""
+function _bind_service_socket(ctx::ZMQ.Context, endpoint::AbstractString)
+    sock = _zmq_socket(ctx, ROUTER)   # no rcvtimeo: the owner loop bounds each recv itself
+    sock.sndtimeo = 5000
+    sock.linger = 0
+    bind(sock, endpoint)
+    windows_ep = _windows_service_endpoint()
+    if windows_ep !== nothing && windows_ep != endpoint
+        try
+            bind(sock, windows_ep)
+            @info "Service endpoint also listening for Windows gates" endpoint = windows_ep
+        catch e
+            @warn "Windows gates cannot reach this Kaimon's service endpoint" endpoint = windows_ep exception = e
+        end
+    end
+    return sock
+end
+
+"Where gates on the Windows side of WSL look for the service endpoint, or `nothing` when none can reach it."
+_windows_service_endpoint() =
+    isempty(_windows_sock_dir()) ? nothing : "tcp://127.0.0.1:$(KaimonGate._SERVICE_TCP_PORT[])"
+
+"""
     start_service_endpoint!() -> NamedTuple
 
 Bind a ZMQ ROUTER socket for tool-call requests from gate sessions and start the
@@ -120,10 +145,7 @@ function start_service_endpoint!()
     RateGovernor.init!()   # admission control for agent turns
 
     ctx = ZMQ.Context()
-    sock = _zmq_socket(ctx, ROUTER)   # no rcvtimeo: the owner loop bounds each recv itself
-    sock.sndtimeo = 5000
-    sock.linger = 0
-    bind(sock, endpoint)
+    sock = _bind_service_socket(ctx, endpoint)
 
     _SERVICE_SOCKET[] = sock
     _SERVICE_CONTEXT[] = ctx
@@ -147,10 +169,7 @@ function start_service_endpoint!()
                     @warn "Service-endpoint socket vanished — rebinding (self-heal)" sock_path = spath
                     try; close(sock); catch; end
                     try
-                        sock = _zmq_socket(ctx, ROUTER)
-                        sock.sndtimeo = 5000
-                        sock.linger = 0
-                        bind(sock, _SERVICE_ENDPOINT[])
+                        sock = _bind_service_socket(ctx, _SERVICE_ENDPOINT[])
                         _SERVICE_SOCKET[] = sock
                         @info "Service endpoint rebound (self-heal)" endpoint = _SERVICE_ENDPOINT[]
                     catch e

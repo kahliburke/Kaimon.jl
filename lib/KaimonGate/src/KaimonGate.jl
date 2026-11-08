@@ -171,6 +171,8 @@ include("gate_service.jl")
 include("gate_curve.jl")
 include("precompile.jl")
 
+__init__() = _load_env_settings!()
+
 """
     connect!()
 

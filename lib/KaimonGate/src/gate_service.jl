@@ -12,16 +12,17 @@
 # singleton) uses a fixed TCP loopback port there — the direct analog of the single
 # fixed `kaimon-service.sock` path on Unix. Kaimon's `start_service_endpoint!` binds
 # this same port. (#41)
-const _SERVICE_TCP_PORT = Ref{Int}(
-    something(tryparse(Int, get(ENV, "KAIMON_SERVICE_TCP_PORT", "")), 9877))
+const _SERVICE_TCP_PORT = _env_setting("KAIMON_SERVICE_TCP_PORT", 9877)
 
 # Per-call REQ recv timeout (ms). Must exceed the worst case admission-wait +
 # slowest-tool timeout (agent_run defaults to 600s and is caller-settable). Kept
 # finite on purpose — an infinite timeout blocks forever if the server dies
 # mid-recv (e.g. an /mcp reconnect); a finite one lets a dead server be noticed.
 # A per-call socket can't wedge, so on timeout we just fail that one call cleanly.
-const _SERVICE_RCV_TIMEOUT_MS = Ref{Int}(
-    something(tryparse(Int, get(ENV, "KAIMON_SERVICE_RCV_TIMEOUT_MS", "")), 660_000))
+const _SERVICE_RCV_TIMEOUT_MS = _env_setting("KAIMON_SERVICE_RCV_TIMEOUT_MS", 660_000)
+
+# How long a call waits for its connection to the service endpoint before giving up.
+const _SERVICE_CONNECT_TIMEOUT_S = _env_setting("KAIMON_SERVICE_CONNECT_TIMEOUT_S", 5.0)
 
 """
     _service_request(request::NamedTuple) -> Any
@@ -39,7 +40,7 @@ function _service_request(request)
     ctx === nothing && error("Kaimon service endpoint not available (no ZMQ context).")
 
     # Unix: ipc:// socket file (presence-checkable). Windows: fixed TCP loopback port
-    # (no file to check — unavailability surfaces as a send/recv timeout below). (#41)
+    # (no file to check: an absent server shows as a connection that never completes). (#41)
     if Sys.iswindows()
         endpoint = "tcp://127.0.0.1:$(_SERVICE_TCP_PORT[])"
     else
@@ -52,10 +53,15 @@ function _service_request(request)
     end
 
     sock = _zmq_socket(ctx, REQ)
-    sock.sndtimeo = 5000   # 5s send timeout
     sock.linger = 0
+    sock.immediate = true   # writable only once connected, so an absent server shows below
     connect(sock, endpoint)
     try
+        _await_socket(_zmq_writable, sock, _SERVICE_CONNECT_TIMEOUT_S[]) || error(
+            "No Kaimon service endpoint answers at $endpoint. Either the Kaimon server isn't " *
+            "running, or it runs where this process cannot reach it" *
+            (Sys.iswindows() ? " (in WSL2 without mirrored networking, or behind a VPN that " *
+                               "blocks loopback traffic to WSL)." : "."))
         io = IOBuffer()
         serialize(io, request)
         send(sock, take!(io))

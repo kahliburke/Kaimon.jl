@@ -27,8 +27,7 @@ end
 #   call-site catch blocks otherwise swallow this and we lose the payload.
 # - `KAIMON_TRACE_DESERIALIZE=1` pre-logs every payload's (label,len,head) BEFORE
 #   deserializing, so after a crash the last line names the offending payload.
-const _DESER_MAX_BYTES = Ref{Int}(
-    something(tryparse(Int, get(ENV, "KAIMON_MAX_DESERIALIZE_BYTES", "")), 64 * 1024 * 1024))
+const _DESER_MAX_BYTES = _env_setting("KAIMON_MAX_DESERIALIZE_BYTES", 64 * 1024 * 1024)
 _deser_trace() = get(ENV, "KAIMON_TRACE_DESERIALIZE", "") in ("1", "true", "yes", "on")
 
 _hexhead(bytes::AbstractVector{UInt8}, n::Int = 32) =

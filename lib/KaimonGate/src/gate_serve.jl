@@ -586,7 +586,7 @@ function _serve(;
     end
     print("  $emoticon ")
     printstyled("Kaimon gate "; color = :green, bold = true)
-    printstyled("connected"; color = :green)
+    printstyled("listening"; color = :green)
     printstyled(" ($name)\n"; color = :light_black)
     let (kg_ver, kg_dir) = _build_info()
         printstyled("  KaimonGate v$kg_ver"; color = :light_black)
@@ -779,7 +779,7 @@ function _stop(; exiting::Bool = false)
     end
     exiting && return
     printstyled("  Kaimon gate "; color = :yellow, bold = true)
-    printstyled("disconnected\n"; color = :yellow)
+    printstyled("stopped\n"; color = :yellow)
 end
 
 """

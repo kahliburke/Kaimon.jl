@@ -13,6 +13,28 @@
 # defaults; when Kaimon loads KaimonGate it installs richer providers.
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# ── Settings from environment variables ───────────────────────────────────────
+# Top-level code runs when the package is precompiled, so a setting read there would keep the
+# environment of that build. `__init__` reads each one again as the package loads. A host package
+# keeps its own registry and loads it from its own `__init__`.
+const _ENV_SETTINGS = Function[]
+
+"""
+    _env_setting(name, default::T, registry = _ENV_SETTINGS) -> Ref{T}
+
+A setting taken from environment variable `name` whenever `registry` is loaded, or `default` when
+it is unset or does not parse as a `T`.
+"""
+function _env_setting(name::String, default::T, registry::Vector{Function} = _ENV_SETTINGS) where {T}
+    r = Ref{T}(default)
+    load() = (r[] = something(tryparse(T, get(ENV, name, "")), default))
+    push!(registry, load)
+    load()
+    return r
+end
+
+_load_env_settings!(registry::Vector{Function} = _ENV_SETTINGS) = foreach(load -> load(), registry)
+
 # ── Thread-safe ZMQ recv ──────────────────────────────────────────────────────
 # ZMQ Message objects have finalizers that call zmq_msg_close, which is NOT
 # thread-safe. If a Message escapes to GC and gets finalized on a worker
@@ -138,20 +160,33 @@ message. A `Timer` bounds the wait, so no poll handle is created per call, which
 `rcvtimeo` does. Leave `rcvtimeo` unset on sockets read this way.
 """
 function _recv_within(sock::ZMQ.Socket, timeout_s::Real)::Vector{UInt8}
-    if !_zmq_readable(sock)
-        deadline = time() + timeout_s
-        while !_zmq_readable(sock)
-            remaining = deadline - time()
-            remaining <= 0 && throw(ZMQ.TimeoutError(repr(sock), Float64(timeout_s)))
-            t = Timer(_ -> _wake_socket_waiters(sock), remaining)
-            try
-                wait(sock)
-            finally
-                close(t)
-            end
+    _await_socket(_zmq_readable, sock, timeout_s) ||
+        throw(ZMQ.TimeoutError(repr(sock), Float64(timeout_s)))
+    return _zmq_recv(sock)
+end
+
+_zmq_writable(sock::ZMQ.Socket) = (sock.events & ZMQ.POLLOUT) != 0
+
+"""
+    _await_socket(ready, sock, timeout_s) -> Bool
+
+Wait on `sock`'s own watcher until `ready(sock)`, for at most `timeout_s` seconds. Returns whether
+it became ready. ZMQ.jl's `send` ignores `sndtimeo`, so a bounded send waits here first.
+"""
+function _await_socket(ready, sock::ZMQ.Socket, timeout_s::Real)
+    ready(sock) && return true
+    deadline = time() + timeout_s
+    while !ready(sock)
+        remaining = deadline - time()
+        remaining <= 0 && return false
+        t = Timer(_ -> _wake_socket_waiters(sock), remaining)
+        try
+            wait(sock)
+        finally
+            close(t)
         end
     end
-    return _zmq_recv(sock)
+    return true
 end
 
 # Thread-safe socket *construction*. ZMQ.jl appends every new Socket to its
@@ -347,13 +382,11 @@ const _GATE_TTY_PARKED_PGRP = Ref{Union{Int32,Nothing}}(nothing)
 # unbounded tasks. At the cap the owner keeps reading, so requests a router sends
 # elsewhere are still served, and holds further default-lane requests in a backlog
 # until a slot frees. Env-overridable.
-const _GATE_MAX_WORKERS = Ref{Int}(
-    something(tryparse(Int, get(ENV, "KAIMON_GATE_MAX_WORKERS", "")), 16))
+const _GATE_MAX_WORKERS = _env_setting("KAIMON_GATE_MAX_WORKERS", 16)
 
 # Bound on that backlog. When it is full the owner stops reading, and the rest
 # stay queued in the ROUTER (client DEALER blocks in its own recv). Env-overridable.
-const _GATE_MAX_DEFERRED = Ref{Int}(
-    something(tryparse(Int, get(ENV, "KAIMON_GATE_MAX_DEFERRED", "")), 256))
+const _GATE_MAX_DEFERRED = _env_setting("KAIMON_GATE_MAX_DEFERRED", 256)
 
 # Adaptive owner-loop recv timeout (ms). The owner blocks in recv, so worker
 # replies queued in _gate_outbox() only flush when the recv returns. A flat 200ms
@@ -364,10 +397,8 @@ const _GATE_MAX_DEFERRED = Ref{Int}(
 # waits long (IDLE) when there's nothing outstanding, so an idle gate stays
 # cheap. Intake latency is unaffected either way (recv returns as soon as a
 # request arrives); only reply latency is bounded, now to ~BUSY ms. Env-overridable.
-const _GATE_RCVTIMEO_BUSY = Ref{Int}(
-    something(tryparse(Int, get(ENV, "KAIMON_GATE_RCVTIMEO_BUSY", "")), 5))
-const _GATE_RCVTIMEO_IDLE = Ref{Int}(
-    something(tryparse(Int, get(ENV, "KAIMON_GATE_RCVTIMEO_IDLE", "")), 200))
+const _GATE_RCVTIMEO_BUSY = _env_setting("KAIMON_GATE_RCVTIMEO_BUSY", 5)
+const _GATE_RCVTIMEO_IDLE = _env_setting("KAIMON_GATE_RCVTIMEO_IDLE", 200)
 
 # Whether `message_loop` parks on an `OwnerWake` instead of polling with the timeouts above:
 # `serve(; owner_wake)`, resolved there (keyword > KAIMON_GATE_OWNER_WAKE > kaimon.toml > off).
@@ -411,8 +442,7 @@ const _STREAM_WAKE = Vector{UInt8}[]
 # (200Hz) spin, which — with a subscriber attached — cost a getsockopt→poll()
 # syscall per tick and woke the whole thread pool (~10% CPU per idle gate).
 # Env-overridable; bounds worst-case presence-event latency.
-const _STREAM_SUBPOLL_INTERVAL = Ref{Float64}(
-    something(tryparse(Float64, get(ENV, "KAIMON_GATE_STREAM_SUBPOLL", "")), 0.5))
+const _STREAM_SUBPOLL_INTERVAL = _env_setting("KAIMON_GATE_STREAM_SUBPOLL", 0.5)
 
 # libzmq socket-option ids (stable ZMTP ABI; see gate_curve.jl for the pattern).
 const _ZMQ_TCP_KEEPALIVE       = 34
