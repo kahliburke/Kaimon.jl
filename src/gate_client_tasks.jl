@@ -259,6 +259,7 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
         pong_pid = Int(get(result, :pid, 0))
         if pong_pid > 0 && pong_pid != conn.pid
             conn.pid = pong_pid
+            conn.mirror_pref_sent = false   # a new process starts with the gate's own default
             _fire_sessions_changed(mgr)
         end
         # Where that PID can be looked up. A gate too old to say keeps what discovery knew.
@@ -359,6 +360,12 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
         conn.allow_restart = Bool(get(result, :allow_restart, true))
         conn.allow_mirror = Bool(get(result, :allow_mirror, true))
         conn.mirror_repl = Bool(get(result, :mirror_repl, false))
+        # A TCP gate gets the mirror preference once it has answered (see `connect!`). Off the
+        # health loop, so a gate that goes quiet right after its pong delays no other session.
+        if _is_tcp(conn) && !conn.mirror_pref_sent
+            conn.mirror_pref_sent = true
+            errormonitor(Threads.@spawn _apply_mirror_pref!(conn))
+        end
 
         # Connect or reconnect SUB socket from pong stream_endpoint.
         # When a gate restarts on the same REQ port, the PUB port changes but

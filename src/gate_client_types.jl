@@ -58,6 +58,7 @@ mutable struct REPLConnection
     allow_restart::Bool          # Whether this session allows manage_repl restart
     allow_mirror::Bool           # Whether mirroring is allowed for this session
     mirror_repl::Bool            # Whether REPL mirroring is currently active
+    mirror_pref_sent::Bool       # Whether the mirror preference was sent to the gate process now answering
     debug_paused::Bool           # True when session is paused at an @infiltrate breakpoint
     diagnostics::Union{ProcessDiagnostics,Nothing}  # populated when stalled
     backtrace_sample::Union{String,Nothing}  # stack sample captured when stalled
@@ -120,6 +121,7 @@ function REPLConnection(;
         true,  # allow_restart — updated from pong
         true,  # allow_mirror — updated from pong
         false, # mirror_repl — updated from pong
+        false, # mirror_pref_sent
         false, # debug_paused
         nothing, # diagnostics
         nothing, # backtrace_sample

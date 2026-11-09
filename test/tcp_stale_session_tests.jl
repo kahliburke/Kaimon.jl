@@ -35,6 +35,10 @@ mutable struct MockGate
     instance_id::String  # unique per gate instance
 end
 
+# The (key, value) of each :set_option request a mock gate receives.
+const MOCK_OPTIONS_SET = Any[]
+const MOCK_OPTIONS_LOCK = ReentrantLock()
+
 """Start a mock gate on fixed REQ port, ephemeral PUB port."""
 function start_mock_gate(req_port::Int; pub_port::Int=0)
     ctx = Context()
@@ -122,6 +126,9 @@ function _run_mock_gate(gate::MockGate)
                 _mock_publish(gate, rid, "42")
             end
             (type = :accepted, request_id = rid)
+        elseif get(msg, :type, nothing) == :set_option
+            lock(() -> push!(MOCK_OPTIONS_SET, (get(msg, :key, ""), get(msg, :value, nothing))), MOCK_OPTIONS_LOCK)
+            (type = :ok,)
         else
             (type = :error, message = "unknown request type: $(get(msg, :type, nothing))")
         end
@@ -991,6 +998,51 @@ end
             Kaimon._WINDOWS_SOCK_DIR[] = nothing
             Kaimon._WINDOWS_MACHINE[] = nothing
             Kaimon._WINDOWS_JULIA_PIDS[] = Kaimon._tasklist_julia_pids
+        end
+    end
+end
+
+@testset "A TCP gate found by discovery gets the mirror preference once it answers" begin
+    # Every gate on Windows is a TCP gate found this way.
+    port = TEST_REQ_PORT + 7
+    gate = start_mock_gate(port)
+    sock = mktempdir()
+    write(joinpath(sock, "mirror-gate.json"), """{"session_id": "mirror-gate", "name": "julia",
+        "mode": "tcp", "pid": $(getpid()), "endpoint": "tcp://127.0.0.1:$port",
+        "stream_endpoint": "tcp://127.0.0.1:$(gate.pub_port)", "project_path": "/tmp/demo",
+        "julia_version": "1.13.0", "spawned_by": "user"}""")
+    lock(() -> empty!(MOCK_OPTIONS_SET), MOCK_OPTIONS_LOCK)
+    function next_option(wait_s = 5.0)
+        t = time()
+        while time() - t < wait_s
+            o = lock(() -> isempty(MOCK_OPTIONS_SET) ? nothing : popfirst!(MOCK_OPTIONS_SET), MOCK_OPTIONS_LOCK)
+            o === nothing || return o
+            sleep(0.05)
+        end
+        return nothing
+    end
+    withenv("XDG_CONFIG_HOME" => mktempdir(), "KAIMON_WINDOWS_SOCK_DIR" => "off") do
+        Kaimon._WINDOWS_SOCK_DIR[] = nothing
+        mgr = Kaimon.ConnectionManager(sock_dir = sock)
+        c = only(Kaimon.discover_sessions(mgr))
+        try
+            @test Kaimon.connect!(mgr, c)
+            @test !c.mirror_pref_sent
+            answered() = Kaimon._process_health_result!(mgr, c, Kaimon.ping(c), Kaimon.REPLConnection[])
+            answered()
+            @test c.mirror_pref_sent
+            @test next_option() == ("mirror_repl", Kaimon.get_gate_mirror_repl_preference())
+            answered()
+            @test next_option(1.0) === nothing   # sent once
+
+            # A new process on the same port starts with the gate's own default again.
+            c.pid = _dead_pid()
+            answered()
+            @test next_option() == ("mirror_repl", Kaimon.get_gate_mirror_repl_preference())
+        finally
+            Kaimon.disconnect!(c)
+            stop_mock_gate!(gate)
+            Kaimon._WINDOWS_SOCK_DIR[] = nothing
         end
     end
 end

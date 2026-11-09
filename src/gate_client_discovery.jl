@@ -700,8 +700,8 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
     pong_machine = string(get(pong, :machine, ""))
     isempty(pong_machine) || (conn.machine = pong_machine)
 
-    # Now that the gate answered and project_path is known, apply the mirror pref (deferred
-    # from connect! for TCP — see there). A dead gate already bailed at the ping above.
+    # The gate has answered, so it gets the mirror preference now, not at the next health check.
+    conn.mirror_pref_sent = true
     _apply_mirror_pref!(conn)
 
     lock(mgr.lock) do
@@ -828,10 +828,9 @@ function connect!(mgr::ConnectionManager, conn::REPLConnection)
         conn.status = :connected
         conn.last_seen = now()
         # Apply runtime gate options from persisted preferences, with per-session
-        # overrides taking priority. TCP sessions defer this to connect_tcp! AFTER the
-        # reachability pong: (1) a dead gate then fails fast on the ping instead of first
-        # burning the set_option timeout here, and (2) conn.project_path is only known
-        # once the pong populates it, so resolving a per-project pref is correct only then.
+        # overrides taking priority. A TCP session gets them from the health check after
+        # its first pong: a dead gate then fails fast instead of first burning the
+        # set_option timeout here, and conn.project_path may only be known from the pong.
         if !_is_tcp(conn)
             _apply_mirror_pref!(conn)
         end
