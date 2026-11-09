@@ -8,6 +8,7 @@ Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each e
 
 **Fixes:**
 - Kaimon in WSL drops a Windows session whose gate died without removing its session file, such as one lost when Windows restarted, and removes that file. It used to ping the gate every 10 seconds indefinitely. It checks the gate's process ID against `tasklist.exe`.
+- The same check covers a Windows gate that Kaimon in WSL reached by address (`connect_tcp`, `tcp_gates.json`, a tunnel), which it recognizes by the machine id the gate reports. Such a session used to be reconnected at every start and pinged indefinitely after its gate exited.
 - `KaimonGate.call_tool` and `list_tools` from a Julia session on Windows reach a Kaimon running in WSL (WSL1, or WSL2 with mirrored networking): Kaimon there also listens on the TCP port where Windows gates look for it, `127.0.0.1:9877`. Such calls used to wait 11 minutes and fail. Like a Kaimon on Windows, that port takes no token.
 - Discovery no longer connects a second time to a gate registered in `tcp_gates.json` under a different loopback name (`localhost` for the `127.0.0.1` in its session file).
 - Settings given as environment variables (`KAIMON_SERVICE_MAX_WORKERS`, `KAIMON_SERVICE_RCVTIMEO_BUSY`/`_IDLE`, `KAIMON_EVENT_PUB_TCP_PORT`, `KAIMON_MAX_DESERIALIZE_BYTES`) take effect. They were read when the package was precompiled, not when it was loaded.

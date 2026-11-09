@@ -943,6 +943,58 @@ end
     end
 end
 
+@testset "A Windows gate reached by address is judged by Windows' process list" begin
+    # A gate connected by host:port (connect_tcp!, tcp_gates.json, an SSH tunnel) keeps its session
+    # file in Kaimon's own directory. It is known to be a Windows gate by the machine id it reports.
+    sock = mktempdir()
+    wpid = _dead_pid()
+    sid = "tcp-127.0.0.1-9612"
+    gate_file = joinpath(sock, "$sid.json")
+    write_meta(machine) = write(gate_file, """{"session_id": "$sid", "name": "julia", "mode": "tcp",
+        "pid": $wpid, "machine": "$machine", "endpoint": "tcp://127.0.0.1:9612",
+        "stream_endpoint": "", "project_path": "C:\\\\demo", "julia_version": "1.13.0",
+        "spawned_by": "user"}""")
+    discover() = Kaimon.discover_sessions(Kaimon.ConnectionManager(sock_dir = sock))
+    windows_lists(pids) = (Kaimon._WINDOWS_JULIA_PIDS[] = () -> pids)
+    withenv("KAIMON_WINDOWS_SOCK_DIR" => "off", "XDG_CONFIG_HOME" => mktempdir()) do
+        Kaimon._WINDOWS_SOCK_DIR[] = nothing
+        try
+            Kaimon._WINDOWS_MACHINE[] = "NT:TESTBOX"
+            @test Kaimon._is_windows_machine("nt:testbox")
+            @test !Kaimon._is_windows_machine("NT:OTHERBOX") && !Kaimon._is_windows_machine("")
+
+            write_meta("NT:TESTBOX")
+            windows_lists(Set([wpid]))
+            c = only(discover())
+            @test c.machine == "NT:TESTBOX" && !Kaimon._process_gone(c)
+            Kaimon.cleanup_stale_sessions!(sock)
+            @test isfile(gate_file)
+
+            windows_lists(Set{Int}())
+            @test Kaimon._process_gone(c)
+            @test isempty(discover())
+            @test !isfile(gate_file)
+            write_meta("NT:TESTBOX")
+            Kaimon.cleanup_stale_sessions!(sock)
+            @test !isfile(gate_file)
+
+            # Another machine's gate, or any gate outside WSL, is not judged here.
+            write_meta("NT:OTHERBOX")
+            Kaimon.cleanup_stale_sessions!(sock)
+            @test isfile(gate_file)
+            @test !Kaimon._process_gone(only(discover()))
+            Kaimon._WINDOWS_MACHINE[] = ""
+            write_meta("NT:TESTBOX")
+            Kaimon.cleanup_stale_sessions!(sock)
+            @test isfile(gate_file)
+        finally
+            Kaimon._WINDOWS_SOCK_DIR[] = nothing
+            Kaimon._WINDOWS_MACHINE[] = nothing
+            Kaimon._WINDOWS_JULIA_PIDS[] = Kaimon._tasklist_julia_pids
+        end
+    end
+end
+
 @testset "A registered gate is not connected again by discovery under another loopback name" begin
     # tcp_gates.json may say `localhost` where the gate's session file says `127.0.0.1`.
     sock = mktempdir()

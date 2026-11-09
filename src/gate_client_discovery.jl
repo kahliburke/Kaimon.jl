@@ -100,12 +100,15 @@ function _find_windows_sock_dir()
     return joinpath(readchomp(pipeline(`wslpath -u $appdata`; stderr = devnull)), "Kaimon", "sock")
 end
 
+_kernel_release() = lowercase(try read("/proc/sys/kernel/osrelease", String) catch; "" end)
+
+"Whether this is Linux under WSL."
+_in_wsl() = Sys.islinux() && occursin("microsoft", _kernel_release())
+
 "Whether this is WSL with Windows on the same loopback: WSL1, or WSL2 with mirrored networking."
 function _wsl_shares_loopback()
-    Sys.islinux() || return false
-    release = lowercase(try read("/proc/sys/kernel/osrelease", String) catch; "" end)
-    occursin("microsoft", release) || return false
-    occursin("wsl2", release) || return true
+    _in_wsl() || return false
+    occursin("wsl2", _kernel_release()) || return true
     mode = try readchomp(pipeline(`wslinfo --networking-mode`; stderr = devnull)) catch; "" end
     return strip(mode) == "mirrored"
 end
@@ -151,10 +154,45 @@ function _windows_pid_gone(pid::Integer, pids = _WINDOWS_JULIA_PIDS[]())
     return pid > 0 && pids !== nothing && !(pid in pids)
 end
 
-"Whether `conn` is a gate found in the Windows directory whose process Windows no longer lists."
+const _WINDOWS_MACHINE = Ref{Union{String,Nothing}}(nothing)
+
+"""
+    _windows_machine_id() -> String
+
+The `KaimonGate.machine_id()` a gate on the Windows side of this WSL machine reports, or `""`
+outside WSL. Worked out once per process.
+"""
+function _windows_machine_id()
+    m = _WINDOWS_MACHINE[]
+    m === nothing || return m
+    return _WINDOWS_MACHINE[] = try
+        _in_wsl() ? _find_windows_machine_id() : ""
+    catch e
+        @debug "No Windows machine id" exception = e
+        ""
+    end
+end
+
+# A Windows gate's id is the host name (see `KaimonGate.machine_id`).
+function _find_windows_machine_id()
+    name = strip(read(pipeline(Cmd(`hostname.exe`; dir = "/mnt/c"); stderr = devnull), String))
+    return isempty(name) ? "" : "NT:$name"   # Sys.KERNEL is :NT on Windows
+end
+
+"Whether a gate reporting `machine` runs on the Windows side of this WSL machine. Windows host names ignore case."
+function _is_windows_machine(machine::AbstractString)
+    w = _windows_machine_id()
+    return !isempty(w) && lowercase(machine) == lowercase(w)
+end
+
+"""
+Whether `conn` is a gate on the Windows side of WSL whose process Windows no longer lists: one found
+in the Windows directory, or one reached by address that reports Windows' machine id.
+"""
 function _windows_process_gone(conn)
-    lock(() -> haskey(_WINDOWS_SESSION_FILES, conn.session_id), _WINDOWS_SESSION_FILES_LOCK) || return false
-    return conn.pid > 0 && _windows_pid_gone(conn.pid)
+    windows = lock(() -> haskey(_WINDOWS_SESSION_FILES, conn.session_id), _WINDOWS_SESSION_FILES_LOCK) ||
+        _is_windows_machine(conn.machine)
+    return windows && conn.pid > 0 && _windows_pid_gone(conn.pid)
 end
 
 # The identity of a gate found in the Windows directory: its own, or, from a gate too old to
@@ -271,6 +309,7 @@ function cleanup_stale_sessions!(sock_dir::String)
 
     # Collect known session IDs from .json files
     json_sessions = Set{String}()
+    windows_pids = missing   # Windows' process list, read once if a Windows gate needs it
 
     for f in readdir(sock_dir)
         endswith(f, ".json") || continue
@@ -291,14 +330,22 @@ function cleanup_stale_sessions!(sock_dir::String)
             0
         end
 
-        # Reap dead-PID sessions: IPC always, and *localhost* TCP gates whose
-        # PID is known (>0) and dead. Genuinely remote TCP gates run on another
-        # machine, so their PID can't be checked here and is never reaped. The
-        # TCP meta `pid` is the gate's own getpid() once a pong has landed.
+        # Reap dead-PID sessions: IPC always, and TCP gates on this machine whose
+        # PID is known (>0) and dead. A TCP gate on the Windows side of WSL is
+        # judged by Windows' process list. Other machines' gates are never reaped
+        # here. The TCP meta `pid` is the gate's own getpid() once a pong has landed.
         session_mode = Symbol(get(meta, "mode", "ipc"))
         local_reapable = session_mode != :tcp ||
             (_same_machine(string(get(meta, "machine", "")), get(meta, "endpoint", "")) && pid > 0)
-        if local_reapable && !_is_pid_alive(pid)
+        gone = if local_reapable
+            !_is_pid_alive(pid)
+        elseif session_mode == :tcp && pid > 0 && _is_windows_machine(string(get(meta, "machine", "")))
+            windows_pids === missing && (windows_pids = _WINDOWS_JULIA_PIDS[]())
+            _windows_pid_gone(pid, windows_pids)
+        else
+            false
+        end
+        if gone
             @debug "Cleaning stale session" session_id pid
             _remove_session_files(sock_dir, session_id)
             delete!(json_sessions, session_id)
@@ -431,7 +478,7 @@ function discover_sessions(mgr::ConnectionManager)
             _remove_session_files(mgr.sock_dir, session_id)
             continue
         end
-        if windows && pid > 0
+        if pid > 0 && (windows || (session_mode == :tcp && _is_windows_machine(machine)))
             windows_pids === missing && (windows_pids = _WINDOWS_JULIA_PIDS[]())
             if _windows_pid_gone(pid, windows_pids)
                 @debug "Removing the file of a Windows session whose process has gone" session_id pid
