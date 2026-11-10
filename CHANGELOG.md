@@ -2,6 +2,10 @@
 
 Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each entry is also published on the GitHub release for its tag.
 
+## KaimonGate (unreleased)
+
+- A `serve` that fails partway, such as on a port already in use, closes the sockets it had opened and stops its CURVE authentication handler. The handler used to keep running, so a package that serves a gate while it precompiles never finished precompiling.
+
 ## Kaimon 2.13.2 (2026-11-10)
 
 [Diff since v2.13.1](https://github.com/kahliburke/Kaimon.jl/compare/v2.13.1...v2.13.2)

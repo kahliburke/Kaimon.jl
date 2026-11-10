@@ -373,72 +373,81 @@ function _serve(;
     curve_on = mode == :tcp && curve
     curve_server_public, curve_server_secret = "", ""
     zap_socket, zap_task = nothing, nothing
-    if curve_on
-        curve_server_public, curve_server_secret = _resolve_server_keypair(server_secret)
-        for ck in allowed_clients
-            isempty(ck) || authorize_client!(ck)
-        end
-        # Started before the session exists, so it hands its handles back for the session
-        # below to hold; closing that socket is what stops it.
-        allow_any || ((zap_socket, zap_task) = _start_zap_handler!(ctx; allow_any = false))
-    end
-    # Shared with _ensure_router!, so a supervisor rebind replays exactly this. The secret is
-    # passed rather than read from the session: this runs before the session is built, and
-    # the ZAP handler above must already be up before any CURVE socket binds.
-    _configure_router_socket!(socket; curve = curve_on, allow_any,
-                              server_secret = curve_server_secret)
-
-    # Bind endpoint — IPC (local socket file) or TCP (network port)
-    # TCP mode supports port=0 for ephemeral port assignment (ZMQ picks a free port).
+    # Assigned while the sockets open below, read after.
     tcp_host, tcp_port, tcp_stream_port = "127.0.0.1", 0, 0   # unused by an IPC gate
-    if mode == :tcp
-        bind(socket, "tcp://$(host):$(port)")
-        endpoint = rstrip(ZMQ._get_last_endpoint(socket), '\0')
-        # Keep the RESOLVED settings for restart replay and for a supervisor rebind: a gate
-        # asked for port 0 must come back on the port it actually got, not on 0.
-        tcp_host = host
-        m = match(r":(\d+)$", endpoint)
-        tcp_port = m !== nothing ? parse(Int, m.captures[1]) : port
-    else
-        sock_path = joinpath(sock_dir(),"$(sid).sock")
-        endpoint = "ipc://$(sock_path)"
-        bind(socket, endpoint)
-    end
+    local endpoint, stream_endpoint
+    pub_socket = nothing
+    try
+        if curve_on
+            curve_server_public, curve_server_secret = _resolve_server_keypair(server_secret)
+            for ck in allowed_clients
+                isempty(ck) || authorize_client!(ck)
+            end
+            # Started before the session exists, so it hands its handles back for the session
+            # below to hold; closing that socket is what stops it.
+            allow_any || ((zap_socket, zap_task) = _start_zap_handler!(ctx; allow_any = false))
+        end
+        # Shared with _ensure_router!, so a supervisor rebind replays exactly this. The secret is
+        # passed rather than read from the session: this runs before the session is built, and
+        # the ZAP handler above must already be up before any CURVE socket binds.
+        _configure_router_socket!(socket; curve = curve_on, allow_any,
+                                  server_secret = curve_server_secret)
 
-    # Create XPUB socket for streaming stdout/stderr to TUI. XPUB is wire-
-    # compatible with SUB clients but also delivers subscription events, which the
-    # broadcaster turns into per-topic presence (see _stream_broadcaster).
-    # sndhwm=0: unlimited send buffer — never drop messages under load.
-    # linger=0: close() returns immediately.
-    # rcvtimeo=0: non-blocking subscription recv (the owner polls events first).
-    pub_socket = _zmq_socket(ctx, XPUB)
-    pub_socket.sndhwm = 0
-    pub_socket.linger = 0
-    pub_socket.rcvtimeo = 0
-    # XPUB_VERBOSER: deliver EVERY subscribe/unsubscribe (not just 0->1/1->0) so
-    # we can count subscribers per topic.
-    _setsockopt_int(pub_socket, _ZMQ_XPUB_VERBOSER, 1)
-    # TCP keepalive: detect dead viewers so libzmq emits their unsubscribe and the
-    # count self-corrects on ungraceful disconnects (IPC detects peer-close already).
-    if mode == :tcp
-        _setsockopt_int(pub_socket, _ZMQ_TCP_KEEPALIVE, 1)
-        _setsockopt_int(pub_socket, _ZMQ_TCP_KEEPALIVE_IDLE, 30)
-        _setsockopt_int(pub_socket, _ZMQ_TCP_KEEPALIVE_INTVL, 5)
-        _setsockopt_int(pub_socket, _ZMQ_TCP_KEEPALIVE_CNT, 3)
-    end
-    # CURVE: same server treatment as the REP socket (ZAP handler already running).
-    if curve_on
-        make_curve_server!(pub_socket, curve_server_secret)
-        allow_any || _setsockopt_str(pub_socket, _ZMQ_ZAP_DOMAIN, _ZAP_DOMAIN)
-    end
-    if mode == :tcp
-        bind(pub_socket, "tcp://$(host):$(stream_port)")
-        stream_endpoint = rstrip(ZMQ._get_last_endpoint(pub_socket), '\0')
-        m = match(r":(\d+)$", stream_endpoint)
-        tcp_stream_port = m !== nothing ? parse(Int, m.captures[1]) : stream_port
-    else
-        stream_endpoint = "ipc://$(joinpath(sock_dir(),"$(sid)-stream.sock"))"
-        bind(pub_socket, stream_endpoint)
+        # Bind endpoint — IPC (local socket file) or TCP (network port)
+        # TCP mode supports port=0 for ephemeral port assignment (ZMQ picks a free port).
+        if mode == :tcp
+            bind(socket, "tcp://$(host):$(port)")
+            endpoint = rstrip(ZMQ._get_last_endpoint(socket), '\0')
+            # Keep the RESOLVED settings for restart replay and for a supervisor rebind: a gate
+            # asked for port 0 must come back on the port it actually got, not on 0.
+            tcp_host = host
+            m = match(r":(\d+)$", endpoint)
+            tcp_port = m !== nothing ? parse(Int, m.captures[1]) : port
+        else
+            sock_path = joinpath(sock_dir(),"$(sid).sock")
+            endpoint = "ipc://$(sock_path)"
+            bind(socket, endpoint)
+        end
+
+        # Create XPUB socket for streaming stdout/stderr to TUI. XPUB is wire-
+        # compatible with SUB clients but also delivers subscription events, which the
+        # broadcaster turns into per-topic presence (see _stream_broadcaster).
+        # sndhwm=0: unlimited send buffer — never drop messages under load.
+        # linger=0: close() returns immediately.
+        # rcvtimeo=0: non-blocking subscription recv (the owner polls events first).
+        pub_socket = _zmq_socket(ctx, XPUB)
+        pub_socket.sndhwm = 0
+        pub_socket.linger = 0
+        pub_socket.rcvtimeo = 0
+        # XPUB_VERBOSER: deliver EVERY subscribe/unsubscribe (not just 0->1/1->0) so
+        # we can count subscribers per topic.
+        _setsockopt_int(pub_socket, _ZMQ_XPUB_VERBOSER, 1)
+        # TCP keepalive: detect dead viewers so libzmq emits their unsubscribe and the
+        # count self-corrects on ungraceful disconnects (IPC detects peer-close already).
+        if mode == :tcp
+            _setsockopt_int(pub_socket, _ZMQ_TCP_KEEPALIVE, 1)
+            _setsockopt_int(pub_socket, _ZMQ_TCP_KEEPALIVE_IDLE, 30)
+            _setsockopt_int(pub_socket, _ZMQ_TCP_KEEPALIVE_INTVL, 5)
+            _setsockopt_int(pub_socket, _ZMQ_TCP_KEEPALIVE_CNT, 3)
+        end
+        # CURVE: same server treatment as the REP socket (ZAP handler already running).
+        if curve_on
+            make_curve_server!(pub_socket, curve_server_secret)
+            allow_any || _setsockopt_str(pub_socket, _ZMQ_ZAP_DOMAIN, _ZAP_DOMAIN)
+        end
+        if mode == :tcp
+            bind(pub_socket, "tcp://$(host):$(stream_port)")
+            stream_endpoint = rstrip(ZMQ._get_last_endpoint(pub_socket), '\0')
+            m = match(r":(\d+)$", stream_endpoint)
+            tcp_stream_port = m !== nothing ? parse(Int, m.captures[1]) : stream_port
+        else
+            stream_endpoint = "ipc://$(joinpath(sock_dir(),"$(sid)-stream.sock"))"
+            bind(pub_socket, stream_endpoint)
+        end
+    catch
+        # No session holds these yet, and the ZAP handler runs until its socket is closed.
+        _abandon_serve!(ctx, (socket, pub_socket, zap_socket), zap_task)
+        rethrow()
     end
 
     # Write metadata file for session discovery. Written for every LOCAL gate: real IPC
@@ -826,6 +835,22 @@ function restart()
         @warn "Restart cleanup failed; proceeding to exec anyway" exception = (e, catch_backtrace())
     end
     _exec_restart(name, sid, proj, snap)
+end
+
+"""
+    _abandon_serve!(ctx, sockets, zap_task)
+
+Close what a `serve` that failed partway had opened, and wait for its ZAP handler to see its
+socket closed. A process building a package image waits on every open handle, so a handler left
+running would hold it forever.
+"""
+function _abandon_serve!(ctx::ZMQ.Context, sockets, zap_task)
+    for s in sockets
+        s === nothing || (try; close(s); catch; end)
+    end
+    zap_task === nothing || timedwait(() -> istaskdone(zap_task), 5.0)
+    try; close(ctx); catch; end
+    return nothing
 end
 
 function _cleanup(; exiting::Bool = false)
