@@ -10,7 +10,7 @@ Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each e
 - On a platform with no Qdrant or llama.cpp build, such as Linux on ARM64 with glibc for Qdrant, the Search tab says so. Starting it used to fail with an `UndefVarError`.
 - On Windows, a check for whether a process ID is running reported every ID as running.
 
-## Kaimon 2.13.1 (unreleased)
+## Kaimon 2.13.1 (2026-11-10)
 
 [Diff since v2.13.0](https://github.com/kahliburke/Kaimon.jl/compare/v2.13.0...v2.13.1)
 
@@ -24,7 +24,7 @@ Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each e
 - A stalled TCP session says whether its gate refused the connection, got no answer at all (a firewall or VPN may drop the traffic), never replied on an open connection (something between may intercept it), or stopped replying.
 - The gate documentation describes registering Windows gates from WSL2 with NAT networking, and the effect of corporate VPNs on WSL2.
 
-## KaimonGate 1.7.1 (unreleased)
+## KaimonGate 1.7.1 (2026-11-09)
 
 [Diff since KaimonGate-v1.7.0](https://github.com/kahliburke/Kaimon.jl/compare/KaimonGate-v1.7.0...KaimonGate-v1.7.1)
 
