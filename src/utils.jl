@@ -24,20 +24,80 @@ end
 ```
 """
 function process_running(pid::Int)
-    if Sys.iswindows()
-        # On Windows, `tasklist` is a common way to check for a PID.
-        # The `findstr` command filters for the PID.
-        # If the command succeeds (exit code 0), the process exists.
-        # We need to check if the output contains the PID, as `tasklist` can return 0 even if not found.
-        return read(`tasklist /FI "PID eq $pid"`, String) |> strip |> !isempty
-    else
-        # On Unix-like systems (Linux, macOS), `kill -0` is the standard
-        # way to check if a process exists without sending a signal.
-        return success(`kill -0 $pid`)
-    end
+    Sys.iswindows() && return _windows_start_id(pid) !== nothing
+    # On Unix-like systems (Linux, macOS), `kill -0` is the standard
+    # way to check if a process exists without sending a signal.
+    return success(`kill -0 $pid`)
 end
 
 export process_running
+
+"""
+    process_start_id(pid) -> Union{String,Nothing}
+
+When the process `pid` started, as an opaque string; `nothing` when no such process is running or
+this platform can't tell. A pid is reused once its process exits, so a pid recorded in a file names
+the process it was recorded for only together with this id (see [`same_process`](@ref)).
+"""
+function process_start_id(pid::Integer)::Union{String,Nothing}
+    pid > 0 || return nothing
+    try
+        Sys.islinux() && return _linux_start_id(pid)
+        Sys.isapple() && return _macos_start_id(pid)
+        Sys.iswindows() && return _windows_start_id(pid)
+    catch
+    end
+    return nothing
+end
+
+"""
+    same_process(pid, started) -> Bool
+
+Whether `pid` is still the process whose [`process_start_id`](@ref) was `started`.
+"""
+same_process(pid::Integer, started::AbstractString)::Bool =
+    !isempty(started) && process_start_id(pid) == started
+
+export process_start_id, same_process
+
+# The boot id and field 22 of /proc/<pid>/stat (start time in clock ticks since boot). Field 2, the
+# command name, is in parentheses and may contain spaces, so fields are counted after its last ')'.
+function _linux_start_id(pid::Integer)
+    stat = read("/proc/$pid/stat", String)
+    fields = split(stat[findlast(')', stat)+1:end])
+    boot = strip(read("/proc/sys/kernel/random/boot_id", String))
+    return "$boot:$(fields[20])"
+end
+
+# `proc_pidinfo(PROC_PIDTBSDINFO)` fills a `struct proc_bsdinfo` (136 bytes), whose start time
+# (`pbi_start_tvsec`, `pbi_start_tvusec`) is its last 16 bytes.
+function _macos_start_id(pid::Integer)
+    buf = zeros(UInt8, 136)
+    n = ccall(:proc_pidinfo, Cint, (Cint, Cint, UInt64, Ptr{UInt8}, Cint), pid, 3, 0, buf, length(buf))
+    n == length(buf) || return nothing
+    sec, usec = reinterpret(UInt64, buf[121:136])
+    return "$sec.$usec"
+end
+
+# The process's creation time from `GetProcessTimes`. An exited process keeps its pid while any
+# handle to it is open, so it must also still be running (`STILL_ACTIVE`).
+function _windows_start_id(pid::Integer)
+    h = ccall((:OpenProcess, "kernel32"), stdcall, Ptr{Cvoid}, (UInt32, Cint, UInt32),
+              0x1000, 0, pid)   # PROCESS_QUERY_LIMITED_INFORMATION
+    h == C_NULL && return nothing
+    try
+        code = Ref{UInt32}(0)
+        ccall((:GetExitCodeProcess, "kernel32"), stdcall, Cint, (Ptr{Cvoid}, Ref{UInt32}), h, code) != 0 &&
+            code[] == 259 || return nothing
+        created, exited, kernel, user = Ref{UInt64}(0), Ref{UInt64}(0), Ref{UInt64}(0), Ref{UInt64}(0)
+        ccall((:GetProcessTimes, "kernel32"), stdcall, Cint,
+              (Ptr{Cvoid}, Ref{UInt64}, Ref{UInt64}, Ref{UInt64}, Ref{UInt64}),
+              h, created, exited, kernel, user) == 0 && return nothing
+        return string(created[])
+    finally
+        ccall((:CloseHandle, "kernel32"), stdcall, Cint, (Ptr{Cvoid},), h)
+    end
+end
 
 """
     terminate_process(pid::Int; force::Bool=false) -> Nothing

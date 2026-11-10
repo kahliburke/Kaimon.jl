@@ -338,6 +338,8 @@ function Tachikoma.update!(m::KaimonModel, evt::TaskEvent)
         elseif r.active
             _set_search_status!("Qdrant installed & loaded — starting…")
             _push_log!(:info, "Qdrant_jll installed and loaded into the running process")
+        elseif "Qdrant" in JLLS_WITHOUT_BUILD
+            _set_search_status!(no_build_message("Qdrant"))
         else
             _set_search_status!("Qdrant installed but failed to load (see log)")
             _push_log!(:warn, "Qdrant_jll installed but load_qdrant_jll! failed:\n$(r.output)")
@@ -352,6 +354,8 @@ function Tachikoma.update!(m::KaimonModel, evt::TaskEvent)
         elseif r.loaded
             _set_search_status!("llama.cpp installed; its server starts on first use")
             _push_log!(:info, "llama_cpp_jll installed and loaded into the running process")
+        elseif "llama.cpp" in JLLS_WITHOUT_BUILD
+            _set_search_status!(no_build_message("llama.cpp"))
         else
             _set_search_status!("llama.cpp installed but failed to load (see log)")
             _push_log!(:warn, "llama_cpp_jll installed but load_llamacpp_jll! failed:\n$(r.output)")

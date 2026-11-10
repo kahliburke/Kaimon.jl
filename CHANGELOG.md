@@ -2,6 +2,14 @@
 
 Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each entry is also published on the GitHub release for its tag.
 
+## Kaimon (unreleased)
+
+**Fixes:**
+- At startup Kaimon stops agent processes left by an earlier Kaimon only when the process ID still names the process it recorded, compared by start time. After a restart a recorded ID can belong to another process, and Kaimon used to stop that process, such as the managed Qdrant it had just started.
+- A managed Qdrant or llama.cpp server is recognized from its record the same way, so a record left by a restart doesn't make an unrelated process look like the server, and stopping Qdrant from the Search tab can't signal that process.
+- On a platform with no Qdrant or llama.cpp build, such as Linux on ARM64 with glibc for Qdrant, the Search tab says so. Starting it used to fail with an `UndefVarError`.
+- On Windows, a check for whether a process ID is running reported every ID as running.
+
 ## Kaimon 2.13.1 (unreleased)
 
 [Diff since v2.13.0](https://github.com/kahliburke/Kaimon.jl/compare/v2.13.0...v2.13.1)

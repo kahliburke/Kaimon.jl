@@ -175,7 +175,9 @@ function load_qdrant_jll!()::Bool
     isfile(joinpath(env, "Manifest.toml")) || return false
     env in LOAD_PATH || push!(LOAD_PATH, env)
     try
-        _QDRANT_JLL_MOD[] = Base.require(_QDRANT_JLL)
+        mod = Base.require(_QDRANT_JLL)
+        jll_has_build(mod, "Qdrant") || return false
+        _QDRANT_JLL_MOD[] = mod
         return true
     catch e
         @warn "Failed to load Qdrant_jll from the managed service env" env exception =
@@ -281,7 +283,7 @@ function managed_qdrant_running()::Bool
     _qdrant_child_alive() && return true
     r = read_service_record(qdrant_record_path())
     (r === nothing || r.host != gethostname()) && return false
-    _pid_alive(r.pid) && return true
+    record_live_here(r) && return true
     try; rm(qdrant_record_path(); force = true); catch; end
     return false
 end
@@ -313,7 +315,7 @@ function ensure_qdrant!(; timeout::Real = 30.0, max_wait::Real = 600.0)::Bool
     mode === :off && return false
 
     if _QDRANT_JLL_MOD[] === nothing && !load_qdrant_jll!()
-        if mode === :always
+        if mode === :always && !("Qdrant" in JLLS_WITHOUT_BUILD)
             @warn "Managed Qdrant requested (KAIMON_QDRANT_MANAGED=always) but the Qdrant \
                    binary isn't installed. Enable it from the Search tab, or install \
                    Qdrant_jll into Kaimon's service env: $(qdrant_service_env())."
@@ -441,7 +443,7 @@ function shutdown_qdrant!()
         # could read its pid, a process on this machine that is no longer alive.
         r = read_service_record(qdrant_record_path())
         if r !== nothing && r.host == gethostname() &&
-           (r.pid == pid || (pid === nothing && !_pid_alive(r.pid)))
+           (r.pid == pid || (pid === nothing && !record_live_here(r)))
             try; rm(qdrant_record_path(); force = true); catch; end
         end
         _QDRANT_HEARTBEAT[] === nothing || (close(_QDRANT_HEARTBEAT[]); _QDRANT_HEARTBEAT[] = nothing)
@@ -464,7 +466,8 @@ function stop_managed_qdrant!()
         pid = (proc isa Base.Process ? _proc_pid(proc) : nothing)
         r = read_service_record(qdrant_record_path())
         here = r !== nothing && r.host == gethostname()
-        pid = something(pid, here ? r.pid : nothing, Some(nothing))
+        # The record's pid is stopped only while it still names the process the record was written for.
+        pid = something(pid, here && record_live_here(r) ? r.pid : nothing, Some(nothing))
         if pid !== nothing && _pid_alive(pid)
             @info "Stopping managed Qdrant" pid
             _kill_pid(pid; force = false)

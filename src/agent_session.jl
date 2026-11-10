@@ -823,24 +823,34 @@ end
 
 _agent_pid_file() = joinpath(kaimon_cache_dir(), "agents", "pids.json")
 
+# Owned agents' processes by agent id: the pid and its `Utils.process_start_id`. The pid alone can
+# name an unrelated process by the time a later Kaimon reads the file, after a reboot most of all.
 function _read_pid_file()
     f = _agent_pid_file()
-    isfile(f) || return Dict{String,Int}()
+    d = Dict{String,Tuple{Int,String}}()
+    isfile(f) || return d
     try
-        Dict{String,Int}(k => Int(v) for (k, v) in JSON.parsefile(f))
+        for (k, v) in JSON.parsefile(f)
+            v isa AbstractDict || continue   # a bare pid: nothing to identify it by
+            d[String(k)] = (Int(v["pid"]), String(v["started"]))
+        end
     catch
-        Dict{String,Int}()
     end
+    return d
 end
 
 function _write_pid_file(d::AbstractDict)
     f = _agent_pid_file()
     mkpath(dirname(f))
-    try; write(f, JSON.json(d)); catch; end
+    entries = Dict(k => Dict("pid" => pid, "started" => started) for (k, (pid, started)) in d)
+    try; write(f, JSON.json(entries)); catch; end
 end
 
+# An agent whose start can't be read is not recorded, so it is never reaped.
 function _record_agent_pid!(id::String, pid::Integer)
-    d = _read_pid_file(); d[id] = Int(pid); _write_pid_file(d)
+    started = Utils.process_start_id(pid)
+    started === nothing && return
+    d = _read_pid_file(); d[id] = (Int(pid), started); _write_pid_file(d)
 end
 function _forget_agent_pid!(id::String)
     d = _read_pid_file(); haskey(d, id) || return; delete!(d, id); _write_pid_file(d)
@@ -855,15 +865,12 @@ On Kaimon (re)start, kill leftover owned-agent processes from a prior instance
 function reap_orphan_agents!()
     d = _read_pid_file()
     isempty(d) && return
-    for (id, pid) in d
-        # Cross-platform (Windows had `kill -0`/`kill` throw → caught → never reaped, so
-        # orphan `claude` children leaked across restarts). The PIDs are ours (from the
-        # pid file), so identity is certain — just check liveness and terminate.
-        Utils.process_running(pid) || continue
+    for (id, (pid, started)) in d
+        Utils.same_process(pid, started) || continue
         _push_log!(:info, "Reaping orphan agent '$id' (pid=$pid)")
         Utils.terminate_process(pid)
         sleep(0.5)
-        Utils.process_running(pid) && Utils.terminate_process(pid; force = true)
+        Utils.same_process(pid, started) && Utils.terminate_process(pid; force = true)
     end
     _write_pid_file(Dict{String,Int}())
 end

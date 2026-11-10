@@ -74,7 +74,9 @@ function load_llamacpp_jll!()::Bool
     isfile(joinpath(env, "Manifest.toml")) || return false
     env in LOAD_PATH || push!(LOAD_PATH, env)
     try
-        _LLAMACPP_JLL_MOD[] = Base.require(_LLAMACPP_JLL)
+        mod = Base.require(_LLAMACPP_JLL)
+        jll_has_build(mod, "llama.cpp") || return false
+        _LLAMACPP_JLL_MOD[] = mod
         return true
     catch e
         @warn "Failed to load llama_cpp_jll from its service env" env exception = (e, catch_backtrace())
@@ -284,7 +286,7 @@ function ensure_llamacpp!(model::AbstractString; timeout::Real = 120.0)
         r = read_service_record(rec)
         (r !== nothing && record_live_here(r) && _llamacpp_ok(r.port, r.key)) &&
             return ("http://127.0.0.1:$(r.port)", r.key)
-        if r !== nothing && r.host == gethostname() && !_pid_alive(r.pid)
+        if r !== nothing && r.host == gethostname() && !record_live_here(r)
             @warn "The llama.cpp server for '$model' has exited; starting a new one" log = llamacpp_log_path(model)
         end
         exe = llamacpp_server_cmd()
@@ -342,7 +344,7 @@ function _stop_llamacpp_locked!(model::AbstractString)
     t === nothing || close(t)
     rec = llamacpp_record_path(model)
     r = read_service_record(rec)
-    (r !== nothing && r.host == gethostname() && !_pid_alive(r.pid)) && rm(rec; force = true)
+    (r !== nothing && r.host == gethostname() && !record_live_here(r)) && rm(rec; force = true)
     return nothing
 end
 

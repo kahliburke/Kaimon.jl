@@ -198,6 +198,27 @@ function loopback_listener_ok(port::Integer)::Bool
     return uid == 0 || uid == Int(ccall(:getuid, Cuint, ()))
 end
 
+"""
+    jll_has_build(mod, name) -> Bool
+
+Whether the JLL module `mod` has a binary for this platform. A JLL installs on any platform but
+defines its products only where it has a build; without one this says so and returns `false`.
+"""
+function jll_has_build(mod::Module, name::AbstractString)::Bool
+    Base.invokelatest(mod.is_available) && return true
+    @warn no_build_message(name)
+    push!(JLLS_WITHOUT_BUILD, String(name))
+    return false
+end
+
+"Names given to `jll_has_build` that found no build for this platform."
+const JLLS_WITHOUT_BUILD = Set{String}()
+
+no_build_message(name::AbstractString) = "$name has no build for this platform ($(jll_platform()))"
+
+"This platform as JLLs name it, such as `aarch64-linux-gnu`."
+jll_platform() = Base.BinaryPlatforms.triplet(Base.BinaryPlatforms.HostPlatform())
+
 # ── Service records ───────────────────────────────────────────────────────────
 
 "Where a running service is, and whose it is. Written privately; `key` is the service's API key."
@@ -207,10 +228,14 @@ struct ServiceRecord
     port::Int
     key::String
     heartbeat::Float64
+    started::String   # the process's `Utils.process_start_id`; empty when it couldn't be read
 end
 
+ServiceRecord(host, pid, port, key, heartbeat) = ServiceRecord(host, pid, port, key, heartbeat, "")
+
 ServiceRecord(port::Integer, key::AbstractString; pid::Integer = getpid()) =
-    ServiceRecord(gethostname(), Int(pid), Int(port), String(key), time())
+    ServiceRecord(gethostname(), Int(pid), Int(port), String(key), time(),
+                  something(Utils.process_start_id(pid), ""))
 
 "A fresh random key for a service Kaimon starts."
 new_service_key()::String = bytes2hex(rand(Random.RandomDevice(), UInt8, 24))
@@ -228,7 +253,7 @@ function read_service_record(path::AbstractString)::Union{ServiceRecord,Nothing}
     d isa AbstractDict || return nothing
     try
         return ServiceRecord(String(d["host"]), Int(d["pid"]), Int(d["port"]), String(d["key"]),
-                             Float64(d["heartbeat"]))
+                             Float64(d["heartbeat"]), String(get(d, "started", "")))
     catch
         return nothing
     end
@@ -241,14 +266,18 @@ function write_service_record(path::AbstractString, r::ServiceRecord)
     open(tmp, "w") do io
         Sys.isunix() && chmod(tmp, 0o600)
         write(io, JSON.json(Dict("host" => r.host, "pid" => r.pid, "port" => r.port, "key" => r.key,
-                                 "heartbeat" => r.heartbeat)))
+                                 "heartbeat" => r.heartbeat, "started" => r.started)))
     end
     mv(tmp, path; force = true)
     return path
 end
 
-"The record names a process that is alive on this machine."
-record_live_here(r::ServiceRecord)::Bool = r.host == gethostname() && _pid_alive(r.pid)
+"""
+The record names a process that is alive on this machine: the same pid and start time, or for a
+record without a start time, any process with that pid.
+"""
+record_live_here(r::ServiceRecord)::Bool =
+    r.host == gethostname() && (isempty(r.started) ? _pid_alive(r.pid) : Utils.same_process(r.pid, r.started))
 
 "The record's owner has updated it recently (it may be on another machine)."
 record_fresh(r::ServiceRecord; now::Float64 = time())::Bool = now - r.heartbeat < SERVICE_STALE_S
@@ -266,7 +295,7 @@ function start_service_heartbeat!(path::AbstractString, alive::Function)
             if r === nothing || r.host != gethostname() || !alive()
                 close(t)
             else
-                write_service_record(path, ServiceRecord(r.host, r.pid, r.port, r.key, time()))
+                write_service_record(path, ServiceRecord(r.host, r.pid, r.port, r.key, time(), r.started))
             end
         catch
             close(t)

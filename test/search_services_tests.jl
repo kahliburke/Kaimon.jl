@@ -137,4 +137,53 @@ end
         a, b = KS.new_service_key(), KS.new_service_key()
         @test a != b && length(a) == 48 && all(isxdigit, a)
     end
+
+    @testset "a process is identified by its pid and start time" begin
+        me = KS.Utils.process_start_id(getpid())
+        @test me isa String && !isempty(me)
+        @test KS.Utils.process_start_id(getpid()) == me              # stable
+        @test KS.Utils.same_process(getpid(), me)
+        @test !KS.Utils.same_process(getpid(), me * "0")            # the pid, reused by another process
+        @test !KS.Utils.same_process(getpid(), "")                  # nothing to compare with
+        @test KS.Utils.process_start_id(2^30) === nothing            # no such process
+        p = run(`$(Base.julia_cmd()) --startup-file=no -e "sleep(30)"`; wait = false)
+        pid = getpid(p)
+        try
+            child = KS.Utils.process_start_id(pid)
+            @test child isa String && child != me
+        finally
+            kill(p); wait(p)
+        end
+        @test KS.Utils.process_start_id(pid) === nothing
+    end
+
+    @testset "a record names its process only while the pid and start time both match" begin
+        r = KS.ServiceRecord(7001, "k")                              # this process, start time read
+        @test !isempty(r.started)
+        @test KS.record_live_here(r)
+        reused = KS.ServiceRecord(r.host, r.pid, r.port, r.key, r.heartbeat, r.started * "0")
+        @test !KS.record_live_here(reused)
+        @test KS.record_live_here(KS.ServiceRecord(r.host, r.pid, r.port, r.key, r.heartbeat))   # none recorded: the pid alone
+        mktempdir() do d
+            path = joinpath(d, "server.json")
+            KS.write_service_record(path, r)
+            @test KS.read_service_record(path).started == r.started
+            write(path, KS.JSON.json(Dict("host" => r.host, "pid" => r.pid, "port" => 1, "key" => "k",
+                                          "heartbeat" => time())))
+            @test KS.read_service_record(path).started == ""         # a record written without one
+        end
+    end
+
+    @testset "a JLL with no build for this platform is reported, not loaded" begin
+        nobuild = Module(:FakeNoBuild_jll)
+        Core.eval(nobuild, :(is_available() = false))
+        withbuild = Module(:FakeBuild_jll)
+        Core.eval(withbuild, :(is_available() = true))
+        @test KS.jll_has_build(withbuild, "Fake") == true
+        @test !("Fake" in KS.JLLS_WITHOUT_BUILD)
+        @test (@test_logs (:warn, KS.no_build_message("Fake")) KS.jll_has_build(nobuild, "Fake")) == false
+        @test "Fake" in KS.JLLS_WITHOUT_BUILD
+        delete!(KS.JLLS_WITHOUT_BUILD, "Fake")
+        @test occursin(KS.jll_platform(), KS.no_build_message("Qdrant"))
+    end
 end

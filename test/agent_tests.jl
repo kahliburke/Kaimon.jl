@@ -296,6 +296,34 @@ end
         end
     end
 
+    @testset "the orphan-agent reaper signals only the process it recorded" begin
+        withenv("KAIMON_CACHE_DIR" => mktempdir()) do
+            p = run(`$(Base.julia_cmd()) --startup-file=no -e "sleep(60)"`; wait = false)
+            try
+                pid = getpid(p)
+                Kaimon._record_agent_pid!("a1", pid)
+                (rpid, started) = Kaimon._read_pid_file()["a1"]
+                @test rpid == pid && started == Kaimon.Utils.process_start_id(pid)
+                # The same pid with another start time is a different process: left alone, and forgotten.
+                Kaimon._write_pid_file(Dict("a1" => (pid, started * "0")))
+                Kaimon.reap_orphan_agents!()
+                @test process_running(p)
+                @test isempty(Kaimon._read_pid_file())
+                # A bare pid, as written before start times were kept, is never signalled.
+                write(Kaimon._agent_pid_file(), Kaimon.JSON.json(Dict("a1" => pid)))
+                @test isempty(Kaimon._read_pid_file())
+                Kaimon.reap_orphan_agents!()
+                @test process_running(p)
+                # The process it recorded is reaped.
+                Kaimon._record_agent_pid!("a1", pid)
+                Kaimon.reap_orphan_agents!()
+                @test timedwait(() -> !process_running(p), 10.0) === :ok
+            finally
+                process_running(p) && kill(p, Base.SIGKILL)
+            end
+        end
+    end
+
     @testset "an embedded Kaimon: its own directories, extensions and tools per caller" begin
         # Its own directories, named outright.
         d = mktempdir()
