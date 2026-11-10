@@ -2,7 +2,9 @@
 
 Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each entry is also published on the GitHub release for its tag.
 
-## Kaimon (unreleased)
+## Kaimon 2.13.2 (unreleased)
+
+[Diff since v2.13.1](https://github.com/kahliburke/Kaimon.jl/compare/v2.13.1...v2.13.2)
 
 **Fixes:**
 - At startup Kaimon stops agent processes left by an earlier Kaimon only when the process ID still names the process it recorded, compared by start time. After a restart a recorded ID can belong to another process, and Kaimon used to stop that process, such as the managed Qdrant it had just started.
