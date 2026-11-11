@@ -157,6 +157,26 @@ end
         @test KS.Utils.process_start_id(pid) === nothing
     end
 
+    @testset "runtime package loads add their env and run one at a time" begin
+        dates = Base.PkgId(Base.UUID("ade2ca70-3891-5945-98fb-dc099432e06a"), "Dates")
+        env = mktempdir()
+        try
+            @test KS.Utils.lazy_require(dates; env) === Base.require(dates)
+            @test env in LOAD_PATH
+            # A load waits for one in progress: Julia shares the resolved load path between
+            # overlapping loads, so they must not overlap.
+            t = lock(KS.Utils._LAZY_LOAD_LOCK) do
+                t = Threads.@spawn KS.Utils.lazy_require(KS, :SQLite)
+                sleep(0.5)
+                @test !istaskdone(t)
+                t
+            end
+            @test nameof(fetch(t)) === :SQLite
+        finally
+            filter!(!=(env), LOAD_PATH)
+        end
+    end
+
     @testset "a record names its process only while the pid and start time both match" begin
         r = KS.ServiceRecord(7001, "k")                              # this process, start time read
         @test !isempty(r.started)

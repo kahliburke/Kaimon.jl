@@ -72,9 +72,8 @@ function load_llamacpp_jll!()::Bool
     _LLAMACPP_JLL_MOD[] !== nothing && return true
     env = llamacpp_service_env()
     isfile(joinpath(env, "Manifest.toml")) || return false
-    env in LOAD_PATH || push!(LOAD_PATH, env)
     try
-        mod = Base.require(_LLAMACPP_JLL)
+        mod = Utils.lazy_require(_LLAMACPP_JLL; env)
         jll_has_build(mod, "llama.cpp") || return false
         _LLAMACPP_JLL_MOD[] = mod
         return true

@@ -17,6 +17,7 @@ using Dates
 using DBInterface
 using JSON
 using DataFrames
+using ..Utils: lazy_require
 
 # SQLite is loaded on FIRST USE, not at module load. `using Kaimon` is how an
 # extension reaches the gate client, and that pulled SQLite — and therefore
@@ -24,7 +25,7 @@ using DataFrames
 # process, for a database none of them touch. Tool calls that do use it are RPCs
 # to the Kaimon host (KaimonGate.call_tool), so they run where SQLite is loaded.
 const _SQLITE = Ref{Union{Nothing,Module}}(nothing)
-_sqlite() = (_SQLITE[] === nothing && (_SQLITE[] = Base.require(@__MODULE__, :SQLite)); _SQLITE[])
+_sqlite() = (_SQLITE[] === nothing && (_SQLITE[] = lazy_require(@__MODULE__, :SQLite)); _SQLITE[])
 
 
 export init_db!,

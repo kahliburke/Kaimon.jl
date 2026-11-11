@@ -173,9 +173,8 @@ function load_qdrant_jll!()::Bool
     _QDRANT_JLL_MOD[] !== nothing && return true
     env = qdrant_service_env()
     isfile(joinpath(env, "Manifest.toml")) || return false
-    env in LOAD_PATH || push!(LOAD_PATH, env)
     try
-        mod = Base.require(_QDRANT_JLL)
+        mod = Utils.lazy_require(_QDRANT_JLL; env)
         jll_has_build(mod, "Qdrant") || return false
         _QDRANT_JLL_MOD[] = mod
         return true

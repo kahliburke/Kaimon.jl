@@ -201,4 +201,30 @@ launch_cmd(cmd::Base.Cmd) = Base.Cmd(launch_argv(cmd.exec))
 
 export launch_argv, launch_cmd
 
+# ── Runtime package loads ─────────────────────────────────────────────────────
+
+const _LAZY_LOAD_LOCK = ReentrantLock()
+
+"""
+    lazy_require(into::Module, name::Symbol) -> Module
+    lazy_require(pkg::Base.PkgId; env=nothing) -> Module
+
+Load a package after startup, one load at a time. While a `require` runs, Julia keeps the
+resolved load path in a process-wide cache that a `require` on another thread can pick up, so
+overlapping loads can resolve against a stale `LOAD_PATH`: a package whose environment was just
+added is then reported as not installed. `env`, when given, is added to `LOAD_PATH` under the
+same lock. Every load Kaimon does at runtime must go through here.
+"""
+lazy_require(into::Module, name::Symbol) =
+    lock(() -> Base.require(into, name), _LAZY_LOAD_LOCK)
+
+function lazy_require(pkg::Base.PkgId; env::Union{AbstractString,Nothing} = nothing)
+    lock(_LAZY_LOAD_LOCK) do
+        env === nothing || env in LOAD_PATH || push!(LOAD_PATH, env)
+        Base.require(pkg)
+    end
+end
+
+export lazy_require
+
 end # module Utils
