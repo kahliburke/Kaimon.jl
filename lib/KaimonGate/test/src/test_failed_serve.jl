@@ -21,7 +21,7 @@ if ccall(:jl_generating_output, Cint, ()) == 1
         end
         error("serve bound a port that was already taken")
     catch e
-        occursin("Address already in use", sprint(showerror, e)) || rethrow()
+        occursin(r"in use"i, sprint(showerror, e)) || rethrow()
     finally
         close(taken)
     end

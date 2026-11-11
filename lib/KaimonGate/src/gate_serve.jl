@@ -376,7 +376,7 @@ function _serve(;
     # Assigned while the sockets open below, read after.
     tcp_host, tcp_port, tcp_stream_port = "127.0.0.1", 0, 0   # unused by an IPC gate
     local endpoint, stream_endpoint
-    pub_socket = nothing
+    pub_socket, mpath = nothing, nothing
     try
         if curve_on
             curve_server_public, curve_server_secret = _resolve_server_keypair(server_secret)
@@ -444,59 +444,60 @@ function _serve(;
             stream_endpoint = "ipc://$(joinpath(sock_dir(),"$(sid)-stream.sock"))"
             bind(pub_socket, stream_endpoint)
         end
+
+        # Write metadata file for session discovery. Written for every LOCAL gate: real IPC
+        # gates, and Windows gates that were coerced IPC → TCP (`local_gate`) — the server
+        # finds those by file and connects to the recorded `tcp://127.0.0.1:<port>` exactly as
+        # it would an IPC socket path (see `discover_sessions`). Without this a Windows gate
+        # advertises nothing and is never discovered — the extension/session startup then times
+        # out. An EXPLICIT `mode=:tcp` gate is remote (connected via connect_tcp!) and writes no
+        # file. `discoverable=false` serves the gate but keeps it out of the registry entirely
+        # (embedded/private gates reached via explicit endpoints).
+        if discoverable && (mode != :tcp || local_gate)
+            mpath = write_metadata(sid, name, endpoint, stream_endpoint; spawned_by, mode)
+            # Diagnostic: confirms serve() reached the advertise step and WHERE it wrote — so a
+            # "never connected" failure can be split into "gate never advertised" vs "advertised
+            # but the server didn't discover it". For a SPAWNED gate (server session / extension)
+            # this lands in that process's captured log where it's wanted; for a user's own
+            # interactive gate (spawned_by == "user") it's just REPL noise, so drop it to @debug.
+            _adv = "Kaimon gate advertised for discovery at $endpoint (mode=$mode, metadata: $mpath)"
+            spawned_by == "user" ? (@debug _adv) : (@info _adv)
+        end
+
+        # Start message loop on an interactive thread so it stays scheduled even
+        # when the main thread is busy executing REPL code.
+        # Async handlers (eval_async, tool_call_async) use Threads.@spawn to run
+        # on the default thread pool, keeping this interactive thread free to
+        # answer pings during CPU-intensive operations.
+        # Everything above has resolved this gate's identity, so gather it into one session.
+        # Built here, before any task spawns, so the tasks see a complete session. Call sites are
+        # migrating onto it field by field; until they all have, the module Refs are kept in step
+        # and remain the source of truth.
+        _SESSION[] = GateSession(;
+            id = sid, namespace = namespace, mode = mode,
+            tcp_host = tcp_host, tcp_port = tcp_port,
+            tcp_stream_port = tcp_stream_port, auth_token = auth_token,
+            local_tcp_coerced = local_tcp_coerced, allow_mirror = allow_mirror,
+            allow_restart = allow_restart, mirror_repl = mirror_repl,
+            start_time = start_time,
+            context = ctx, socket = socket,
+            stream_socket = pub_socket, stream_endpoint = stream_endpoint,
+            curve_enabled = curve_on, curve_allow_any = allow_any,
+            curve_server_secret = curve_server_secret,
+            curve_server_public = curve_server_public,
+            zap_socket = zap_socket, zap_task = zap_task,
+            on_shutdown = on_shutdown, tools = tools,
+            running = true,
+        )
     catch
         # No session holds these yet, and the ZAP handler runs until its socket is closed.
+        mpath === nothing || rm(mpath; force = true)
         _abandon_serve!(ctx, (socket, pub_socket, zap_socket), zap_task)
         rethrow()
     end
 
-    # Write metadata file for session discovery. Written for every LOCAL gate: real IPC
-    # gates, and Windows gates that were coerced IPC → TCP (`local_gate`) — the server
-    # finds those by file and connects to the recorded `tcp://127.0.0.1:<port>` exactly as
-    # it would an IPC socket path (see `discover_sessions`). Without this a Windows gate
-    # advertises nothing and is never discovered — the extension/session startup then times
-    # out. An EXPLICIT `mode=:tcp` gate is remote (connected via connect_tcp!) and writes no
-    # file. `discoverable=false` serves the gate but keeps it out of the registry entirely
-    # (embedded/private gates reached via explicit endpoints).
-    if discoverable && (mode != :tcp || local_gate)
-        mpath = write_metadata(sid, name, endpoint, stream_endpoint; spawned_by, mode)
-        # Diagnostic: confirms serve() reached the advertise step and WHERE it wrote — so a
-        # "never connected" failure can be split into "gate never advertised" vs "advertised
-        # but the server didn't discover it". For a SPAWNED gate (server session / extension)
-        # this lands in that process's captured log where it's wanted; for a user's own
-        # interactive gate (spawned_by == "user") it's just REPL noise, so drop it to @debug.
-        _adv = "Kaimon gate advertised for discovery at $endpoint (mode=$mode, metadata: $mpath)"
-        spawned_by == "user" ? (@debug _adv) : (@info _adv)
-    end
-
     # Register cleanup
     atexit(() -> _stop(; exiting = true))
-
-    # Start message loop on an interactive thread so it stays scheduled even
-    # when the main thread is busy executing REPL code.
-    # Async handlers (eval_async, tool_call_async) use Threads.@spawn to run
-    # on the default thread pool, keeping this interactive thread free to
-    # answer pings during CPU-intensive operations.
-    # Everything above has resolved this gate's identity, so gather it into one session.
-    # Built here, before any task spawns, so the tasks see a complete session. Call sites are
-    # migrating onto it field by field; until they all have, the module Refs are kept in step
-    # and remain the source of truth.
-    _SESSION[] = GateSession(;
-        id = sid, namespace = namespace, mode = mode,
-        tcp_host = tcp_host, tcp_port = tcp_port,
-        tcp_stream_port = tcp_stream_port, auth_token = auth_token,
-        local_tcp_coerced = local_tcp_coerced, allow_mirror = allow_mirror,
-        allow_restart = allow_restart, mirror_repl = mirror_repl,
-        start_time = start_time,
-        context = ctx, socket = socket,
-        stream_socket = pub_socket, stream_endpoint = stream_endpoint,
-        curve_enabled = curve_on, curve_allow_any = allow_any,
-        curve_server_secret = curve_server_secret,
-        curve_server_public = curve_server_public,
-        zap_socket = zap_socket, zap_task = zap_task,
-        on_shutdown = on_shutdown, tools = tools,
-        running = true,
-    )
     _running!(true)
     # Broadcaster owns the XPUB stream socket (send + subscription recv). Runs on
     # :interactive so it stays scheduled alongside the message loop.
