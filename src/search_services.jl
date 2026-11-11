@@ -48,7 +48,7 @@ qdrant_api_key_setting()::String = String(search_setting("qdrant", "api_key", "K
 "The port a managed Qdrant tries first; it falls back to per-account ports when that is taken."
 qdrant_port_setting()::Int = _setting_int(search_setting("qdrant", "port", "KAIMON_QDRANT_PORT", 6333), 6333)
 
-"Use `qdrant.port` (and the next port, for gRPC) and nothing else: a taken port is an error."
+"Use `qdrant.port` and nothing else: a taken port is an error."
 qdrant_fixed_port()::Bool = _setting_bool(search_setting("qdrant", "fixed_port", "KAIMON_QDRANT_FIXED_PORT", false))
 
 """

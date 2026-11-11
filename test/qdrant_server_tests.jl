@@ -67,14 +67,23 @@ end
 
     @testset "managed Qdrant listens on loopback with the launch's key" begin
         _with_temp_cache() do dir
-            env = K._qdrant_env(; storage_path = joinpath(dir, "s"), http_port = 7001,
-                                grpc_port = 7002, api_key = "k123")
+            env = withenv("QDRANT__SERVICE__GRPC_PORT" => "7002") do
+                K._qdrant_env(; storage_path = joinpath(dir, "s"), http_port = 7001,
+                              api_key = "k123")
+            end
             @test env["QDRANT__SERVICE__HOST"] == "127.0.0.1"
             @test env["QDRANT__SERVICE__HTTP_PORT"] == "7001"
-            @test env["QDRANT__SERVICE__GRPC_PORT"] == "7002"
+            @test !haskey(env, "QDRANT__SERVICE__GRPC_PORT")
             @test env["QDRANT__SERVICE__API_KEY"] == "k123"
             @test env["QDRANT__STORAGE__SNAPSHOTS_PATH"] == joinpath(dir, "snapshots")
         end
+    end
+
+    @testset "managed Qdrant's config file turns gRPC off" begin
+        dir = mktempdir()
+        path = K._write_qdrant_config(dir)
+        @test dirname(path) == dir
+        @test occursin(r"^service:\n  grpc_port: null$"m, read(path, String))
     end
 
     @testset "install command targets the service env, unpinned" begin

@@ -193,11 +193,11 @@ end
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 """Launch the bundled Qdrant binary. Assumes `_QDRANT_JLL_MOD` is loaded."""
-function _spawn_managed_qdrant(; storage_path::String, http_port::Int, grpc_port::Int,
-                               api_key::String, log_path::String)
+function _spawn_managed_qdrant(; storage_path::String, http_port::Int, api_key::String,
+                               log_path::String)
     mod = _QDRANT_JLL_MOD[]
     mod === nothing && error("Qdrant_jll is not loaded")
-    env = _qdrant_env(; storage_path, http_port, grpc_port, api_key)
+    env = _qdrant_env(; storage_path, http_port, api_key)
     # `qdrant()` was defined by a just-loaded module — reach it past the current world.
     qdrant_cmd = Base.invokelatest(mod.qdrant)::Cmd
     # Qdrant logs every request, so the log is rotated rather than appended to forever.
@@ -207,19 +207,31 @@ function _spawn_managed_qdrant(; storage_path::String, http_port::Int, grpc_port
     # working dir; without this it inherits the launching process's cwd — e.g. the
     # user's repo — and litters it.
     workdir = dirname(log_path)
-    return run(pipeline(setenv(qdrant_cmd, env; dir = workdir);
+    config = _write_qdrant_config(workdir)
+    return run(pipeline(setenv(`$qdrant_cmd --config-path $config`, env; dir = workdir);
                         stdin = devnull, stdout = logio, stderr = logio); wait = false)
 end
 
 """
-The managed Qdrant's environment: loopback only, the launch's API key (which also guards gRPC,
-unused by Kaimon but served anyway), and storage under the private root.
+Write the managed Qdrant's config file into `dir` and return its path. It turns off the gRPC
+endpoint, which Kaimon doesn't use; an environment variable can only set its port, not disable it.
+Everything else comes from the environment (`_qdrant_env`), which overrides the file.
 """
-function _qdrant_env(; storage_path::String, http_port::Int, grpc_port::Int, api_key::String)
+function _write_qdrant_config(dir::AbstractString)::String
+    path = joinpath(dir, "kaimon-qdrant.yaml")
+    write(path, "service:\n  grpc_port: null\n")
+    return path
+end
+
+"""
+The managed Qdrant's environment: loopback only, the launch's API key, and storage under the
+private root.
+"""
+function _qdrant_env(; storage_path::String, http_port::Int, api_key::String)
     env = copy(ENV)
+    delete!(env, "QDRANT__SERVICE__GRPC_PORT")   # would re-enable gRPC over the config file
     env["QDRANT__SERVICE__HOST"] = "127.0.0.1"
     env["QDRANT__SERVICE__HTTP_PORT"] = string(http_port)
-    env["QDRANT__SERVICE__GRPC_PORT"] = string(grpc_port)
     env["QDRANT__SERVICE__API_KEY"] = api_key
     env["QDRANT__STORAGE__STORAGE_PATH"] = storage_path
     env["QDRANT__STORAGE__SNAPSHOTS_PATH"] = private_dir(joinpath(dirname(storage_path), "snapshots"))
@@ -354,10 +366,9 @@ function _start_and_await_qdrant(timeout::Real, max_wait::Real)::Bool
         end
         fixed = qdrant_fixed_port()
         port = service_free_port(qdrant_port_setting(); fixed)
-        grpc = port === nothing ? nothing : service_free_port(port + 1; exclude = [port], fixed)
-        if port === nothing || grpc === nothing
+        if port === nothing
             @error fixed ?
-                "Managed Qdrant is fixed to ports $(qdrant_port_setting()) and $(qdrant_port_setting() + 1), and one is in use" :
+                "Managed Qdrant is fixed to port $(qdrant_port_setting()), which is in use" :
                 "No free port for managed Qdrant near $(qdrant_port_setting())"
             return false
         end
@@ -366,7 +377,7 @@ function _start_and_await_qdrant(timeout::Real, max_wait::Real)::Bool
         @info "Starting managed Qdrant" port storage = qdrant_storage_dir() log
         try
             proc = _spawn_managed_qdrant(; storage_path = qdrant_storage_dir(),
-                http_port = port, grpc_port = grpc, api_key = key, log_path = log)
+                http_port = port, api_key = key, log_path = log)
             _QDRANT_PROC[] = proc
             write_service_record(rec, ServiceRecord(port, key; pid = getpid(proc)))
             _QDRANT_HEARTBEAT[] === nothing || close(_QDRANT_HEARTBEAT[])
