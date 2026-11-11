@@ -2,7 +2,21 @@
 
 Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each entry is also published on the GitHub release for its tag.
 
-## KaimonGate (unreleased)
+## Kaimon 2.13.3 (unreleased)
+
+[Diff since v2.13.2](https://github.com/kahliburke/Kaimon.jl/compare/v2.13.2...v2.13.3)
+
+**Fixes:**
+- Managed Qdrant serves only its REST API, the one Kaimon uses, so it needs one free port. It also served gRPC on the next port.
+- The check for a free port gives up on a connection attempt that gets no answer after 1.5 seconds. Where a firewall or WSL's networking drops loopback traffic, a start could take minutes.
+- When managed Qdrant fails to start, the Search tab says why. On Windows without the Microsoft Visual C++ Redistributable, which the Windows Qdrant binary needs, it names the download.
+- The Search tab's service status refreshes every 5 seconds while the tab is shown, and shows a managed Qdrant that is starting. `l` and `x` do nothing until the start finishes.
+- Managed Qdrant starts when the TUI opens, before the startup index work that needs it.
+- Packages Kaimon loads at runtime, such as `Qdrant_jll`, load one at a time. Two loads at once could fail with "required but does not seem to be installed".
+
+## KaimonGate 1.7.2 (unreleased)
+
+[Diff since KaimonGate-v1.7.1](https://github.com/kahliburke/Kaimon.jl/compare/KaimonGate-v1.7.1...KaimonGate-v1.7.2)
 
 - A `serve` that fails partway, such as on a port already in use, closes the sockets it had opened and stops its CURVE authentication handler. The handler used to keep running, so a package that serves a gate while it precompiles never finished precompiling.
 
