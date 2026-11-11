@@ -182,6 +182,7 @@ function check_search_health(; model::String = DEFAULT_EMBEDDING_MODEL)
         managed_qdrant_enabled = K.qdrant_managed_mode() !== :off,
         managed_qdrant_installed = K.managed_qdrant_installed(),
         managed_qdrant_running = K.managed_qdrant_running(),
+        managed_qdrant_starting = K.managed_qdrant_starting(),
     )
 end
 

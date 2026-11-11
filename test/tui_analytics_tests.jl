@@ -846,8 +846,7 @@ end
 end
 
 @testset "Search tab health refresh" begin
-    # A check is stamped when it starts and the cooldown runs from that stamp, so polling
-    # never stacks a second check behind a slow one.
+    # A check is stamped when it starts and the cooldown runs from that stamp.
     @testset "cooldown from the last start" begin
         m = Kaimon.KaimonModel()
         t0 = time() - 3.0
@@ -880,5 +879,45 @@ end
         @test occursin("managed process not answering", txt)
         @test !occursin("start managed Qdrant", txt)
         @test occursin("managed by Kaimon", txt)
+    end
+
+    @testset "one check runs at a time; a request made during it runs after it" begin
+        m = Kaimon.KaimonModel()
+        m._search_health_running = true
+        Kaimon._refresh_search_health_async!(m; cooldown = 0, queue = false)   # the poll
+        @test m.search_health_last_check == 0.0 && !m._search_health_again
+        Kaimon._refresh_search_health_async!(m; cooldown = 0)
+        @test m.search_health_last_check == 0.0 && m._search_health_again
+        # The running check finishes (here, failed): the noted request starts a fresh one.
+        Tachikoma.update!(m, Tachikoma.TaskEvent(:search_health, ErrorException("unreachable")))
+        @test m._search_health_running && !m._search_health_again
+        @test m.search_health_last_check > 0.0
+    end
+
+    @testset "a managed Qdrant that is starting is neither stopped nor removed" begin
+        m = Kaimon.KaimonModel()
+        m.tab_bar.active = Kaimon.TAB_SEARCH
+        mode = Kaimon.qdrant_managed_mode()
+        Kaimon._QDRANT_STARTING[] = true
+        try
+            for c in ('l', 'x')
+                Kaimon._set_search_status!("")
+                Kaimon._handle_search_key!(m, Tachikoma.KeyEvent(c))
+                @test first(Kaimon._SEARCH_STATUS[]) == "Managed Qdrant is starting"
+            end
+            @test Kaimon.qdrant_managed_mode() === mode
+        finally
+            Kaimon._QDRANT_STARTING[] = false
+        end
+        m.search_managed_qdrant_enabled = true
+        m.search_managed_qdrant_installed = true
+        m.search_managed_qdrant_running = true
+        m.search_managed_qdrant_starting = true
+        area = Tachikoma.Rect(1, 1, 100, 6)
+        buf = Tachikoma.Buffer(area)
+        Kaimon._view_search_status(m, area, buf)
+        txt = Tachikoma.buffer_to_text(buf, area)
+        @test occursin("starting", txt)
+        @test !occursin("stop", txt) && !occursin("remove", txt)
     end
 end

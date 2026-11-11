@@ -256,6 +256,12 @@ function Tachikoma.update!(m::KaimonModel, evt::TaskEvent)
     elseif evt.id == :search_health
         # Only clear if we're showing "Refreshing..." (not another op's status)
         first(_SEARCH_STATUS[]) == "Refreshing..." && _set_search_status!("")
+        m._search_health_running = false
+        if m._search_health_again
+            # Requested while this check ran, so its result may predate what prompted it.
+            m._search_health_again = false
+            _refresh_search_health_async!(m; cooldown = 0)
+        end
         h = evt.value
         # A failed check (the task's exception) keeps the last known state; the next poll retries.
         h isa NamedTuple || return _push_log!(:debug, "Search health check failed: $(sprint(showerror, h))")
@@ -268,6 +274,7 @@ function Tachikoma.update!(m::KaimonModel, evt::TaskEvent)
         m.search_managed_qdrant_enabled = h.managed_qdrant_enabled
         m.search_managed_qdrant_installed = h.managed_qdrant_installed
         m.search_managed_qdrant_running = h.managed_qdrant_running
+        m.search_managed_qdrant_starting = h.managed_qdrant_starting
         # Also refresh collections list if Qdrant is up
         if h.qdrant_up
             m.search_collections = sort(h.collections)
@@ -281,7 +288,7 @@ function Tachikoma.update!(m::KaimonModel, evt::TaskEvent)
     elseif evt.id == :search_health_poll
         # Slightly under the timer period, so timer jitter doesn't skip every other tick.
         m.tab_bar.active == TAB_SEARCH &&
-            _refresh_search_health_async!(m; cooldown = SEARCH_HEALTH_POLL_S - 0.5)
+            _refresh_search_health_async!(m; cooldown = SEARCH_HEALTH_POLL_S - 0.5, queue = false)
     elseif evt.id == :search_services_ready
         # Managed Qdrant is up (or failed to start, or isn't managed): run the startup index
         # work that needs it, and show the result now rather than at the next poll.

@@ -33,9 +33,13 @@ function _handle_search_key!(m::KaimonModel, evt::KeyEvent)
             end
         end
         'p' => _pull_embedding_model_async!(m)
-        'l' => (managed_qdrant_running() ? _disable_managed_qdrant!(m) :
-                                           _start_managed_qdrant_async!(m))
-        'x' => _remove_managed_qdrant_async!(m)
+        # While a start is in progress `l` and `x` do nothing: a stop then would wait for the
+        # start and stop Qdrant as soon as it answered.
+        'l' => (managed_qdrant_starting() ? _set_search_status!("Managed Qdrant is starting") :
+                managed_qdrant_running()  ? _disable_managed_qdrant!(m) :
+                                            _start_managed_qdrant_async!(m))
+        'x' => (managed_qdrant_starting() ? _set_search_status!("Managed Qdrant is starting") :
+                _remove_managed_qdrant_async!(m))
         'c' => begin
             if !isempty(m.search_collections)
                 m.search_collection_delete_confirm = false
@@ -53,15 +57,20 @@ const SEARCH_HEALTH_POLL_S = 5.0
 
 """
 Spawn an async task to refresh Qdrant/embedder health status. Unless `force`d, skipped when a
-check started less than `cooldown` seconds ago; the start is stamped, so polling never stacks
-checks behind a slow one.
+check started less than `cooldown` seconds ago. One check runs at a time. A request made while
+one is running starts a fresh check when it finishes, unless `queue` is false (the periodic poll).
 """
 function _refresh_search_health_async!(m::KaimonModel; force::Bool = false,
-                                       cooldown::Real = 10.0)
+                                       cooldown::Real = 10.0, queue::Bool = true)
     m._render_mode && return
     if !force && time() - m.search_health_last_check < cooldown
         return
     end
+    if m._search_health_running
+        queue && (m._search_health_again = true)
+        return
+    end
+    m._search_health_running = true
     m.search_health_last_check = time()
     force && _set_search_status!("Refreshing...")
     model = m.search_embedding_model
@@ -79,6 +88,7 @@ function _refresh_search_health_async!(m::KaimonModel; force::Bool = false,
             managed_qdrant_enabled = health.managed_qdrant_enabled,
             managed_qdrant_installed = health.managed_qdrant_installed,
             managed_qdrant_running = health.managed_qdrant_running,
+            managed_qdrant_starting = health.managed_qdrant_starting,
         )
     end
 end

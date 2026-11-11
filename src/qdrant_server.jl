@@ -39,6 +39,11 @@ const _QDRANT_JLL_MOD = Ref{Any}(nothing)
 const _QDRANT_PROC = Ref{Any}(nothing)
 const _QDRANT_LOCK = ReentrantLock()
 const _QDRANT_HEARTBEAT = Ref{Any}(nothing)   # Timer refreshing our record while the child runs
+# Set while `ensure_qdrant!` launches Qdrant and waits for it to answer.
+const _QDRANT_STARTING = Threads.Atomic{Bool}(false)
+
+"""True while this process is starting managed Qdrant and waiting for it to answer."""
+managed_qdrant_starting()::Bool = _QDRANT_STARTING[]
 
 # ── Policy ────────────────────────────────────────────────────────────────────
 
@@ -325,57 +330,66 @@ function ensure_qdrant!(; timeout::Real = 30.0, max_wait::Real = 600.0)::Bool
     lock(_QDRANT_LOCK) do
         QdrantClient.refresh!()
         QdrantClient.ping() && return true  # another caller may have won the race
-
-        if !_qdrant_child_alive()
-            rec = qdrant_record_path()
-            r = read_service_record(rec)
-            # Qdrant's storage is served by one process; two machines sharing a home directory
-            # must not both open it.
-            if r !== nothing && r.host != gethostname() && record_fresh(r)
-                @warn "Kaimon on $(r.host) is serving the Qdrant index in $(qdrant_storage_root()). \
-                       One machine at a time can serve an index: use that machine, or give this \
-                       one its own qdrant.storage_dir."
-                return false
-            end
-            fixed = qdrant_fixed_port()
-            port = service_free_port(qdrant_port_setting(); fixed)
-            grpc = port === nothing ? nothing : service_free_port(port + 1; exclude = [port], fixed)
-            if port === nothing || grpc === nothing
-                @error fixed ?
-                    "Managed Qdrant is fixed to ports $(qdrant_port_setting()) and $(qdrant_port_setting() + 1), and one is in use" :
-                    "No free port for managed Qdrant near $(qdrant_port_setting())"
-                return false
-            end
-            key = new_service_key()
-            log = qdrant_log_path()
-            @info "Starting managed Qdrant" port storage = qdrant_storage_dir() log
-            try
-                proc = _spawn_managed_qdrant(; storage_path = qdrant_storage_dir(),
-                    http_port = port, grpc_port = grpc, api_key = key, log_path = log)
-                _QDRANT_PROC[] = proc
-                write_service_record(rec, ServiceRecord(port, key; pid = getpid(proc)))
-                _QDRANT_HEARTBEAT[] === nothing || close(_QDRANT_HEARTBEAT[])
-                _QDRANT_HEARTBEAT[] = start_service_heartbeat!(rec, _qdrant_child_alive)
-                QdrantClient.configure!("http://127.0.0.1:$port", key)
-            catch e
-                @error "Failed to launch managed Qdrant" exception = (e, catch_backtrace())
-                return false
-            end
+        _QDRANT_STARTING[] = true
+        try
+            _start_and_await_qdrant(timeout, max_wait)
+        finally
+            _QDRANT_STARTING[] = false
         end
-
-        log = qdrant_log_path()
-        outcome = _await_qdrant_healthy(QdrantClient.ping, _qdrant_child_alive,
-            () -> filesize(log); timeout, max_wait)
-        outcome === :healthy && return true
-        if outcome === :exited
-            @error "Managed Qdrant exited before becoming healthy; see log" log
-        elseif outcome === :stalled
-            @error "Managed Qdrant made no startup progress for $(timeout)s" log
-        else
-            @error "Managed Qdrant did not become healthy within $(max_wait)s" log
-        end
-        return false
     end
+end
+
+# The part of `ensure_qdrant!` that runs under `_QDRANT_LOCK` once nothing answers.
+function _start_and_await_qdrant(timeout::Real, max_wait::Real)::Bool
+    if !_qdrant_child_alive()
+        rec = qdrant_record_path()
+        r = read_service_record(rec)
+        # Qdrant's storage is served by one process; two machines sharing a home directory
+        # must not both open it.
+        if r !== nothing && r.host != gethostname() && record_fresh(r)
+            @warn "Kaimon on $(r.host) is serving the Qdrant index in $(qdrant_storage_root()). \
+                   One machine at a time can serve an index: use that machine, or give this \
+                   one its own qdrant.storage_dir."
+            return false
+        end
+        fixed = qdrant_fixed_port()
+        port = service_free_port(qdrant_port_setting(); fixed)
+        grpc = port === nothing ? nothing : service_free_port(port + 1; exclude = [port], fixed)
+        if port === nothing || grpc === nothing
+            @error fixed ?
+                "Managed Qdrant is fixed to ports $(qdrant_port_setting()) and $(qdrant_port_setting() + 1), and one is in use" :
+                "No free port for managed Qdrant near $(qdrant_port_setting())"
+            return false
+        end
+        key = new_service_key()
+        log = qdrant_log_path()
+        @info "Starting managed Qdrant" port storage = qdrant_storage_dir() log
+        try
+            proc = _spawn_managed_qdrant(; storage_path = qdrant_storage_dir(),
+                http_port = port, grpc_port = grpc, api_key = key, log_path = log)
+            _QDRANT_PROC[] = proc
+            write_service_record(rec, ServiceRecord(port, key; pid = getpid(proc)))
+            _QDRANT_HEARTBEAT[] === nothing || close(_QDRANT_HEARTBEAT[])
+            _QDRANT_HEARTBEAT[] = start_service_heartbeat!(rec, _qdrant_child_alive)
+            QdrantClient.configure!("http://127.0.0.1:$port", key)
+        catch e
+            @error "Failed to launch managed Qdrant" exception = (e, catch_backtrace())
+            return false
+        end
+    end
+
+    log = qdrant_log_path()
+    outcome = _await_qdrant_healthy(QdrantClient.ping, _qdrant_child_alive,
+        () -> filesize(log); timeout, max_wait)
+    outcome === :healthy && return true
+    if outcome === :exited
+        @error "Managed Qdrant exited before becoming healthy; see log" log
+    elseif outcome === :stalled
+        @error "Managed Qdrant made no startup progress for $(timeout)s" log
+    else
+        @error "Managed Qdrant did not become healthy within $(max_wait)s" log
+    end
+    return false
 end
 
 """

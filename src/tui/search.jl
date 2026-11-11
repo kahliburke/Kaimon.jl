@@ -70,7 +70,7 @@ function _view_search_status(m::KaimonModel, area::Rect, buf::Buffer)
             # Our process is alive but not answering: still starting, or wedged.
             _write_spans!(buf, x, y, [
                 ("◐ ", tstyle(:warning)), (rpad("Qdrant", 10), txt),
-                ("managed process not answering", dim),
+                (m.search_managed_qdrant_starting ? "starting" : "managed process not answering", dim),
             ])
         elseif m.search_managed_qdrant_enabled
             # Managed state comes from the health check (model fields), so the
@@ -117,11 +117,12 @@ function _view_search_status(m::KaimonModel, area::Rect, buf::Buffer)
 
     # ── Managed-Qdrant control (only when Kaimon is running the child) ──
     if m.search_managed_qdrant_running
-        _write_spans!(buf, x, y, [
-            ("◆ ", tstyle(:accent)), ("Qdrant managed by Kaimon  ", dim),
-            ("[l]", tstyle(:warning)), (" stop  ", dim),
-            ("[x]", tstyle(:warning)), (" remove", dim),
-        ])
+        # No stop or remove offered while it starts: `l` and `x` do nothing until it answers.
+        _write_spans!(buf, x, y, m.search_managed_qdrant_starting ?
+            [("◆ ", tstyle(:accent)), ("Qdrant managed by Kaimon", dim)] :
+            [("◆ ", tstyle(:accent)), ("Qdrant managed by Kaimon  ", dim),
+             ("[l]", tstyle(:warning)), (" stop  ", dim),
+             ("[x]", tstyle(:warning)), (" remove", dim)])
         y += 1
     end
 
