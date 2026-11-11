@@ -139,13 +139,12 @@ function service_port_candidates(pref::Integer; user::AbstractString = _service_
     return out
 end
 
-"Nothing answers on loopback port `p` and it can be bound."
+"""
+Nothing answers on loopback port `p` and it can be bound. The connect is bounded: a dropped
+connection attempt would otherwise block until the kernel gives up on it.
+"""
 function service_port_free(p::Integer)::Bool
-    try
-        close(Sockets.connect(Sockets.localhost, p))
-        return false                     # something is serving there
-    catch
-    end
+    _tcp_probe("127.0.0.1", p) === :open && return false   # something is serving there
     try
         close(Sockets.listen(Sockets.localhost, p))
         return true
