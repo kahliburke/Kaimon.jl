@@ -2,7 +2,7 @@
 
 Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each entry is also published on the GitHub release for its tag.
 
-## Kaimon 2.13.3 (unreleased)
+## Kaimon 2.13.3 (2026-11-11)
 
 [Diff since v2.13.2](https://github.com/kahliburke/Kaimon.jl/compare/v2.13.2...v2.13.3)
 
@@ -14,7 +14,7 @@ Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each e
 - Managed Qdrant starts when the TUI opens, before the startup index work that needs it.
 - Packages Kaimon loads at runtime, such as `Qdrant_jll`, load one at a time. Two loads at once could fail with "required but does not seem to be installed".
 
-## KaimonGate 1.7.2 (unreleased)
+## KaimonGate 1.7.2 (2026-11-11)
 
 [Diff since KaimonGate-v1.7.1](https://github.com/kahliburke/Kaimon.jl/compare/KaimonGate-v1.7.1...KaimonGate-v1.7.2)
 
