@@ -484,22 +484,23 @@ function stop_managed_qdrant!()
 end
 
 """
-    autostart_managed_qdrant!()
+    autostart_managed_qdrant!() -> Bool
 
-If managed Qdrant is enabled and installed, bring it up in the background (no-op
-if it's already answering). Called on TUI launch so the managed instance is
-available without a manual `[l]` — the symmetric partner to the `atexit` reap.
-Deliberately NOT called from `__init__`, so non-interactive Kaimon processes
-(agents, scripts, doc rendering) never spawn Qdrant.
+If managed Qdrant is enabled and installed, bring it up (no-op if it's already
+answering), blocking until it is healthy or has failed. Returns whether Qdrant answers.
+Called on TUI launch, from a background task, so the managed instance is available
+without a manual `[l]` — the symmetric partner to the `atexit` reap. Deliberately NOT
+called from `__init__`, so non-interactive Kaimon processes (agents, scripts, doc
+rendering) never spawn Qdrant.
 """
-function autostart_managed_qdrant!()
-    (qdrant_managed_mode() !== :off && managed_qdrant_installed()) || return
-    Threads.@spawn try
-        ensure_qdrant!()
+function autostart_managed_qdrant!()::Bool
+    (qdrant_managed_mode() !== :off && managed_qdrant_installed()) || return QdrantClient.ping()
+    try
+        return ensure_qdrant!()
     catch e
         @warn "Managed Qdrant auto-start failed" exception = (e, catch_backtrace())
+        return false
     end
-    return
 end
 
 """

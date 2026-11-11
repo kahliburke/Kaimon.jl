@@ -48,13 +48,21 @@ function _handle_search_key!(m::KaimonModel, evt::KeyEvent)
     end
 end
 
-"""Spawn an async task to refresh Qdrant/Ollama health status."""
-function _refresh_search_health_async!(m::KaimonModel; force::Bool = false)
+"""How often the Search tab re-checks service health while it is shown."""
+const SEARCH_HEALTH_POLL_S = 5.0
+
+"""
+Spawn an async task to refresh Qdrant/embedder health status. Unless `force`d, skipped when a
+check started less than `cooldown` seconds ago; the start is stamped, so polling never stacks
+checks behind a slow one.
+"""
+function _refresh_search_health_async!(m::KaimonModel; force::Bool = false,
+                                       cooldown::Real = 10.0)
     m._render_mode && return
-    # Cooldown: don't re-check within 10 seconds
-    if !force && time() - m.search_health_last_check < 10.0
+    if !force && time() - m.search_health_last_check < cooldown
         return
     end
+    m.search_health_last_check = time()
     force && _set_search_status!("Refreshing...")
     model = m.search_embedding_model
     spawn_task!(m._task_queue, :search_health) do

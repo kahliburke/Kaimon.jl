@@ -137,6 +137,24 @@ function _auto_index_on_connect!(project_path::String, render_mode::Bool = false
 end
 
 """
+    _startup_index_work!(m)
+
+Index work done once per launch, after managed Qdrant has had its chance to start: an
+incremental sync (or a fresh index) of each approved project, under the same concurrency
+guard as gate auto-index so nothing runs twice if a REPL for the project also connects;
+then the lexical (FTS5) index is brought to parity with the vector index (no re-embedding,
+idempotent once counts match). The headless path does the latter in `_start_gate_services!`.
+"""
+function _startup_index_work!(m::KaimonModel)
+    for entry in m.project_entries
+        entry.enabled || continue
+        isdir(entry.project_path) || continue
+        _auto_index_project!(entry.project_path)
+    end
+    _spawn_fts_coverage_sync!()
+end
+
+"""
     _auto_index_project!(project_path::String)
 
 Core async auto-index: sync or full-index a project in the background.
@@ -284,23 +302,12 @@ function Tachikoma.init!(m::KaimonModel, _t::Tachikoma.Terminal)
     m.project_entries = load_projects_config()
     _sync_tcp_gate_entries!(m)
 
-    # Auto-index approved projects in the background.  Each enabled project
-    # gets an incremental sync (or a fresh index if its collection doesn't
-    # exist yet).  Uses the same concurrency guard as gate auto-index so
-    # nothing runs twice if a REPL for the project also connects.
-    if !m._render_mode
-        for entry in m.project_entries
-            entry.enabled || continue
-            isdir(entry.project_path) || continue
-            _auto_index_project!(entry.project_path)
-        end
-
-        # Bring the lexical (FTS5) index to parity with the vector index in the
-        # background (e.g. first boot after the 2.0 hybrid-search upgrade). No
-        # re-embedding; idempotent once counts match. The headless path hooks this
-        # in _start_gate_services!; the TUI bypasses that, so call it here too.
-        _spawn_fts_coverage_sync!()
-    end
+    # Bring managed Qdrant up if it's enabled and installed (no-op if already running), then
+    # do the startup index work that needs it: see `:search_services_ready` in update!.
+    spawn_task!(autostart_managed_qdrant!, m._task_queue, :search_services_ready)
+    m._search_health_timer === nothing &&
+        (m._search_health_timer = spawn_timer!(m._task_queue, :search_health_poll,
+                                               SEARCH_HEALTH_POLL_S; repeat = true))
 
     # MCP server is started on the first view() tick so the TUI is already
     # rendering and can report status in the Server tab.
@@ -314,6 +321,11 @@ function Tachikoma.cleanup!(m::KaimonModel)
 
     # Skip teardown on restart — we're coming right back
     m._restart_requested && return
+
+    if m._search_health_timer !== nothing
+        cancel!(m._search_health_timer)
+        m._search_health_timer = nothing
+    end
 
     # Stop the headless housekeeping loop if start!() started it before tui().
     try
@@ -499,11 +511,6 @@ function tui(; port::Int = 2828, theme_name::Union{Symbol,Nothing} = nothing, re
     end
     model = KaimonModel(server_port = port, _revise_polling = revise_polling, _revise_mod = revise_mod)
     model.search_embedding_model = _load_embedding_model()
-
-    # Bring managed Qdrant back up on launch if it's enabled+installed (background,
-    # no-op if already running) — symmetric with the atexit reap, so a restart
-    # doesn't leave the user to press [l] again.
-    autostart_managed_qdrant!()
 
     # This process runs its OWN persistent full-screen TUI (`app` below) alongside a
     # self-served gate whose capture mux may be installed. Opt out of the #67 TUI

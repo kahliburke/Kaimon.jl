@@ -359,7 +359,10 @@ const TAB_ADVANCED   = 10
     search_managed_qdrant_installed::Bool = false # binary present in the service env
     search_managed_qdrant_running::Bool = false   # a Kaimon-managed instance is live
     search_collection_count::Int = 0
-    search_health_last_check::Float64 = 0.0
+    search_health_last_check::Float64 = 0.0       # when the last health check was started
+    # Re-checks health while the Search tab is shown, so a service that comes up or goes down
+    # on its own (managed Qdrant starting in the background) is reflected without input.
+    _search_health_timer::Union{CancelToken,Nothing} = nothing
     search_collections::Vector{String} = String[]
     search_selected_collection::Int = 1
     search_query_input::Any = nothing       # TextInput, created lazily

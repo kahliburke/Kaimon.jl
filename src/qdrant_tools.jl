@@ -163,21 +163,14 @@ embedder_name() = embedding_backend() === :llamacpp ? "llama.cpp" : "Ollama"
 """
     check_search_health(; model=DEFAULT_EMBEDDING_MODEL)
 
-Returns a NamedTuple (qdrant_up, embedder_up, model_available, collection_count,
-fts_chunks, fts_collections) — the last two report local lexical-index coverage.
+Returns a NamedTuple: whether Qdrant and the embedding backend are up, whether `model` is
+available, the collection count, and the managed-Qdrant state. Cheap enough to poll.
 """
 function check_search_health(; model::String = DEFAULT_EMBEDDING_MODEL)
     qdrant_up = QdrantClient.ping()
     embedder_up = ping_embedder()
     model_available = embedder_up ? embedding_model_available(model) : false
     collection_count = qdrant_up ? length(QdrantClient.list_collections()) : 0
-    # Lexical (FTS5) coverage — local, so available even when Qdrant/the embedder are down.
-    fts_chunks, fts_collections = try
-        cov = FtsIndex.coverage()
-        (cov.total, length(cov.collections))
-    catch
-        (0, 0)
-    end
     K = parentmodule(@__MODULE__)
     return (
         qdrant_up = qdrant_up,
@@ -186,8 +179,6 @@ function check_search_health(; model::String = DEFAULT_EMBEDDING_MODEL)
         embedding_where = embedding_backend() === :llamacpp ? embedding_model_dir() : ollama_url(),
         model_available = model_available,
         collection_count = collection_count,
-        fts_chunks = fts_chunks,
-        fts_collections = fts_collections,
         managed_qdrant_enabled = K.qdrant_managed_mode() !== :off,
         managed_qdrant_installed = K.managed_qdrant_installed(),
         managed_qdrant_running = K.managed_qdrant_running(),

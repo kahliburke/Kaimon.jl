@@ -844,3 +844,41 @@ end
         @test last(Kaimon._TUI_LOG_RING).level == want
     end
 end
+
+@testset "Search tab health refresh" begin
+    # A check is stamped when it starts and the cooldown runs from that stamp, so polling
+    # never stacks a second check behind a slow one.
+    @testset "cooldown from the last start" begin
+        m = Kaimon.KaimonModel()
+        t0 = time() - 3.0
+        m.search_health_last_check = t0
+        Kaimon._refresh_search_health_async!(m; cooldown = 5.0)
+        @test m.search_health_last_check == t0
+        Kaimon._refresh_search_health_async!(m; cooldown = 2.0)
+        @test m.search_health_last_check > t0
+    end
+
+    @testset "the poll checks only while the Search tab is shown" begin
+        m = Kaimon.KaimonModel()
+        m.tab_bar.active = 1
+        Tachikoma.update!(m, Tachikoma.TaskEvent(:search_health_poll, time()))
+        @test m.search_health_last_check == 0.0
+        m.tab_bar.active = Kaimon.TAB_SEARCH
+        Tachikoma.update!(m, Tachikoma.TaskEvent(:search_health_poll, time()))
+        @test m.search_health_last_check > 0.0
+    end
+
+    @testset "a managed Qdrant that is not answering is not offered a start" begin
+        m = Kaimon.KaimonModel()
+        m.search_managed_qdrant_enabled = true
+        m.search_managed_qdrant_installed = true
+        m.search_managed_qdrant_running = true
+        area = Tachikoma.Rect(1, 1, 100, 6)
+        buf = Tachikoma.Buffer(area)
+        Kaimon._view_search_status(m, area, buf)
+        txt = Tachikoma.buffer_to_text(buf, area)
+        @test occursin("managed process not answering", txt)
+        @test !occursin("start managed Qdrant", txt)
+        @test occursin("managed by Kaimon", txt)
+    end
+end
