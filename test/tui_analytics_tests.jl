@@ -919,5 +919,10 @@ end
         txt = Tachikoma.buffer_to_text(buf, area)
         @test occursin("starting", txt)
         @test !occursin("stop", txt) && !occursin("remove", txt)
+        # Pressing `l` shows the start before any health check has seen the process.
+        m.search_managed_qdrant_running = false
+        buf = Tachikoma.Buffer(area)
+        Kaimon._view_search_status(m, area, buf)
+        @test occursin("starting", Tachikoma.buffer_to_text(buf, area))
     end
 end

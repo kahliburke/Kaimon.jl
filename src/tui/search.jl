@@ -66,7 +66,7 @@ function _view_search_status(m::KaimonModel, area::Rect, buf::Buffer)
     else
         if qdrant_up
             _write_spans!(buf, x, y, [("● ", tstyle(:success)), ("Qdrant", txt)])
-        elseif m.search_managed_qdrant_running
+        elseif m.search_managed_qdrant_running || m.search_managed_qdrant_starting
             # Our process is alive but not answering: still starting, or wedged.
             _write_spans!(buf, x, y, [
                 ("◐ ", tstyle(:warning)), (rpad("Qdrant", 10), txt),

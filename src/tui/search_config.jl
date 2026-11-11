@@ -331,6 +331,9 @@ function _start_managed_qdrant_async!(m::KaimonModel)
         # Binary present → ensure_qdrant! loads it (if needed) and spawns.
         _set_search_status!("Starting managed Qdrant...")
         _push_log!(:info, "Starting managed Qdrant child process...")
+        # Shown now; the next health check replaces it with what ensure_qdrant! reports.
+        m.search_managed_qdrant_enabled = true
+        m.search_managed_qdrant_starting = true
         spawn_task!(m._task_queue, :search_start_qdrant) do
             ok = try
                 ensure_qdrant!()
