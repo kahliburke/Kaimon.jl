@@ -293,6 +293,11 @@ function Tachikoma.update!(m::KaimonModel, evt::TaskEvent)
         # Managed Qdrant is up (or failed to start, or isn't managed): run the startup index
         # work that needs it, and show the result now rather than at the next poll.
         _startup_index_work!(m)
+        problem = managed_qdrant_start_problem()
+        if !isempty(problem)
+            _set_search_status!("Managed Qdrant did not start: $problem")
+            _push_log!(:warn, "Managed Qdrant did not start: $problem")
+        end
         _refresh_search_health_async!(m; cooldown = 0)
     elseif evt.id == :search_results
         m.search_results = evt.value::Vector{Dict}

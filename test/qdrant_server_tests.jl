@@ -79,6 +79,26 @@ end
         end
     end
 
+    @testset "a failed start says why" begin
+        @test occursin("exit code 3", K._qdrant_exit_problem(3))
+        if Sys.iswindows()
+            @test occursin("Visual C++ Redistributable", K._qdrant_exit_problem(0xC0000135))
+        end
+        _with_temp_cache() do dir
+            taken = K.Sockets.listen(K.Sockets.localhost, 0)
+            port = Int(K.Sockets.getsockname(taken)[2])
+            try
+                withenv("KAIMON_QDRANT_PORT" => string(port),
+                        "KAIMON_QDRANT_FIXED_PORT" => "true") do
+                    problem = K._start_and_await_qdrant(1.0, 1.0)
+                    @test occursin("fixed to port $port", problem)
+                end
+            finally
+                close(taken)
+            end
+        end
+    end
+
     @testset "managed Qdrant's config file turns gRPC off" begin
         dir = mktempdir()
         path = K._write_qdrant_config(dir)

@@ -341,9 +341,10 @@ function _start_managed_qdrant_async!(m::KaimonModel)
                 _push_log!(:warn, "ensure_qdrant! error: $(sprint(showerror, e))")
                 false
             end
+            problem = managed_qdrant_start_problem()
             (success = ok, error_msg = ok ? "" :
                 "Qdrant" in JLLS_WITHOUT_BUILD ? no_build_message("Qdrant") :
-                "did not become healthy (see qdrant.log)")
+                isempty(problem) ? "did not become healthy (see qdrant.log)" : problem)
         end
     else
         _install_managed_qdrant_async!(m)

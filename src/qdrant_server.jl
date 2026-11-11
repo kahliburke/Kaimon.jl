@@ -45,6 +45,25 @@ const _QDRANT_STARTING = Threads.Atomic{Bool}(false)
 """True while this process is starting managed Qdrant and waiting for it to answer."""
 managed_qdrant_starting()::Bool = _QDRANT_STARTING[]
 
+# Why the last start in this process failed, for the Search tab; empty once one succeeds.
+const _QDRANT_START_PROBLEM = Ref("")
+
+"""Why this process's last attempt to start managed Qdrant failed, or `""`."""
+managed_qdrant_start_problem()::String = _QDRANT_START_PROBLEM[]
+
+# Windows' STATUS_DLL_NOT_FOUND. The Windows Qdrant binary is built with MSVC and needs its
+# runtime, which Windows Server and some Windows installs lack.
+const _STATUS_DLL_NOT_FOUND = 0xC0000135
+const _VC_REDIST_URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+
+"""What to tell the user about a Qdrant process that exited before answering."""
+function _qdrant_exit_problem(exitcode::Integer)::String
+    Sys.iswindows() && exitcode == _STATUS_DLL_NOT_FOUND &&
+        return "Qdrant needs the Microsoft Visual C++ Redistributable (x64), which is not \
+                installed: $_VC_REDIST_URL"
+    return "Qdrant exited before answering (exit code $exitcode); see $(qdrant_log_path())"
+end
+
 # ── Policy ────────────────────────────────────────────────────────────────────
 
 """
@@ -343,34 +362,40 @@ function ensure_qdrant!(; timeout::Real = 30.0, max_wait::Real = 600.0)::Bool
         QdrantClient.refresh!()
         QdrantClient.ping() && return true  # another caller may have won the race
         _QDRANT_STARTING[] = true
+        _QDRANT_START_PROBLEM[] = ""
         try
-            _start_and_await_qdrant(timeout, max_wait)
+            problem = _start_and_await_qdrant(timeout, max_wait)
+            _QDRANT_START_PROBLEM[] = problem
+            isempty(problem)
         finally
             _QDRANT_STARTING[] = false
         end
     end
 end
 
-# The part of `ensure_qdrant!` that runs under `_QDRANT_LOCK` once nothing answers.
-function _start_and_await_qdrant(timeout::Real, max_wait::Real)::Bool
+# The part of `ensure_qdrant!` that runs under `_QDRANT_LOCK` once nothing answers. Returns
+# `""` once Qdrant answers, else why it doesn't, which is also logged.
+function _start_and_await_qdrant(timeout::Real, max_wait::Real)::String
     if !_qdrant_child_alive()
         rec = qdrant_record_path()
         r = read_service_record(rec)
         # Qdrant's storage is served by one process; two machines sharing a home directory
         # must not both open it.
         if r !== nothing && r.host != gethostname() && record_fresh(r)
-            @warn "Kaimon on $(r.host) is serving the Qdrant index in $(qdrant_storage_root()). \
-                   One machine at a time can serve an index: use that machine, or give this \
-                   one its own qdrant.storage_dir."
-            return false
+            problem = "Kaimon on $(r.host) is serving the Qdrant index in \
+                       $(qdrant_storage_root()). One machine at a time can serve an index: use \
+                       that machine, or give this one its own qdrant.storage_dir."
+            @warn problem
+            return problem
         end
         fixed = qdrant_fixed_port()
         port = service_free_port(qdrant_port_setting(); fixed)
         if port === nothing
-            @error fixed ?
+            problem = fixed ?
                 "Managed Qdrant is fixed to port $(qdrant_port_setting()), which is in use" :
                 "No free port for managed Qdrant near $(qdrant_port_setting())"
-            return false
+            @error problem
+            return problem
         end
         key = new_service_key()
         log = qdrant_log_path()
@@ -385,22 +410,23 @@ function _start_and_await_qdrant(timeout::Real, max_wait::Real)::Bool
             QdrantClient.configure!("http://127.0.0.1:$port", key)
         catch e
             @error "Failed to launch managed Qdrant" exception = (e, catch_backtrace())
-            return false
+            return "Failed to launch Qdrant: $(sprint(showerror, e))"
         end
     end
 
     log = qdrant_log_path()
     outcome = _await_qdrant_healthy(QdrantClient.ping, _qdrant_child_alive,
         () -> filesize(log); timeout, max_wait)
-    outcome === :healthy && return true
-    if outcome === :exited
-        @error "Managed Qdrant exited before becoming healthy; see log" log
+    outcome === :healthy && return ""
+    problem = if outcome === :exited
+        _qdrant_exit_problem(_QDRANT_PROC[].exitcode)
     elseif outcome === :stalled
-        @error "Managed Qdrant made no startup progress for $(timeout)s" log
+        "Managed Qdrant made no startup progress for $(timeout)s; see $log"
     else
-        @error "Managed Qdrant did not become healthy within $(max_wait)s" log
+        "Managed Qdrant did not become healthy within $(max_wait)s; see $log"
     end
-    return false
+    @error problem
+    return problem
 end
 
 """
