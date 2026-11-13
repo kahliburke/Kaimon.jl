@@ -51,6 +51,19 @@ function _endpoint_host(endpoint::AbstractString)
     return strip(m.captures[1], ['[', ']'])
 end
 
+"""
+    _stream_endpoint_via(endpoint, stream) -> String
+
+The stream endpoint `stream` a gate reports, reached the way its request `endpoint` is. A gate
+bound to every interface reports the wildcard address it bound, which names no host to connect to.
+"""
+function _stream_endpoint_via(endpoint::AbstractString, stream::AbstractString)
+    m = match(r"^tcp://(\*|0\.0\.0\.0|\[::\]|::):(\d+)$", stream)
+    host = _endpoint_host(endpoint)
+    (m === nothing || isempty(host)) && return String(stream)
+    return string("tcp://", occursin(':', host) ? "[$host]" : host, ":", m.captures[2])
+end
+
 "`host:port` of a TCP gate, with every loopback spelling of the host (`localhost`, `127.0.0.1`, …) written alike."
 _gate_address_key(host::AbstractString, port) =
     string(_is_local_host(host) ? "loopback" : lowercase(strip(host)), ":", port)
@@ -718,7 +731,7 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
     # Populate connection from pong
     # Prefer pre-set stream_endpoint (from stream_port config) over pong value
     pong_stream = !isempty(conn.stream_endpoint) ? conn.stream_endpoint :
-        string(get(pong, :stream_endpoint, ""))
+        _stream_endpoint_via(endpoint, string(get(pong, :stream_endpoint, "")))
     # Skip if connect! already wired the SUB (a fixed stream_port sets stream_endpoint
     # before connect!, so it connects there); only ephemeral gates reach it via the pong.
     if !isempty(pong_stream) && conn.sub_socket === nothing

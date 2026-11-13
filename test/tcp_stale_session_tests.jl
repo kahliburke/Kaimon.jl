@@ -1147,3 +1147,13 @@ end
     @test Kaimon._local_project_path("D:\\proj", false) == "D:\\proj"
     Kaimon._in_wsl() || @test Kaimon._local_project_path("D:\\proj", true) == "D:\\proj"
 end
+
+@testset "A gate bound to every interface streams on the host it was reached at" begin
+    via = Kaimon._stream_endpoint_via
+    @test via("tcp://172.29.32.1:9612", "tcp://0.0.0.0:9613") == "tcp://172.29.32.1:9613"
+    @test via("tcp://gpu-node:9612", "tcp://*:9613") == "tcp://gpu-node:9613"
+    @test via("tcp://[fd00::5]:9612", "tcp://[::]:9613") == "tcp://[fd00::5]:9613"
+    @test via("tcp://gpu-node:9612", "tcp://10.0.0.7:9613") == "tcp://10.0.0.7:9613"
+    @test via("ipc:///tmp/a.sock", "ipc:///tmp/a-stream.sock") == "ipc:///tmp/a-stream.sock"
+    @test via("tcp://gpu-node:9612", "") == ""
+end

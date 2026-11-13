@@ -372,7 +372,7 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
         # When a gate restarts on the same REQ port, the PUB port changes but
         # the old SUB socket is still set — detect this via endpoint mismatch
         # and replace the stale SUB socket. (#35)
-        pong_stream = string(get(result, :stream_endpoint, ""))
+        pong_stream = _stream_endpoint_via(conn.endpoint, string(get(result, :stream_endpoint, "")))
         if !isempty(pong_stream)
             needs_sub = conn.sub_socket === nothing
             if !needs_sub && pong_stream != conn.stream_endpoint
