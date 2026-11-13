@@ -2,6 +2,15 @@
 
 Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each entry is also published on the GitHub release for its tag.
 
+## Kaimon 2.13.4 (unreleased)
+
+[Diff since v2.13.3](https://github.com/kahliburke/Kaimon.jl/compare/v2.13.3...v2.13.4)
+
+**Fixes:**
+- Kaimon in WSL reads the project of a Julia session on the Windows side through its WSL mount (`D:\\proj` as `/mnt/d/proj`), so it can index that project and search it. It used to treat the Windows path as relative to its own directory, and indexing failed.
+- The Collection Manager says "not on this machine" for a session whose project is not a directory where Kaimon runs, and does not index or configure it. Configuring such a project used to stop with an error.
+- A gate served on every interface (`host = "0.0.0.0"`) streams its output to Kaimon on the host Kaimon reached it at. Kaimon used to connect the stream to the wildcard address the gate reported, so a remote gate's output never arrived.
+
 ## Kaimon 2.13.3 (2026-11-11)
 
 [Diff since v2.13.2](https://github.com/kahliburke/Kaimon.jl/compare/v2.13.2...v2.13.3)
