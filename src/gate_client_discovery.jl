@@ -185,15 +185,59 @@ function _is_windows_machine(machine::AbstractString)
     return !isempty(w) && lowercase(machine) == lowercase(w)
 end
 
-"""
-Whether `conn` is a gate on the Windows side of WSL whose process Windows no longer lists: one found
-in the Windows directory, or one reached by address that reports Windows' machine id.
-"""
-function _windows_process_gone(conn)
-    windows = lock(() -> haskey(_WINDOWS_SESSION_FILES, conn.session_id), _WINDOWS_SESSION_FILES_LOCK) ||
-        _is_windows_machine(conn.machine)
-    return windows && conn.pid > 0 && _windows_pid_gone(conn.pid)
+const _WSL_MOUNT_ROOT = Ref{Union{String,Nothing}}(nothing)
+
+# Where WSL mounts Windows drives ("/mnt/" unless wsl.conf moves it), from where it puts C:.
+function _wsl_mount_root()
+    r = _WSL_MOUNT_ROOT[]
+    r === nothing || return r
+    c = try readchomp(pipeline(`wslpath -u $("C:\\")`; stderr = devnull)) catch; "" end
+    return _WSL_MOUNT_ROOT[] = endswith(rstrip(c, '/'), "/c") ? rstrip(c, '/')[1:end-1] : "/mnt/"
 end
+
+"""
+    _windows_to_wsl(path, mount_root, distro) -> Union{String,Nothing}
+
+The WSL path of the Windows path `path`: a drive path under `mount_root`, or a `\\\\wsl\$\\` /
+`\\\\wsl.localhost\\` path into the distro named `distro`. `nothing` for any other path.
+"""
+function _windows_to_wsl(path::AbstractString, mount_root::AbstractString, distro::AbstractString)
+    m = match(r"^([A-Za-z]):(?:[\\/](.*))?$"s, path)
+    if m !== nothing
+        rest = replace(something(m.captures[2], ""), '\\' => '/')
+        return String(rstrip(string(mount_root, lowercase(m.captures[1]), "/", rest), '/'))
+    end
+    m = match(r"^[\\/]{2}(?:wsl\$|wsl\.localhost)[\\/]([^\\/]+)(.*)$"i, path)
+    if m !== nothing && !isempty(distro) && lowercase(m.captures[1]) == lowercase(distro)
+        rest = replace(m.captures[2], '\\' => '/')
+        return isempty(rest) ? "/" : rest
+    end
+    return nothing
+end
+
+"""
+    _local_project_path(path, windows_side) -> String
+
+A gate's project path as this process reaches it. Kaimon reads the project's files itself (indexing,
+search scope, tests), so the Windows path a gate on the Windows side of WSL reports is taken to its
+WSL mount. Every other path is returned as given.
+"""
+function _local_project_path(path::AbstractString, windows_side::Bool)
+    (windows_side && _in_wsl()) || return String(path)
+    wsl = _windows_to_wsl(path, _wsl_mount_root(), get(ENV, "WSL_DISTRO_NAME", ""))
+    return wsl === nothing ? String(path) : wsl
+end
+
+"""
+Whether `conn` is a gate on the Windows side of WSL: one found in the Windows directory, or one
+reached by address that reports Windows' machine id.
+"""
+_on_windows_side(conn) =
+    lock(() -> haskey(_WINDOWS_SESSION_FILES, conn.session_id), _WINDOWS_SESSION_FILES_LOCK) ||
+    _is_windows_machine(conn.machine)
+
+"Whether `conn` is a gate on the Windows side of WSL whose process Windows no longer lists."
+_windows_process_gone(conn) = _on_windows_side(conn) && conn.pid > 0 && _windows_pid_gone(conn.pid)
 
 # The identity of a gate found in the Windows directory: its own, or, from a gate too old to
 # report one, a stand-in that is never this machine's.
@@ -521,7 +565,8 @@ function discover_sessions(mgr::ConnectionManager)
             socket_path = session_mode == :tcp ? "" : ipc_sock,
             endpoint = get(meta, "endpoint", "ipc://$(ipc_sock)"),
             stream_endpoint = get(meta, "stream_endpoint", ""),
-            project_path = get(meta, "project_path", ""),
+            project_path = _local_project_path(get(meta, "project_path", ""),
+                windows || _is_windows_machine(machine)),
             julia_version = get(meta, "julia_version", ""),
             pid = pid,
             machine = machine,
@@ -693,12 +738,12 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
             _push_log!(:warn, "TCP stream connect failed: $pong_stream — $(sprint(showerror, e))")
         end
     end
-    new_path = string(get(pong, :project_path, ""))
-    !isempty(new_path) && (conn.project_path = new_path)
     conn.julia_version = string(get(pong, :julia_version, ""))
     conn.pid = Int(get(pong, :pid, 0))
     pong_machine = string(get(pong, :machine, ""))
     isempty(pong_machine) || (conn.machine = pong_machine)
+    new_path = string(get(pong, :project_path, ""))
+    !isempty(new_path) && (conn.project_path = _local_project_path(new_path, _is_windows_machine(conn.machine)))
 
     # The gate has answered, so it gets the mirror preference now, not at the next health check.
     conn.mirror_pref_sent = true

@@ -313,7 +313,8 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
         end
 
         # Update project_path from pong
-        new_path = get(result, :project_path, "")
+        new_path = string(get(result, :project_path, ""))
+        isempty(new_path) || (new_path = _local_project_path(new_path, _on_windows_side(conn)))
         if !isempty(new_path) && new_path != conn.project_path
             conn.project_path = new_path
             if !_is_tcp(conn) || conn.name == "tcp"

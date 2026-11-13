@@ -381,9 +381,22 @@ end
 
 # ── Configure project flow ───────────────────────────────────────────────────
 
+"""
+Whether `entry`'s project is a directory on this machine, which indexing and configuring need. A
+session on another machine reports a path that is not; the entry's status says so.
+"""
+function _manage_entry_local!(m::KaimonModel, entry)
+    isempty(entry.project_path) && return false
+    isdir(entry.project_path) && return true
+    m.search_manage_op_status[entry.collection] = "not on this machine"
+    _push_log!(:warn, "Collection Manager: $(entry.project_path) is not a directory on this machine")
+    return false
+end
+
+
 """Start the configure-project sub-flow for the selected entry."""
 function _start_configure_project!(m::KaimonModel, entry)
-    isempty(entry.project_path) && return
+    _manage_entry_local!(m, entry) || return
     m.search_manage_configuring = true
     m.search_manage_config_field = 1
 
@@ -566,7 +579,7 @@ end
 
 """Index a collection for a specific entry."""
 function _manage_index_collection!(m::KaimonModel, entry)
-    isempty(entry.project_path) && return
+    _manage_entry_local!(m, entry) || return
     if !(m.search_qdrant_up && m.search_embedder_up && m.search_model_available)
         m.search_manage_op_status[entry.collection] = "Services not ready"
         return
@@ -587,7 +600,7 @@ end
 
 """Sync a collection for a specific entry."""
 function _manage_sync_collection!(m::KaimonModel, entry)
-    isempty(entry.project_path) && return
+    _manage_entry_local!(m, entry) || return
     if !(m.search_qdrant_up && m.search_embedder_up && m.search_model_available)
         m.search_manage_op_status[entry.collection] = "Services not ready"
         return
@@ -612,7 +625,7 @@ end
 
 """Reindex (recreate) a collection for a specific entry."""
 function _manage_reindex_collection!(m::KaimonModel, entry)
-    isempty(entry.project_path) && return
+    _manage_entry_local!(m, entry) || return
     if !(m.search_qdrant_up && m.search_embedder_up && m.search_model_available)
         m.search_manage_op_status[entry.collection] = "Services not ready"
         return

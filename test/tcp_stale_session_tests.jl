@@ -1128,3 +1128,22 @@ end
         Kaimon._WINDOWS_SOCK_DIR[] = nothing
     end
 end
+
+@testset "A Windows gate's project path is read through its WSL mount" begin
+    to_wsl(p) = Kaimon._windows_to_wsl(p, "/mnt/", "Ubuntu")
+    @test to_wsl("D:\\bamboo\\something") == "/mnt/d/bamboo/something"
+    @test to_wsl("D:\\x") isa String
+    @test to_wsl("C:/Users/me/proj/") == "/mnt/c/Users/me/proj"
+    @test to_wsl("E:\\") == "/mnt/e"
+    @test to_wsl("D:") == "/mnt/d"
+    @test Kaimon._windows_to_wsl("D:\\x", "/", "Ubuntu") == "/d/x"          # wsl.conf automount root = /
+    @test to_wsl("\\\\wsl.localhost\\Ubuntu\\home\\me\\proj") == "/home/me/proj"
+    @test to_wsl("\\\\wsl\$\\ubuntu\\home\\me") == "/home/me"
+    @test to_wsl("\\\\wsl.localhost\\Debian\\home\\me") === nothing        # another distro's files
+    @test to_wsl("\\\\server\\share\\proj") === nothing
+    @test to_wsl("/home/me/proj") === nothing
+    @test to_wsl("") === nothing
+    # Only a gate on the Windows side of WSL has its path taken to the mount.
+    @test Kaimon._local_project_path("D:\\proj", false) == "D:\\proj"
+    Kaimon._in_wsl() || @test Kaimon._local_project_path("D:\\proj", true) == "D:\\proj"
+end
