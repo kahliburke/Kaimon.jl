@@ -34,6 +34,23 @@ using KaimonGate
     @test KG._restart_tcp_kwargs(:ipc, false, "", 0, 0, false, false) == ""
 end
 
+@testset "restart(; then): the code a restarted session runs once it serves" begin
+    KG = KaimonGate
+    delete!(ENV, "KAIMON_RESTART_THEN")
+    plain = KG._restart_serve_code("session_id=\"abc\"")
+    @test occursin("KaimonGate.serve(session_id=\"abc\")", plain) && !occursin("KAIMON_RESTART_THEN\")\n", plain)
+    ENV["KAIMON_RESTART_THEN"] = "using Foo; Foo.open()"
+    try
+        code = KG._restart_serve_code("session_id=\"abc\"")
+        @test endswith(code, "using Foo; Foo.open()")
+        @test findfirst("KaimonGate.serve(", code).start < findfirst("using Foo", code).start   # after the gate serves
+        @test occursin("delete!(ENV, \"KAIMON_RESTART_THEN\")", code)                         # run once, not on each restart after
+        @test Meta.parseall(code) isa Expr
+    finally
+        delete!(ENV, "KAIMON_RESTART_THEN")
+    end
+end
+
 @testset "argv replay detection + launch-flag reconstruction" begin
     KG = KaimonGate
     saved = KG._ORIGINAL_ARGV[]

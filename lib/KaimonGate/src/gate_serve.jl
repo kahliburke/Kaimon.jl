@@ -793,7 +793,7 @@ function _stop(; exiting::Bool = false)
 end
 
 """
-    restart()
+    restart(; then = "")
 
 Restart the Julia session, preserving the Kaimon session ID so the TUI
 reconnects automatically.  Equivalent to what the agent's `manage_repl` tool
@@ -802,8 +802,12 @@ does, but callable directly from your REPL.
 Uses `execvp` to replace the current process image — same PID, fresh Julia
 state.  Your startup.jl runs again and `KaimonGate.serve()` reconnects with the
 same session key.
+
+`then` is Julia code the fresh process runs once the gate is serving, on the main thread:
+what brings an app back up after its own restart (a window opened again, say).
 """
-function restart()
+function restart(; then::AbstractString = "")
+    isempty(then) ? delete!(ENV, "KAIMON_RESTART_THEN") : (ENV["KAIMON_RESTART_THEN"] = String(then))
     _running() || error("Gate is not running")
     _allow_restart() || error("Restart is disabled for this session (allow_restart=false)")
     sid  = _session_id()

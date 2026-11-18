@@ -250,6 +250,19 @@ function _restart_tcp_kwargs(mode::Symbol, coerced::Bool, host::AbstractString,
 end
 
 """
+    _restart_serve_code(serve_args) -> String
+
+The `-e` code a restarted plain REPL session runs: the restart preamble serving with `serve_args`,
+then what `restart(; then)` asked for (`KAIMON_RESTART_THEN`), taken out of the environment first so
+a later restart does not run it again.
+"""
+function _restart_serve_code(serve_args::AbstractString)
+    code = _RESTART_CODE_BUILDER[](serve_args)
+    then = get(ENV, "KAIMON_RESTART_THEN", "")
+    isempty(then) ? code : code * "\ndelete!(ENV, \"KAIMON_RESTART_THEN\")\n" * then
+end
+
+"""
     _exec_restart(name, session_id, project_path, snap)
 
 Replace this process with a fresh gate that reconstructs the same session.
@@ -295,8 +308,7 @@ function _exec_restart(name::String, session_id::String, project_path::String,
         # becomes a no-op that updates mutable options (mirror, restart flag).
         # If startup.jl didn't call serve, this creates the gate from scratch.
         serve_args = "session_id=$(repr(session_id))$ns_kwarg$mirror_kwarg$restart_kwarg$tcp_kwargs"
-        serve_code = _RESTART_CODE_BUILDER[](serve_args)
-        vcat(julia_args, ["--project=$project_path", "-i", "-e", serve_code])
+        vcat(julia_args, ["--project=$project_path", "-i", "-e", _restart_serve_code(serve_args)])
     end
 
     # Restore terminal state and stdio fds before execvp. Tachikoma's
