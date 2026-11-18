@@ -161,7 +161,9 @@ function _start_stderr_capture!()
     _TUI_STDERR_WR[] = wr
     _TUI_STDERR_TASK[] = @async begin
         try
-            while _TUI_STDERR_RUNNING[]
+            # readline answers "" at end of stream rather than throwing: stop there, or this spins
+            # on the main thread and starves the TUI and every session's terminal reader
+            while _TUI_STDERR_RUNNING[] && !eof(rd)
                 line = readline(rd; keep = false)
                 isempty(line) && continue
                 _push_log!(:warn, "stderr: $line")
@@ -231,7 +233,9 @@ function _start_stdout_capture!()
     _TUI_STDOUT_WR[] = wr
     _TUI_STDOUT_TASK[] = @async begin
         try
-            while _TUI_STDOUT_RUNNING[]
+            # readline answers "" at end of stream rather than throwing: stop there, or this spins
+            # on the main thread and starves the TUI and every session's terminal reader
+            while _TUI_STDOUT_RUNNING[] && !eof(rd)
                 line = readline(rd; keep = false)
                 isempty(line) && continue
                 _push_log!(:info, "stdout: $line")
