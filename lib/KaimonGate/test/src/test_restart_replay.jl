@@ -46,6 +46,12 @@ end
         @test findfirst("KaimonGate.serve(", code).start < findfirst("using Foo", code).start   # after the gate serves
         @test occursin("delete!(ENV, \"KAIMON_RESTART_THEN\")", code)                         # run once, not on each restart after
         @test Meta.parseall(code) isa Expr
+        # a replayed command line: after its last code evaluated, in either spelling
+        r = KG._replay_with_then(["julia", "-i", "-e", "serve()"])
+        @test r[1:3] == ["julia", "-i", "-e"] && startswith(r[4], "serve()\n") && endswith(r[4], "using Foo; Foo.open()")
+        r = KG._replay_with_then(["julia", "--eval=serve()"])
+        @test startswith(r[2], "--eval=serve()\n") && endswith(r[2], "Foo.open()")
+        @test KG._replay_with_then(["julia", "script.jl"]) == ["julia", "script.jl"]
     finally
         delete!(ENV, "KAIMON_RESTART_THEN")
     end

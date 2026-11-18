@@ -257,9 +257,38 @@ then what `restart(; then)` asked for (`KAIMON_RESTART_THEN`), taken out of the 
 a later restart does not run it again.
 """
 function _restart_serve_code(serve_args::AbstractString)
-    code = _RESTART_CODE_BUILDER[](serve_args)
+    _restart_then(_RESTART_CODE_BUILDER[](serve_args))
+end
+
+"""
+    _restart_then(code) -> String
+
+`code` followed by what `restart(; then)` asked for (`KAIMON_RESTART_THEN`), taken out of the
+environment first so a later restart does not run it again; `code` alone when nothing was asked.
+"""
+function _restart_then(code::AbstractString)
     then = get(ENV, "KAIMON_RESTART_THEN", "")
-    isempty(then) ? code : code * "\ndelete!(ENV, \"KAIMON_RESTART_THEN\")\n" * then
+    isempty(then) ? String(code) : code * "\ndelete!(ENV, \"KAIMON_RESTART_THEN\")\n" * then
+end
+
+"""
+    _replay_with_then(argv) -> Vector{String}
+
+A replayed command line with `restart(; then)`'s code run after the last code it evaluates (its
+last `-e`/`--eval`). A command line evaluating none (a script, a TUI) is replayed as it was.
+"""
+function _replay_with_then(argv::Vector{String})
+    out = copy(argv)
+    isempty(get(ENV, "KAIMON_RESTART_THEN", "")) && return out
+    for i in length(out):-1:1
+        a = out[i]
+        if (a == "-e" || a == "--eval") && i < length(out)
+            out[i + 1] = _restart_then(out[i + 1]); return out
+        elseif startswith(a, "--eval=")
+            out[i] = "--eval=" * _restart_then(a[8:end]); return out
+        end
+    end
+    out
 end
 
 """
@@ -285,7 +314,7 @@ function _exec_restart(name::String, session_id::String, project_path::String,
         # or bin/kaimon) will call serve(force=true) itself; the env var carries
         # the session_id through. Don't inject -i: it would initialize a REPL
         # backend that conflicts with TUI terminal handling.
-        copy(_ORIGINAL_ARGV[])
+        _replay_with_then(_ORIGINAL_ARGV[])
     else
         # Plain REPL session — reconstruct from the original argv, preserving
         # all launch flags (-t, --heap-size-hint, --gcthreads, -O, etc.), then
