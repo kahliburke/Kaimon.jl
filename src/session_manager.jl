@@ -313,6 +313,10 @@ function spawn_session!(ms::ManagedSession)
         # KAIMON_GATE_* carry the host's identity to the standalone gate.
         # (pty_spawn merges env into the parent ENV, so we set explicit values.)
         env = _build_session_env()
+        # the launch config's own variables, where Kaimon's environment does not already set them
+        for (k, v) in lc.env
+            haskey(ENV, k) || haskey(env, k) || (env[k] = v)
+        end
         pty = Tachikoma.pty_spawn(cmd; rows = 24, cols = 80, env)
         ms.pty = pty
         ms.process = nothing

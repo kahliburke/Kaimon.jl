@@ -33,9 +33,13 @@ struct LaunchConfig
     startup_file::Bool        # true = --startup-file=yes. Default false
     julia_version::String     # "1.12.6" or a "1.12" series; resolved via juliaup. Empty = any
     instantiate::String       # "auto" | "always" | "never". Empty = "auto"
+    # Environment for the session, applied only where Kaimon's own environment does not already set
+    # the variable (an exported value wins), as for an extension's `[extension.env]`. For settings a
+    # runtime reads once at startup and no flag exposes, such as `JULIA_THREAD_SLEEP_THRESHOLD`.
+    env::Dict{String,String}
 end
 
-LaunchConfig() = LaunchConfig("", "", "", String[], "", "", false, "", "")
+LaunchConfig() = LaunchConfig("", "", "", String[], "", "", false, "", "", Dict{String,String}())
 
 # Positional constructors for earlier field sets, so existing callers/tests (and any config
 # written by an older Kaimon) keep working.
@@ -45,6 +49,9 @@ LaunchConfig(threads, gcthreads, heap_size_hint, extra_flags, sysimage, julia_bi
     LaunchConfig(threads, gcthreads, heap_size_hint, extra_flags, sysimage, julia_bin, startup_file, "", "")
 LaunchConfig(threads, gcthreads, heap_size_hint, extra_flags, sysimage, julia_bin, startup_file, julia_version) =
     LaunchConfig(threads, gcthreads, heap_size_hint, extra_flags, sysimage, julia_bin, startup_file, julia_version, "")
+LaunchConfig(threads, gcthreads, heap_size_hint, extra_flags, sysimage, julia_bin, startup_file, julia_version, instantiate) =
+    LaunchConfig(threads, gcthreads, heap_size_hint, extra_flags, sysimage, julia_bin, startup_file, julia_version, instantiate,
+                 Dict{String,String}())
 
 const INSTANTIATE_MODES = ("auto", "always", "never")
 
@@ -149,7 +156,16 @@ function _parse_launch_config(raw)::LaunchConfig
         # readable rather than throwing, and resolution rejects it if it isn't a version.
         string(get(raw, "julia_version", "")),
         _parse_instantiate(get(raw, "instantiate", "")),
+        _parse_env(get(raw, "env", nothing)),
     )
+end
+
+# `env` as written in kaimon.toml (`[launch.env]`) / projects.json: a table of names to values,
+# a number or a boolean taken as its text. Anything else is ignored with a warning.
+function _parse_env(v)::Dict{String,String}
+    v === nothing && return Dict{String,String}()
+    v isa AbstractDict || (@warn "Ignoring launch config env = $(repr(v)); expected a table"; return Dict{String,String}())
+    Dict{String,String}(String(k) => string(x) for (k, x) in v)
 end
 
 """Serialize a ProjectEntry to a Dict, only including non-default launch_config fields."""
@@ -169,6 +185,7 @@ function _project_entry_to_dict(e::ProjectEntry)
     !isempty(lc.julia_version) && (lcd["julia_version"] = lc.julia_version)
     lc.startup_file && (lcd["startup_file"] = true)
     !isempty(lc.instantiate) && (lcd["instantiate"] = lc.instantiate)
+    !isempty(lc.env) && (lcd["env"] = lc.env)
     !isempty(lcd) && (d["launch_config"] = lcd)
     return d
 end
@@ -192,6 +209,9 @@ function launch_config_summary(lc::LaunchConfig)
     !isempty(lc.instantiate) && push!(parts, "instantiate $(lc.instantiate)")
     for f in lc.extra_flags
         push!(parts, f)
+    end
+    for k in sort!(collect(keys(lc.env)))
+        push!(parts, "$k=$(lc.env[k])")
     end
     return join(parts, ", ")
 end
@@ -244,6 +264,7 @@ function merge_launch_config(base::LaunchConfig, override::LaunchConfig)
         override.startup_file || base.startup_file,
         pick(override.julia_version, base.julia_version),
         pick(override.instantiate, base.instantiate),
+        merge(base.env, override.env),          # each variable: the user's entry over the project's
     )
 end
 

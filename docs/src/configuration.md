@@ -160,6 +160,7 @@ How Kaimon starts a managed session for a project — most importantly, which **
 | `startup_file` | Run `~/.julia/config/startup.jl`. Default `false` |
 | `instantiate` | `Pkg.instantiate` before the session connects: `"auto"`, `"always"` or `"never"` (`true`/`false` also work). Default `"auto"` |
 | `extra_flags` | Any further Julia flags, passed through verbatim |
+| `env` | Environment variables for the session, as a table (`[launch.env]` in `kaimon.toml`). A variable already set in Kaimon's own environment is left as it is |
 
 #### Instantiating the environment
 
@@ -205,6 +206,17 @@ startup_file = true
 ```
 
 A user's `projects.json` entry is overlaid field-wise on the project's `kaimon.toml [launch]`, so you can override a single field locally and inherit the rest. A configured sysimage that doesn't exist on disk is logged and skipped — the session still starts, on the default image.
+
+#### Environment variables
+
+`env` sets variables a runtime reads once at startup and that no flag exposes. For example, a project whose idle threads should park at once rather than spin:
+
+```toml
+[launch.env]
+JULIA_THREAD_SLEEP_THRESHOLD = "0"
+```
+
+`projects.json` overlays `env` one variable at a time (`"launch_config": {"env": {"NAME": "value"}}`). A variable you have exported in the environment Kaimon runs in always wins over both.
 
 With `startup_file = true`, your `startup.jl` runs *before* the session's own boot script. If it connects a gate of its own, the session registers under those settings first and is then reconfigured — harmless, but worth knowing if your `startup.jl` does anything session-visible.
 

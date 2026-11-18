@@ -379,6 +379,25 @@ end
         @test occursin("catch e; @error \"Pkg.instantiate failed\"", script("auto"))
     end
 
+    @testset "launch env: kaimon.toml [launch.env], projects.json overlay per variable" begin
+        @test isempty(K.LaunchConfig().env)
+        @test isempty(K.LaunchConfig("", "", "", String[], "", "", false, "", "auto").env)   # older field sets
+        @test K._parse_launch_config(Dict("env" => Dict("A" => "1", "N" => 0))).env == Dict("A" => "1", "N" => "0")
+        @test isempty((@test_logs (:warn,) K._parse_launch_config(Dict("env" => "A=1"))).env)
+
+        proj = mktempdir()
+        write(joinpath(proj, "kaimon.toml"), "[launch]\nthreads = \"4,1\"\n\n[launch.env]\nJULIA_THREAD_SLEEP_THRESHOLD = \"0\"\nX = \"repo\"\n")
+        toml_lc = K.load_toml_launch_config(proj)
+        @test toml_lc.threads == "4,1" && toml_lc.env == Dict("JULIA_THREAD_SLEEP_THRESHOLD" => "0", "X" => "repo")
+
+        user = K._parse_launch_config(Dict("env" => Dict("X" => "user")))
+        merged = K.merge_launch_config(toml_lc, user)
+        @test merged.env == Dict("JULIA_THREAD_SLEEP_THRESHOLD" => "0", "X" => "user")   # the user's, variable by variable
+        d = K._project_entry_to_dict(K.ProjectEntry("/p", true, merged))["launch_config"]
+        @test K._parse_launch_config(d).env == merged.env                                    # round-trips through projects.json
+        @test occursin("JULIA_THREAD_SLEEP_THRESHOLD=0", K.launch_config_summary(merged))
+    end
+
     @testset "an undeliverable prompt is not reported as a timeout" begin
         # A prompt that could not be delivered and a prompt the user ignored are different
         # facts. Collapsing them tells someone to approve a dialog that was never displayed,
