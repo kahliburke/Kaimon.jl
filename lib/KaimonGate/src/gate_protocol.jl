@@ -268,8 +268,13 @@ environment first so a later restart does not run it again; `code` alone when no
 """
 function _restart_then(code::AbstractString)
     then = get(ENV, "KAIMON_RESTART_THEN", "")
-    isempty(then) ? String(code) : code * "\ndelete!(ENV, \"KAIMON_RESTART_THEN\")\n" * then
+    # a replayed command line carries the code an earlier restart asked for: dropped, so each restart runs only its own
+    i = findfirst(_THEN_MARK, code); base = i === nothing ? String(code) : String(code[1:prevind(code, first(i))])
+    isempty(then) ? base : base * _THEN_MARK * then
 end
+
+"What separates a restart's code from what `restart(; then)` asked to run after it."
+const _THEN_MARK = "\ndelete!(ENV, \"KAIMON_RESTART_THEN\")\n"
 
 """
     _replay_with_then(argv) -> Vector{String}
@@ -279,7 +284,6 @@ last `-e`/`--eval`). A command line evaluating none (a script, a TUI) is replaye
 """
 function _replay_with_then(argv::Vector{String})
     out = copy(argv)
-    isempty(get(ENV, "KAIMON_RESTART_THEN", "")) && return out
     for i in length(out):-1:1
         a = out[i]
         if (a == "-e" || a == "--eval") && i < length(out)

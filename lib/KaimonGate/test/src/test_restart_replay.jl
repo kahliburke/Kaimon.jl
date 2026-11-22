@@ -52,6 +52,11 @@ end
         r = KG._replay_with_then(["julia", "--eval=serve()"])
         @test startswith(r[2], "--eval=serve()\n") && endswith(r[2], "Foo.open()")
         @test KG._replay_with_then(["julia", "script.jl"]) == ["julia", "script.jl"]
+        # restarted again: the earlier restart's code, which the replayed line carries, is not run a second time
+        twice = KG._replay_with_then(KG._replay_with_then(["julia", "-e", "serve()"]))
+        @test length(findall("Foo.open()", twice[3])) == 1 && startswith(twice[3], "serve()\n")
+        delete!(ENV, "KAIMON_RESTART_THEN")                                          # a plain restart after: none of it
+        @test KG._replay_with_then(twice) == ["julia", "-e", "serve()"]
     finally
         delete!(ENV, "KAIMON_RESTART_THEN")
     end
