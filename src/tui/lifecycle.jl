@@ -414,31 +414,19 @@ function _check_code_stale!(m::KaimonModel)
     m._code_stale = false
 end
 
-const _REVISE_PENDING = Threads.Atomic{Bool}(false)
-
-"""Start a background task that waits on Revise's file-change event and sets an atomic flag."""
-function _start_revise_watcher!(_Revise)
-    Threads.@spawn begin
-        evt = _Revise.revision_event
-        while true
-            try
-                wait(evt)
-                reset(evt)
-                _REVISE_PENDING[] = true
-                _push_log!(:info, "Revise: file changes detected")
-            catch e
-                e isa InterruptException && break
-            end
-        end
-    end
-end
+# Newest queued-file mtime already handed to revise(). A failed revision stays queued,
+# so this keeps it from being retried on every frame until the file is saved again.
+const _REVISE_SEEN_MTIME = Ref(0.0)
 
 function Tachikoma.pre_render!(m::KaimonModel)
     m._revise_polling || return
-    _REVISE_PENDING[] || return
     _Revise = m._revise_mod
     _Revise === nothing && return
-    _REVISE_PENDING[] = false
+    # Read Revise's queue rather than wait on its revision_event, which releases one
+    # waiter per change and so would take changes from `entr` and other waiters.
+    t = something(KaimonGate.revise_queue_mtime(_Revise), 0.0)
+    t > _REVISE_SEEN_MTIME[] || return
+    _REVISE_SEEN_MTIME[] = t
     try
         _Revise.revise()
         m._code_stale = false

@@ -857,10 +857,7 @@ function (@main)(ARGS)
         _maybe_run_gate_upgrade()
 
         _revise_active = use_revise && _Revise !== nothing
-        if _revise_active
-            @info "Revise loaded — watching for file changes"
-            Base.invokelatest(_start_revise_watcher!, _Revise)
-        end
+        _revise_active && @info "Revise loaded — watching for file changes"
 
         tui(; port = port, theme_name = theme, revise_polling = _revise_active, revise_mod = _Revise)
     end

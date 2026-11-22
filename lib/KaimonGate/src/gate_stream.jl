@@ -265,17 +265,51 @@ function publish(topic::AbstractString, payload)
     return nothing
 end
 
+# Revise's `revision_event` releases one waiting task per notify, so a watcher that
+# waits on it takes the wakeup from `entr` or any other waiter. These read the queue
+# of files Revise has yet to revise instead, which leaves the event to its waiters.
+
+"""
+    revise_queue_mtime(R::Module) -> Union{Float64,Nothing}
+
+The newest modification time among the files queued for revision in Revise module
+`R`, 0.0 when the queue is empty, or `nothing` when this Revise has no such queue.
+"""
+function revise_queue_mtime(R::Module)
+    isdefined(R, :revision_queue) || return nothing
+    queue = R.revision_queue
+    entries = isdefined(R, :revise_lock) ? (@lock R.revise_lock collect(queue)) : collect(queue)
+    t = 0.0
+    for (pkgdata, file) in entries
+        path = try
+            joinpath(R.basedir(pkgdata), file)
+        catch
+            continue
+        end
+        t = max(t, mtime(path))
+    end
+    return t
+end
+
+const _REVISE_POLL_S = 1.0
+
 function _start_revise_watcher()
     isdefined(Main, :Revise) || return
-    isdefined(Main.Revise, :revision_event) || return
+    R = Main.Revise
+    revise_queue_mtime(R) === nothing && return
     _revise_watcher_task!(@async begin
+        # Publish once per newer save, not once per poll while the queue waits for the
+        # next prompt, so a session left with unapplied changes doesn't keep reindexing.
+        seen = 0.0
         try
-            while _running()
-                wait(Main.Revise.revision_event)
-                _running() || break
-                Base.reset(Main.Revise.revision_event)
-                project_path = dirname(Base.active_project())
-                _publish_stream("files_changed", project_path)
+            # A later serve replaces this task as the watcher; stop then too.
+            while _running() && _revise_watcher_task() === current_task()
+                t = something(revise_queue_mtime(R), 0.0)
+                if t > seen
+                    seen = t
+                    _publish_stream("files_changed", dirname(Base.active_project()))
+                end
+                sleep(_REVISE_POLL_S)
             end
         catch e
             e isa InterruptException && return

@@ -863,17 +863,7 @@ function _cleanup(; exiting::Bool = false)
     # Restore the original stdout/stderr (uninstall the capture mux) so a stopped
     # gate leaves the process's streams as it found them.
     _restore_capture!()
-    # Stop Revise watcher
-    watcher = _revise_watcher_task()
-    if watcher !== nothing && !istaskdone(watcher)
-        try
-            # Wake the blocked wait so the task can exit
-            if isdefined(Main, :Revise)
-                Base.notify(Main.Revise.revision_event)
-            end
-        catch
-        end
-    end
+    # The Revise watcher exits at its next poll, once _running() is false.
     _revise_watcher_task!(nothing)
 
     # Stop the stream broadcaster and wait for it to release the XPUB BEFORE any

@@ -35,6 +35,7 @@ end
 @safetestset "Failed serve" include("src/test_failed_serve.jl")
 @safetestset "Capture race" include("src/test_capture_race.jl")
 @safetestset "Stream guard" include("src/test_stream_guard.jl")
+@safetestset "Revise queue" include("src/test_revise_queue.jl")
 @safetestset "Concurrent eval" include("src/test_eval_concurrency.jl")
 @safetestset "Request id forwarding" include("src/test_request_id_forwarding.jl")
 @safetestset "Debug breakpoint" include("src/test_debug.jl")
