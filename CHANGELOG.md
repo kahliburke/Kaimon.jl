@@ -2,6 +2,34 @@
 
 Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each entry is also published on the GitHub release for its tag.
 
+## Kaimon 2.14.0
+
+[Diff since v2.13.4](https://github.com/kahliburke/Kaimon.jl/compare/v2.13.4...v2.14.0)
+
+**New:**
+- A project's launch config can set environment variables for its sessions (`[launch.env]` in `kaimon.toml`, or `env` in the `projects.json` entry), for settings a runtime reads once at startup and no flag exposes, such as `JULIA_THREAD_SLEEP_THRESHOLD`. A variable set in the environment Kaimon runs in takes precedence.
+- The time a session spawned by `start_session` has to connect is configurable: `session_startup_timeout` in `config.json`, or `KAIMON_SESSION_STARTUP_TIMEOUT` (default 120 seconds) (#109).
+- An agent-spawned gate that connects but matches no waiting session is logged in `server.log` with the reason (#109).
+
+**Fixes:**
+- A session that misses its startup limit is reported as timed out, but its process gets the same time again, and its gate is used if it connects then. Calling `start_session` again for the project waits for it instead of spawning another process. A process that never connects is stopped. It used to be left running and its gate never matched (#109).
+- A spawned session's gate is matched by its process id whatever it reports as its origin, so a `startup.jl` that serves the gate before the session's own script does no longer leaves the session unmatched (#109).
+- A requested session shutdown no longer logs "process exited unexpectedly" when the gate exits before Kaimon records the stop (#109).
+- Kaimon finds the sessions it starts when it runs under a macOS sandbox profile (#110). A process that answers signal 0 counts as alive when `ps` cannot run, as under a sandbox that denies running the setuid `/bin/ps`; only a zombie state from `ps` makes it dead. Discovery used to treat every local session as dead and delete its metadata.
+- The TUI's Revise integration reads Revise's queue of changed files rather than waiting on `Revise.revision_event`, which wakes one waiting task per change and so took changes from `entr` in the same process (#111). Requires KaimonGate 1.8.
+- The TUI stops capturing its stdout and stderr when the stream ends. The capture loops used to spin on the main thread once their pipe closed, freezing the TUI and the terminal output of every session.
+
+## KaimonGate 1.8.0
+
+[Diff since KaimonGate-v1.7.2](https://github.com/kahliburke/Kaimon.jl/compare/KaimonGate-v1.7.2...KaimonGate-v1.8.0)
+
+**New:**
+- `restart(; then)` runs `then`, Julia code, in the fresh process once its gate is serving, on the main thread, so an app can bring itself back up after restarting its session. It also runs after a replayed command line's last `-e`, and each restart runs only its own `then`.
+
+**Fixes:**
+- The gate's Revise watcher reads Revise's queue of changed files and publishes a change when a queued file is newer than the last one it reported (#111). It used to wait on `Revise.revision_event`, which wakes one waiting task per change, so `entr` and other tasks waiting on it missed changes.
+- On Windows, `restart()` and `manage_repl` restart run the fresh process on the same console (#112). The old process stays, idle and off the console, until the new one exits. The fresh process used to be detached, with no console, so its REPL exited at once and took the gate with it.
+
 ## Kaimon 2.13.4 (2026-11-13)
 
 [Diff since v2.13.3](https://github.com/kahliburke/Kaimon.jl/compare/v2.13.3...v2.13.4)
