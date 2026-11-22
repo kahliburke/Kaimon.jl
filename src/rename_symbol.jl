@@ -117,7 +117,7 @@ function _rename_symbol(args)
         push!(scan_flags, "-g")
         push!(scan_flags, g)
     end
-    append!(scan_flags, _grep_cloud_excludes(root))              # never into iCloud Drive or Dropbox: reading there downloads
+    append!(scan_flags, _GREP_SCAN)                              # never into a mount (cloud-synced folders: see `_edit_scope_files`)
 
     rg_cwd = if !isempty(base) && _grep_path_within(root, [base])
         base

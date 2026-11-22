@@ -134,24 +134,64 @@ _grep_path_within(abs::AbstractString, roots::Vector{String}) = any(roots) do r
     a == rr || startswith(a, rr * "/")
 end
 
-# Folders under the home folder whose files live in the cloud: reading one asks the
-# system to download it (iCloud Drive; Dropbox and the other file providers), so a
-# search walking into them downloads all they hold.
-const _GREP_CLOUD_DIRS = ("Library/Mobile Documents", "Library/CloudStorage")
+# ── cloud-synced folders ──────────────────────────────────────────────────────
+# Files that live in the cloud download as they are read, so a search walking into
+# them downloads all they hold. Folders under the home folder are kept out by path (see
+# `_grep_search_paths`); everything mounted from elsewhere (network shares, Linux's
+# gvfs and FUSE mounts such as rclone and sshfs) by `--one-file-system` (`_GREP_SCAN`).
+
+"The ripgrep flags every search takes: it stays on the filesystem it starts on."
+const _GREP_SCAN = ("--one-file-system",)
 
 """
-    _grep_cloud_excludes(root) -> Vector{String}
+    _grep_cloud_dirs(home = homedir()) -> Vector{String}
 
-The ripgrep flags that keep a search from `root` out of the cloud-synced folders (see
-`_GREP_CLOUD_DIRS`) lying inside it. A root inside one of them (a search asked for
-there) is left alone.
+The folders under `home` whose files live in the cloud and download as they are read, those
+that exist. On macOS: iCloud Drive (`Library/Mobile Documents`), the file providers' folders
+(`Library/CloudStorage`: Dropbox, OneDrive, Google Drive, Box), and the Desktop and Documents
+when iCloud keeps them (they resolve into iCloud Drive). On Windows: OneDrive's (personal
+and each organisation's), iCloud Drive's, Dropbox's and Box's.
 """
-function _grep_cloud_excludes(root::AbstractString)
-    out = String[]; r = rstrip(String(root), '/')
-    for d in _GREP_CLOUD_DIRS
-        full = joinpath(homedir(), d)
-        (full != r && _grep_path_within(full, [r])) && append!(out, ["-g", "!" * basename(full)])
+function _grep_cloud_dirs(home::AbstractString = homedir())
+    out = String[]; add(p) = (ispath(p) && push!(out, p); nothing)
+    if Sys.isapple()
+        icloud = joinpath(home, "Library", "Mobile Documents")
+        add(icloud); add(joinpath(home, "Library", "CloudStorage"))
+        for d in ("Desktop", "Documents")
+            p = joinpath(home, d); r = try; realpath(p); catch; p; end
+            r != p && _grep_path_within(r, String[icloud]) && add(p)
+        end
+    elseif Sys.iswindows()
+        for n in (try; readdir(home); catch; String[]; end)
+            (startswith(n, "OneDrive") || n in ("iCloudDrive", "Dropbox", "Box")) && add(joinpath(home, n))
+        end
     end
+    out
+end
+
+"""
+    _grep_search_paths(root; hidden = false, cloud = _grep_cloud_dirs()) -> Vector{String}
+
+What ripgrep is given to search for `root`: `root` itself, or, where cloud-synced folders
+(`cloud`) lie inside it, its contents without them, opened up only along the way to each
+(so a search of the home folder reads all of it but iCloud Drive and its like). Hidden
+entries are left out there unless `hidden` (as ripgrep leaves them out of a walk). A root
+inside a cloud folder (a search asked for there) is searched as asked.
+"""
+function _grep_search_paths(root::AbstractString; hidden::Bool = false, cloud = _grep_cloud_dirs())
+    r = String(rstrip(String(root), '/'))
+    inside = [String(c) for c in cloud if rstrip(c, '/') != r && _grep_path_within(c, [r])]
+    isempty(inside) && return String[root]
+    out = String[]
+    function open_up(dir)
+        for name in (try; readdir(dir); catch; String[]; end)
+            (hidden || !startswith(name, ".")) || continue
+            p = String(joinpath(dir, name))
+            any(c -> rstrip(c, '/') == p, inside) && continue
+            any(c -> _grep_path_within(c, String[p]), inside) && isdir(p) && !islink(p) ? open_up(p) : push!(out, p)
+        end
+    end
+    open_up(r)
     out
 end
 
@@ -591,8 +631,8 @@ end
 # Used only on the empty path — cheap, and it answers the question `stats.searches` can't
 # on this rg build: was anything actually searched? 0 ⇒ the path/glob matched no files (a
 # scoping mistake); N ⇒ a genuine negative over N files.
-function _grep_scope_file_count(rg, scan_flags, root, rg_cwd)
-    argv = String[rg...; "--files"; scan_flags...; "--"; root]
+function _grep_scope_file_count(rg, scan_flags, paths, rg_cwd)
+    argv = String[rg...; "--files"; scan_flags...; "--"; paths...]
     try
         out = read(pipeline(ignorestatus(Cmd(Cmd(argv); dir = rg_cwd)), stderr = devnull), String)
         isempty(out) && return 0
@@ -644,7 +684,9 @@ function _grep_code(args)
     for g in globs
         push!(scan_flags, "-g"); push!(scan_flags, g)
     end
-    append!(scan_flags, _grep_cloud_excludes(root))              # never into iCloud Drive or Dropbox: reading there downloads
+    append!(scan_flags, _GREP_SCAN)                              # never into a mount, nor a cloud-synced folder: reading there downloads
+    paths = _grep_search_paths(root; hidden = _grep_bool(args, "no_ignore"))
+    isempty(paths) && return "No matches: $(root) holds only cloud-synced folders, which are not searched (reading them downloads them)."
 
     # Echo the normalized search inputs (glob + active flags) in the header, so a caller
     # sees WHAT was actually searched — a header of just `in src` hides whether a glob or
@@ -662,7 +704,7 @@ function _grep_code(args)
     # rg builds report it as matched-files, so it reads 0 exactly on the empty case we need
     # it for; we count scope files with `rg --files` instead.)
     # `--` terminates flags so a pattern starting with `-` is taken literally.
-    argv = String[rg...; "--json"; "--stats"; pat_flags...; scan_flags...; "--"; pattern; root]
+    argv = String[rg...; "--json"; "--stats"; pat_flags...; scan_flags...; "--"; pattern; paths...]
     # Glob anchoring. ripgrep matches slash-containing globs (`src/**/*.jl`) against each
     # file's path RELATIVE TO rg's PROCESS CWD, not the positional search argument. We want
     # a `glob` to be written the SAME WAY as `path=`/`file=` — both project-root-relative —
@@ -694,7 +736,7 @@ function _grep_code(args)
         # Self-evidencing empty: report how many files were in scope, so a true negative
         # (searched N files, found nothing) is distinguishable from a scoping mistake
         # (path=/glob= matched no files → nothing was searched).
-        nscope = _grep_scope_file_count(rg, scan_flags, root, rg_cwd)
+        nscope = _grep_scope_file_count(rg, scan_flags, paths, rg_cwd)
         note = nscope == 0 ? " (0 files in scope — check path=/glob=)" :
                " ($nscope file$(nscope == 1 ? "" : "s") in scope)"
         # Discovery nudge. A TRUE negative — files WERE searched, the exact text just isn't

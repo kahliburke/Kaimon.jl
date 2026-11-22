@@ -300,21 +300,25 @@ _grep_ts(ago::Period) = format(now() - ago, "yyyy-mm-dd\\THH:MM:SS")
         end
     end
 
-    @testset "a search never walks into the cloud-synced folders" begin
-        home = homedir()
-        ex = Kaimon._grep_cloud_excludes(home)
-        @test ex == ["-g", "!Mobile Documents", "-g", "!CloudStorage"]
-        @test Kaimon._grep_cloud_excludes(joinpath(home, "Library")) == ex
-        @test isempty(Kaimon._grep_cloud_excludes(joinpath(home, "devel")))            # a project: nothing to keep out
-        @test isempty(Kaimon._grep_cloud_excludes(joinpath(home, "Library", "Mobile Documents")))   # asked for there: searched
-        if Kaimon._rg_argv() !== nothing                                                # and ripgrep prunes them
-            mktempdir() do d
-                for (sub, f) in (("Library/Mobile Documents/a", "x.txt"), ("Library/CloudStorage/b", "y.txt"), ("proj", "z.txt"))
-                    mkpath(joinpath(d, sub)); write(joinpath(d, sub, f), "needle\n")
-                end
+    @testset "a search never walks into a cloud-synced folder, nor a mount" begin
+        @test "--one-file-system" in Kaimon._GREP_SCAN
+        mktempdir() do d                                                                # a home folder of its own
+            d = realpath(d)
+            for (sub, f) in (("Library/Mobile Documents/a", "x.txt"), ("Library/CloudStorage/b", "y.txt"),
+                             ("Library/Prefs", "p.txt"), ("proj", "z.txt"), (".hidden", "h.txt"))
+                mkpath(joinpath(d, sub)); write(joinpath(d, sub, f), "needle\n")
+            end
+            cloud = [joinpath(d, "Library", "Mobile Documents"), joinpath(d, "Library", "CloudStorage")]
+            Sys.isapple() && @test sort(Kaimon._grep_cloud_dirs(d)) == sort(cloud)
+            ps = Kaimon._grep_search_paths(d; cloud)                                    # opened up only on the way to them
+            @test sort(ps) == sort([joinpath(d, "Library", "Prefs"), joinpath(d, "proj")])
+            @test joinpath(d, ".hidden") in Kaimon._grep_search_paths(d; cloud, hidden = true)
+            @test Kaimon._grep_search_paths(joinpath(d, "proj"); cloud) == [joinpath(d, "proj")]                   # nothing to keep out
+            @test Kaimon._grep_search_paths(cloud[1]; cloud) == [cloud[1]]                                         # asked for there: searched
+            if Kaimon._rg_argv() !== nothing
                 rg = Kaimon._rg_argv()
-                out = read(Cmd(Cmd(String[rg...; "-l"; ex...; "needle"; "."]); dir = d), String)
-                @test strip(out) == joinpath(".", "proj", "z.txt")
+                out = read(Cmd(String[rg...; "-l"; Kaimon._GREP_SCAN...; "needle"; ps...]), String)
+                @test sort(split(strip(out), '\n')) == sort([joinpath(d, "Library", "Prefs", "p.txt"), joinpath(d, "proj", "z.txt")])
             end
         end
     end

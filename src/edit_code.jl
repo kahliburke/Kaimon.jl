@@ -228,7 +228,9 @@ end
 function _edit_scope_files(rg::Vector{String}, scan_flags::Vector{String},
                            root::AbstractString, rg_cwd::AbstractString)
     isfile(root) && return String[root]
-    argv = String[rg...; "--files"; scan_flags...; "--"; root]
+    paths = _grep_search_paths(root; hidden = "--hidden" in scan_flags)       # without its cloud-synced folders
+    isempty(paths) && return String[]
+    argv = String[rg...; "--files"; scan_flags...; "--"; paths...]
     out = try
         read(pipeline(ignorestatus(Cmd(Cmd(argv); dir = rg_cwd)), stderr = devnull), String)
     catch
@@ -299,7 +301,7 @@ function _edit_code(args)
         push!(scan_flags, "--no-ignore")
         push!(scan_flags, "--hidden")
     end
-    append!(scan_flags, _grep_cloud_excludes(root))              # never into iCloud Drive or Dropbox: reading there downloads
+    append!(scan_flags, _GREP_SCAN)                              # never into a mount (cloud-synced folders: see `_edit_scope_files`)
     for g in _grep_globs(args)
         push!(scan_flags, "-g")
         push!(scan_flags, g)
