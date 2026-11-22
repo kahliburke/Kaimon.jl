@@ -1006,48 +1006,59 @@ Call with no `project_path` to list allowed projects and their status.""",
         pending_install = _maybe_offer_julia_install(path)
         pending_install === nothing || return "Session not started — $pending_install"
 
-        # Any MANAGED_SESSIONS entry for this path is stale at this point — a live
-        # gate would have been caught by the connection-manager check above — so
-        # drop it and respawn fresh. This closes the phantom "already running" gap
-        # where a dead managed entry's key was handed back (issue #55). Stop it first:
-        # its process is either dead and needs reaping, or never connected.
+        # A MANAGED_SESSIONS entry for this path whose process is still waiting for its
+        # gate is waited on again rather than replaced: a slow start (a precompile after a
+        # dependency changed) is not restarted from scratch. Any other entry is stale at
+        # this point — a live gate would have been caught by the connection-manager check
+        # above — so stop it (its process is dead and needs reaping, or never connected)
+        # and respawn fresh. This closes the phantom "already running" gap where a dead
+        # managed entry's key was handed back (issue #55).
         existing = find_managed_session(path; owner = owner)
-        if existing !== nothing
-            stop_session!(existing)
-            lock(MANAGED_SESSIONS_LOCK) do
-                filter!(ms -> ms !== existing, MANAGED_SESSIONS)
+        ms = if existing !== nothing && existing.status in (:starting, :timed_out)
+            existing.status = :starting
+            existing.connect_by = time() + session_startup_timeout()
+            isempty(name) || (existing.name = name)
+            existing
+        else
+            if existing !== nothing
+                stop_session!(existing)
+                lock(MANAGED_SESSIONS_LOCK) do
+                    filter!(ms -> ms !== existing, MANAGED_SESSIONS)
+                end
             end
+            fresh = ManagedSession(path; name = isempty(name) ? "" : name, owner = owner)
+            lock(MANAGED_SESSIONS_LOCK) do
+                push!(MANAGED_SESSIONS, fresh)
+            end
+            spawn_session!(fresh)
+            fresh
         end
 
-        # Create and spawn
-        ms = ManagedSession(path; name = isempty(name) ? "" : name, owner = owner)
-        lock(MANAGED_SESSIONS_LOCK) do
-            push!(MANAGED_SESSIONS, ms)
-        end
-        spawn_session!(ms)
-
-        # Poll for connection (Pkg.instantiate can be slow)
+        # Poll for connection (Pkg.instantiate can be slow). The monitor moves the session
+        # off :starting: to :running when its gate connects, :timed_out at its startup limit.
         mgr = GATE_CONN_MGR[]
-        timeout = 120.0
-        start = time()
-        while time() - start < timeout
+        while ms.status == :starting
             sleep(2.0)
             if mgr !== nothing
                 _monitor_managed_sessions!(mgr)
-            end
-            if ms.status == :running && !isempty(ms.session_key)
-                _bind_caller_session!(ms.session_key)
-                return private && !isempty(owner) ?
-                    "Private session started. Session key: $(ms.session_key). No other agent is handed this session; pass it as ses (tools default to it when you omit ses)." :
-                    "Session started. Session key: $(ms.session_key)"
-            end
-            if ms.status == :crashed
-                err_msg = isempty(ms.error_log) ? "unknown error" : last(ms.error_log)
-                return "Error: Session failed to start — $err_msg\nCheck log: $(ms.log_file)"
+            elseif time() > ms.connect_by
+                ms.status = :timed_out
             end
         end
-
-        return "Error: Timed out waiting for session to connect ($(Int(timeout))s). The process may still be starting — check log: $(ms.log_file)"
+        if ms.status == :running && !isempty(ms.session_key)
+            _bind_caller_session!(ms.session_key)
+            return private && !isempty(owner) ?
+                "Private session started. Session key: $(ms.session_key). No other agent is handed this session; pass it as ses (tools default to it when you omit ses)." :
+                "Session started. Session key: $(ms.session_key)"
+        end
+        if ms.status == :timed_out
+            return "Error: the session did not connect within $(round(Int, time() - ms.started_at))s. " *
+                   "Its process is still starting and is used if it connects within another " *
+                   "$(round(Int, session_startup_timeout()))s: call start_session again to keep " *
+                   "waiting for it. Check log: $(ms.log_file)"
+        end
+        err_msg = isempty(ms.error_log) ? "unknown error" : last(ms.error_log)
+        return "Error: Session failed to start — $err_msg\nCheck log: $(ms.log_file)"
     end
 )
 

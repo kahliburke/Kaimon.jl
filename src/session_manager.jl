@@ -17,8 +17,9 @@ mutable struct ManagedSession
     name::String
     process::Union{Base.Process,Nothing}
     pty::Any                # Union{Tachikoma.PTY, Nothing} — PTY handle for terminal access
-    status::Symbol          # :stopped, :starting, :running, :crashed
+    status::Symbol          # :stopped, :starting, :timed_out, :running, :stopping, :crashed
     started_at::Float64     # time() when last started
+    connect_by::Float64     # time() by which its gate must connect; see session_startup_timeout
     session_key::String     # gate session key once connected (8-char)
     error_log::Vector{String}
     log_file::String        # path to stderr/stdout log
@@ -33,12 +34,38 @@ function ManagedSession(project_path::String; name::String = "", owner::String =
     mkpath(log_dir)
     stem = isempty(owner) ? basename(project_path) : "$(basename(project_path))-$(first(owner, 8))"
     log_file = joinpath(log_dir, "$stem.log")
-    ManagedSession(project_path, name, nothing, nothing, :stopped, 0.0, "", String[], log_file, owner)
+    ManagedSession(project_path, name, nothing, nothing, :stopped, 0.0, 0.0, "", String[], log_file, owner)
 end
 
 """Return the PID of a managed session (from PTY or Process)."""
 session_pid(ms::ManagedSession) =
     ms.pty !== nothing ? Int(ms.pty.child_pid) : (ms.process !== nothing ? getpid(ms.process) : 0)
+
+const _SESSION_STARTUP_TIMEOUT_DEFAULT = 120.0
+
+"""
+    session_startup_timeout() -> Float64
+
+Seconds a spawned session has to connect its gate: `KAIMON_SESSION_STARTUP_TIMEOUT` > config.json
+`"session_startup_timeout"` > default $(_SESSION_STARTUP_TIMEOUT_DEFAULT). A session that has not
+connected by then is reported as timed out, and its process gets the same time again to connect
+before it is stopped. Read on use, so a config edit applies to the next spawn.
+"""
+function session_startup_timeout()::Float64
+    env = tryparse(Float64, strip(get(ENV, "KAIMON_SESSION_STARTUP_TIMEOUT", "")))
+    (env !== nothing && env > 0) && return env
+    t = _SESSION_STARTUP_TIMEOUT_DEFAULT
+    try
+        p = get_global_config_path()
+        if isfile(p)
+            data = JSON.parse(read(p, String); dicttype = Dict{String,Any})
+            v = get(data, "session_startup_timeout", nothing)
+            (v isa Real && v > 0) && (t = Float64(v))
+        end
+    catch
+    end
+    return t
+end
 
 # ── Global state ─────────────────────────────────────────────────────────────
 
@@ -254,7 +281,7 @@ function _watch_session_exit!(ms::ManagedSession, pty, log_io; poll::Real = 2.0)
     while Tachikoma.pty_alive(pty)
         sleep(poll)
     end
-    if ms.status in (:starting, :running)
+    if ms.status in (:starting, :timed_out, :running)
         ms.status = :crashed
         _push_session_error!(ms, "Process exited at $(Dates.now())")
         _push_log!(
@@ -294,6 +321,7 @@ function spawn_session!(ms::ManagedSession)
     ms.status == :running && return
     ms.status = :starting
     ms.started_at = time()
+    ms.connect_by = ms.started_at + session_startup_timeout()
     empty!(ms.error_log)
 
     # Resolve per-session allow_restart preference
@@ -451,13 +479,90 @@ end
 
 # ── Monitor ──────────────────────────────────────────────────────────────────
 
+_realpath_or_self(p::AbstractString) = try
+    realpath(p)
+catch
+    String(p)
+end
+
+"""
+    _match_gate(ms, sessions, conns) -> Union{REPLConnection,Nothing}
+
+The connected gate of managed session `ms`, which is waiting for one. The process id decides,
+since several sessions can share a project. It matches whatever the gate says started it: a startup
+file the launch config runs may serve the gate before the session's own script does. The project
+path is the fallback, for a `julia_bin` wrapper that runs Julia as a child with another pid, and
+takes only an agent-spawned gate whose pid is no other managed session's. A gate another managed
+session has claimed is never matched again.
+"""
+function _match_gate(ms::ManagedSession, sessions, conns)
+    claimed = Set(s.session_key for s in sessions if s !== ms && !isempty(s.session_key))
+    free = [c for c in conns if !(short_key(c) in claimed)]
+    pid = session_pid(ms)
+    if pid > 0
+        i = findfirst(c -> c.pid == pid, free)
+        i === nothing || return free[i]
+    end
+    other_pids = Set(p for p in (session_pid(s) for s in sessions if s !== ms) if p > 0)
+    norm_path = _realpath_or_self(ms.project_path)
+    i = findfirst(free) do c
+        is_agent_spawned(c) && !(c.pid in other_pids) &&
+            _realpath_or_self(c.project_path) == norm_path
+    end
+    return i === nothing ? nothing : free[i]
+end
+
+"""
+    _unmatched_gate_reason(conn, sessions) -> String
+
+Why agent-spawned gate `conn` matches none of the managed `sessions`, for the log.
+"""
+function _unmatched_gate_reason(conn::REPLConnection, sessions)
+    if conn.pid > 0
+        i = findfirst(s -> session_pid(s) == conn.pid, sessions)
+        i === nothing || return "its process is session '$(sessions[i].name)''s, which is $(sessions[i].status)"
+    end
+    waiting = [s for s in sessions if s.status in (:starting, :timed_out)]
+    isempty(waiting) && return "no session is waiting for a gate"
+    gate_path = _realpath_or_self(conn.project_path)
+    reasons = map(waiting) do s
+        same_path = _realpath_or_self(s.project_path) == gate_path
+        "'$(s.name)' has pid $(session_pid(s))" * (same_path ? "" : " and project $(s.project_path)")
+    end
+    return "pid differs from every waiting session (" * join(reasons, "; ") * ")"
+end
+
+# Keys of unclaimed agent-spawned gates already logged, so each is reported once.
+const _UNMATCHED_GATES_LOGGED = Set{String}()
+const _UNMATCHED_GATES_LOCK = ReentrantLock()
+
+function _log_unmatched_gates!(sessions, conns)
+    claimed = Set(s.session_key for s in sessions if !isempty(s.session_key))
+    lock(_UNMATCHED_GATES_LOCK) do
+        live = Set(short_key(c) for c in conns)
+        intersect!(_UNMATCHED_GATES_LOGGED, live)
+        for c in conns
+            key = short_key(c)
+            (is_agent_spawned(c) && !(key in claimed) && !(key in _UNMATCHED_GATES_LOGGED)) || continue
+            push!(_UNMATCHED_GATES_LOGGED, key)
+            _push_log!(
+                :warn,
+                "Agent-spawned gate $key (pid $(c.pid), project $(c.project_path)) matches no " *
+                "managed session: $(_unmatched_gate_reason(c, sessions))",
+            )
+        end
+    end
+end
+
 """
     _monitor_managed_sessions!(conn_mgr)
 
-Called periodically from the TUI view tick. Checks session health:
-- Matches gate sessions to managed sessions by project_path
+Called periodically from the TUI view tick and while `start_session` waits. Checks session health:
+- Matches each session waiting for its gate to the gate that connected for its process
+- Marks a session `:timed_out` once its startup limit passes; its process keeps running and is
+  still matched if its gate connects, until the same time again has passed, when it is stopped
 - Detects crashed processes
-- Updates status from :starting to :running when gate connects
+- Logs an agent-spawned gate that matches no session, with the reason
 - No auto-restart (agent retries manually)
 """
 function _monitor_managed_sessions!(conn_mgr)
@@ -471,7 +576,7 @@ function _monitor_managed_sessions!(conn_mgr)
     conns = connected_sessions(conn_mgr)
 
     for ms in sessions
-        if ms.status == :starting || ms.status == :running
+        if ms.status in (:starting, :timed_out, :running)
             # Check if process is still alive (PTY or legacy pipeline)
             alive = if ms.pty !== nothing
                 Tachikoma.pty_alive(ms.pty)
@@ -481,10 +586,8 @@ function _monitor_managed_sessions!(conn_mgr)
                 false
             end
             if !alive
-                if ms.status != :crashed
-                    ms.status = :crashed
-                    _push_session_error!(ms, "Process died at $(Dates.now())")
-                end
+                ms.status = :crashed
+                _push_session_error!(ms, "Process died at $(Dates.now())")
             end
         end
 
@@ -501,45 +604,37 @@ function _monitor_managed_sessions!(conn_mgr)
             end
         end
 
-        if ms.status == :starting
-            # Match the gate that connected for this process. Several sessions can share
-            # a project, so the process id decides; the project path is the fallback for
-            # a `julia_bin` wrapper that runs Julia as a child (a different pid). A gate
-            # another managed session already claimed is never matched twice.
-            claimed = Set(s.session_key for s in sessions if s !== ms && !isempty(s.session_key))
-            pid = session_pid(ms)
-            norm_path = try
-                realpath(ms.project_path)
-            catch
-                ms.project_path
-            end
-            other_pids = Set(session_pid(s) for s in sessions if s !== ms)
-            path_match(conn) = !(conn.pid in other_pids) &&
-                (try realpath(conn.project_path) catch; conn.project_path end) == norm_path
-            candidates = [c for c in conns if is_agent_spawned(c) && !(short_key(c) in claimed)]
-            match = something(
-                findfirst(c -> pid > 0 && c.pid == pid, candidates),
-                findfirst(path_match, candidates),
-                Some(nothing),
+        ms.status in (:starting, :timed_out) || continue
+        conn = _match_gate(ms, sessions, conns)
+        if conn !== nothing
+            late = ms.status == :timed_out
+            ms.status = :running
+            ms.session_key = short_key(conn)
+            _push_log!(
+                :info,
+                "Session '$(ms.name)' connected (session=$(ms.session_key))" *
+                (late ? " $(round(Int, time() - ms.started_at))s after it started, past its startup limit" : ""),
             )
-            if match !== nothing
-                conn = candidates[match]
-                ms.status = :running
-                ms.session_key = short_key(conn)
-                _push_log!(
-                    :info,
-                    "Session '$(ms.name)' connected (session=$(ms.session_key))",
-                )
-            end
-
-            # Timeout: if starting for >120s, mark as crashed
-            if ms.status == :starting && time() - ms.started_at > 120.0
-                ms.status = :crashed
-                _push_session_error!(ms, "Startup timeout at $(Dates.now())")
-                _push_log!(:warn, "Session '$(ms.name)' startup timed out")
-            end
+            continue
+        end
+        grace = session_startup_timeout()
+        if ms.status == :starting && time() > ms.connect_by
+            ms.status = :timed_out
+            waited = round(Int, time() - ms.started_at)
+            _push_session_error!(ms, "Startup timeout at $(Dates.now()): no gate connected within $(waited)s")
+            _push_log!(
+                :warn,
+                "Session '$(ms.name)' startup timed out after $(waited)s; its process " *
+                "(PID=$(session_pid(ms))) is used if its gate connects within another $(round(Int, grace))s",
+            )
+        elseif ms.status == :timed_out && time() > ms.connect_by + grace
+            _push_log!(:warn, "Session '$(ms.name)' never connected; stopping its process")
+            stop_session!(ms)
         end
     end
+
+    _log_unmatched_gates!(sessions, conns)
+    return nothing
 end
 
 """
@@ -632,6 +727,8 @@ stalled and did not answer) or `:unacknowledged`.
 function shutdown_session!(mgr::ConnectionManager, conn::REPLConnection; exit_wait::Real = 5.0)
     was_stalled = conn.status == :stalled
     ms = managed_session_for(conn)
+    # Before the gate is asked to exit, so its exit is not taken for a crash.
+    ms === nothing || (ms.status = :stopping)
     ok = send_shutdown!(conn)
     disconnect!(conn)
     _unregister_session_tools!(conn)

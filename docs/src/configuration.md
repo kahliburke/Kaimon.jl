@@ -95,6 +95,7 @@ The security config controls access to the MCP server via `config.json` at `~/.c
 | `allowed_ips` | IP addresses permitted to connect |
 | `editor` | Editor for file:line links: `"vscode"`, `"cursor"`, `"zed"`, `"windsurf"` |
 | `qdrant_prefix` | Prefix for Qdrant collection names (for shared instances). Set via Config tab `[Q]` or `KAIMON_QDRANT_PREFIX` env var. |
+| `session_startup_timeout` | Seconds a session spawned by `start_session` has to connect (default `120`). Its process gets the same time again before it is stopped. See [Managed sessions](sessions.md#Managed-sessions). |
 
 Use the security management tools to modify these settings programmatically:
 
@@ -305,6 +306,7 @@ that is nearly always a typo in a tool name.
 | `KAIMON_TEST_PROMOTE_AFTER` | all | Seconds a test run may hold the foreground before `run_tests` backgrounds it (default `30`). `0` never backgrounds. |
 | `KAIMON_TEST_CONCURRENCY` | all | Test runs allowed in flight per project (default `1`). Runs are serialised because overlapping suites share fixtures and global state. |
 | `KAIMON_TOOL_HOLD_SECONDS` | all | How long an extension's tools stay listed while it restarts (default `45`). Overrides `extension_tool_hold_seconds`. See [Tools Stay Listed Across a Restart](extensions.md#Tools-Stay-Listed-Across-a-Restart). |
+| `KAIMON_SESSION_STARTUP_TIMEOUT` | all | Seconds a session spawned by `start_session` has to connect (default `120`). Overrides `session_startup_timeout`. |
 | `KAIMON_TOOL_PARK_SECONDS` | all | How long a tool call waits for a restarting extension before giving up (default `40`). Overrides `extension_tool_park_seconds`. |
 | `KAIMON_GATE_MODE` | all | Gate transport: `"ipc"` (default) or `"tcp"`. |
 | `KAIMON_GATE_HOST` | all | TCP bind address (default `127.0.0.1`). |

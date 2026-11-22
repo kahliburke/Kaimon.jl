@@ -82,9 +82,13 @@ When a managed session starts, Kaimon:
 1. Spawns a Julia subprocess via PTY (pseudo-terminal).
 2. Activates the project environment and runs `Pkg.instantiate` (see [Instantiating the environment](configuration.md#Instantiating-the-environment)).
 3. Loads Revise and calls `KaimonGate.serve(spawned_by="agent")`.
-4. Waits up to 120 seconds for the gate connection.
+4. Waits for the gate connection, 120 seconds by default (`session_startup_timeout` in `config.json`, or `KAIMON_SESSION_STARTUP_TIMEOUT`).
 
 The spawned process connects back as a regular gate session. It appears in the Sessions tab like any other session, but is tagged with `spawned_by: agent` to distinguish it from manually started REPLs.
+
+A session that has not connected within that limit is reported as timed out, but its process keeps running for the same time again. If its gate connects in that window, the session is used: calling `start_session` again for the project waits for it rather than spawning another process. A process that never connects is then stopped. An agent-spawned gate that connects but matches no waiting session is logged in `server.log` with the reason.
+
+Evaluations run on a worker thread, and sessions start with `-t auto`. A package that must be called from the main thread, such as PythonCall or GLMakie, needs `ex(…, mt=true)` for every eval that calls into it.
 
 To configure which projects can be spawned, see [Projects Configuration](configuration.md#projects-configuration).
 
