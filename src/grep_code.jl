@@ -134,6 +134,27 @@ _grep_path_within(abs::AbstractString, roots::Vector{String}) = any(roots) do r
     a == rr || startswith(a, rr * "/")
 end
 
+# Folders under the home folder whose files live in the cloud: reading one asks the
+# system to download it (iCloud Drive; Dropbox and the other file providers), so a
+# search walking into them downloads all they hold.
+const _GREP_CLOUD_DIRS = ("Library/Mobile Documents", "Library/CloudStorage")
+
+"""
+    _grep_cloud_excludes(root) -> Vector{String}
+
+The ripgrep flags that keep a search from `root` out of the cloud-synced folders (see
+`_GREP_CLOUD_DIRS`) lying inside it. A root inside one of them (a search asked for
+there) is left alone.
+"""
+function _grep_cloud_excludes(root::AbstractString)
+    out = String[]; r = rstrip(String(root), '/')
+    for d in _GREP_CLOUD_DIRS
+        full = joinpath(homedir(), d)
+        (full != r && _grep_path_within(full, [r])) && append!(out, ["-g", "!" * basename(full)])
+    end
+    out
+end
+
 # `outcome` states WHY approval is absent, in the caller's own words. Lumping "the user said
 # no" together with "the user was never asked" makes the two indistinguishable from the tool's
 # output, which leaves an agent unable to tell a refusal from a broken prompt channel.
@@ -195,7 +216,7 @@ function _grep_enforce_scope(root::AbstractString; consent = _elicit_grep_path_c
     roots = _grep_allowed_roots()
     _grep_path_within(root, roots) && return nothing
     decision = try; consent(root); catch; :unsupported; end
-    if decision === :always
+    if decision === :always                                       # kept, unless too broad to keep (home, root): then this once
         try; allow_grep_path!(isdir(root) ? root : dirname(root)); catch; end
         return nothing
     elseif decision === :once
@@ -623,6 +644,7 @@ function _grep_code(args)
     for g in globs
         push!(scan_flags, "-g"); push!(scan_flags, g)
     end
+    append!(scan_flags, _grep_cloud_excludes(root))              # never into iCloud Drive or Dropbox: reading there downloads
 
     # Echo the normalized search inputs (glob + active flags) in the header, so a caller
     # sees WHAT was actually searched — a header of just `in src` hides whether a glob or

@@ -286,6 +286,39 @@ _grep_ts(ago::Period) = format(now() - ago, "yyyy-mm-dd\\THH:MM:SS")
         end
     end
 
+    @testset "allow_grep_path! won't keep the home folder or anything holding it" begin
+        mktempdir() do cache
+            withenv("XDG_CONFIG_HOME" => joinpath(cache, "config")) do
+                mkpath(joinpath(cache, "config", "kaimon"))
+                for p in ("/", homedir(), dirname(homedir()))
+                    @test Kaimon.grep_path_too_broad(p)
+                    @test Kaimon.allow_grep_path!(p) == false
+                end
+                @test isempty(Kaimon.grep_allowed_paths())
+                @test !Kaimon.grep_path_too_broad(joinpath(homedir(), "devel"))
+            end
+        end
+    end
+
+    @testset "a search never walks into the cloud-synced folders" begin
+        home = homedir()
+        ex = Kaimon._grep_cloud_excludes(home)
+        @test ex == ["-g", "!Mobile Documents", "-g", "!CloudStorage"]
+        @test Kaimon._grep_cloud_excludes(joinpath(home, "Library")) == ex
+        @test isempty(Kaimon._grep_cloud_excludes(joinpath(home, "devel")))            # a project: nothing to keep out
+        @test isempty(Kaimon._grep_cloud_excludes(joinpath(home, "Library", "Mobile Documents")))   # asked for there: searched
+        if Kaimon._rg_argv() !== nothing                                                # and ripgrep prunes them
+            mktempdir() do d
+                for (sub, f) in (("Library/Mobile Documents/a", "x.txt"), ("Library/CloudStorage/b", "y.txt"), ("proj", "z.txt"))
+                    mkpath(joinpath(d, sub)); write(joinpath(d, sub, f), "needle\n")
+                end
+                rg = Kaimon._rg_argv()
+                out = read(Cmd(Cmd(String[rg...; "-l"; ex...; "needle"; "."]); dir = d), String)
+                @test strip(out) == joinpath(".", "proj", "z.txt")
+            end
+        end
+    end
+
     @testset "_grep_code end-to-end (rg)" begin
         if Kaimon._rg_argv() === nothing
             @test_skip "ripgrep not available"

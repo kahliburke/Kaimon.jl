@@ -484,15 +484,29 @@ function grep_allowed_paths()::Vector{String}
 end
 
 """
+    grep_path_too_broad(path) -> Bool
+
+Whether `path` is too broad to keep on the grep allow-list: the filesystem's root, the
+home folder, or a folder holding it. A search from one of these walks into the
+cloud-synced folders (iCloud Drive, Dropbox), whose files download as they are read.
+"""
+function grep_path_too_broad(path::AbstractString)
+    p = rstrip(normalize_path(String(path)), '/'); home = rstrip(normalize_path(homedir()), '/')
+    isempty(p) || p == home || startswith(home * "/", p * "/")
+end
+
+"""
     allow_grep_path!(path::AbstractString) -> Bool
 
 Add `path` to the grep allow-list (`grep_paths` in projects.json) and persist,
 preserving all other config keys (read-then-merge). Used to remember an interactive
-"always allow" consent. Returns `true` if the list changed, `false` if already present.
+"always allow" consent. Returns `true` if the list changed, `false` if already present
+or too broad to keep (see `grep_path_too_broad`: allowed once, asked again next time).
 """
 function allow_grep_path!(path::AbstractString)::Bool
     norm = normalize_path(String(path))
     isempty(norm) && return false
+    grep_path_too_broad(norm) && return false
     cfg = get_projects_config_path()
     mkpath(dirname(cfg))
     data =

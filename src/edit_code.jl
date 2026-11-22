@@ -299,6 +299,7 @@ function _edit_code(args)
         push!(scan_flags, "--no-ignore")
         push!(scan_flags, "--hidden")
     end
+    append!(scan_flags, _grep_cloud_excludes(root))              # never into iCloud Drive or Dropbox: reading there downloads
     for g in _grep_globs(args)
         push!(scan_flags, "-g")
         push!(scan_flags, g)
