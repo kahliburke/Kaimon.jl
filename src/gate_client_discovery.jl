@@ -5,12 +5,12 @@
 # ── PID & Stale Session Helpers ──────────────────────────────────────────────
 
 """
-    _is_pid_alive(pid::Int) -> Bool
+    _is_pid_alive(pid::Integer) -> Bool
 
 Cross-platform check whether a process with the given PID exists.
 Uses signal 0 (no actual signal sent) via libuv.
 """
-function _is_pid_alive(pid::Int)
+function _is_pid_alive(pid::Integer)
     pid > 0 || return false
     ccall(:uv_kill, Cint, (Cint, Cint), pid, 0) == 0 || return false
     # Zombie processes (defunct) still respond to signal 0; filter them via process state.
