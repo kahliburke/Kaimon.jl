@@ -15,7 +15,7 @@ using TOML
         # - Short git hash with -dirty suffix
         # - Version from Project.toml (v0.3.0 format)
 
-        if occursin(r"^[0-9a-f]{7}(-dirty)?$", version)
+        if occursin(r"^[0-9a-f]{7,}(-dirty)?$", version)
             # Git commit hash format
             @test length(version) >= 7
             @test length(version) <= 13  # 7 chars + "-dirty"
@@ -51,7 +51,7 @@ using TOML
             version = Kaimon.version_info()
 
             # Should be a valid git short hash (7 hex chars) or include -dirty
-            @test occursin(r"^[0-9a-f]{7}(-dirty)?$", version) || startswith(version, "v")
+            @test occursin(r"^[0-9a-f]{7,}(-dirty)?$", version) || startswith(version, "v")
         else
             # If not a git repo (installed package), should return version from Project.toml
             version = Kaimon.version_info()
