@@ -801,7 +801,8 @@ does, but callable directly from your REPL.
 
 Uses `execvp` to replace the current process image — same PID, fresh Julia
 state.  Your startup.jl runs again and `KaimonGate.serve()` reconnects with the
-same session key.
+same session key.  On Windows, which has no `execvp`, the fresh process runs on
+the same console with a new PID, and the old one waits, idle, for it to exit.
 
 `then` is Julia code the fresh process runs once the gate is serving, on the main thread:
 what brings an app back up after its own restart (a window opened again, say).

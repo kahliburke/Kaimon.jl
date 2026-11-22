@@ -367,19 +367,7 @@ function _exec_restart(name::String, session_id::String, project_path::String,
     # execvp replaces the process image — same PID, same terminal
     argv = map(String, args)
 
-    # Windows has no execvp (a process can't replace its own image). Spawn a fresh,
-    # DETACHED instance with the same argv and exit — it re-registers under the same
-    # session_id (KAIMON_RESTART_SESSION, set above, is inherited), so the client
-    # reconnects through the session metadata. New PID, but discover_sessions already
-    # handles a session_id whose PID changed on restart.
-    if Sys.iswindows()
-        try
-            run(detach(Cmd(argv)); wait = false)
-        catch e
-            @error "Windows restart: spawn failed" exception = e
-        end
-        exit(0)
-    end
+    Sys.iswindows() && _windows_restart(argv)
 
     ptrs = Ptr{UInt8}[pointer(s) for s in argv]
     push!(ptrs, Ptr{UInt8}(0))  # NULL terminator
@@ -389,6 +377,44 @@ function _exec_restart(name::String, session_id::String, project_path::String,
     # If we reach here, execvp failed — fall back to exit
     @error "execvp failed, falling back to exit" errno = err
     exit(1)
+end
+
+"""
+    _windows_restart(argv)
+
+Windows has no `execvp`, so run the fresh process on this console and keep this one alive,
+but off the console, until it exits; then exit with its code. The fresh process re-registers
+under the same session id (`KAIMON_RESTART_SESSION` is inherited) with a new PID.
+
+It cannot be detached: a detached process has no console, so its REPL reads end of file at
+once and the process exits. And this process cannot exit first: libuv puts the processes it
+starts in a job that is closed, killing them, when this process exits.
+"""
+function _windows_restart(argv::Vector{String})
+    proc = try
+        run(Cmd(argv); wait = false)   # inherits this process's stdin, stdout and stderr
+    catch e
+        @error "Windows restart: spawn failed" exception = e
+        exit(1)
+    end
+    # Leave the console to the fresh process: stop reading its input here, and ignore the
+    # Ctrl-C the console sends every process attached to it. The second is set after the
+    # spawn because a child inherits it.
+    try
+        Base.stop_reading(stdin)
+    catch
+    end
+    ccall((:SetConsoleCtrlHandler, "kernel32"), stdcall, Cint, (Ptr{Cvoid}, Cint), C_NULL, 1)
+    while true
+        try
+            wait(proc)
+            break
+        catch e
+            e isa InterruptException || break
+        end
+    end
+    # A Windows exit status can exceed Int32 as a signed value; exit takes its low 32 bits.
+    exit(process_exited(proc) ? proc.exitcode % Int32 : Int32(1))
 end
 
 function handle_message(request::NamedTuple)
