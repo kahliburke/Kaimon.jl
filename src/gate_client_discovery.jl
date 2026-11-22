@@ -18,12 +18,14 @@ function _is_pid_alive(pid::Int)
     # WITHOUT this the `ps` call below throws, the catch returns false, and EVERY live
     # process reads as dead (reaping live local sessions during discovery).
     Sys.iswindows() && return true
-    try
-        state = strip(read(pipeline(`ps -o state= -p $pid`; stderr=devnull), String))
-        !startswith(state, "Z")
+    # The process exists, so a `ps` that cannot run (a sandbox denies exec of the
+    # setuid binary, or it is not installed) leaves it alive; only a zombie state reads dead.
+    state = try
+        strip(read(pipeline(`ps -o state= -p $pid`; stderr=devnull), String))
     catch
-        false
+        return true
     end
+    return !startswith(state, "Z")
 end
 
 """

@@ -459,6 +459,16 @@ end
         @test conn.pid == getpid()   # adopted the live PID, not the stale 11111
     end
 
+    @testset "A live process stays alive when ps cannot run" begin
+        @test Kaimon._is_pid_alive(getpid())
+        # An empty PATH makes `ps` unrunnable, as a sandbox that denies its exec does.
+        dpid = _dead_pid()
+        withenv("PATH" => mktempdir()) do
+            @test Kaimon._is_pid_alive(getpid())
+            @test !Kaimon._is_pid_alive(dpid)
+        end
+    end
+
     @testset "Bug 2: dead localhost TCP reaped; remote/unknown kept" begin
         mgr = Kaimon.ConnectionManager(sock_dir = mktempdir())
         dpid = _dead_pid()
