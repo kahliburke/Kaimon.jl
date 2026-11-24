@@ -12,13 +12,37 @@
 
 # ── JSON-RPC methods ────────────────────────────────────────────────────────
 
-function _rpc_initialize(request, session)
+"""
+The tools MCP session `sid` is shown: the server's tools less hidden ones, narrowed to the tools
+of an agent opened with `only` and to the request's allowed list. `tools/list` and the server
+instructions both use it, so the instructions mention only tools the session can see.
+"""
+function _advertised_tools(tools::AbstractDict, sid::AbstractString; include_hidden::Bool = false)
+    only = _only_tools_for_session(sid)
+    allowed = _allowed_tools(sid)
+    return [t for t in values(tools) if (include_hidden || !t.hidden) &&
+                                        (only === nothing || _only_allows(only, t.name)) &&
+                                        (allowed === nothing || _allowed_by(allowed, t.name))]
+end
+
+"""
+The server instructions for MCP session `sid`, covering the tools it is shown. A Kaimon that
+indexes no code (`KAIMON_CODE_INDEX=0`) leaves semantic search out of them.
+"""
+function _server_instructions(tools::AbstractDict, sid::AbstractString)
+    served = Set{String}(t.name for t in _advertised_tools(tools, sid))
+    code_indexing() || delete!(served, "search_code")
+    return Session.get_server_instructions(served)
+end
+
+function _rpc_initialize(request, tools, session)
     params = get(request, "params", Dict{String,Any}())
 
     try
+        instructions = _server_instructions(tools, session === nothing ? "" : session.id)
         # Use session management if available
         if session !== nothing
-            init_result = initialize_session!(session, params)
+            init_result = initialize_session!(session, params; instructions)
             # Persist the negotiated capabilities so a later reconnect that doesn't
             # re-initialize (e.g. Claude Code) still sees them (issue: elicitation
             # consent fell back to the static error on restored sessions).
@@ -31,7 +55,7 @@ function _rpc_initialize(request, session)
                 # and resources.listChanged) so the no-session fallback can't silently
                 # under-declare them — keep this in lockstep with get_server_capabilities().
                 "capabilities" => Session.get_server_capabilities(),
-                "instructions" => Session.get_server_instructions(),
+                "instructions" => instructions,
                 "serverInfo" =>
                     Dict("name" => "Kaimon", "title" => "Kaimon MCP Server", "version" => PACKAGE_VERSION),
             )
@@ -186,18 +210,14 @@ function _rpc_tools_list(request, tools, session = nothing)
     # Internal worker tools (relayed to by intermediary sessions) are hidden by
     # default; a client can pass params.include_hidden=true to see them.
     include_hidden = get(get(request, "params", Dict()), "include_hidden", false) === true
-    # An agent opened with `only` is shown just the tools it was given, as it may call no others.
-    only = _only_tools_for_session(session)
-    allowed = _allowed_tools(session === nothing ? "" : session.id)
+    sid = session === nothing ? "" : session.id
     tool_list = [
         Dict(
             "name" => tool.name,
             "title" => tool.title,
             "description" => tool.description,
             "inputSchema" => tool.parameters,
-        ) for tool in values(tools) if (include_hidden || !tool.hidden) &&
-                                         (only === nothing || _only_allows(only, tool.name)) &&
-                                         (allowed === nothing || _allowed_by(allowed, tool.name))
+        ) for tool in _advertised_tools(tools, sid; include_hidden)
     ]
 
     response = Dict(
@@ -409,9 +429,9 @@ function _tool_refusal_response(request, tool_name::AbstractString, why::Abstrac
                                  "result" => result)))
 end
 
-"The tool list of the `only` agent owning this MCP session, or `nothing` when it has none."
-function _only_tools_for_session(session)
-    aid = _session_agent_id(session === nothing ? "" : session.id)
+"The tool list of the `only` agent owning MCP session `sid`, or `nothing` when it has none."
+function _only_tools_for_session(sid::AbstractString)
+    aid = _session_agent_id(sid)
     isempty(aid) && return nothing
     s = lock(AGENT_SESSIONS_LOCK) do; get(AGENT_SESSIONS, aid, nothing); end
     return s !== nothing && s.backend isa ClaudeBackend && s.backend.only ? s.backend.allowed_tools : nothing

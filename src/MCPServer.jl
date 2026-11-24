@@ -746,7 +746,7 @@ function create_handler(
             # error still becomes the -32603/500 response below. request["method"]
             # is guaranteed present (checked above).
             method = request["method"]
-            method == "initialize" && return _rpc_initialize(request, session)
+            method == "initialize" && return _rpc_initialize(request, tools, session)
             method == "notifications/initialized" &&
                 return _rpc_notifications_initialized(request, session)
             method == "logging/setLevel" && return _rpc_logging_setlevel(request)

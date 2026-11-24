@@ -378,7 +378,9 @@ usage_instructions_tool =
                 # them plus the extended guide below. One source for the essentials,
                 # so the two can't drift.
                 extended = read(workflow_path, String)
-                return string(Session.get_server_instructions(), "\n\n---\n\n", extended)
+                tools = SERVER[] === nothing ?
+                    Dict(Symbol(t.name) => t for t in something(ALL_TOOLS[], MCPTool[])) : SERVER[].tools
+                return string(_server_instructions(tools, _current_mcp_caller()), "\n\n---\n\n", extended)
             catch e
                 return "Error reading usage instructions: $e"
             end

@@ -331,6 +331,68 @@ _session_ts(ago::Period) = format(now() - ago, "yyyy-mm-dd\\THH:MM:SS")
         @test result["serverInfo"]["name"] == "Kaimon"
     end
 
+    @testset "Server instructions mention only served tools" begin
+        # Every tool the instructions can name.
+        named = ["search_code", "grep_code", "edit_code", "rename_symbol", "run_tests", "check_tests",
+                 "ex", "check_eval", "cancel_eval", "ping", "start_session", "usage_quiz", "usage_instructions"]
+        patterns = [t => Regex("\\b$t\\b") for t in named]
+        mentions(text) = Set(t for (t, re) in patterns if occursin(re, text))
+
+        all_text = Session.get_server_instructions(Set(named))
+        @test mentions(all_text) == Set(named)
+        @test occursin("grep_code's write side", all_text)
+        @test occursin("Pick by what you HAVE", all_text)
+
+        # Each subset of the named tools: nothing outside it is mentioned.
+        leak = nothing
+        for mask in 0:(2^length(named) - 1)
+            served = Set(named[i] for i in eachindex(named) if (mask >> (i - 1)) & 1 == 1)
+            extra = setdiff(mentions(Session.get_server_instructions(served)), served)
+            isempty(extra) || (leak = (served, extra); break)
+        end
+        @test leak === nothing
+
+        no_search = Session.get_server_instructions(setdiff(Set(named), ["search_code"]))
+        @test !occursin("search_code", no_search)
+        @test occursin("grep_code(pattern=", no_search)
+        @test !occursin("both beat", no_search)
+
+        none = Session.get_server_instructions(Set{String}())
+        @test isempty(mentions(none))
+        @test startswith(none, "Kaimon exposes a Julia REPL")
+    end
+
+    @testset "Instructions follow the tools a session is shown" begin
+        mk(name; hidden = false) = Kaimon.MCPTool(Symbol(name), name, name, "", Dict{String,Any}(), _ -> "", hidden)
+        tools = Dict(Symbol(n) => mk(n) for n in ["search_code", "grep_code", "edit_code", "ex"])
+        tools[:usage_quiz] = mk("usage_quiz"; hidden = true)
+        names(ts) = Set(t.name for t in ts)
+
+        @test names(Kaimon._advertised_tools(tools, "")) == Set(["search_code", "grep_code", "edit_code", "ex"])
+        @test "usage_quiz" in names(Kaimon._advertised_tools(tools, ""; include_hidden = true))
+        withenv("KAIMON_CODE_INDEX" => "1") do   # the suite turns code indexing off
+            text = Kaimon._server_instructions(tools, "")
+            @test occursin("search_code(query=", text)
+            @test !occursin("usage_quiz", text)   # hidden
+        end
+
+        # The request's allowed-tools list narrows both.
+        task_local_storage(:mcp_allowed_tools, ["grep_code", "ex"]) do
+            @test names(Kaimon._advertised_tools(tools, "")) == Set(["grep_code", "ex"])
+            text = Kaimon._server_instructions(tools, "")
+            @test !occursin("search_code", text)
+            @test !occursin("edit_code", text)
+            @test occursin("grep_code(pattern=", text)
+        end
+
+        # A Kaimon that indexes no code leaves semantic search out.
+        withenv("KAIMON_CODE_INDEX" => "0") do
+            text = Kaimon._server_instructions(tools, "")
+            @test !occursin("search_code", text)
+            @test occursin("grep_code(pattern=", text)
+        end
+    end
+
     @testset "Session Initialization - Unsupported Version" begin
         session = MCPSession()
 

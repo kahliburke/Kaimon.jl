@@ -186,35 +186,80 @@ function get_server_capabilities()
 end
 
 """
-    get_server_instructions() -> String
+    get_server_instructions(served) -> String
 
 Server-level guidance injected into the agent's context on connect (the MCP `instructions`
 field of the initialize result — honored cross-client). This is the cross-cutting "how to
 use Kaimon" that doesn't belong to any single tool's description; kept tight because it
 rides in every session's handshake.
+
+`served` names the tools the session is shown. Guidance for a tool, and every mention of it in
+another tool's guidance, is included only when the tool is served, so an agent is never sent
+to a tool it cannot see.
 """
-function get_server_instructions()
-    return """
-    Kaimon exposes a Julia REPL and code-intelligence tools over MCP.
+function get_server_instructions(served::AbstractSet{<:AbstractString})
+    has(t) = t in served
+    parts = String["Kaimon exposes a Julia REPL and code-intelligence tools over MCP."]
 
-    Finding code (both beat shell grep/find/rg — repo-scoped, .gitignore-aware, each hit carries its enclosing function/struct). Pick by what you HAVE, not by habit:
-    • Exploring, or you can only DESCRIBE what the code does? → search_code(query="…") finds code by MEANING and ranks by relevance, so a natural-language phrase works ("where a disconnected gate is reattached"). This is the DEFAULT when learning a codebase: grep only finds the exact text you type, so it's blind to synonyms, indirection, and the code you didn't know to look for — guessing a symbol name and grepping it is the trap. Start here.
-    • Already holding an exact token — a symbol, call site, string, or TODO? → grep_code(pattern="…") runs a real regex over the live tree, every occurrence with its enclosing symbol. Add query="…" to also rank the matching files by relevance, or no_ignore=true to also search logs and generated/gitignored files (so it covers the same ground as shell grep — which is then only needed to TRANSFORM matches or pipe them onward). path=/file=/glob= are all PROJECT-ROOT-relative (a glob is anchored to the repo root like `cd repo && rg -g '<glob>'`, NOT to path=), so don't repeat a path= prefix inside a glob — a bare basename glob (no `/`) matches at any depth.
+    finding = String[]
+    has("search_code") && push!(finding, """• Exploring, or you can only DESCRIBE what the code does? → search_code(query="…") finds code by MEANING and ranks by relevance, so a natural-language phrase works ("where a disconnected gate is reattached"). This is the DEFAULT when learning a codebase: grep only finds the exact text you type, so it's blind to synonyms, indirection, and the code you didn't know to look for — guessing a symbol name and grepping it is the trap. Start here.""")
+    has("grep_code") && push!(finding, """• Already holding an exact token — a symbol, call site, string, or TODO? → grep_code(pattern="…") runs a real regex over the live tree, every occurrence with its enclosing symbol. Add query="…" to also rank the matching files by relevance, or no_ignore=true to also search logs and generated/gitignored files (so it covers the same ground as shell grep — which is then only needed to TRANSFORM matches or pipe them onward). path=/file=/glob= are all PROJECT-ROOT-relative (a glob is anchored to the repo root like `cd repo && rg -g '<glob>'`, NOT to path=), so don't repeat a path= prefix inside a glob — a bare basename glob (no `/`) matches at any depth.""")
+    if length(finding) == 2
+        push!(parts, "Finding code (both beat shell grep/find/rg — repo-scoped, .gitignore-aware, each hit carries its enclosing function/struct). Pick by what you HAVE, not by habit:\n" * join(finding, "\n"))
+    elseif length(finding) == 1
+        push!(parts, "Finding code (beats shell grep/find/rg — repo-scoped, .gitignore-aware, each hit carries its enclosing function/struct):\n" * only(finding))
+    end
 
-    Changing code: edit_code(pattern="…", replacement="…") is grep_code's write side — same path=/file=/glob= scoping, so you can locate with one and change with the other. It parses every .jl before writing and one failure aborts the whole batch untouched, then returns the unified diff as its result. Use it for any multi-file mechanical change (a rename, a signature update, retiring a deprecated call) INSTEAD of a shell/python one-liner or a run of single-file edits: a script isn't reviewable in the transcript, doesn't validate, and can leave a half-applied edit behind. It matches text, not syntax, so it also matches inside strings and comments — prefer word=true and a narrow glob. For renaming a Julia identifier specifically, use rename_symbol(old_name=…, new_name=…) instead: it matches on the PARSED token stream, so comments, string literals and docstrings are left alone while an interpolated `\$name` inside a string is still renamed — a distinction no regex can make.
+    changing = String[]
+    if has("edit_code")
+        scope = has("grep_code") ?
+            "is grep_code's write side — same path=/file=/glob= scoping, so you can locate with one and change with the other." :
+            "takes path=/file=/glob= to scope the files it changes."
+        push!(changing, """edit_code(pattern="…", replacement="…") $scope It parses every .jl before writing and one failure aborts the whole batch untouched, then returns the unified diff as its result. Use it for any multi-file mechanical change (a rename, a signature update, retiring a deprecated call) INSTEAD of a shell/python one-liner or a run of single-file edits: a script isn't reviewable in the transcript, doesn't validate, and can leave a half-applied edit behind. It matches text, not syntax, so it also matches inside strings and comments — prefer word=true and a narrow glob.""")
+    end
+    if has("rename_symbol")
+        instead = has("edit_code") ? " instead" : ""
+        push!(changing, """For renaming a Julia identifier specifically, use rename_symbol(old_name=…, new_name=…)$instead: it matches on the PARSED token stream, so comments, string literals and docstrings are left alone while an interpolated `\$name` inside a string is still renamed — a distinction no regex can make.""")
+    end
+    isempty(changing) || push!(parts, "Changing code: " * join(changing, " "))
 
-    Backgrounded work: run_tests promotes a slow suite to a background run and hands you a run id; ex does the same past ~30s. NEVER `sleep` in Bash to wait for either — backgrounding exists precisely to free you for other work, so go do some, then collect with check_tests(run_id=…) / check_eval(eval_id=…). Sleeping to pass the time is always the wrong move, and sleeping LONGER than the work takes wastes the wait twice over.
+    background = String[]
+    has("run_tests") && push!(background, "run_tests promotes a slow suite to a background run and hands you a run id")
+    has("ex") && push!(background, (has("run_tests") ? "ex does the same" : "ex promotes an eval to a background job") * " past ~30s")
+    if !isempty(background)
+        collectors = String[c for (t, c) in (("check_tests", "check_tests(run_id=…)"), ("check_eval", "check_eval(eval_id=…)")) if has(t)]
+        collect_with = isempty(collectors) ? "" : ", then collect with " * join(collectors, " / ")
+        either = length(background) == 2 ? "either" : "it"
+        push!(parts, "Backgrounded work: $(join(background, "; ")). NEVER `sleep` in Bash to wait for $either — backgrounding exists precisely to free you for other work, so go do some$collect_with. Sleeping to pass the time is always the wrong move, and sleeping LONGER than the work takes wastes the wait twice over.")
+    end
 
-    Running Julia: ex evaluates in a REPL the USER SHARES live — pass the code in the `e` parameter (ex(e="1 + 1"); it's `e`, not `code`). Default q=true (suppress output); pass q=false only when you need the value back. Don't report through println/print/@show: with q=true they are removed from the cell before it runs — return a final expression instead. Revise auto-reloads src/ edits before every eval, so never call Revise.revise() — it's a no-op and is removed too. Slow evals auto-promote to background jobs (poll check_eval); when you write code that may run long, make it cooperative so it can be watched and stopped — loop on KaimonGate.is_cancelled() (lets cancel_eval stop it), report KaimonGate.progress("…"), and stash intermediates with KaimonGate.stash(:k, v) (all visible via check_eval). Use mt=true for GLMakie/OpenGL.
+    if has("ex")
+        poll = has("check_eval") ? " (poll check_eval)" : ""
+        cancel = has("cancel_eval") ? " (lets cancel_eval stop it)" : ""
+        visible = has("check_eval") ? " (all visible via check_eval)" : ""
+        push!(parts, """Running Julia: ex evaluates in a REPL the USER SHARES live — pass the code in the `e` parameter (ex(e="1 + 1"); it's `e`, not `code`). Default q=true (suppress output); pass q=false only when you need the value back. Don't report through println/print/@show: with q=true they are removed from the cell before it runs — return a final expression instead. Revise auto-reloads src/ edits before every eval, so never call Revise.revise() — it's a no-op and is removed too. Slow evals auto-promote to background jobs$poll; when you write code that may run long, make it cooperative so it can be watched and stopped — loop on KaimonGate.is_cancelled()$cancel, report KaimonGate.progress("…"), and stash intermediates with KaimonGate.stash(:k, v)$visible. Use mt=true for GLMakie/OpenGL.""")
+    end
 
-    Sessions: each connected project is a session; when more than one is connected, pass ses=<key> to target one (ping lists them). Need a project that isn't connected? Start it yourself — start_session(project_path="/abs/path") spawns a REPL for it right away (that's the normal way to get a session, not something to wait for the user to do); start_session() with no args lists the allowed projects.
+    sessions = "Sessions: each connected project is a session; when more than one is connected, pass ses=<key> to target one" *
+               (has("ping") ? " (ping lists them)." : ".")
+    if has("start_session")
+        sessions *= """ Need a project that isn't connected? Start it yourself — start_session(project_path="/abs/path") spawns a REPL for it right away (that's the normal way to get a session, not something to wait for the user to do); start_session() with no args lists the allowed projects."""
+    end
+    push!(parts, sessions)
 
-    New here? Call usage_quiz (then usage_quiz(show_sols=true) to self-grade) and usage_instructions before starting.
-    """
+    if has("usage_quiz") && has("usage_instructions")
+        push!(parts, "New here? Call usage_quiz (then usage_quiz(show_sols=true) to self-grade) and usage_instructions before starting.")
+    elseif has("usage_quiz")
+        push!(parts, "New here? Call usage_quiz (then usage_quiz(show_sols=true) to self-grade) before starting.")
+    elseif has("usage_instructions")
+        push!(parts, "New here? Call usage_instructions before starting.")
+    end
+
+    return join(parts, "\n\n") * "\n"
 end
 
 """
-    initialize_session!(session::MCPSession, params::Dict) -> Dict{String,Any}
+    initialize_session!(session::MCPSession, params::Dict; instructions="") -> Dict{String,Any}
 
 Initialize a session with protocol version and capability negotiation.
 
@@ -224,18 +269,21 @@ Initialize a session with protocol version and capability negotiation.
   - `protocolVersion`: Required protocol version
   - `capabilities`: Client capabilities
   - `clientInfo`: Client information (name, version)
+- `instructions`: the server instructions for this session, from `get_server_instructions`
+  over the tools it is shown
 
 # Returns
 Dictionary containing initialization response with:
 - `protocolVersion`: Server's protocol version
 - `capabilities`: Server capabilities
+- `instructions`: Server instructions
 - `serverInfo`: Server information
 
 # Throws
 - `ErrorException`: If session is not in UNINITIALIZED state
 - `ErrorException`: If protocol version is not supported
 """
-function initialize_session!(session::MCPSession, params::Dict)
+function initialize_session!(session::MCPSession, params::Dict; instructions::AbstractString = "")
     # Validate session state
     if session.state != UNINITIALIZED
         error("Session already initialized or closed")
@@ -306,11 +354,11 @@ function initialize_session!(session::MCPSession, params::Dict)
     return Dict{String,Any}(
         "protocolVersion" => supported_version,
         "capabilities" => session.server_capabilities,
-        "instructions" => get_server_instructions(),
+        "instructions" => instructions,
         "serverInfo" => Dict{String,Any}(
             "name" => "Kaimon",
             "version" => get_version(),
-            "description" => "Julia REPL with powerful code discovery tools: 🔍 Semantic search (find code by meaning, not keywords), 🔬 Deep type introspection (inspect types/fields/hierarchy), 🎯 Method search (find function implementations), 📚 Symbol discovery (list available names/exports). Use these instead of grep/shell commands for Julia code exploration.",
+            "description" => "Julia REPL and code-intelligence tools over MCP.",
         ),
     )
 end
