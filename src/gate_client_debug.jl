@@ -145,7 +145,6 @@ function _route_stream_message!(mgr::ConnectionManager, conn, raw, messages, pub
         skey = short_key(conn)
         if raw_data isa NamedTuple && hasfield(typeof(raw_data), :key)
             _buffer_panel_push!(skey, string(raw_data.key), raw_data.value)
-            _push_log!(:info, "panel_push received: key=$(raw_data.key) session=$skey")
         else
             _push_log!(:warn, "panel_push malformed: session=$skey data=$(repr(raw_data))")
         end
