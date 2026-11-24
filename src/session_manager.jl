@@ -287,6 +287,17 @@ function _pty_end_reason(pty)
     return "terminal reader stopped while the process was running: $(sprint(showerror, err))"
 end
 
+"""
+Open a session log for appending. Sessions of one project share a log, and the file is opened
+with the OS append flag so each write lands at the end of the file even while another session
+writes to it. Writes are unbuffered, so each marker is written whole with a single `write`.
+"""
+_open_session_log(path::AbstractString) = Base.Filesystem.open(
+    path,
+    Base.Filesystem.JL_O_WRONLY | Base.Filesystem.JL_O_CREAT | Base.Filesystem.JL_O_APPEND,
+    0o644,
+)
+
 function _watch_session_exit!(ms::ManagedSession, pty, log_io; poll::Real = 2.0)
     while Tachikoma.pty_alive(pty)
         sleep(poll)
@@ -308,7 +319,7 @@ function _watch_session_exit!(ms::ManagedSession, pty, log_io; poll::Real = 2.0)
                 end
                 write(log_io, data)
             end
-            println(log_io, "--- Session $(ms.name) exited at $(Dates.now()) ---")
+            write(log_io, "--- Session $(ms.name) exited at $(Dates.now()) ---\n")
         catch
         end
         try
@@ -363,9 +374,8 @@ function spawn_session!(ms::ManagedSession)
         # user opens the session viewer, at which point logging stops and the
         # widget takes over consumption of the channel.
         log_io = try
-            io = open(ms.log_file, "a")
-            println(io, "\n--- Session $(ms.name) starting at $(Dates.now()) (PID=$(Int(pty.child_pid))) ---")
-            flush(io)
+            io = _open_session_log(ms.log_file)
+            write(io, "\n--- Session $(ms.name) starting at $(Dates.now()) (PID=$(Int(pty.child_pid))) ---\n")
             io
         catch e
             _push_log!(

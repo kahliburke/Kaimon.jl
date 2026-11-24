@@ -85,6 +85,19 @@ _st_exists(pid) = ccall(:kill, Cint, (Cint, Cint), pid, 0) == 0
         end
     end
 
+    @testset "sessions sharing a log both append to it" begin
+        path = joinpath(mktempdir(), "shared.log")
+        a = _ST._open_session_log(path)
+        write(a, "a: start\n")
+        b = _ST._open_session_log(path)   # opened after a's first write, at the end it saw
+        write(b, "b: start\n")
+        write(a, "a: exited\n")
+        flush(a)
+        write(b, UInt8[0x62, 0x3a, 0x20, 0x6f, 0x75, 0x74, 0x0a])   # "b: out\n" as bytes, like PTY output
+        close(a); close(b)
+        @test readlines(path) == ["a: start", "b: start", "a: exited", "b: out"]
+    end
+
     @testset "a timeout on a session that just started says it may still be loading" begin
         conn = _ST.REPLConnection(session_id = "timeout-test", endpoint = "ipc:///tmp/timeout-test.sock",
                                   spawned_by = "agent", pid = 999_999)
