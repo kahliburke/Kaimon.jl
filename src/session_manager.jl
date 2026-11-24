@@ -277,17 +277,25 @@ function _build_julia_cmd(lc::LaunchConfig, script::String; project::String = ""
 end
 
 # Wait for the session's process to exit, then record it, finish its log, and release its terminal.
+"""
+Why a session's PTY stopped: its process exited, or the reader of its terminal stopped while the
+process was still running. Nothing reads the process's output after that, so it is closed too.
+"""
+function _pty_end_reason(pty)
+    err = pty.reader_error
+    err === nothing && return "process exited"
+    return "terminal reader stopped while the process was running: $(sprint(showerror, err))"
+end
+
 function _watch_session_exit!(ms::ManagedSession, pty, log_io; poll::Real = 2.0)
     while Tachikoma.pty_alive(pty)
         sleep(poll)
     end
     if ms.status in (:starting, :timed_out, :running)
         ms.status = :crashed
-        _push_session_error!(ms, "Process exited at $(Dates.now())")
-        _push_log!(
-            :warn,
-            "Managed session '$(ms.name)' process exited unexpectedly",
-        )
+        reason = _pty_end_reason(pty)
+        _push_session_error!(ms, "$(uppercasefirst(reason)) at $(Dates.now())")
+        _push_log!(:warn, "Managed session '$(ms.name)' stopped unexpectedly: $reason")
     end
     # Final drain and close log
     if log_io !== nothing
@@ -578,8 +586,9 @@ function _monitor_managed_sessions!(conn_mgr)
     for ms in sessions
         if ms.status in (:starting, :timed_out, :running)
             # Check if process is still alive (PTY or legacy pipeline)
-            alive = if ms.pty !== nothing
-                Tachikoma.pty_alive(ms.pty)
+            pty = ms.pty
+            alive = if pty !== nothing
+                Tachikoma.pty_alive(pty)
             elseif ms.process !== nothing
                 Base.process_running(ms.process)
             else
@@ -587,7 +596,8 @@ function _monitor_managed_sessions!(conn_mgr)
             end
             if !alive
                 ms.status = :crashed
-                _push_session_error!(ms, "Process died at $(Dates.now())")
+                reason = pty !== nothing ? _pty_end_reason(pty) : "process exited"
+                _push_session_error!(ms, "$(uppercasefirst(reason)) at $(Dates.now())")
             end
         end
 

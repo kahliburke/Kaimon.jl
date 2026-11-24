@@ -23,7 +23,24 @@ _st_exists(pid) = ccall(:kill, Cint, (Cint, Cint), pid, 0) == 0
             _ST._watch_session_exit!(ms, pty, nothing; poll = 0.05)
             @test ms.pty === nothing
             @test ms.status == :crashed
+            @test any(startswith("Process exited"), ms.error_log)
             @test pty.master_fd == -1
+            @test !_st_exists(pid)
+        end
+
+        @testset "a session whose terminal reader stops is reported as such and stopped" begin
+            ms = _ST.ManagedSession(mktempdir())
+            pty = Base.CoreLogging.with_logger(Base.CoreLogging.NullLogger()) do
+                _ST.Tachikoma.pty_spawn(["sh", "-c", "sleep 0.2; echo output; exec sleep 30"])
+            end
+            pid = pty.child_pid
+            ms.pty = pty
+            ms.status = :running
+            close(pty.output)   # the reader fails on its next chunk while the process runs on
+            _ST._watch_session_exit!(ms, pty, nothing; poll = 0.05)
+            @test ms.status == :crashed
+            @test any(startswith("Terminal reader stopped while the process was running"), ms.error_log)
+            @test ms.pty === nothing
             @test !_st_exists(pid)
         end
 
