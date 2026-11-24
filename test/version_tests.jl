@@ -11,14 +11,13 @@ using TOML
         @test version != "git-error"
 
         # Should return one of the valid formats:
-        # - Short git hash (7 chars)
+        # - Short git hash (7 chars or more: git lengthens it when 7 would be ambiguous)
         # - Short git hash with -dirty suffix
         # - Version from Project.toml (v0.3.0 format)
 
-        if occursin(r"^[0-9a-f]{7,}(-dirty)?$", version)
+        if (m = match(r"^([0-9a-f]+)(-dirty)?$", version)) !== nothing
             # Git commit hash format
-            @test length(version) >= 7
-            @test length(version) <= 13  # 7 chars + "-dirty"
+            @test 7 <= length(m[1]) <= 40
         elseif startswith(version, "v")
             # Project.toml version format
             @test occursin(r"^v\d+\.\d+\.\d+", version)
