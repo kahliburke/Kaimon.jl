@@ -282,7 +282,7 @@ const TAB_ADVANCED   = 10
     # Server log scroll pane
     log_pane::Union{ScrollPane,Nothing} = nothing
     log_word_wrap::Bool = false
-    _log_pane_synced::Int = 0   # number of server_log entries already pushed to pane
+    _log_pane_synced::Int = 0   # server_log entries already in the pane; -1 = rebuild (front dropped)
     _log_pane_width::Int = 0    # last-known render width for word wrap rebuilds
 
     # Pane focus — which pane has keyboard focus on each tab

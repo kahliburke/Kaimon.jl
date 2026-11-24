@@ -926,3 +926,31 @@ end
         @test occursin("starting", Tachikoma.buffer_to_text(buf, area))
     end
 end
+
+@testset "Server log pane keeps following once the log is full" begin
+    m = Kaimon.KaimonModel()
+    msg(i) = "entry $i"
+    last_msg(m) = m.log_pane.content[end][end].content
+    drain!(m) = Kaimon._drain_log_buffer!(m.server_log) > 0 && (m._log_pane_synced = -1)
+
+    lock(Kaimon._TUI_LOG_LOCK) do
+        empty!(Kaimon._TUI_LOG_BUFFER)
+    end
+    for i in 1:500
+        push!(m.server_log, Kaimon.ServerLogEntry(now(), :info, msg(i)))
+    end
+    Kaimon._sync_log_pane!(m, 0)
+    @test last_msg(m) == msg(500)
+
+    for batch in 1:3, i in 1:7
+        lock(Kaimon._TUI_LOG_LOCK) do
+            push!(Kaimon._TUI_LOG_BUFFER, Kaimon.ServerLogEntry(now(), :info, msg(500 + 7(batch - 1) + i)))
+        end
+        drain!(m)
+        Kaimon._sync_log_pane!(m, 0)
+    end
+    @test length(m.server_log) == 500
+    @test last_msg(m) == msg(521)
+    @test length(m.log_pane.content) == 500
+    @test m.log_pane.content[1][end].content == msg(22)
+end

@@ -125,14 +125,16 @@ function Logging.handle_message(
     return nothing
 end
 
+"""Move buffered log entries into `dest`, keeping its newest 500. Returns how many entries were
+dropped from the front."""
 function _drain_log_buffer!(dest::Vector{ServerLogEntry})
     lock(_TUI_LOG_LOCK) do
         append!(dest, _TUI_LOG_BUFFER)
         empty!(_TUI_LOG_BUFFER)
     end
-    while length(dest) > 500
-        popfirst!(dest)
-    end
+    dropped = max(0, length(dest) - 500)
+    dropped > 0 && deleteat!(dest, 1:dropped)
+    return dropped
 end
 
 function _push_log!(level::Symbol, message::String)
@@ -606,15 +608,15 @@ function _ensure_log_pane!(m::KaimonModel)
     end
 end
 
-"""Sync new server_log entries into the ScrollPane."""
+"""Sync new server_log entries into the ScrollPane. A negative `_log_pane_synced` means entries
+were dropped from the front of the log, so the pane is rebuilt from what remains."""
 function _sync_log_pane!(m::KaimonModel, width::Int = 0)
     _ensure_log_pane!(m)
     pane = m.log_pane::ScrollPane
     n = length(m.server_log)
-    if m._log_pane_synced > n
-        # Log was truncated (ring buffer popfirst!), rebuild
-        m._log_pane_synced = 0
-        pane.content = Vector{Span}[]
+    if m._log_pane_synced < 0 || m._log_pane_synced > n
+        _rebuild_log_pane!(m, width)
+        return
     end
     for i = (m._log_pane_synced+1):n
         entry = m.server_log[i]

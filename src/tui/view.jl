@@ -68,7 +68,7 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
     end
 
     # Drain captured log messages into the model each frame
-    _drain_log_buffer!(m.server_log)
+    _drain_log_buffer!(m.server_log) > 0 && (m._log_pane_synced = -1)
 
     # Drain activity events (tool calls from MCPServer hook)
     _drain_activity_buffer!(m.activity_feed)
