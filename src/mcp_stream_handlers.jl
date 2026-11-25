@@ -147,9 +147,16 @@ function _stream_security_gate(http, req, body, security_config)
                 # those would bypass strict/relaxed mode.
                 is_agent = api_key !== nothing && !isempty(agent_for_token(api_key))
                 if !is_agent && !validate_api_key(String(something(api_key, "")), security_config)
-                    @warn "Auth denied: invalid API key (401)" client_ip =
-                        get_client_ip(req) method = req.method target = req.target
-                    record_auth_refusal!(401, "invalid API key or agent token", get_client_ip(req))
+                    # A DELETE is a client ending its session, which this server does not do over
+                    # DELETE anyway: an agent's MCP client sends it as it shuts down, after its token
+                    # is revoked. Refused the same, but it is not reported as an attempt to get in.
+                    if req.method == "DELETE"
+                        @debug "Refused a session DELETE with an unknown or revoked token" target = req.target
+                    else
+                        @warn "Auth denied: invalid API key (401)" client_ip =
+                            get_client_ip(req) method = req.method target = req.target
+                        record_auth_refusal!(401, "invalid API key or agent token", get_client_ip(req))
+                    end
                     HTTP.setstatus(http, 401)
                     HTTP.setheader(http, "Content-Type" => "application/json")
                     HTTP.setheader(http, "WWW-Authenticate" => "Bearer realm=\"kaimon\"")

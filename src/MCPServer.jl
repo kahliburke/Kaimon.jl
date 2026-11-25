@@ -696,6 +696,12 @@ mutable struct MCPServer
 end
 
 # Create request handler with access to tools and session
+"""
+Whether `e` says the client hung up: a closed stream, or a write to a socket it already closed
+(broken pipe, reset), which the socket layer reports as a `SystemError`.
+"""
+_client_gone(e) = e isa Base.IOError || (e isa SystemError && e.errnum in (Libc.EPIPE, Libc.ECONNRESET))
+
 function create_handler(
     tools::Dict{Symbol,MCPTool},
     name_to_id::Dict{String,Symbol},
@@ -1136,7 +1142,7 @@ function _hybrid_handler_impl(
     body = try
         read(http, String)
     catch e
-        e isa Base.IOError && return nothing   # client disconnected before sending body
+        _client_gone(e) && return nothing   # client disconnected before sending body
         rethrow()
     end
 
@@ -1355,7 +1361,7 @@ function _hybrid_handler_impl(
 
     catch e
         # Client disconnected — no response possible, no need to log
-        e isa Base.IOError && return nothing
+        _client_gone(e) && return nothing
 
         _push_log!(:error, "MCP handler error: $(sprint(showerror, e))")
 

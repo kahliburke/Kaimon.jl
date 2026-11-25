@@ -111,6 +111,14 @@ using JSON
             @test post(list, a; sid).status == 401
             @test post(init, "0123456789abcdef"^4).status == 401
             @test last(Kaimon.recent_auth_refusals().refusals).reason == "invalid API key or agent token"
+            # The session DELETE a closed agent's client sends as it shuts down is refused, and not
+            # counted as an attempt to get in.
+            before = Kaimon.recent_auth_refusals().total
+            r = HTTP.request("DELETE", url, ["Authorization" => "Bearer $a", "Mcp-Session-Id" => sid]; status_exception = false)
+            @test r.status == 401 && Kaimon.recent_auth_refusals().total == before
+            # A write to a client that hung up is the client gone, not a handler error.
+            @test Kaimon._client_gone(SystemError("write", Libc.EPIPE)) && Kaimon._client_gone(Base.IOError("closed", 0))
+            @test !Kaimon._client_gone(SystemError("open", Libc.ENOENT)) && !Kaimon._client_gone(ErrorException("x"))
         finally
             Kaimon.revoke_agent_token!("tok-srv-a")
             Kaimon.revoke_agent_token!("tok-srv-b")
