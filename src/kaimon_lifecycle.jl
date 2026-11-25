@@ -734,6 +734,8 @@ function (@main)(ARGS)
     theme = nothing
     headless = false
     use_revise = false
+    setup = false
+    embedding_model = ""
 
     i = 1
     while i <= length(ARGS)
@@ -748,6 +750,11 @@ function (@main)(ARGS)
             use_revise = true
         elseif arg == "--headless"
             headless = true
+        elseif arg == "--setup-defaults"
+            setup = true
+        elseif arg == "--embedding-model" && i < length(ARGS)
+            i += 1
+            embedding_model = ARGS[i]
         elseif arg == "--reset-global-prompt"
             _set_global_install_dismissed(false)
             _set_gate_setup_version(0)
@@ -765,6 +772,9 @@ function (@main)(ARGS)
               -t, --theme NAME            Theme: kokaku, esper, motoko, neuromancer (default: kokaku)
               -r, --revise                Load Revise for live code reloading
               --headless                  Run without TUI (headless MCP server)
+              --setup-defaults            Set up for one person on this machine without the
+                                          wizard (for installers), then exit; changes nothing set
+              --embedding-model MODEL     With --setup-defaults: the Ollama model code search uses
               --reset-global-prompt       Re-enable the "add to global env" prompt
               -h, --help                  Show this help""")
             return
@@ -773,6 +783,12 @@ function (@main)(ARGS)
             return
         end
         i += 1
+    end
+
+    if setup
+        println("Setting Kaimon up for this machine:")
+        setup_defaults!(; port = something(cli_port, 2828), embedding_model)
+        return
     end
 
     # Resolve port: CLI arg > config.json > default 2828

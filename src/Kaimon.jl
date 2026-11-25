@@ -198,6 +198,7 @@ include("tui.jl")
 # (usings, includes, __init__, exports) stays here. kaimon_setup defines the
 # @mcp_tool macro, so it must load before the tool_definitions_* includes below.
 include("kaimon_setup.jl")
+include("setup_defaults.jl")   # `kaimon --setup-defaults`, for installers
 include("security.jl")
 # First-run setup wizard, split from the former monolithic setup_wizard_tui.jl.
 # Order follows the original (art → model/enums → update → views → companion).
