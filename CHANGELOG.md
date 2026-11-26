@@ -2,6 +2,22 @@
 
 Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each entry is also published on the GitHub release for its tag.
 
+## Kaimon 2.15.0
+
+[Diff since v2.14.0](https://github.com/kahliburke/Kaimon.jl/compare/v2.14.0...v2.15.0)
+
+**New:**
+- `kaimon --setup-defaults` sets Kaimon up for one person on their own machine without the setup wizard, for installers: lax mode on the loopback addresses, code search through Ollama with its model pulled (`--embedding-model` chooses it), the Qdrant Kaimon manages, and Claude Code connected. Nothing already set is changed.
+- The server instructions an agent gets at `initialize`, and from `usage_instructions`, describe only the tools its session is shown: after `.kaimon/tools.json`, an agent's `only` tool list and the request's `X-Kaimon-Allowed-Tools` header. With `KAIMON_CODE_INDEX=0` they leave out `search_code` (#114).
+
+**Fixes:**
+- Closing a session's stream socket closes Kaimon's watchers on its fd first (#115). On macOS a watcher left on the closed fd was handed to the next file given the same fd number, so in headless mode a new session's results could go undelivered, or its terminal go unread so that it stalled at startup (#113).
+- Requires Tachikoma 2.8.1, whose PTY reader stops before its fd is closed and whose forked child resolves the calls it makes before the fork (#113). A session whose terminal reader stops while its process is running is reported with the reader's error, not as an exited process.
+- The Server tab's log keeps showing new entries once it holds 500.
+- Sessions of one project share a log file, and each now appends to it, so one session's lines no longer overwrite another's.
+- `grep_code`, `edit_code` and `rename_symbol` skip cloud-synced folders unless asked to search inside one, since reading a file there downloads it: iCloud Drive and file-provider folders on macOS, and OneDrive, iCloud Drive, Dropbox and Box under the home folder on Windows. They no longer search across a mount. An always-allow never records the home folder, the root, or a folder holding the home folder.
+- Panel pushes and SSE notification deliveries are logged at debug, not info. A closed agent's session DELETE is refused without counting as an attempt to get in, and a write to a client that has hung up is not logged as a handler error.
+
 ## Kaimon 2.14.0 (2026-11-22)
 
 [Diff since v2.13.4](https://github.com/kahliburke/Kaimon.jl/compare/v2.13.4...v2.14.0)
