@@ -2,7 +2,7 @@
 
 Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each entry is also published on the GitHub release for its tag.
 
-## Kaimon 2.14.0
+## Kaimon 2.14.0 (2026-11-22)
 
 [Diff since v2.13.4](https://github.com/kahliburke/Kaimon.jl/compare/v2.13.4...v2.14.0)
 
@@ -19,7 +19,7 @@ Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each e
 - The TUI's Revise integration reads Revise's queue of changed files rather than waiting on `Revise.revision_event`, which wakes one waiting task per change and so took changes from `entr` in the same process (#111). Requires KaimonGate 1.8.
 - The TUI stops capturing its stdout and stderr when the stream ends. The capture loops used to spin on the main thread once their pipe closed, freezing the TUI and the terminal output of every session.
 
-## KaimonGate 1.8.0
+## KaimonGate 1.8.0 (2026-11-22)
 
 [Diff since KaimonGate-v1.7.2](https://github.com/kahliburke/Kaimon.jl/compare/KaimonGate-v1.7.2...KaimonGate-v1.8.0)
 
