@@ -36,6 +36,10 @@ mutable struct REPLConnection
     stream_endpoint::String      # ipc:// endpoint for PUB/SUB streaming
     req_channel::Union{RequestChannel,Nothing}  # persistent DEALER (protocol v2)
     sub_socket::Union{ZMQ.Socket,Nothing}   # SUB for streaming stdout/stderr
+    # Kaimon's own watchers on `sub_socket`'s fd (see `_watch_sub!`), guarded by `req_lock`.
+    # `_close_sub_socket!` closes them before the socket: FileWatching shares one watcher per fd
+    # number, so one left open on a closed fd would be handed to the next file given that number.
+    sub_watchers::Vector{FileWatching.FDWatcher}
     zmq_context::Union{ZMQ.Context,Nothing} # shared context for socket recreation
     req_lock::ReentrantLock      # protects REQ socket access (connect/disconnect)
     eval_state::Ref{EvalState}   # current eval lifecycle state
@@ -99,6 +103,7 @@ function REPLConnection(;
         stream_endpoint,
         nothing,
         nothing,
+        FileWatching.FDWatcher[],  # sub_watchers
         nothing,
         ReentrantLock(),
         Ref(EVAL_IDLE),
@@ -131,6 +136,53 @@ function REPLConnection(;
         :none,  # stall_reason
         label,
     )
+end
+
+"""
+    _watch_sub!(conn, sub) -> Union{FDWatcher,Nothing}
+
+A readability watcher on `sub`'s fd, recorded on `conn` so that `_close_sub_socket!` closes it
+before the socket. `nothing` when `sub` is no longer the connection's open SUB socket: a watcher
+is only made under `req_lock`, the lock the socket is closed under, so none is made on a socket
+that is being closed. Release it with `_unwatch_sub!`.
+"""
+function _watch_sub!(conn::REPLConnection, sub::ZMQ.Socket)
+    lock(conn.req_lock) do
+        (conn.sub_socket === sub && isopen(sub)) || return nothing
+        w = KaimonGate._zmq_fd_watcher(sub)
+        push!(conn.sub_watchers, w)
+        return w
+    end
+end
+
+"Close a watcher from `_watch_sub!` and forget it. Safe after `_close_sub_socket!` closed it."
+function _unwatch_sub!(conn::REPLConnection, w::FileWatching.FDWatcher)
+    lock(conn.req_lock) do
+        filter!(x -> x !== w, conn.sub_watchers)
+        try; close(w); catch; end
+    end
+    return nothing
+end
+
+"""
+    _close_sub_socket!(conn)
+
+Close the connection's SUB socket. Kaimon's watchers on its fd are closed first, which also wakes
+a reader parked on one: closing an fd under a watcher does not end the wait on macOS, and the
+watcher left behind would be handed to the next file opened with that fd number.
+"""
+function _close_sub_socket!(conn::REPLConnection)
+    lock(conn.req_lock) do
+        for w in conn.sub_watchers
+            try; close(w); catch; end
+        end
+        empty!(conn.sub_watchers)
+        if conn.sub_socket !== nothing
+            _zmq_close!(conn.sub_socket)   # close + drop its ctx.sockets weakref
+            conn.sub_socket = nothing
+        end
+    end
+    return nothing
 end
 
 """Apply CURVE client options to `sock` (before connect) when the connection pins

@@ -46,10 +46,7 @@ function disconnect!(conn::REPLConnection)
     rc = lock(conn.req_lock) do
         rc = conn.req_channel
         conn.req_channel = nothing
-        if conn.sub_socket !== nothing
-            _zmq_close!(conn.sub_socket)   # close + drop its ctx.sockets weakref
-            conn.sub_socket = nothing
-        end
+        _close_sub_socket!(conn)
         conn.status = :disconnected
         return rc
     end

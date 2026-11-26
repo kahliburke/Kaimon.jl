@@ -902,10 +902,7 @@ function connect!(mgr::ConnectionManager, conn::REPLConnection)
         rc === nothing || _close_request_channel!(rc)
         conn.req_channel = nothing
         # Clean up the SUB socket if it was created before we threw.
-        if conn.sub_socket !== nothing
-            _zmq_close!(conn.sub_socket)   # close + drop its ctx.sockets weakref
-            conn.sub_socket = nothing
-        end
+        _close_sub_socket!(conn)
         # A TCP/CURVE connect owns a DEDICATED Context (created above). If we threw
         # after creating it, park it for deferred termination instead of leaving it
         # dangling on conn.zmq_context — otherwise the next reconnect overwrites that
