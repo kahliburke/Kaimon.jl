@@ -262,8 +262,8 @@ connections — two libuv poll handles on one fd collide) can loop on this inste
 `drain + sleep` poll: it trades the fixed poll-cadence latency floor for wake-on-arrival, so a
 streaming producer's frame is forwarded the moment it lands rather than up to a poll interval
 later. Drain-first means a busy stream never parks (we spin at drain speed); only an idle `mgr`
-blocks, at ~no CPU. The `idle_timeout` ceiling self-heals a park left stale by a SUB socket the
-health task recreated under us (new fd ⇒ the old watcher never fires).
+blocks, at ~no CPU. The watchers are registered on their connections (`_watch_sub!`), so a SUB
+socket the health task closes or recreates closes its watcher first and ends the park.
 """
 function wait_stream_messages!(mgr::ConnectionManager; idle_timeout::Real = 0.25)
     msgs = drain_stream_messages!(mgr)         # drain-first: a busy stream returns without parking
@@ -272,17 +272,17 @@ function wait_stream_messages!(mgr::ConnectionManager; idle_timeout::Real = 0.25
     # Draining above already re-read each socket's EVENTS, re-arming the edge-triggered ZMQ_FD, so
     # a frame that lands after the drain still asserts the fd and wakes the watcher (no lost wakeup).
     conns = lock(mgr.lock) do; copy(mgr.connections) end
-    watchers = FileWatching.FDWatcher[]
+    watchers = Tuple{REPLConnection,FileWatching.FDWatcher}[]
     for conn in conns
         sub = conn.sub_socket
         (sub === nothing || !isopen(sub)) && continue
         w = try
-            KaimonGate._zmq_fd_watcher(sub)
+            _watch_sub!(conn, sub)   # registered, so closing the socket closes it first
         catch e
             @warn "Stream socket has no fd watcher; stream frames will be polled" exception = e maxlog = 1
             nothing
         end
-        w === nothing || push!(watchers, w)
+        w === nothing || push!(watchers, (conn, w))
     end
     if isempty(watchers)                       # all SUBs mid-recreation — fall back to a plain sleep
         sleep(idle_timeout)
@@ -290,7 +290,7 @@ function wait_stream_messages!(mgr::ConnectionManager; idle_timeout::Real = 0.25
     end
     ready = Base.Event()                        # level: first waker sets it; late notifies are no-ops
     timer = Timer(_ -> notify(ready), Float64(idle_timeout))
-    for w in watchers
+    for (_, w) in watchers
         Threads.@spawn begin
             try; wait(w); catch; end            # a close() below unblocks a still-parked wait → throws → exits
             notify(ready)
@@ -300,8 +300,8 @@ function wait_stream_messages!(mgr::ConnectionManager; idle_timeout::Real = 0.25
         wait(ready)
     finally
         try; close(timer); catch; end
-        for w in watchers
-            try; close(w); catch; end
+        for (conn, w) in watchers
+            _unwatch_sub!(conn, w)
         end
     end
     return drain_stream_messages!(mgr)          # readable (or timed out) — pull whatever arrived
@@ -320,26 +320,28 @@ the pending messages. Only the *trigger* changes — the recv still happens insi
 
 Used by the HEADLESS drain supervisor; the TUI instead drives
 `drain_stream_messages!` from its render loop. Exits when the connection
-disconnects or the manager stops. A recreated SUB socket (new fd, closed old fd)
-makes the parked `wait` throw, and the loop rebuilds the watcher on the new fd.
+disconnects or the manager stops. Its watcher is registered on the connection
+(`_watch_sub!`): closing or recreating the SUB socket (`_close_sub_socket!`)
+closes the watcher first, which ends the parked `wait`, and the loop then
+watches the new socket or exits.
 """
 function _sub_reader(mgr::ConnectionManager, conn::REPLConnection)
     fdw = nothing
     watched = nothing   # the socket `fdw` watches; a recreated SUB is a new object
+    release!() = (fdw === nothing || _unwatch_sub!(conn, fdw); fdw = nothing)
     try
         while mgr.running && conn.status !== :disconnected
             sub = conn.sub_socket
             if sub === nothing || !isopen(sub)
                 # SUB not connected yet / mid-recreation — brief settle, retry.
-                fdw === nothing || (try; close(fdw); catch; end)
-                fdw = nothing
+                release!()
                 sleep(0.1)
                 continue
             end
             if fdw === nothing || watched !== sub
-                fdw === nothing || (try; close(fdw); catch; end)
+                release!()
                 fdw = try
-                    KaimonGate._zmq_fd_watcher(sub)
+                    _watch_sub!(conn, sub)
                 catch e
                     @warn "Stream reader has no fd watcher; retrying" exception = e maxlog = 1
                     nothing
@@ -350,19 +352,19 @@ function _sub_reader(mgr::ConnectionManager, conn::REPLConnection)
                 # (also re-arms the ZMQ_FD edge so the watcher fires on the next).
                 drain_stream_messages!(mgr)
             end
-            # Block until the SUB is readable (zero idle CPU). A closed fd — socket
-            # recreated or disconnected — makes `wait` throw → rebuild/exit.
+            # Block until the SUB is readable (zero idle CPU). `_close_sub_socket!`
+            # closes this watcher before the socket, which makes `wait` throw.
             woke = try
                 wait(fdw)
                 true
             catch
-                fdw = nothing
+                release!()
                 false
             end
             woke && drain_stream_messages!(mgr)
         end
     finally
-        fdw === nothing || (try; close(fdw); catch; end)
+        release!()
     end
     return nothing
 end

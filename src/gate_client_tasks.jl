@@ -378,12 +378,9 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
             if !needs_sub && pong_stream != conn.stream_endpoint
                 # Gate restarted — PUB port changed. Close the stale SUB socket.
                 _push_log!(:info, "TCP stream endpoint changed: $(conn.stream_endpoint) → $pong_stream ($(conn.display_name))")
-                # Serialize with the drain (which recvs sub_socket under req_lock)
+                # Under req_lock, serialized with the drain (which recvs sub_socket under it)
                 # so we never close it mid-recv (#51).
-                lock(conn.req_lock) do
-                    _zmq_close!(conn.sub_socket)   # close + drop its ctx.sockets weakref
-                    conn.sub_socket = nothing
-                end
+                _close_sub_socket!(conn)
                 needs_sub = true
             end
             if needs_sub
