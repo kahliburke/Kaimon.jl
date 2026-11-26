@@ -422,7 +422,7 @@ function _stream_get_sse(http, req)
                         # POST channel's: a write landing here does not mean the client
                         # read it, so it must not stop the next POST from carrying it.
                         for notif in _flush_notifications_for_session!(sid; channel = :stream)
-                            _push_log!(:info, "SSE notification flush (GET stream): $(get(notif, "method", ""))")
+                            @debug "SSE notification flush (GET stream)" method = get(notif, "method", "")
                             write(http, "data: $(JSON.json(notif))\n\n")
                             wrote = true
                         end

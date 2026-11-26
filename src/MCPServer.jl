@@ -1101,7 +1101,7 @@ function _handle_gate_tool_sse(
     # that case. Deliver it here, ahead of the result, rather than leave it for a
     # next POST that may not come before the agent looks for the new tools.
     for notif in _flush_notifications_for_session!(session === nothing ? "" : session.id)
-        _push_log!(:info, "SSE notification flush: $(get(notif, "method", ""))")
+        @debug "SSE notification flush" method = get(notif, "method", "")
         send_sse_event(notif)
     end
 
@@ -1336,7 +1336,7 @@ function _hybrid_handler_impl(
             for notif in pending
                 notif_json = JSON.json(notif)
                 method = get(notif, "method", "")
-                _push_log!(:info, "SSE notification flush: $method")
+                @debug "SSE notification flush" method
                 write(http, "data: $(notif_json)\n\n")
             end
             # Send the actual response as the final event
