@@ -181,6 +181,16 @@ end
     end
 end
 
+@testset "TCP auth: a near miss, another length or a token that is not a string is refused" begin
+    with_gate_state(mode=:tcp, token="secret123") do
+        for bad in ("secret124", "secret12", "secret1234", "", 123, nothing)
+            resp = KaimonGate.handle_message((type=:ping, token=bad))
+            @test resp.type == :error && occursin("Authentication", resp.message)
+        end
+    end
+    @test KaimonGate._same_secret("abc", "abc") && !KaimonGate._same_secret("abc", "abd") && !KaimonGate._same_secret("abc", "ab")
+end
+
 # ── :shutdown ─────────────────────────────────────────────────────────────────
 
 @testset ":shutdown" begin

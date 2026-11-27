@@ -417,11 +417,15 @@ function _windows_restart(argv::Vector{String})
     exit(process_exited(proc) ? proc.exitcode % Int32 : Int32(1))
 end
 
+"Whether `a` and `b` are equal, taking as long whatever they are (a token compared with `!=` leaks how much of it matched)."
+_same_secret(a::AbstractString, b::AbstractString) =
+    ncodeunits(a) == ncodeunits(b) && foldl(|, (x ⊻ y for (x, y) in zip(codeunits(a), codeunits(b))); init = 0x00) == 0x00
+
 function handle_message(request::NamedTuple)
     # TCP auth: reject unauthenticated requests when a token is set
     if _mode() == :tcp && !isempty(_auth_token())
         token = get(request, :token, "")
-        if token != _auth_token()
+        if !(token isa AbstractString) || !_same_secret(token, _auth_token())
             return (type = :error, message = "Authentication required")
         end
     end
