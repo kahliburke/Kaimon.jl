@@ -733,16 +733,38 @@ function _recv_request(sock::ZMQ.Socket, timeout_s::Real)
     parts = Vector{UInt8}[]
     user = ""
     while true
-        msg = ZMQ.recv(sock)
-        push!(parts, Vector{UInt8}(msg))
-        more = sock.rcvmore
-        if !more
-            p = ZMQ.lib.zmq_msg_gets(msg, "User-Id")
-            user = p == C_NULL ? "" : unsafe_string(p)
-        end
-        more || break
+        bytes, user = _recv_frame_from(sock)
+        push!(parts, bytes)
+        sock.rcvmore || break
     end
     return parts, user
+end
+
+# A `zmq_msg_t` is allocated here and closed before returning, so no `ZMQ.Message` is left for a
+# finalizer to close on whichever thread the GC runs it (which can crash a thread mid-computation).
+const _MSG_T_BYTES = 64
+
+"One frame's bytes and the ZAP user id of its connection (`\"\"` with none). Call when `sock` is readable."
+function _recv_frame_from(sock::ZMQ.Socket)
+    m = Libc.malloc(_MSG_T_BYTES)
+    m == C_NULL && throw(OutOfMemoryError())
+    try
+        ccall((:zmq_msg_init, ZMQ.lib.libzmq), Cint, (Ptr{Cvoid},), m)
+        while true
+            rc = ccall((:zmq_msg_recv, ZMQ.lib.libzmq), Cint, (Ptr{Cvoid}, Ptr{Cvoid}, Cint), m, sock, 0)
+            rc >= 0 && break
+            Libc.errno() == Libc.EINTR && continue
+            throw(ZMQ.StateError(unsafe_string(ZMQ.lib.zmq_strerror(Libc.errno()))))
+        end
+        n = ccall((:zmq_msg_size, ZMQ.lib.libzmq), Csize_t, (Ptr{Cvoid},), m)
+        p = ccall((:zmq_msg_data, ZMQ.lib.libzmq), Ptr{UInt8}, (Ptr{Cvoid},), m)
+        bytes = copy(unsafe_wrap(Array, p, n))
+        u = ccall((:zmq_msg_gets, ZMQ.lib.libzmq), Ptr{Cchar}, (Ptr{Cvoid}, Cstring), m, "User-Id")
+        return bytes, u == C_NULL ? "" : unsafe_string(u)
+    finally
+        ccall((:zmq_msg_close, ZMQ.lib.libzmq), Cint, (Ptr{Cvoid},), m)
+        Libc.free(m)
+    end
 end
 
 function _send_multipart(sock::ZMQ.Socket, parts::Vector{Vector{UInt8}})
