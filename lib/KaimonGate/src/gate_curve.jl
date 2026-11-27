@@ -383,27 +383,73 @@ function _handle_zap_request(zap::ZMQ.Socket, frames::Vector{Vector{UInt8}},
                              allow::Set{String}, allow_any::Bool)
     length(frames) >= 7 || return
     request_id = frames[2]
-    client_key = frames[7]
-    ok = allow_any
-    if !ok
-        client_z85 = try
-            _z85_encode(client_key)
-        catch
-            ""
-        end
-        ok = client_z85 in allow
+    client_z85 = try
+        _z85_encode(frames[7])
+    catch
+        ""
     end
+    user = _zap_user(client_z85, allow, allow_any)
     reply = Any[
-        "1.0",                       # version
-        request_id,                  # echo request id
-        ok ? "200" : "400",          # status code
-        ok ? "OK" : "denied",        # status text
-        "",                          # user id
-        "",                          # metadata
+        "1.0",                                  # version
+        request_id,                             # echo request id
+        user === nothing ? "400" : "200",       # status code
+        user === nothing ? "denied" : "OK",     # status text
+        something(user, ""),                    # user id: on every message of the connection
+        "",                                     # metadata
     ]
     ZMQ.send_multipart(zap, reply)
     return nothing
 end
+
+# ── Other people's hubs (gate protocol v3) ─────────────────────────────────────
+# The allow-list holds the keys of the hub(s) that own this gate's process: they speak protocol v2
+# (Julia `Serialization`, every request kind). A key the peer authority knows is another person's
+# hub: its connection is marked `peer:<id>`, and the gate never deserializes what it sends — each
+# message goes as text to the peer handler (v3), which decides what that person may do. Any other key
+# is refused. The authority and the handler are installed by the gate's host (Slate's worker).
+
+"Who the key `z85` is to this gate: the ZAP user id of its connection (`owner`, `peer:<id>`, or `\"\"` under `allow_any`), or `nothing` to refuse it."
+function _zap_user(z85::AbstractString, allow::Set{String}, allow_any::Bool)
+    isempty(z85) && return nothing
+    z85 in allow && return "owner"
+    peer = _peer_of(z85)
+    peer === nothing || return "peer:" * peer
+    return allow_any ? "" : nothing
+end
+
+const _PEER_KEYS = Ref{Any}(nothing)
+const _PEER_HANDLER = Ref{Any}(nothing)
+
+function _peer_of(z85::AbstractString)
+    f = _PEER_KEYS[]
+    f === nothing && return nothing
+    id = try
+        Base.invokelatest(f, String(z85))
+    catch e
+        @debug "peer authority failed" exception = e
+        nothing
+    end
+    id isa AbstractString && !isempty(id) && !occursin(r"[\x00-\x1f]", id) ? String(id) : nothing
+end
+
+"""
+    set_peer_keys!(f)
+
+Recognize other people's hubs: `f(key_z85)` returns an id for a key this gate should admit as a peer
+(protocol v3), or `nothing`. Asked on every CURVE handshake, so a revoked key is refused from its next
+connection. `nothing` (the default) admits no peers.
+"""
+set_peer_keys!(f) = (_PEER_KEYS[] = f; nothing)
+
+"""
+    set_peer_handler!(f)
+
+Serve peers: `f(peer_id, request::String) -> String` answers one message from a peer's connection.
+The request is the message's bytes as UTF-8 text, never deserialized here; the handler parses it
+(JSON) and decides what the peer may do, so it is also where a revoked peer's requests are refused.
+`nothing` (the default) refuses every peer message.
+"""
+set_peer_handler!(f) = (_PEER_HANDLER[] = f; nothing)
 
 """
     _start_zap_handler!(ctx; allow_any=false) -> Task

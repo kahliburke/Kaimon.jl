@@ -206,6 +206,7 @@ public set_tachikoma!, set_restart_code_builder!, set_auth_token_provider!
 public disable_wedge_guard!
 # CURVE transport (opt-in TCP encryption + auth)
 public curve_keypair, curve_public, pin_server!, authorize_client!
+public set_peer_keys!, set_peer_handler!
 public known_servers, unpin_server!, authorized_clients, revoke_client!
 public verify_server_key_via_ssh
 # Observe channel (out-of-band PUB/SUB broadcast, e.g. TachiRei tui:<id>)

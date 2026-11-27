@@ -722,6 +722,29 @@ function _recv_multipart(sock::ZMQ.Socket, timeout_s::Real)
     return parts
 end
 
+"""
+    _recv_request(sock, timeout_s) -> (parts, user)
+
+One request's frames, and the ZAP user id of the connection it came on (`owner`, `peer:<id>`, or
+`""` without CURVE), read from libzmq's metadata on the payload frame before anything is decoded.
+"""
+function _recv_request(sock::ZMQ.Socket, timeout_s::Real)
+    _await_socket(_zmq_readable, sock, timeout_s) || throw(ZMQ.TimeoutError(repr(sock), Float64(timeout_s)))
+    parts = Vector{UInt8}[]
+    user = ""
+    while true
+        msg = ZMQ.recv(sock)
+        push!(parts, Vector{UInt8}(msg))
+        more = sock.rcvmore
+        if !more
+            p = ZMQ.lib.zmq_msg_gets(msg, "User-Id")
+            user = p == C_NULL ? "" : unsafe_string(p)
+        end
+        more || break
+    end
+    return parts, user
+end
+
 function _send_multipart(sock::ZMQ.Socket, parts::Vector{Vector{UInt8}})
     n = length(parts)
     for (i, p) in enumerate(parts)
@@ -786,6 +809,34 @@ function _start_request(identity::Vector{UInt8}, corr_id::Vector{UInt8}, request
     end
     Threads.atomic_add!(_gate_default_inflight(), 1)
     Threads.@spawn _serve_request(identity, corr_id, request, true)
+    return nothing
+end
+
+# A message from another person's hub (protocol v3), answered on a task of its own: its bytes go to the
+# host's peer handler as text, and the handler's text is the reply. Nothing here deserializes them.
+function _start_peer_request(identity::Vector{UInt8}, corr_id::Vector{UInt8}, payload::Vector{UInt8}, peer::String)
+    Threads.atomic_add!(_gate_inflight(), 1)
+    Threads.@spawn try
+        f = _PEER_HANDLER[]
+        text = String(copy(payload))
+        reply = if f === nothing
+            "{\"error\":\"This gate serves no one else's hub\"}"
+        elseif !isvalid(text)
+            "{\"error\":\"A request is UTF-8 text\"}"
+        else
+            try
+                r = Base.invokelatest(f, peer, text)
+                r isa AbstractString ? String(r) : "{\"error\":\"The peer handler gave no text\"}"
+            catch e
+                @debug "peer handler failed" peer exception = e
+                "{\"error\":\"The request failed\"}"
+            end
+        end
+        put!(_gate_outbox(), (identity, corr_id, Vector{UInt8}(codeunits(reply))))
+    finally
+        Threads.atomic_sub!(_gate_inflight(), 1)
+        _gate_wake!()
+    end
     return nothing
 end
 
@@ -874,7 +925,7 @@ function message_loop(socket::ZMQ.Socket)
                 continue
             end
 
-            parts = if wake === nothing
+            received = if wake === nothing
                 # 2b. pick recv timeout: poll fast while a reply may be in flight (a
                 #     worker running, or one already queued between drain and now) or a
                 #     deferred request is waiting for a slot, else wait long.
@@ -882,7 +933,7 @@ function message_loop(socket::ZMQ.Socket)
                              _GATE_RCVTIMEO_BUSY[] : _GATE_RCVTIMEO_IDLE[]
 
                 # 3. recv one request — [identity, corr_id, payload] — within that timeout
-                _recv_multipart(socket, timeout_ms / 1000)
+                _recv_request(socket, timeout_ms / 1000)
             else
                 # 2b/3. nothing to read: park until a request arrives or a reply is queued;
                 #       readable, so the recv returns at once
@@ -890,12 +941,19 @@ function message_loop(socket::ZMQ.Socket)
                     park!(wake)
                     continue
                 end
-                _recv_multipart(socket, 1.0)
+                _recv_request(socket, 1.0)
             end
+            (parts, user) = received
             length(parts) >= 3 || continue
             identity = parts[1]
             corr_id = parts[2]
             payload = parts[end]
+
+            # Another person's hub (protocol v3): never deserialized; its text goes to the peer handler.
+            if startswith(user, "peer:")
+                _start_peer_request(identity, corr_id, payload, user[6:end])
+                continue
+            end
 
             request = try
                 deserialize(IOBuffer(payload))

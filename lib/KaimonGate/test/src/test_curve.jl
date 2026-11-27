@@ -413,4 +413,61 @@ end
     end
 end
 
+@testset "serve(curve=true) peers: who sent it is known before decoding, and a peer is served as text" begin
+    Sys.iswindows() && (@test_skip true; return)
+    mktempdir() do dir
+        withenv("KAIMON_CACHE_DIR" => dir) do
+            opub, osec = KG.curve_keypair()      # the hub that owns the gate
+            ppub, psec = KG.curve_keypair()      # another person's hub
+            xpub, xsec = KG.curve_keypair()      # a key nobody vouches for
+            KG.set_peer_keys!(k -> k == ppub ? "bea" : nothing)
+            KG.set_peer_handler!((id, text) -> "peer=$id text=$text")
+            try
+                sid = "test-peer-$(bytes2hex(rand(UInt8, 4)))"
+                KG._serve(name = "peer", session_id = sid, force = true, mode = :tcp,
+                          host = "127.0.0.1", port = 0, curve = true, allow_any = false, allowed_clients = [opub])
+                sleep(0.25)
+                ep = rstrip(ZMQ._get_last_endpoint(KG._gate_socket()), '\0')
+                spub = KG._curve_server_public()
+                ctx = ZMQ.Context()
+                function client(pub, sec)
+                    s = ZMQ.Socket(ctx, ZMQ.REQ); s.rcvtimeo = 2000; s.linger = 0
+                    KG.make_curve_client!(s, spub, pub, sec)
+                    ZMQ.connect(s, ep)
+                    s
+                end
+                # The owner's hub: protocol v2, as before.
+                o = client(opub, osec)
+                @test _zmq_req(o, (type = :ping,)).type == :pong
+                ZMQ.close(o)
+                # Another person's hub: its text reaches the handler with the id its key was given.
+                p = client(ppub, psec)
+                ZMQ.send(p, """{"verb":"hello"}""")
+                @test String(ZMQ.recv(p, Vector{UInt8})) == """peer=bea text={"verb":"hello"}"""
+                # A v2 request from it is never deserialized: no pong, only the handler's text or a refusal.
+                buf = IOBuffer(); Serialization.serialize(buf, (type = :ping,))
+                ZMQ.send(p, ZMQ.Message(take!(buf)))
+                r = String(ZMQ.recv(p, Vector{UInt8}))
+                @test occursin("UTF-8", r) || startswith(r, "peer=bea")
+                ZMQ.close(p)
+                # A key nobody vouches for: refused at the handshake.
+                x = client(xpub, xsec)
+                ZMQ.send(x, "{}")
+                @test_throws ZMQ.TimeoutError ZMQ.recv(x, Vector{UInt8})
+                ZMQ.close(x)
+                # No longer vouched for: its next connection is refused.
+                KG.set_peer_keys!(nothing)
+                p2 = client(ppub, psec)
+                ZMQ.send(p2, "{}")
+                @test_throws ZMQ.TimeoutError ZMQ.recv(p2, Vector{UInt8})
+                ZMQ.close(p2)
+                ZMQ.close(ctx)
+            finally
+                KG.set_peer_keys!(nothing); KG.set_peer_handler!(nothing)
+                KG.stop(); sleep(0.2)
+            end
+        end
+    end
+end
+
 end  # if !_running()
