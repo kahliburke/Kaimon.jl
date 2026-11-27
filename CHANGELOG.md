@@ -2,7 +2,7 @@
 
 Release notes for Kaimon and KaimonGate (`lib/KaimonGate`), newest first. Each entry is also published on the GitHub release for its tag.
 
-## Kaimon 2.15.0
+## Kaimon 2.15.0 (2026-11-27)
 
 [Diff since v2.14.0](https://github.com/kahliburke/Kaimon.jl/compare/v2.14.0...v2.15.0)
 
