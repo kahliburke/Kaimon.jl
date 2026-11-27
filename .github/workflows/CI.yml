@@ -98,4 +98,21 @@ jobs:
           version: ${{ matrix.version }}
       - uses: julia-actions/cache@v2
       - name: Test KaimonGate (standalone)
-        run: julia --project=lib/KaimonGate -e 'using Pkg; Pkg.test()'
+        # ZMQ's precompile workload intermittently crashes (#104), before any test runs. A run
+        # that failed that way, precompile failure and no test summary, is run again, up to
+        # three times. Any other failure fails the job.
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            set +e
+            julia --project=lib/KaimonGate -e 'using Pkg; Pkg.test()' 2>&1 | tee test.log
+            rc=${PIPESTATUS[0]}
+            set -e
+            [ "$rc" -eq 0 ] && exit 0
+            if grep -q "Failed to precompile" test.log && ! grep -q "Test Summary:" test.log; then
+              echo "::warning::Precompiling crashed before the tests ran (attempt $attempt of 3, #104); running again"
+              continue
+            fi
+            exit "$rc"
+          done
+          exit 1
